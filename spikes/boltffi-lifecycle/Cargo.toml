@@ -1,0 +1,16 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "blehub-boltffi-lifecycle-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+boltffi = { path = "../../../contrib/boltffi/boltffi" }
+thiserror = "2"

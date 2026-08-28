@@ -1,0 +1,62 @@
+# Local project tooling
+/.pixi/
+/.ruff_cache/
+/.codegraph/
+
+# Python caches and test output
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Isolated work and collected CI output
+/.work/
+/artifacts/
+
+# Rust build output
+**/target/
+
+# Gradle and Android build output
+**/.gradle/
+**/build/
+**/out/
+local.properties
+*.apk
+*.aab
+*.aar
+
+# Apple and Swift build output
+**/.build/
+**/DerivedData/
+*.xcarchive
+*.xcframework/
+*.dSYM/
+*.ipa
+
+# BoltFFI generated bindings and package staging
+# Generated API/ABI snapshots will use a dedicated tracked directory when Phase 0 begins.
+**/generated/
+**/gen/
+**/dist/
+**/staging/
+
+# Native binary artifacts
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
+*.pdb
+
+# Logs, temporary files, and editor/OS metadata
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

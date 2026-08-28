@@ -1,0 +1,39 @@
+[workspace]
+name = "blehub"
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
+
+[dependencies]
+python = ">=3.12,<3.14"
+just = ">=1.38,<2"
+tqdm = ">=4.67,<5"
+ruff = ">=0.16.5,<0.17"
+httpx = ">=0.28.1,<0.29"
+pooch = ">=1.8,<2"
+hishel = ">=1,<2"
+
+[feature.rust.dependencies]
+rust = "1.95.*"
+
+[feature.jvm.dependencies]
+openjdk = "17.*"
+gradle = "8.11.*"
+
+[feature.jvm.target.win-64.dependencies]
+rust-std-x86_64-pc-windows-gnu = "1.95.*"
+
+[feature.android.dependencies]
+openjdk = "17.*"
+
+[environments]
+default = { features = ["rust"], solve-group = "development" }
+jvm = { features = ["rust", "jvm"], solve-group = "development" }
+android = { features = ["rust", "jvm", "android"], solve-group = "development" }
+
+[target.win-64.activation.env]
+CARGO_HOME = "%USERPROFILE%\\.cache\\mobile-ffi-toolchain\\cargo-home"
+CARGO_TARGET_DIR = "%PIXI_PROJECT_ROOT%\\.work\\cargo-target"
+
+[target.unix.activation.env]
+CARGO_HOME = "$HOME/.cache/mobile-ffi-toolchain/cargo-home"
+CARGO_TARGET_DIR = "$PIXI_PROJECT_ROOT/.work/cargo-target"
