@@ -7,12 +7,12 @@ let package = Package(
         .iOS(.v16),
         .macOS(.v13),
     ],
-    dependencies: [
-        .package(path: "../../generated/apple")
-    ],
     products: [
         .library(name: "ConsumerLibrary", targets: ["ConsumerLibrary"]),
         .executable(name: "Consumer", targets: ["Consumer"]),
+    ],
+    dependencies: [
+        .package(path: "../../generated/apple")
     ],
     targets: [
         .target(
