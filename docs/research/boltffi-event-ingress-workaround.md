@@ -12,10 +12,11 @@ BleHub 保持一个不因 BoltFFI 能力变化而改变的装配 contract：
 
 1. platform factory 构造不含 ingress、不会启动 BLE 工作或 callback source 的 inert backend；
 2. Rust application 调用 `BleHub::new(backend, rust_sink)`；
-3. constructor 在内部完成一次性 `bind_event_ingress`；
-4. bind 和 ingress routing 都成功后才返回可用 Hub；
-5. downstream 始终是普通 Rust `BleEventSink`，不跨第二次 FFI；
-6. ingress 最终只通过 `Weak<EventIngressState>` 到达 Hub state，不形成强引用环。
+3. constructor先通过typed`backend.capabilities()`读取、校验并缓存静态metadata；
+4. constructor在内部完成一次性`bind_event_ingress`；
+5. capabilities、bind和ingress routing都成功后才返回可用Hub；
+6. downstream始终是普通Rust`BleEventSink`，不跨第二次FFI；
+7. ingress最终只通过`Weak<EventIngressState>`到达Hub state，不形成强引用环。
 
 理想方案是把 exported Rust class `BackendEventIngressHandle` 直接传给 foreign backend。当前 BoltFFI `0.30.1` 不能生成这个 foreign callback method parameter，因此 v0.1 使用：
 
@@ -145,6 +146,7 @@ Ownership：
 ```text
 BleHub
   strong -> foreign BleBackend
+  value -> cached BackendCapabilities
   strong -> Arc<EventIngressState>
 
 EventIngressState
@@ -334,20 +336,24 @@ v0.1 使用 process-local monotonic `AtomicU64` allocator：
 ### 4.4 Constructor 顺序
 
 ```text
-1. create Arc<EventIngressState> with Rust sink
-2. allocate never-reused token
-3. call backend.bind_event_ingress(token)
-4. if bind Err:
+1. call backend.capabilities() and validate static metadata
+2. if capabilities Err/invalid:
+     best-effort backend.dispose
+     return Err
+3. create Arc<EventIngressState> with Rust sink
+4. allocate never-reused token
+5. call backend.bind_event_ingress(token)
+6. if bind Err:
      state.close_and_drain
      best-effort backend.dispose
      return Err
-5. register token -> Weak<EventIngressState>
-6. if registration Err:
+7. register token -> Weak<EventIngressState>
+8. if registration Err:
      state.close_and_drain
      best-effort backend.dispose
      return Err
-7. store backend, state, registration guard
-8. return BleHub
+9. store backend, capabilities, state, registration guard
+10. return BleHub
 ```
 
 bind 发生时 token 尚未注册。backend 必须保持 inert，不得在 bind 内或 bind 返回后、第一条 command 前创建 callback source。若违规调用 `push_backend_event`，只能得到 `Closed`，不会把事件交给尚未返回的 Hub/sink。
@@ -397,7 +403,7 @@ pub fn push_backend_event(
 - Rust sink 返回 typed error：`DownstreamFailed { message }`；
 - delivery 成功：`Delivered`。
 
-backend 可以记录 status/message，但不得解析 message 控制流程、自动 retry event 或把 ingress failure 当 BLE operation completion。
+backend可以记录status/message，但不得解析message控制流程、自动retry event或把ingress failure当BLE operation completion。`InvalidEvent`/`DownstreamFailed`消费当前attempt：backend照常提交terminal/correlation cleanup并继续后续event；只有`Closed`才停止向该ingress push。
 
 ### 4.6 Close 顺序
 
@@ -421,6 +427,7 @@ v0.1：
 ```text
 BleHub
   strong -> foreign BleBackend
+  value -> cached BackendCapabilities
   strong -> Arc<EventIngressState>
   owns -> BackendEventIngressRegistration
 

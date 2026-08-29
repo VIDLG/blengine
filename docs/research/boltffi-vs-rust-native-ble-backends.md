@@ -553,6 +553,7 @@ BoltFFI 可以生成 record/enum/error/trait/class 对应绑定，减少手写 J
 ```text
 BleHub
   strong -> foreign BleBackend
+  value -> cached BackendCapabilities
   strong -> Arc<EventIngressState>
 
 EventIngressState
@@ -673,45 +674,30 @@ BleHub 仍需定义并验证：
 
 在 Phase 0 通过前，不冻结 v0.1 public ABI。
 
-## 10. `capabilities()` 的特殊风险
+## 10. `capabilities()` 的特殊风险与已采纳方案
 
-当前计划草案中存在：
+原草案的foreign callback使用infallible value return：
 
 ```rust
 fn capabilities(&self) -> BackendCapabilities;
 ```
 
-这是 foreign callback 上的 infallible value return。如果 Kotlin/Swift implementation 意外抛异常，Rust 侧没有自然的 typed failure channel。
-
-建议优先改成构造时传入 immutable capabilities：
-
-```text
-BleHub::new(backend, downstream, backend_capabilities)
-```
-
-或者由 backend factory/registration record 一次性提供：
-
-```text
-RegisteredBackend {
-    backend,
-    capabilities,
-}
-```
-
-收益：
-
-- capability 是 backend type/platform version 的装配元数据，不需要每次跨 FFI 回调查询；
-- 避免 infallible foreign return；
-- capability 可在 backend 完全进入运行态前验证；
-- facade 可直接缓存 immutable value，不引入动态状态。
-
-若确实必须动态查询，则应返回：
+如果Kotlin/Swift implementation意外抛异常，Rust侧没有typed failure channel。Plan现已采纳一次性typed assembly query：
 
 ```rust
 fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
 ```
 
-但动态 capability 会引入“何时变化、是否发 capability-changed event”的额外问题。v0.1 更适合 immutable constructor metadata。
+`BleHub::new`在bind前只调用一次，校验后把immutable value缓存到Hub；public`BleHub::capabilities()`只返回缓存，不再跨FFI，也不引入capability-changed event。query失败或DTO非法使constructor best-effort dispose inert backend并返回`BleHubError`。
+
+该方案保留`BleHub::new(backend, downstream)`单一装配API，不要求application额外传一份可能与backend不一致的metadata，也避免设计`RegisteredBackend`包装。收益：
+
+- capability仍是backend type/platform contract的装配metadata，不是动态adapter state；
+- foreign invocation和DTO conversion具有typed failure channel；
+- capability可在backend进入运行态前验证；
+- facade缓存immutable value，不产生重复FFI调用或第二套metadata真值。
+
+Phase 0仍必须验证这一foreign trait `Result<data,error>`的Kotlin/Swift生成shape与未声明exception行为。
 
 ## 11. Phase 0 必须升级为硬 Go/No-Go 门槛
 
@@ -721,6 +707,7 @@ Phase 0 不应只验证“BoltFFI 能生成 trait”。必须完整运行：
 
 ```text
 foreign backend + Rust downstream sink
+  -> BleHub::new queries/validates/caches capabilities exactly once
   -> BleHub::new creates state and never-reused token
   -> bind_event_ingress(token) exactly once
   -> register token to Weak state
@@ -797,7 +784,7 @@ foreign backend + Rust downstream sink
 - backend command 抛 unchecked exception；
 - bind 或 registry registration 中途失败；
 - stale token 与 unregister/push 竞争；
-- Rust downstream 返回 `EventSinkError`，并验证 backend 收到 `DownstreamFailed { message }`；
+- Rust downstream对domain/terminal event返回`EventSinkError`，验证backend收到`DownstreamFailed { message }`、不重试当前event、清理correlation并继续后续event；
 - Rust event conversion panic；
 - Rust downstream panic；
 - allocation/encoding failure 能模拟时进行模拟；
@@ -959,7 +946,7 @@ FFI ownership 失败与 BLE domain contract 失败是两个不同问题，应只
 8. 添加 20/100/1000 Hz 真实 event benchmark；
 9. 添加 generated API/header/vtable/packaging snapshot；
 10. 明确 BoltFFI Android 输出不等于最终 AAR 发布流程全部完成；
-11. 把 immutable `BackendCapabilities` 放入装配数据，避免 infallible foreign query；
+11. 以constructor一次性typed query取得并缓存immutable`BackendCapabilities`，避免infallible或重复foreign query；
 12. 记录 No-Go 后的 fallback 顺序。
 
 在用户 review 并批准主计划前，这些仍是调研建议，不启动 BLE 实现。

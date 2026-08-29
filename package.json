@@ -1,0 +1,12 @@
+{
+  "name": "blehub-doc-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check:mermaid": "node tools/check_mermaid.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1",
+    "mermaid": "11.17.2"
+  }
+}

@@ -11,6 +11,10 @@ fmt:
 lint:
     ruff check tools
 
+docs-check-mermaid:
+    npm install --ignore-scripts --no-audit --no-fund
+    npm run check:mermaid
+
 ffi-spike-check-class-handle-param:
     python tools/check_expected_cargo_failure.py --manifest-path spikes/boltffi-class-handle-callback-param/Cargo.toml --expected "unsupported expansion: callback method parameter shape"
 

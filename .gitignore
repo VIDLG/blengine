@@ -3,6 +3,9 @@
 /.ruff_cache/
 /.codegraph/
 
+# JavaScript package cache
+/node_modules/
+
 # Python caches and test output
 **/__pycache__/
 *.py[cod]

@@ -20,6 +20,7 @@ BleHub v0.1 推荐使用两个互不嵌套的同步边界和一个单向原子�
 ```rust
 pub struct BleHub {
     backend: RwLock<Option<Box<dyn BleBackend>>>,
+    capabilities: BackendCapabilities,
     ingress: Arc<EventIngressState>,
     ingress_registration: BackendEventIngressRegistration,
 }
@@ -37,7 +38,7 @@ pub struct BackendEventIngressToken {
 // token -> Weak<EventIngressState>
 ```
 
-这不是一个通用并发框架，也不引入 runtime、actor、worker、mailbox 或 lock-free reclamation。设计目标是用标准 ownership 和同步原语表达最小、可测试的生命周期不变量。
+`BackendCapabilities`由constructor通过typed backend query读取、校验并缓存一次，是O(1) immutable metadata，不参与上述同步边界。其余结构不是一个通用并发框架，也不引入runtime、actor、worker、mailbox或lock-free reclamation。设计目标是用标准ownership和同步原语表达最小、可测试的生命周期不变量。
 
 推荐从 `RwLock` gate 开始，而不是预先实现自定义 in-flight counter/condition variable。command method 的 foreign call 被限制为短同步 dispatch；ingress callback 不获取 command/close gate；Rust downstream sink 不同步重入 Hub。移动端只有 `BleHub -> foreign backend` 和 `foreign backend -> push_backend_event(token, event)` 跨 FFI；registry 通过 `ArcSwap` immutable snapshot lock-free lookup，并在进入 state 前释放 snapshot guard；`EventIngressState::push -> BleEventSink::on_event` 始终是 Rust 内部调用。若 Phase 0 证明确有不可控 re-entry 或持锁跨 FFI 的问题，再升级为 RAII operation lease + in-flight counter + condition variable。token workaround 的完整设计和 direct-handle 迁移见 [BoltFFI event ingress workaround](boltffi-event-ingress-workaround.md)。
 
@@ -219,6 +220,7 @@ flowchart TB
 ```rust
 struct BleHub {
     backend: RwLock<Option<Box<dyn BleBackend>>>,
+    capabilities: BackendCapabilities,
     ingress: Arc<EventIngressState>,
     ingress_registration: BackendEventIngressRegistration,
 }
@@ -237,24 +239,36 @@ fn dispatch(
 }
 ```
 
-close 取得 exclusive/write guard：
+close取得exclusive/write guard。清理算法直接实现在public`dispose`中，`Drop`调用它，不增加同义private wrapper：
 
 ```rust
-fn close(&self) -> Result<(), BleHubError> {
-    let mut slot = self.backend.write().map_err(map_lock_failure)?;
-    let Some(backend) = slot.as_ref() else {
-        return Ok(());
-    };
+impl BleHub {
+    pub fn dispose(&self) -> Result<(), BleHubError> {
+        let mut slot = self.backend.write_recovering_poison();
+        let Some(backend) = slot.take() else {
+            return Ok(());
+        };
 
-    self.ingress.close_and_drain();
-    let result = backend.dispose();
-    self.ingress_registration.unregister();
-    slot.take();
-    result
+        self.ingress.close_and_drain();
+        let backend_result = backend.dispose();
+        self.ingress_registration.unregister();
+        drop(backend);
+        backend_result
+    }
+}
+
+impl Drop for BleHub {
+    fn drop(&mut self) {
+        if let Err(error) = self.dispose() {
+            trace_dispose_failure(error);
+        }
+    }
 }
 ```
 
-准确方法名和 borrow shape 在实现时调整，重要的是 read/write guard 的生命周期。
+准确方法名、borrow shape、poison diagnostic聚合在实现时调整。关键是取得write guard后不因poison/backend `Err`提前退出，所有路径继续close ingress、调用backend cleanup、注销registration并释放ownership。第一次显式`dispose`可返回cleanup error；对象仍closed。重复调用和显式dispose后的`Drop`观察到`None`并返回`Ok(())`。
+
+constructor rollback发生在Hub完整形成前，因此best-effort调用同一个backend trait `dispose`，保留原assembly error，再drop trait object。每个平台backend的trait `dispose`本身必须幂等；Rust`Drop`/Swift`deinit`可直接调用它兜底，Kotlin不能依赖不确定的GC/finalizer。
 
 ### 6.2 Linearization
 
@@ -348,7 +362,7 @@ impl EventIngressState {
 }
 ```
 
-`BleEvent::validate_shape` 是私有、无状态的纯结构校验。`downstream.on_event(event)` 是普通 Rust trait 调用，不发生第二次 FFI crossing；它返回 Rust-only `Result<(), EventSinkError>`，并由 contract 明确要求不得 panic。所有可预期失败都走 typed `Err`。validation 与 sink error 的 `Display` 文本分别进入 `InvalidEvent { message }` 与 `DownstreamFailed { message }`，供调用 `push` 的 backend 记录诊断；message 不是稳定机器协议，不得控制 retry。若 BoltFFI 同步 exported wrapper 没有统一阻止 Rust unwind 穿越 ABI，则 v0.1 只在最外层 `push_backend_event` trampoline 增加 panic guard；未来 direct-handle 路径对应放在 `BackendEventIngressHandle::push` trampoline；该防线处理 contract violation，不属于正常 event delivery 语义，也不应伪装成 `EventSinkError`。
+`BleEvent::validate_shape`是私有、无状态校验：data enum路径检查ID/wire value/size，tagged-record fallback再检查唯一tag/body。`downstream.on_event(event)`是普通Rust trait调用，不发生第二次FFI crossing；它返回Rust-only `Result<(), EventSinkError>`，并由contract要求不得panic。validation与sink error文本分别进入`InvalidEvent`与`DownstreamFailed`供backend记录；message不是稳定机器协议。两种failure都消费当前attempt：不retry同一event，backend照常提交terminal/correlation cleanup并继续后续event，只有`Closed`停止push。若BoltFFI wrapper未统一阻止Rust unwind穿越ABI，v0.1只在最外层`push_backend_event` trampoline增加panic guard；未来direct-handle路径对应放在`BackendEventIngressHandle::push` trampoline。该防线处理contract violation，不属于正常delivery语义，也不伪装成`EventSinkError`。
 
 执行顺序：
 
@@ -357,7 +371,7 @@ impl EventIngressState {
 3. 获取 downstream mutex，lock poisoning/failure 映射为带 diagnostic message 的 `DownstreamFailed`；
 4. 在锁内再次 acquire-load closed flag；
 5. downstream 已被取走则返回 `Closed`；
-6. 校验 event wire/tag/payload shape；
+6. 校验唯一event variant/body、ID/wire value和size guard；
 7. 在 mutex guard 生命周期内同步调用 Rust `on_event`；
 8. `Ok(())` 返回 `Delivered`；typed `Err` 或 mutex failure 返回 `DownstreamFailed { message }`；panic 是单独处理的 contract violation。
 
@@ -448,7 +462,7 @@ command/close read guard
 | bind 或 registry registration 中途失败 | state closed，backend best-effort disposed，token 不复用 | constructor rollback |
 | push lookup 与 token unregister 并发 | closed state 或 missing token，均返回 `Closed` | ArcSwap snapshot + RCU replacement + closed flag |
 | backend dispose 返回错误 | Hub 仍 closed，backend ownership 仍释放 | close is terminal |
-| Rust downstream 返回 `Err(EventSinkError)` | `DownstreamFailed { message }`，backend 可记录但不自动重试 event | typed result |
+| Rust downstream 返回 `Err(EventSinkError)` | `DownstreamFailed { message }`；当前attempt不重试，backend清理correlation并继续后续event | typed result + ingress status policy |
 | Rust downstream 违反 contract 并 panic | 不得 unwind 穿越 ingress FFI；不伪装成普通 rejection | 最外层 FFI trampoline + Phase 0 fault injection |
 | token unregister 与 callback lookup 竞争 | closed state 或 missing token，均返回 `Closed` | ArcSwap snapshot + RCU replacement + state closed flag |
 | 未来 wrapper close 与 callback handle retain 竞争 | 无 UAF/double free | BoltFFI handle atomics + direct-handle lifecycle spike |

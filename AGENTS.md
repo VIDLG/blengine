@@ -7,11 +7,11 @@ Read it before researching, planning, or changing the project.
 
 ## Current Project State
 
-BleHub is currently in architecture planning and review.
+BleHub's architecture plan is approved; implementation has not started.
 
-- The single review plan is [`.plan/PLAN.md`](.plan/PLAN.md).
-- The plan status is `待 Review`.
-- Do not create the Rust workspace, public API, FFI bindings, platform backends, or BLE implementation until the user approves the plan.
+- The single reviewed plan is [`.plan/PLAN.md`](.plan/PLAN.md).
+- The plan status is `已批准`.
+- Implementation must start from Phase 0 and follow the Plan's phase gates; do not skip ahead to the public API, production FFI bindings, platform backends, or BLE implementation.
 - Project-authored research belongs under [`docs/research/`](docs/research/).
 - Downloaded platform API evidence belongs under [`docs/platform-api-reference/`](docs/platform-api-reference/).
 
@@ -142,6 +142,7 @@ Current recipes include:
 
 ```text
 pixi run just docs-update
+pixi run just docs-check-mermaid
 pixi run just fmt
 pixi run just lint
 ```
@@ -179,6 +180,7 @@ pixi run just lint
 
 For authored Markdown, also verify:
 
+- Mermaid fences with `pixi run just docs-check-mermaid` when diagrams are present;
 - UTF-8 decoding;
 - balanced fenced code blocks;
 - no trailing whitespace;
