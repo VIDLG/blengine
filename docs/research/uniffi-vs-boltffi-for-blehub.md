@@ -51,25 +51,24 @@ BleHub 需要选择一个 Rust 与 Kotlin/Swift 原生 backend 之间的 FFI 生
 
 - 稳定 UniFFI Kotlin backend 使用 JNA，而当前 BoltFFI 路径是直接 JNI；同机实测 UniFFI/JNA 的单次跨边界开销明显更高；
 - Android ART、发布 AAR、clean consumer、生命周期、异常、payload 和性能比较已经通过，但性能取舍仍需用户明确接受；
-- UniFFI 自己明确不提供完整 XCFramework/SPM packaging，BleHub 必须维护 Apple 打包脚本；
-- Windows Swift host fixture 已通过，但真实 macOS Swift runtime、ARC、XCFramework 与 SPM consumer gate 尚未在 macOS/Xcode runner 上运行；
+- UniFFI 自己明确不提供完整 XCFramework/SPM packaging，BleHub 必须维护已经通过 gate 的 Apple 打包脚本；
+- Stable UniFFI Swift 已在真实 `macos-15` runner 上通过 retained direct ingress、ARC/lifecycle、错误、XCFramework、clean macOS SPM consumer 和 generic iOS simulator/device compile-link；
 - UniFFI 稳定和实验 Kotlin 后端都仍有与 BoltFFI #871 等价的 `message`/`cause` 错误字段冲突。
 
 ### 2.2 推荐决策
 
-建议把 UniFFI 保持为 **Phase 0 首选候选**。Android gate 已经完成；最终决定现在只剩两个明确条件：
+建议把 UniFFI 保持为 **Phase 0 首选候选**。Android correctness 和 Apple gate 已经完成；最终框架决定现在只剩一个需要用户确认的产品取舍：
 
-> 1. 用户接受物理 Android 设备上约 `16×`（push）和 `21×`（command）的 JNA/JNI 相对开销；绝对 push 吞吐仍约为每秒 `7,900` 次，通常高于 BLE event 需求，但这是产品取舍而不是框架替用户决定。
-> 2. Stable UniFFI Swift 在 macOS runner 上通过 retained direct handle、ARC/lifecycle、错误、XCFramework 和 clean SPM consumer gate。
+> 用户是否接受物理 Android 设备上约 `16×`（push）和 `21×`（command）的 JNA/JNI 相对开销。绝对 push 吞吐仍约为每秒 `7,900` 次，通常高于 BLE event 需求，但这是产品取舍而不是框架替用户决定。
 
-如果两项都成立，建议在 public ABI 冻结前切换到 UniFFI，并删除 token ingress registry 与 BoltFFI ACK workaround 候选。如果 Apple gate 失败，或用户不接受 JNA 开销，则继续使用 BoltFFI并优先等待官方 #869/#872 修复，而不是把两套永久 workaround 静默冻结进 v0.1 contract。
+Apple 条件已经满足。如果用户接受该 Android 开销，建议在 public ABI 冻结前切换到 UniFFI，并删除 token ingress registry 与 BoltFFI ACK workaround 候选；如果不接受，则继续使用 BoltFFI并优先等待官方 #869/#872 修复，而不是把两套永久 workaround 静默冻结进 v0.1 contract。
 
 因此当前比较是：
 
 - API/object/error correctness：UniFFI 领先；
 - Android direct JNI 性能：BoltFFI 明显领先；
 - Android correctness 与发布消费：两条路径均已有运行证据；
-- Apple packaging/runtime：BoltFFI 已有准备，UniFFI gate 已实现但仍待 macOS runner 实跑。
+- Apple packaging/runtime：两条路径均已在同一次真实 macOS workflow 中通过 runtime、XCFramework 和 clean consumer gate。
 
 ## 3. 证据边界
 
@@ -137,6 +136,8 @@ Gradle XML 记录总耗时 `1.289s`，但这是 debug desktop mechanism test，*
 Android producer instrumentation 在 API 36 x86_64 emulator 和 arm64 物理设备上均为 `6 tests/device, 0 failures`，发布制品 consumer 为 `1 test/device, 0 failures`。运行证据覆盖 ART、main `Handler`/`Looper`、Rust-created thread、8-worker concurrent direct ingress、`dispose()` 等待已 admission callback、10,000 undeclared exceptions、10,000 lifecycle、late callback、三档 payload、Rust/foreign handle counter 回 baseline，以及只声明 Maven artifact 的 clean consumer。发布 POM 传递 JNA 依赖，consumer 不读取 generated source。
 
 Windows Swift host gate 使用 Swift `6.3.3` 和发布版 UniFFI `0.32.0` 通过 retained direct ingress、Rust-created thread、64 路并发 push、declared/undeclared error、late callback 与 10,000 lifecycle。它排除了大部分 Swift binding/ownership 机制问题，但不替代 macOS ARC/Xcode 证据。
+
+GitHub Actions [`Phase 0 Apple` run `33249751300`](https://github.com/VIDLG/blehub/actions/runs/33249751300) 在 arm64 `macos-15`、macOS `15.7.7`、Xcode `16.4`、Apple Swift `6.1.2` 和 Rust/Cargo `1.95.0` 上通过。UniFFI runtime 输出 `swift_macos_uniffi_direct_ingress_smoke=passed`，clean SPM runtime consumer 输出 `swift_package_uniffi_direct_ingress_consumer=passed`；iOS device `arm64`、iOS simulator `arm64+x86_64`、macOS `arm64+x86_64` slices、每-slice modulemap 和两次 generic iOS compile-link 均通过。BoltFFI `0.30.1` baseline 在同一 run 中也通过对应 token-ingress runtime、XCFramework、clean consumer 和 generic iOS compile-link gate。
 
 错误字段 fixture 的 Kotlin 编译按预期失败，并明确报告：
 
@@ -470,20 +471,11 @@ UniFFI Swift tests 已覆盖：
 
 这比只读 generator API 名称更强，说明 #869 的基本 object shape 在 Swift 也存在 upstream runtime test。
 
-### 9.2 BleHub-shaped Swift host 证据与 Apple 待验证项
+### 9.2 BleHub-shaped Swift 与 Apple 运行证据
 
 Windows Swift `6.3.3` host fixture 已运行验证：Swift backend 保存 direct Rust ingress；Rust 保存 Swift backend；Rust-created thread 调用 Swift 后重入 Rust；64 路并发 push；declared/undeclared errors；`dispose()` 等待已经 admission 且被阻塞的 callback 完成；late callback；10,000 次 lifecycle 后 weak backend 释放，Rust ingress created/dropped counter 回到预期 baseline。
 
-该结果说明生成的 Swift foreign trait 与 direct handle 对象图能按 BleHub shape 工作，但 Windows Swift runtime 不等于 Apple ARC/Xcode/package 环境。仍必须在 macOS runner 上验证：
-
-- Swift backend 在 bind 返回后长期保存 `BackendEventIngressHandle`；
-- 后续 `DispatchQueue` callback 调 `push`；
-- Rust 保存 Swift backend；
-- explicit dispose、late callback、in-flight callback drain；
-- 10,000 次 ARC create/dispose，所有 strong/weak counter 回 baseline；
-- declared 与 undeclared Swift error；
-- generated header/modulemap/Swift source 组成 XCFramework；
-- 独立 SPM consumer 只依赖 produced package。
+权威 macOS run `33249751300` 又在 Apple Swift `6.1.2`/Xcode `16.4` 上验证了同一对象图和生命周期，包括 retained `BackendEventIngressHandle`、`DispatchQueue` callback、Rust 保存 Swift backend、Rust-created thread、64 路并发 push、declared/undeclared errors、explicit/idempotent dispose、in-flight callback drain、late callback、10,000 次 ARC lifecycle 与 ingress create/drop baseline。生成的 Swift/header/modulemap 和五个 Rust Apple target 组成三-slice XCFramework；独立 macOS SPM consumer 实际运行，generic iOS simulator/device 均完成编译链接且无需签名。
 
 iOS simulator 可以验证 FFI、ARC、package 和多数线程行为，但不能替代真实 CoreBluetooth/BLE hardware。该限制与 BoltFFI 相同。
 
@@ -499,7 +491,7 @@ BleHub 已经为 BoltFFI 建立：
 - API 36 emulator 和 arm64 device ART tests；
 - clean AAR-only consumer；
 - Windows Swift host test；
-- Apple XCFramework/SPM packaging recipe 和 macOS CI 准备；
+- 已在 macOS CI 运行通过的 Apple XCFramework/SPM packaging 与 clean consumer；
 - project-owned Android/Swift/native toolchain resolution；
 - generated API/ABI 后续 snapshot 方向。
 
@@ -533,7 +525,7 @@ Android 侧已经建立并运行：
 - POM 传递 JNA，clean consumer 只声明 `dev.blehub:blehub-uniffi-lifecycle:0.0.0`；
 - API 36 emulator 与 arm64 physical device producer/consumer instrumentation。
 
-Apple 侧已经建立但尚未在 macOS runner 实跑：
+Apple 侧已在权威 macOS run `33249751300` 实际通过：
 
 - 五个 Rust staticlib target：iOS device、两种 iOS simulator、两种 macOS architecture；
 - `lipo` 形成 iOS simulator/macOS universal archives；
@@ -641,7 +633,7 @@ BleHub event 不是音视频级数据流，但可能出现：
 | Android call overhead | 低：direct JNI | 高于 JNI：physical push约 `16×`、command约 `21×` | BoltFFI 胜 |
 | Android packaging | 低/中：已有 AAR lane | 中：AAR/POM/clean consumer已运行 | 均已关闭 correctness risk |
 | Apple basic foreign trait/object | 中：已有 host evidence | 低/中：upstream + Windows host fixture | UniFFI 略胜 |
-| BleHub-shaped macOS ARC/package | 待完成 | recipe已建立、待 macOS实跑 | 均未关闭 |
+| BleHub-shaped macOS ARC/package | token baseline 已通过 | direct ingress 已通过 | 两条路径均关闭 correctness/package risk |
 | framework maturity/test matrix | 中 | 低/中 | UniFFI 胜 |
 | generator/API churn | 中 | 中 | 均需 pin + snapshot |
 | 实验 JNI 风险 | 不适用 | 高 | 不应作为 v0.1 选择依据 |
@@ -666,13 +658,15 @@ BleHub event 不是音视频级数据流，但可能出现：
 
 该 gate 已在 API 36 x86_64 emulator 与 arm64 physical device 上通过。它不需要真实 BLE hardware；验证的是 FFI、ART、JNA 和 packaging。真实 Android BLE/permission/RF 仍在 production backend/HIL 阶段验证。
 
-### 14.2 Apple 对比 gate：recipe 已建立，待一次 macOS workflow 实跑
+### 14.2 Apple 对比 gate：已通过
 
 `.github/workflows/phase0-apple.yml` 在同一次 workflow run 中启动两个相互隔离的 `macos-15` job：BoltFFI job 验证当前 token-ingress baseline，UniFFI job 验证 retained direct-ingress 候选。两边都保存环境、runtime、package 日志和生成的 Apple package，避免只为候选方案保留证据。
 
-BoltFFI job 已准备验证 declared/undeclared callback error、bind rollback、Rust-created thread、64 路并发 push、in-flight dispose drain、late push、幂等 dispose、ARC backend release、10,000 token lifecycle、XCFramework metadata、clean macOS SPM consumer，以及 generic iOS simulator/device compile-link。
+权威 [`run 33249751300`](https://github.com/VIDLG/blehub/actions/runs/33249751300) 的两个 job 均通过。该 run 已启用 Bash `pipefail`，runtime 和 package 命令的失败不会被 `tee` 掩盖。早期 run `33248861852` 因缺少 `pipefail` 出现假阳性，不计为证据；run `33249490884` 正确暴露并定位 Swift weak-reference 与 SwiftPM manifest 问题，同样不计为通过证据。
 
-UniFFI job 已建立以下自动化检查，仍需在 macOS/Xcode runner 完成：
+BoltFFI job 通过 declared/undeclared callback error、bind rollback、Rust-created thread、64 路并发 push、in-flight dispose drain、late push、幂等 dispose、ARC backend release、10,000 token lifecycle、XCFramework metadata、clean macOS SPM consumer，以及 generic iOS simulator/device compile-link。
+
+UniFFI job 通过：
 
 1. Swift backend 保存 direct Rust ingress；
 2. DispatchQueue later callback；
@@ -685,7 +679,7 @@ UniFFI job 已建立以下自动化检查，仍需在 macOS/Xcode runner 完成�
 9. XCFramework；
 10. clean SPM consumer。
 
-该 gate 同样不验证 CoreBluetooth RF；但必须验证真实 Swift runtime、ARC、Clang module 和 package consumer。
+该 gate 验证了真实 Swift runtime、ARC、Clang module 和 package consumer，但不验证 CoreBluetooth RF；后者仍属于 production backend/HIL 阶段。
 
 ### 14.3 切换 Go 条件
 
@@ -693,7 +687,7 @@ UniFFI job 已建立以下自动化检查，仍需在 macOS/Xcode runner 完成�
 
 - Android stable JNA correctness 全通过；**已满足**；
 - Android 性能和包体积经用户 review 可接受；**待用户明确接受约 `16×`/`21×` 相对开销**；
-- macOS ARC/XCFramework/SPM 全通过；**待 macOS runner**；
+- macOS ARC/XCFramework/SPM 全通过；**已满足**；
 - 不需要 experimental JNI；
 - direct ingress 删除 token registry 后 rollback/close invariant 仍完整；
 - generated API/ABI snapshot 和 consumer test 建立；
