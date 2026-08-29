@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    BackendCapabilities, BleBackend, BleEventSink, BleHubError, CommandDispatchError, CommandKind,
+    BackendCapabilities, BleBackend, BleEventSink, BleHubError, CommandDispatchError,
     ConnectCommand, StartScanCommand,
     ingress::{
         BackendEventIngressRegistration, BackendEventIngressRegistry, EventIngressState,
@@ -87,23 +87,19 @@ impl BleHub {
     pub fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError> {
         if !command.command_id.is_valid() || !command.scan_session_id.is_valid() {
             return Err(CommandDispatchError::InvalidRequest {
-                operation: CommandKind::StartScan,
-                message: "command_id and scan_session_id must be nonzero".to_owned(),
+                detail: "command_id and scan_session_id must be nonzero".to_owned(),
             });
         }
         let backend =
             self.backend
                 .read()
                 .map_err(|_| CommandDispatchError::BackendUnavailable {
-                    operation: CommandKind::StartScan,
-                    message: "command gate is poisoned".to_owned(),
+                    detail: "command gate is poisoned".to_owned(),
                     platform: None,
                 })?;
         backend
             .as_ref()
-            .ok_or(CommandDispatchError::Closed {
-                operation: CommandKind::StartScan,
-            })?
+            .ok_or(CommandDispatchError::Closed)?
             .start_scan(command)
     }
 
@@ -113,23 +109,19 @@ impl BleHub {
             || !command.peripheral_id.is_valid()
         {
             return Err(CommandDispatchError::InvalidRequest {
-                operation: CommandKind::Connect,
-                message: "command_id, connection_id and peripheral_id must be nonzero".to_owned(),
+                detail: "command_id, connection_id and peripheral_id must be nonzero".to_owned(),
             });
         }
         let backend =
             self.backend
                 .read()
                 .map_err(|_| CommandDispatchError::BackendUnavailable {
-                    operation: CommandKind::Connect,
-                    message: "command gate is poisoned".to_owned(),
+                    detail: "command gate is poisoned".to_owned(),
                     platform: None,
                 })?;
         backend
             .as_ref()
-            .ok_or(CommandDispatchError::Closed {
-                operation: CommandKind::Connect,
-            })?
+            .ok_or(CommandDispatchError::Closed)?
             .connect(command)
     }
 
@@ -146,7 +138,7 @@ impl BleHub {
         let backend_result =
             catch_unwind(AssertUnwindSafe(|| backend.dispose())).unwrap_or_else(|_| {
                 Err(BleHubError::BackendCleanup {
-                    message: "backend panicked during dispose".to_owned(),
+                    detail: "backend panicked during dispose".to_owned(),
                     platform: None,
                 })
             });
@@ -173,7 +165,7 @@ mod tests {
 
     use crate::{
         BackendCapabilities, BackendEventIngressToken, BleBackend, BleEvent, BleEventSink,
-        BleHubError, CommandDispatchError, CommandKind, ConnectCommand, EventSinkError, Platform,
+        BleHubError, CommandDispatchError, ConnectCommand, EventSinkError, Platform,
         StartScanCommand,
         ingress::{BackendEventIngressRegistry, EventIngressState},
     };
@@ -224,15 +216,13 @@ mod tests {
 
         fn start_scan(&self, _: StartScanCommand) -> Result<(), CommandDispatchError> {
             Err(CommandDispatchError::InvalidState {
-                operation: CommandKind::StartScan,
-                message: "constructor test backend does not dispatch commands".to_owned(),
+                detail: "constructor test backend does not dispatch commands".to_owned(),
             })
         }
 
         fn connect(&self, _: ConnectCommand) -> Result<(), CommandDispatchError> {
             Err(CommandDispatchError::InvalidState {
-                operation: CommandKind::Connect,
-                message: "constructor test backend does not dispatch commands".to_owned(),
+                detail: "constructor test backend does not dispatch commands".to_owned(),
             })
         }
 
@@ -274,7 +264,7 @@ mod tests {
         let registry = Arc::new(BackendEventIngressRegistry::new());
         let (backend, state) = ConstructorBackend::new(
             Err(BleHubError::BackendAssembly {
-                message: "capabilities unavailable".to_owned(),
+                detail: "capabilities unavailable".to_owned(),
             }),
             Ok(()),
         );
@@ -295,7 +285,7 @@ mod tests {
         let (backend, state) = ConstructorBackend::new(
             Ok(BackendCapabilities::new(Platform::Test)),
             Err(BleHubError::BackendAssembly {
-                message: "bind rejected".to_owned(),
+                detail: "bind rejected".to_owned(),
             }),
         );
         let (sink, sink_drop_count) = tracking_sink();
@@ -346,7 +336,7 @@ mod tests {
         let (backend, state) = ConstructorBackend::new(
             Ok(BackendCapabilities {
                 platform: Platform::Test,
-                contract_version: 2,
+                contract_version: 3,
             }),
             Ok(()),
         );

@@ -1,6 +1,7 @@
 use std::{
+    collections::HashMap,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, LazyLock, Mutex,
         atomic::{AtomicU8, AtomicU64, Ordering},
     },
     time::Duration,
@@ -14,6 +15,128 @@ use boltffi::*;
 
 #[export]
 pub const FIXTURE_CONTRACT_VERSION: u32 = blehub::BLEHUB_CONTRACT_VERSION;
+
+#[data]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExceptionProbeAck {
+    pub accepted: bool,
+}
+
+#[data]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ForeignCallAckToken {
+    pub value: u64,
+}
+
+static NEXT_FOREIGN_CALL_ACK_TOKEN: AtomicU64 = AtomicU64::new(1);
+static FOREIGN_CALL_ACKS: LazyLock<Mutex<HashMap<ForeignCallAckToken, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[export]
+pub trait ForeignResultExceptionProbe: Send + Sync {
+    fn unit_result(&self) -> Result<(), CommandDispatchError>;
+
+    fn success_sentinel_result(&self) -> Result<bool, CommandDispatchError>;
+
+    fn record_ack_result(&self) -> Result<ExceptionProbeAck, CommandDispatchError>;
+
+    fn acknowledged_unit_result(
+        &self,
+        token: ForeignCallAckToken,
+    ) -> Result<(), CommandDispatchError>;
+}
+
+pub struct ForeignResultExceptionProbeFixture {
+    probe: Box<dyn ForeignResultExceptionProbe>,
+}
+
+#[export]
+impl ForeignResultExceptionProbeFixture {
+    pub fn new(probe: Box<dyn ForeignResultExceptionProbe>) -> Self {
+        Self { probe }
+    }
+
+    pub fn call_unit_result(&self) -> Result<(), CommandDispatchError> {
+        self.probe.unit_result()
+    }
+
+    pub fn call_checked_success_sentinel(&self) -> Result<(), CommandDispatchError> {
+        validate_exception_probe_ack(self.probe.success_sentinel_result()?)
+    }
+
+    pub fn call_checked_record_ack(&self) -> Result<(), CommandDispatchError> {
+        validate_exception_probe_ack(self.probe.record_ack_result()?.accepted)
+    }
+
+    pub fn call_explicitly_acknowledged_unit_result(&self) -> Result<(), CommandDispatchError> {
+        let token = begin_foreign_call_ack();
+        let result = self.probe.acknowledged_unit_result(token);
+        let acknowledged = finish_foreign_call_ack(token);
+
+        match (result, acknowledged) {
+            (Ok(()), true) => Ok(()),
+            (Ok(()), false) => Err(missing_foreign_call_ack()),
+            (Err(error), false) => Err(error),
+            (Err(_), true) => Err(CommandDispatchError::FfiContract {
+                detail: "foreign callback both acknowledged and rejected the same call".to_owned(),
+            }),
+        }
+    }
+}
+
+#[export]
+pub fn acknowledge_foreign_call(token: ForeignCallAckToken) -> bool {
+    let mut acknowledgements = FOREIGN_CALL_ACKS.lock().unwrap();
+    let Some(acknowledged) = acknowledgements.get_mut(&token) else {
+        return false;
+    };
+    if *acknowledged {
+        return false;
+    }
+    *acknowledged = true;
+    true
+}
+
+fn begin_foreign_call_ack() -> ForeignCallAckToken {
+    let token = ForeignCallAckToken {
+        value: NEXT_FOREIGN_CALL_ACK_TOKEN.fetch_add(1, Ordering::Relaxed),
+    };
+    assert_ne!(token.value, 0, "foreign call ACK token space exhausted");
+    assert!(
+        FOREIGN_CALL_ACKS
+            .lock()
+            .unwrap()
+            .insert(token, false)
+            .is_none(),
+        "foreign call ACK token collision"
+    );
+    token
+}
+
+fn finish_foreign_call_ack(token: ForeignCallAckToken) -> bool {
+    FOREIGN_CALL_ACKS
+        .lock()
+        .unwrap()
+        .remove(&token)
+        .unwrap_or(false)
+}
+
+fn missing_foreign_call_ack() -> CommandDispatchError {
+    CommandDispatchError::FfiContract {
+        detail: "foreign callback returned without the required explicit acknowledgement"
+            .to_owned(),
+    }
+}
+
+fn validate_exception_probe_ack(accepted: bool) -> Result<(), CommandDispatchError> {
+    if accepted {
+        Ok(())
+    } else {
+        Err(CommandDispatchError::FfiContract {
+            detail: "foreign callback did not return the required success sentinel".to_owned(),
+        })
+    }
+}
 
 static SINK_CREATE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SINK_DROP_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -197,7 +320,7 @@ impl Phase0Fixture {
                 .join()
                 .unwrap_or_else(|_| {
                     Err(CommandDispatchError::FfiContract {
-                        message: "Rust-created backend caller thread panicked".to_owned(),
+                        detail: "Rust-created backend caller thread panicked".to_owned(),
                     })
                 })
         })

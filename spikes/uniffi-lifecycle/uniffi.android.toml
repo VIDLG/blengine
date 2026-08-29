@@ -1,0 +1,4 @@
+[crates.blehub_uniffi_lifecycle.bindings.kotlin]
+android = true
+package_name = "dev.blehub.uniffi"
+kotlin_target_version = "2.1.20"

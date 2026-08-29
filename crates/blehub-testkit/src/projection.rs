@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use blehub::{BleEvent, BleEventPayload, CommandId, CommandOutcome};
+use blehub::{BleEvent, BleEventError, BleEventPayload, CommandId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventDisposition {
@@ -9,10 +9,16 @@ pub enum EventDisposition {
     Orphan,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectedCommandOutcome {
+    Succeeded,
+    Failed(BleEventError),
+}
+
 #[derive(Default)]
 pub struct ReferenceProjection {
     pending: HashSet<CommandId>,
-    outcomes: HashMap<CommandId, CommandOutcome>,
+    outcomes: HashMap<CommandId, ProjectedCommandOutcome>,
 }
 
 impl ReferenceProjection {
@@ -23,12 +29,7 @@ impl ReferenceProjection {
     }
 
     pub fn apply(&mut self, event: &BleEvent) -> EventDisposition {
-        let BleEventPayload::CommandCompleted {
-            command_id,
-            outcome,
-            ..
-        } = &event.payload
-        else {
+        let BleEventPayload::CommandCompleted { command_id, error } = &event.payload else {
             return EventDisposition::Accepted;
         };
 
@@ -38,11 +39,15 @@ impl ReferenceProjection {
         if !self.pending.remove(command_id) {
             return EventDisposition::Orphan;
         }
-        self.outcomes.insert(*command_id, *outcome);
+        let outcome = match error {
+            Some(error) => ProjectedCommandOutcome::Failed(error.clone()),
+            None => ProjectedCommandOutcome::Succeeded,
+        };
+        self.outcomes.insert(*command_id, outcome);
         EventDisposition::Accepted
     }
 
-    pub fn outcome(&self, command_id: CommandId) -> Option<CommandOutcome> {
-        self.outcomes.get(&command_id).copied()
+    pub fn outcome(&self, command_id: CommandId) -> Option<ProjectedCommandOutcome> {
+        self.outcomes.get(&command_id).cloned()
     }
 }

@@ -1,0 +1,30 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "blehub-uniffi-lifecycle-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+name = "blehub_uniffi_lifecycle"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi_bindgen.rs"
+required-features = ["bindgen"]
+
+[[bin]]
+name = "uniffi-bindgen-swift"
+path = "src/uniffi_bindgen_swift.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+thiserror = "2"
+uniffi = "=0.32.0"

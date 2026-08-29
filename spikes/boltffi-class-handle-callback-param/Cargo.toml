@@ -12,4 +12,4 @@ publish = false
 crate-type = ["rlib"]
 
 [dependencies]
-boltffi = { path = "../../../contrib/boltffi/boltffi" }
+boltffi = "=0.30.1"

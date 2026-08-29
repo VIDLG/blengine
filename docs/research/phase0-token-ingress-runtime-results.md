@@ -8,11 +8,11 @@
 
 ## 1. Conclusion
 
-The representative production-shaped Rust token ingress runs successfully through both desktop Kotlin/JVM and Swift on Windows. The fixture uses the real `blehub::BleHub`, real process-global `BackendEventIngressRegistry`, real `EventIngressState`, real public command/event/error types, Kotlin and Swift implementations of the real foreign `BleBackend`, and a Rust-only recording `BleEventSink`.
+The representative production-shaped Rust token ingress runs successfully through Swift on Windows and through Android ART on an API 36 emulator and API 36 arm64 device. The fixture uses the real `blehub::BleHub`, process-global `BackendEventIngressRegistry`, `EventIngressState`, public command/event/error types, foreign implementations of the real `BleBackend`, and a Rust-only recording `BleEventSink`.
 
-The Windows JVM mechanism suite passed 21 tests, including 10,000 complete foreign-backend assembly/dispose cycles; a separate artifact-only Gradle consumer test also passed. The supplementary Windows Swift lane compiled the complete generated binding with its generated C module and an MSVC Rust DLL, then passed synchronous and Rust-thread callbacks, 64 concurrent pushes, idempotent dispose, stale-token rejection, and 10,000 unique-token ARC release cycles. No executed test observed a token collision, stale-token misdelivery, double backend cleanup, callback admission after close, command/close use-after-free, or panic/unexpected Kotlin exception crossing the ABI.
+The official crates.io `boltffi` and `boltffi_cli` release `0.30.1` now drives every fixture; no build depends on the sibling BoltFFI checkout. The supplementary Windows Swift lane passes synchronous and Rust-thread callbacks, 64 concurrent pushes, idempotent dispose, stale-token rejection, and 10,000 unique-token ARC release cycles. The Android lane packages an AAR for `arm64-v8a` and `x86_64`, runs the production-shaped callback/lifecycle smoke on ART, and validates a clean AAR-only consumer.
 
-This is not yet a Phase 0 Go decision. Kotlin generation currently needs a narrowly scoped workaround for BoltFFI's `message` property output; the project still needs a reproducibly pinned clean generator source for CI; macOS Swift/CoreBluetooth-adjacent ARC and queue behavior, Apple packaging, final counter coverage, and performance gates remain open.
+This is not yet a Phase 0 Go decision. The original production-shaped desktop JVM lane passes 19 of 21 tests, but two unchecked Kotlin exception cases are cleared and reported to Rust as success; this production blocker is tracked as [BoltFFI #872](https://github.com/boltffi/boltffi/issues/872). Android testing disproved the earlier return-value ACK candidate: generated JNI does not initialize the non-Unit `return_out` slot on the unchecked-exception path, and x86_64 ART observed a stale `true` while arm64 ART happened to observe `false`. Primitive and record sentinels are therefore unsafe regardless of host tests. A separate explicit token-ACK callback probe passes on desktop JVM, x86_64 ART, and arm64 ART without reading that return slot. The production `BleBackend` contract has not yet adopted this workaround candidate. The `message` generator defect is avoided without generated-source patching by using `detail` on exported error variants and remains tracked as [#871](https://github.com/boltffi/boltffi/issues/871). macOS Swift runtime/ARC and XCFramework/SPM consumption are prepared in GitHub Actions but have not yet run. Final counter, isolated fault, payload, and performance coverage also remains open.
 
 `Phase 0` is a project execution gate, not a runtime capability or ABI version, so production contract symbols do not encode phase names. `BLEHUB_CONTRACT_VERSION` is the single backend compatibility value and changes only for an incompatible contract revision, not when the project advances to another implementation phase. Root generated Kotlin exposes it as `blehubContractVersion`; the multi-crate Phase 0 fixture exports `fixtureContractVersion` as a compile-time alias because BoltFFI does not otherwise merge an unused dependency constant into that fixture's bindings.
 
@@ -24,19 +24,14 @@ This is not yet a Phase 0 Go decision. Kotlin generation currently needs a narro
 | Rust | `rustc 1.95.0 (59807616e 2026-04-14)` |
 | JDK | Azul OpenJDK `17.0.18+8-LTS` from Pixi |
 | Gradle | `8.11.1` from Pixi |
-| Kotlin Gradle plugin | `2.1.0` |
+| Kotlin Gradle plugin | JVM `2.1.0`; Android `2.1.20` |
 | Swift | `6.3.3`, `x86_64-unknown-windows-msvc`, assertions build; official WinGet `Swift.Toolchain` installed under `D:/dev/swift` |
-| Windows native tools | VS Build Tools `17.14`, MSVC `14.44.35207`, Windows SDK `10.0.26100.0` |
+| Windows native tools | Pixi Clang/LLD `22.1.8`; VS Build Tools `17.14`, MSVC `14.44.35207`, Windows SDK `10.0.26100.0` |
+| Android | API 36 x86_64 emulator and API 36 arm64-v8a device; build-tools `36.0.0`; NDK `28.2.13676358`; AGP `8.10.1`; Gradle `8.11.1`; JDK 17 |
 | Rust `boltffi` dependency | crates.io exact `0.30.1`, locked by each fixture `Cargo.lock` |
-| BoltFFI CLI base revision | `8f862c8dd35ec9d8437ac0212c001baf0d700dd2`; a clean `git archive` snapshot is retained in ignored work storage |
-| Current generated Kotlin SHA-256 after the temporary override patch | `d880a1a5cb65c64b2f75828cfe0cea942ac775086d74340cc26a4c4b55f070fa` |
-| Current generated JNI glue SHA-256 | `115f5b87a2d767cfe621259ed08d685705b3bb865d9ec6d85e9f9fc34ebc7d1f` |
+| BoltFFI CLI | official crates.io `boltffi_cli 0.30.1`, installed by `tools/boltffi_toolchain.py`; Cargo verifies the crates.io package checksum |
 
-The sibling BoltFFI worktree was not clean and already contained user callback/JNI changes. To avoid attributing those changes to the base revision, `git archive HEAD` exported a clean `8f862c8...` snapshot into BleHub's ignored `.work` directory. Before the contract-version alias was added, that clean snapshot regenerated the candidate, the known Kotlin `message` workaround changed only its intended fields, and both the 21-case mechanism suite and artifact consumer passed with `--rerun-tasks`. The clean and sibling-worktree outputs had identical post-workaround Kotlin and JNI hashes for that earlier candidate, so the typed and unchecked Kotlin exception findings are not based solely on the dirty worktree.
-
-The current hashes above include the subsequently exported contract-version alias. They were regenerated and tested successfully with the sibling CLI, but clean-snapshot regeneration of this exact candidate could not be repeated: online resolution failed at the configured `rsproxy.cn` TLS handshake, and offline resolution lacked locked `uuid 1.26.0`. The failed attempts did not rewrite the generated files. Therefore clean-versus-sibling hash equality for the current exact artifact remains unverified and is part of the immutable-generator blocker; the report does not attribute the current hashes to a clean source tree.
-
-CI still needs an explicit immutable generator source/revision and complete dependency availability rather than depending on whichever state a sibling checkout or network mirror happens to have.
+The CLI is installed into ignored project work storage through an isolated Cargo home, so it does not depend on the sibling source checkout or the machine's global Cargo mirror configuration. `tools/run_boltffi_cli.py` verifies and invokes that executable for Kotlin/Swift generation and Android/Apple packaging. Generated source and package output remain ignored artifacts and are always reproducible from the exact fixture contract plus the pinned official CLI.
 
 ## 3. Implemented object graph
 
@@ -86,18 +81,17 @@ The workspace currently passes 17 unit tests:
 
 ### 4.2 Kotlin/JVM
 
-The generated Kotlin/JNI mechanism lane passed 21 tests with zero failures or skips:
+With official BoltFFI `0.30.1`, the original generated Kotlin/JNI mechanism lane passes 19 of 21 tests. Twelve additional comparison/workaround-probe tests pass, so the complete Gradle run contains 31 passing and two deliberately retained #872 failures. The original passing cases cover:
 
 - capabilities typed failure rollback;
 - invalid contract version rollback before bind;
 - bind typed failure without token retention;
 - push during bind returns `Closed` because registration has not occurred;
-- unchecked capabilities and bind exceptions map to `BleHubError.FfiContract` and roll back, including the clean generator rerun;
+- unchecked capabilities exception mapping to `BleHubError.FfiContract` and rollback;
 - synchronous push before command return;
 - push from a JVM executor worker;
 - Rust-created caller thread attaches to JVM and re-enters Rust through top-level push;
 - typed dispatch rejection returns zero events;
-- unchecked command exception maps to `CommandDispatchError.FfiContract`;
 - downstream typed rejection returns structured `DownstreamFailed`;
 - invalid event returns structured `InvalidEvent`;
 - Rust sink panic is caught by the exported ingress containment boundary and active callback count returns to zero;
@@ -109,7 +103,7 @@ The generated Kotlin/JNI mechanism lane passed 21 tests with zero failures or sk
 - explicit dispose is idempotent and releases the Rust sink once;
 - 10,000 lifecycle tokens are unique and every foreign backend is disposed exactly once.
 
-The 21-test mechanism report completed in approximately `0.69s` on the recorded host. A second Gradle project then consumed only `blehub-phase0-token-ingress-bindings.jar` plus the produced native DLL directory in a fresh test JVM; its single bind/push/dispose smoke test passed and confirmed `Phase0Fixture` was loaded from a JAR. These timings are smoke observations, not benchmark results.
+The two failing tests are `uncheckedBindExceptionBecomesFfiContractAndRollsBack` and `uncheckedCommandExceptionBecomesFfiContractWithoutCrossingTheAbi`. Generated Kotlin represents Rust `Result<(), E>` callbacks as `Unit`; when Kotlin throws an undeclared exception, official `0.30.1` clears it and Rust observes success rather than `UnexpectedFfiCallbackError`. The tests remain enabled and failing so this cannot be mistaken for a passing boundary. A separate Gradle artifact consumer is valid for ordinary bind/push/dispose behavior, but the complete JVM lane remains blocked by #872.
 
 ### 4.3 Swift on Windows
 
@@ -126,6 +120,21 @@ The project-owned `tools/swift_toolchain.py` pins the official WinGet `Swift.Too
 
 This is supplementary host evidence, not an Apple package gate. It does not cover CoreBluetooth, Objective-C interoperability, Apple dispatch/CoreBluetooth queue semantics, Xcode, XCFramework/SPM consumption, signing, simulator/device behavior, or the final CoreBluetooth object graph.
 
+### 4.4 Android ART and AAR
+
+`pixi run just ffi-phase0-test-android-emulator` passed on both the API 36 x86_64 `medium_phone` emulator and a connected API 36 arm64-v8a device. The recipe uses the project-managed SDK/NDK root, official BoltFFI Android pack, Rust Android targets, and Aliyun-only Gradle repositories. It verified:
+
+- generated Kotlin and packaged native libraries for `arm64-v8a` and `x86_64`;
+- AAR assembly with the generated classes and native `.so` files;
+- execution on ART with the Android main `Handler`/`Looper` available;
+- a Rust-created thread attaching to the VM and calling the Kotlin backend;
+- eight-worker concurrent ingress with serialization at the Rust downstream;
+- dispose idempotence and stale-token rejection;
+- 10,000 unchecked exceptions before explicit token acknowledgement becoming `FfiContract` on both ART ABIs, with explicit acknowledgement succeeding;
+- a separate Android project consuming only the produced AAR, without generated-source leakage, on both devices.
+
+This is an FFI/runtime/package mechanism result, not BLE evidence. Running the fixture on a physical device does not validate Bluetooth hardware, RF behavior, BLE permissions, vendor callback behavior, or a production Android BLE backend. The debug AAR emitted a non-blocking warning that native libraries could not be stripped and were packaged as-is; release symbol and strip policy remains a later packaging gate.
+
 ## 5. BoltFFI findings
 
 ### 5.1 Multi-crate public type paths
@@ -138,27 +147,55 @@ Using the unqualified `#[error(...)]` helper attributes required by `thiserror` 
 
 ### 5.3 Kotlin `message` override bug
 
-Raw generated Kotlin fails compilation for data-enum error variants containing `message: String`. BoltFFI renders a sealed error class extending `Exception`, then renders each payload property as plain `val message`; Kotlin requires `override val message` because `Throwable` already declares that property.
+Raw generated Kotlin fails compilation for data-enum error variants containing `message: String`. BoltFFI renders a sealed error class extending `Exception`, then renders each payload property as plain `val message`; Kotlin requires `override val message` because `Throwable` already declares that property. The standalone reproducer and requested generation-plus-compilation regression are tracked upstream as [BoltFFI #871](https://github.com/boltffi/boltffi/issues/871).
 
-The fixture applies `tools/workaround_boltffi_kotlin_error_message.py` after generation. The script:
+BleHub avoids making its build depend on a generated-source patch: diagnostic fields on exported `#[boltffi::error]` variants are named `detail`. This is language-neutral diagnostic data and remains non-parseable text. `BleFailure.message` and `PlatformErrorDetails.message` remain unchanged because those types are ordinary data records rather than Kotlin `Exception` subclasses. The Phase 0 Kotlin lane compiles raw generated output, so it can detect a future generator regression independently of a workaround script.
 
-- operates only on a specified generated Kotlin file;
-- changes only unqualified `message: String` properties inside generated sealed `Exception` subclasses;
-- changed eight fields in the current ABI;
-- preserves all Rust and wire field names;
-- reports a no-op when a future generator already emits valid properties.
+BoltFFI should still fix the generator because `message` is a valid Rust error payload field and other projects should not need this naming convention. If #871 is fixed before BleHub freezes its ABI, the public naming can be reviewed again; no automatic rename follows from an upstream upgrade.
 
-Because the raw output does not compile, typed Kotlin errors remain a production blocker until BoltFFI fixes the template or BleHub pins a reviewed generator fork. Renaming the reviewed public `message` fields merely to avoid a generator bug is not recommended.
+### 5.4 Unchecked Kotlin `Unit` callback exceptions
+
+Official BoltFFI `0.30.1` does not preserve an undeclared Kotlin exception from a foreign callback whose Rust signature is `Result<(), E>`. The generated JNI path clears the exception and returns the void/zero success representation, so Rust cannot map it to `UnexpectedFfiCallbackError`. This violates BleHub's rule that unexpected foreign failures must never masquerade as successful construction or command dispatch. The minimal upstream reproducer and required regression behavior are tracked in [BoltFFI #872](https://github.com/boltffi/boltffi/issues/872).
+
+BleHub will not patch generated code, use the sibling checkout, skip the tests, or reinterpret the observed success as acceptable.
+
+### 5.5 Explicit token-ACK workaround probe
+
+The fixture first compared three official `0.30.1` callback return shapes while deliberately throwing the same unchecked Kotlin exception:
+
+1. `Result<(), E>` reproduces #872 and is incorrectly reported as success.
+2. `Result<ClosedEnumAck, E>` is not a workaround: after the exception is cleared, an invalid enum discriminant reaches Rust and aborts at the non-unwinding FFI boundary.
+3. `Result<bool, E>` and `Result<RecordAck { accepted: bool }, E>` appeared to produce an invalid-by-default `false` in desktop JVM tests, but this was accidental rather than contractual.
+
+Generated JNI accepts a native `return_out` pointer for both primitive and record results. It calls Kotlin without initializing that slot; when an unchecked exception occurs, it clears the exception, skips the success writer, and returns an empty error buffer. The x86_64 API 36 emulator then observed a stale `true`, so Rust incorrectly accepted the callback, while the arm64-v8a device happened to observe `false`. Reading the unwritten result is not a portable or safe failure signal. Closed enums, booleans, records, magic values, and nonces in that return slot are all rejected as workaround designs.
+
+The retained probe therefore adds a separate explicit acknowledgement path that does not depend on a foreign return value:
+
+1. Rust allocates a one-shot `ForeignCallAckToken` and records it as pending before entering the foreign Unit callback.
+2. The foreign implementation calls exported `acknowledge_foreign_call(token)` only after reaching the accepted linearization point.
+3. Rust removes and checks the pending token after the generated callback returns. Normal return or swallowed unchecked exception without ACK becomes `CommandDispatchError::FfiContract`; a declared typed error before ACK remains unchanged.
+4. ACK plus a declared rejection is contradictory and becomes `FfiContract`. Once ACK succeeds, later failure cannot retract acceptance.
+
+Twelve focused desktop JVM cases pass, including 10,000 unchecked exceptions before ACK, missing ACK, explicit ACK success, and preservation of a declared typed error. The same 10,000-exception and explicit-success probe passes on both x86_64 and arm64-v8a ART. This is materially stronger evidence than a return-slot sentinel, but it adds one nested native call and one pending-token registration per foreign Unit-result invocation.
+
+Before adoption, the production contract must define the ACK token and exported acknowledgement operation, apply them to `bind_event_ingress`, every foreign command method, and `dispose`, specify ACK as the accepted linearization point, and add rollback, duplicate/stale token, concurrency, cleanup-counter, Swift, and macOS package coverage. `capabilities()` already has a non-Unit result and does not use this workaround. The original #872 tests remain enabled because BoltFFI itself is still unfixed.
+
+Phase 0 therefore remains blocked pending either an official BoltFFI fix or explicit review and production-shaped validation of this token-ACK workaround.
 
 ## 6. Build and source policy
 
-The JVM lane runs through Pixi:
+All generation and packaging lanes use the pinned official CLI:
 
 ```text
+pixi run just boltffi-bootstrap
+pixi run just boltffi-doctor
 pixi run just ffi-phase0-test-kotlin-jvm
+pixi run just ffi-phase0-test-android-emulator
 ```
 
-`tools/build_windows_jvm_bridge.py` now accepts `--project`, reads the native package name from that project's `boltffi.toml`, builds the Rust GNU DLL, and compiles the generated JNI C bridge with the managed LLVM-MinGW toolchain.
+`boltffi-bootstrap` is explicit; ordinary generation and tests verify the CLI and fail with installation guidance rather than silently downloading it.
+
+`tools/build_windows_jvm_bridge.py` accepts `--project`, reads the native package name from that project's `boltffi.toml`, builds the Rust DLL for `x86_64-pc-windows-msvc`, and compiles and links the generated JNI C bridge with Pixi-managed `clang-cl` and `lld-link`. The desktop JVM and Windows Swift host lanes therefore share the Windows MSVC ABI without making JVM validation depend on the separately installed Swift toolchain. This does not approximate or replace the later Android NDK/Bionic/ART lane.
 
 Both Gradle projects use the Pixi JDK and Gradle. Plugin and dependency resolution are restricted to Aliyun mirrors in `settings.gradle.kts`; no official Gradle Plugin Portal or Maven Central repository is configured. The producer compiles generated source and creates a bindings JAR. The separate consumer has no generated-source directory on its source set and compiles only against that JAR, while loading the produced Rust/JNI DLLs from the native artifact directory.
 
@@ -166,12 +203,12 @@ Both Gradle projects use the Pixi JDK and Gradle. Plugin and dependency resoluti
 
 The following remain unverified or incomplete:
 
-1. pin an immutable clean BoltFFI generator source/revision in project tooling and CI instead of depending on a sibling worktree state;
-2. replace the Kotlin `message` post-generation workaround with an upstream/fork generator fix and an expected-failure regression probe;
+1. either consume an official BoltFFI fix for #872, or review and apply the explicit token-ACK workaround to every foreign Unit-result method and rerun Kotlin/JVM, Android, Windows Swift, and macOS package lanes; return-value ACK sentinels are rejected;
+2. keep #871 as an upstream generator regression while using the reviewed `detail` naming workaround without generated-source patching;
 3. add foreign registration-failure injection, named-barrier strong/weak counts, peak-entry, native-wrapper final-free, and all-object-baseline counters across the JVM and Swift lanes;
 4. run fault cases in isolated subprocesses and verify process exit/cleanup records;
-5. run the remaining Swift ARC/queue/close-race/exception cases plus clean XCFramework/SPM consumer tests on macOS; Windows host evidence does not close this Apple gate;
+5. execute the prepared macOS GitHub Actions lane and pass Swift ARC/queue runtime plus clean XCFramework/SPM consumer tests; Windows host evidence does not close this Apple gate;
 6. add payload-boundary vectors and recorded performance/close-latency workloads;
-7. later run Android ART, Handler/Looper, SDK/NDK, AAR, emulator, and device gates before Android production work.
+7. later validate real Android device and BLE/HIL behavior when a production Android backend exists; the ART/AAR mechanism lane is already passing.
 
 Until these items are closed, the evidence supports continuing Phase 0 implementation but does not authorize freezing the public ABI or starting production platform backends.

@@ -5,10 +5,9 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import tomllib
-
-from tools import llvm_mingw
 
 
 def required_environment_path(name: str) -> Path:
@@ -24,42 +23,23 @@ def run(command: list[str], *, environment: dict[str, str] | None = None) -> Non
         raise SystemExit(result.returncode)
 
 
-def prepare_rust_gnu_compatibility_libraries(toolchain: Path, work_root: Path) -> Path:
-    compatibility_root = work_root / "llvm-mingw-rust-gnu-compat" / "lib"
-    compatibility_root.mkdir(parents=True, exist_ok=True)
-    mappings = {
-        toolchain / "x86_64-w64-mingw32" / "lib" / "libunwind.a": (
-            compatibility_root / "libgcc_eh.a"
-        ),
-        toolchain
-        / "lib"
-        / "clang"
-        / "23"
-        / "lib"
-        / "windows"
-        / "libclang_rt.builtins-x86_64.a": compatibility_root / "libgcc.a",
-    }
-    for source, destination in mappings.items():
-        if not source.is_file():
-            raise SystemExit(f"missing LLVM-MinGW runtime library: {source}")
-        if (
-            not destination.is_file()
-            or source.stat().st_mtime_ns != destination.stat().st_mtime_ns
-        ):
-            shutil.copy2(source, destination)
-    return compatibility_root
+def required_executable(name: str) -> str:
+    executable = shutil.which(name)
+    if executable is None:
+        raise SystemExit(f"missing Pixi-managed executable: {name}")
+    return executable
 
 
-def parse_args() -> argparse.Namespace:
+def parse_project() -> str:
     parser = argparse.ArgumentParser(
         description="Build a BoltFFI Rust library and its generated Windows JNI bridge."
     )
-    parser.add_argument(
+    _ = parser.add_argument(
         "--project",
         default="spikes/boltffi-lifecycle",
         help="project directory relative to PIXI_PROJECT_ROOT",
     )
-    return parser.parse_args()
+    return cast(str, parser.parse_args().project)
 
 
 def configured_package(project: Path) -> str:
@@ -67,7 +47,10 @@ def configured_package(project: Path) -> str:
     if not config.is_file():
         raise SystemExit(f"missing BoltFFI project configuration: {config}")
     with config.open("rb") as stream:
-        package = tomllib.load(stream).get("package", {}).get("name")
+        package_table = tomllib.load(stream).get("package")
+    if not isinstance(package_table, dict):
+        raise SystemExit(f"missing [package] table in {config}")
+    package = cast(dict[str, object], package_table).get("name")
     if not isinstance(package, str) or not package:
         raise SystemExit(f"missing [package].name in {config}")
     return package
@@ -77,28 +60,23 @@ def main() -> int:
     if os.name != "nt":
         raise SystemExit("the Windows JVM bridge can only be built on Windows")
 
-    args = parse_args()
+    project = parse_project()
     project_root = required_environment_path("PIXI_PROJECT_ROOT")
     java_home = required_environment_path("JAVA_HOME")
     cargo_target = required_environment_path("CARGO_TARGET_DIR")
-    toolchain = llvm_mingw.install()
-    compiler = toolchain / "bin" / "x86_64-w64-mingw32-clang.exe"
-    compiler_cache = shutil.which("sccache")
-    if compiler_cache is None:
-        raise SystemExit("missing Pixi-managed sccache executable")
-    compatibility_libraries = prepare_rust_gnu_compatibility_libraries(
-        toolchain, project_root / ".work"
-    )
+    compiler = required_executable("clang-cl")
+    compiler_cache = required_executable("sccache")
+    _ = required_executable("lld-link")
 
-    spike_root = (project_root / args.project).resolve()
+    spike_root = (project_root / project).resolve()
     package = configured_package(spike_root)
     generated_root = spike_root / "generated" / "kotlin" / "jni"
     generated = generated_root / "jni_glue.c"
     manifest = spike_root / "Cargo.toml"
-    rust_output = cargo_target / "x86_64-pc-windows-gnu" / "debug"
+    rust_output = cargo_target / "x86_64-pc-windows-msvc" / "debug"
     output_directory = project_root / ".work" / "jvm-native"
     output_directory.mkdir(parents=True, exist_ok=True)
-    bridge_object = output_directory / f"{package}_jni.o"
+    bridge_object = output_directory / f"{package}_jni.obj"
     output = output_directory / f"{package}_jni.dll"
 
     for required in (
@@ -110,13 +88,6 @@ def main() -> int:
         if not required.is_file():
             raise SystemExit(f"missing bridge build input: {required}")
 
-    cargo_environment = os.environ.copy()
-    cargo_environment["CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER"] = str(compiler)
-    cargo_environment["CC_x86_64_pc_windows_gnu"] = str(compiler)
-    rustflags = cargo_environment.get("RUSTFLAGS", "")
-    cargo_environment["RUSTFLAGS"] = (
-        f"{rustflags} -Lnative={compatibility_libraries}"
-    ).strip()
     run(
         [
             "cargo",
@@ -124,53 +95,51 @@ def main() -> int:
             "--manifest-path",
             str(manifest),
             "--target",
-            "x86_64-pc-windows-gnu",
-        ],
-        environment=cargo_environment,
+            "x86_64-pc-windows-msvc",
+        ]
     )
 
     rust_library = rust_output / f"{package}.dll"
-    rust_import_library = rust_output / f"lib{package}.dll.a"
+    rust_import_library = rust_output / f"{package}.dll.lib"
     for required in (rust_library, rust_import_library):
         if not required.is_file():
-            raise SystemExit(f"missing Rust GNU build output: {required}")
+            raise SystemExit(f"missing Rust MSVC build output: {required}")
 
     run(
         [
             compiler_cache,
-            str(compiler),
-            "-std=c11",
-            "-c",
-            "-I",
-            str(java_home / "include"),
-            "-I",
-            str(java_home / "include" / "win32"),
-            "-I",
-            str(generated_root),
+            compiler,
+            "/nologo",
+            "/std:c11",
+            "/MD",
+            "/c",
+            f"/I{java_home / 'include'}",
+            f"/I{java_home / 'include' / 'win32'}",
+            f"/I{generated_root}",
             str(generated),
-            "-o",
-            str(bridge_object),
+            f"/Fo{bridge_object}",
         ]
     )
     run(
         [
-            str(compiler),
-            "-shared",
+            compiler,
+            "/nologo",
+            "-fuse-ld=lld",
+            "/LD",
             str(bridge_object),
-            "-L",
-            str(rust_output),
-            f"-l{package}",
-            "-o",
-            str(output),
+            str(rust_import_library),
+            "/link",
+            f"/OUT:{output}",
         ]
     )
     if not output.is_file():
         raise SystemExit(f"JNI bridge compiler succeeded without producing {output}")
 
-    shutil.copy2(rust_library, output_directory / rust_library.name)
+    _ = shutil.copy2(rust_library, output_directory / rust_library.name)
     print(f"project={spike_root}")
     print(f"package={package}")
-    print(f"toolchain={toolchain}")
+    print("abi=msvc")
+    print(f"compiler={compiler}")
     print(f"rust_library={output_directory / rust_library.name}")
     print(f"jni_library={output}")
     return 0

@@ -6,9 +6,9 @@
 //! available from the crate root.
 
 pub use crate::contract::{
-    BackendCapabilities, BleEvent, BleEventPayload, BleFailure, BleHubError, BleOperationError,
-    CommandDispatchError, CommandId, CommandKind, CommandOutcome, ConnectCommand, ConnectionId,
-    ConnectionPhase, ErrorCategory, EventSinkError, PeripheralId, Platform, PlatformErrorDetails,
-    ScanSessionId, StartScanCommand,
+    BackendCapabilities, BleErrorCategory, BleEvent, BleEventError, BleEventPayload, BleHubError,
+    CommandDispatchError, CommandId, CommandKind, ConnectCommand, ConnectionId, ConnectionState,
+    EventSinkError, PeripheralId, Platform, PlatformErrorDetails, ScanSessionId, ScanStopReason,
+    StartScanCommand,
 };
 pub use crate::ingress::{BackendEventIngressToken, EventIngressStatus};

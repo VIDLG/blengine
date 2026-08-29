@@ -125,7 +125,7 @@ mod tests {
         BleEvent {
             payload: BleEventPayload::ScanStarted {
                 command_id: CommandId::new(1),
-                scan_session_id: ScanSessionId::new(2),
+                scan_id: ScanSessionId::new(2),
             },
         }
     }
@@ -231,7 +231,7 @@ mod tests {
         let invalid = BleEvent {
             payload: BleEventPayload::ScanStarted {
                 command_id: CommandId::new(0),
-                scan_session_id: ScanSessionId::new(2),
+                scan_id: ScanSessionId::new(2),
             },
         };
 

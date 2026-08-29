@@ -4,6 +4,7 @@ name = "blehub_phase0_ffi_fixture"
 [targets.android]
 enabled = true
 min_sdk = 24
+ndk_version = "28.2.13676358"
 architectures = ["arm64", "x86_64"]
 
 [targets.android.kotlin]
@@ -20,7 +21,7 @@ include_macos = true
 deployment_target = "16.0"
 
 [targets.apple.xcframework]
-output = "generated/apple/BleHubPhase0FfiFixture.xcframework"
+output = "generated/apple"
 
 [targets.apple.spm]
 output = "generated/apple"

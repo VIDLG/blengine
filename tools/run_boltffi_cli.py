@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from .boltffi_toolchain import verify
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -19,46 +21,29 @@ def main() -> int:
     args = parse_args()
     repository_root = Path(__file__).resolve().parents[1]
     project = (repository_root / args.project).resolve()
-    boltffi_manifest = (
-        repository_root.parent / "contrib" / "boltffi" / "Cargo.toml"
-    ).resolve()
-
     if not (project / "Cargo.toml").is_file():
         raise SystemExit(f"missing Cargo.toml in BoltFFI project: {project}")
-    if not boltffi_manifest.is_file():
-        raise SystemExit(f"missing local BoltFFI workspace: {boltffi_manifest}")
     if not args.boltffi_args:
         raise SystemExit("at least one BoltFFI CLI argument is required")
 
-    build = subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--manifest-path",
-            str(boltffi_manifest),
-            "-p",
-            "boltffi_cli",
-        ],
-        cwd=repository_root,
-        check=False,
-    )
-    if build.returncode != 0:
-        return build.returncode
+    try:
+        executable = verify()
+    except RuntimeError as error:
+        raise SystemExit(str(error)) from error
 
-    cargo_target = Path(
-        os.environ.get("CARGO_TARGET_DIR", boltffi_manifest.parent / "target")
+    try:
+        project_relative = project.relative_to(repository_root)
+    except ValueError as error:
+        raise SystemExit(
+            f"BoltFFI project must be inside {repository_root}: {project}"
+        ) from error
+    target_key = (
+        "root" if project_relative == Path(".") else "__".join(project_relative.parts)
     )
-    if not cargo_target.is_absolute():
-        cargo_target = repository_root / cargo_target
-    executable = (
-        cargo_target / "debug" / ("boltffi.exe" if os.name == "nt" else "boltffi")
-    )
-    if not executable.is_file():
-        raise SystemExit(f"missing built BoltFFI CLI: {executable}")
 
     environment = os.environ.copy()
     environment["CARGO_TARGET_DIR"] = str(
-        repository_root / ".work" / "boltffi-metadata-target"
+        repository_root / ".work" / "boltffi-metadata-target" / target_key
     )
     for variable in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
         wrapper = environment.get(variable, "")

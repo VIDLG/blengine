@@ -24,6 +24,7 @@ val nativeDirectory = projectDir.resolve("../../../..")
     .canonicalPath
 
 tasks.test {
+    inputs.dir(nativeDirectory)
     useJUnitPlatform()
     jvmArgs("-Djava.library.path=$nativeDirectory")
 }

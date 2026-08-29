@@ -36,7 +36,7 @@ impl BackendEventIngressRegistry {
             })
             .map(BackendEventIngressToken::new)
             .map_err(|_| BleHubError::FfiContract {
-                message: "event ingress token space exhausted".to_owned(),
+                detail: "event ingress token space exhausted".to_owned(),
             })
     }
 
@@ -47,7 +47,7 @@ impl BackendEventIngressRegistry {
     ) -> Result<BackendEventIngressRegistration, BleHubError> {
         if !token.is_valid() {
             return Err(BleHubError::FfiContract {
-                message: "event ingress token must be nonzero".to_owned(),
+                detail: "event ingress token must be nonzero".to_owned(),
             });
         }
 
@@ -57,7 +57,7 @@ impl BackendEventIngressRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.entries.load().contains_key(&token.value) {
             return Err(BleHubError::FfiContract {
-                message: "event ingress token is already registered".to_owned(),
+                detail: "event ingress token is already registered".to_owned(),
             });
         }
 

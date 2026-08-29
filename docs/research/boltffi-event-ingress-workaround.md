@@ -46,11 +46,13 @@ BleHub 保持一个不因 BoltFFI 能力变化而改变的装配 contract：
 
 ### 2.1 已由本地源码和 fixture 验证
 
-本地 BoltFFI revision：
+可执行 fixture 固定官方 crates.io `boltffi`/`boltffi_cli`：
 
 ```text
-8f862c8dd35ec9d8437ac0212c001baf0d700dd2
+0.30.1
 ```
+
+相邻 BoltFFI checkout 仅用于按 local-first 规则审计对应实现源码，不参与 BleHub 构建或生成。
 
 `spikes/boltffi-class-handle-callback-param/` 复现：
 
@@ -101,7 +103,7 @@ pub fn push_backend_event(
 ) -> EventIngressStatus;
 ```
 
-该最初 probe 只证明 generator 接受参数形状。现已新增 `spikes/boltffi-token-ingress/`，通过真实 `BleHub`、全局 registry、Rust-only sink 与 Kotlin foreign backend 运行 production-shaped Windows JVM lane；21 个测试覆盖同步/异步/Rust-attached thread push、assembly rollback、typed/unexpected failure、close race、stale token 和 10,000 lifecycle。准确环境、已验证边界、dirty local generator 限制与未关闭 blocker 见 [`phase0-token-ingress-runtime-results.md`](phase0-token-ingress-runtime-results.md)。
+该最初 probe 只证明 generator 接受参数形状。现已新增 `spikes/boltffi-token-ingress/`，通过真实 `BleHub`、全局 registry、Rust-only sink 与 foreign backend 运行 production-shaped Windows JVM、Windows Swift 和 Android ART/AAR lanes。官方 `0.30.1` 的 JVM suite 有 19/21 项通过；两个 unchecked Kotlin exception case 暴露 [#872](https://github.com/boltffi/boltffi/issues/872) 并保持失败。Android emulator/AAR consumer 与 Windows Swift smoke 已通过。准确环境、已验证边界和未关闭 blocker 见 [`phase0-token-ingress-runtime-results.md`](phase0-token-ingress-runtime-results.md)。
 
 ### 2.3 仍属设计推导或跨目标待实测
 
@@ -109,8 +111,8 @@ pub fn push_backend_event(
 
 - registry entry 的强弱引用和全部 wrapper/native handle 计数在所有失败与 race 后都回到 baseline；
 - ArcSwap snapshot guard scope 和 notification workload 性能满足最终门槛；
-- 未来 pinned generator/完整 ABI 的 unexpected exception 行为继续满足当前 clean `8f862c8...` candidate 已通过的结果；
-- Android ART/AAR 与 Swift runtime/ARC/packaging 通过；Windows/JVM bindings-JAR/native-DLL consumer 已通过；
+- 官方 BoltFFI 后续版本修复 #872，并让完整 ABI 的 unexpected foreign exception 明确失败而不是伪装成功；
+- macOS Swift runtime/ARC 与 XCFramework/SPM packaging 通过；Windows Swift host、Android ART/AAR 和普通 Windows/JVM artifact consumer 已通过；
 - foreign runtime registration failure injection、完整 payload boundary catalog 与各语言 object counters 通过；pure Rust near-overflow、并发分配和 registration rollback 已有测试。
 
 ## 3. 理想 direct-handle 方案

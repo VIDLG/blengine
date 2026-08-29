@@ -1,0 +1,25 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[package]
+name = "blehub-uniffi-error-field-collision-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "blehub_uniffi_error_field_collision"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi_bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+thiserror = "2"
+uniffi = { path = "../../../contrib/uniffi-rs/uniffi" }

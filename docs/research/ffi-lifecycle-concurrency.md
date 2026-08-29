@@ -113,7 +113,7 @@ BoltFFI 不知道 BleHub 的领域与生命周期语义，因此上述机制不�
 - dispose 等待 in-flight sink callback、幂等 cleanup、late callback 返回 `Closed`；
 - 旧 spike 中 Rust 长期保存 foreign backend/sink，backend 长期保存 Rust ingress wrapper；该 foreign sink 和 builder assembly 不是最终 BleHub contract；
 - declared typed error、10,000 次 assembly/dispose、20/244/1024-byte payload 各 1,000 次持续 push；
-- LLVM-MinGW 生成的 Rust GNU DLL 与 JNI glue 可由 Gradle/Kotlin consumer 实际加载。
+- Pixi `clang-cl`/`lld-link` 生成的 MSVC ABI JNI glue 与 Rust `x86_64-pc-windows-msvc` DLL 可由 Gradle/Kotlin consumer 实际加载；该桌面 JVM 证据不替代 Android NDK/Bionic/ART 验证。
 
 `spikes/boltffi-class-handle-callback-param/` 固定了当前 BoltFFI `0.30.1` 的生成能力缺口：foreign trait method 不能接收 exported Rust class handle，宏报 `unsupported expansion: callback method parameter shape`；上游由 [issue #869](https://github.com/boltffi/boltffi/issues/869) 跟踪。v0.1 因此采用 `BackendEventIngressToken` + process-local `token -> Weak<EventIngressState>` registry + exported free push，并保留单一 `BleHub::new`。旧 builder spike 只证明 class wrapper retain/release、跨线程 push 与 close race 的部分性质，不证明 token assembly、最终 Rust-only downstream 或未来 direct-handle bind。
 

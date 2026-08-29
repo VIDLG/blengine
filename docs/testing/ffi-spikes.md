@@ -33,20 +33,30 @@ Do not accept screenshots or a compile-only probe as runtime evidence. Preserve 
 | A temporary compile probe accepts named-field `BackendEventIngressToken`, typed `bind_event_ingress`, and top-level `push_backend_event` shapes | The token ABI is syntactically generatable | Kotlin/JVM or Swift execution, packaging, exception behavior, registry races, or final object lifetime |
 | Local BoltFFI source and generated Kotlin fixtures implement exported-class retain/release and idempotent `AutoCloseable.close()` | Existing wrapper primitives can support deterministic release | The final token registry graph, Rust-only downstream sink, or BleHub rollback order |
 | `spikes/boltffi-lifecycle/` runs Rust and Windows Kotlin/JVM tests for the old builder/foreign-sink graph | Partial evidence for wrapper retention, cross-thread calls, callback serialization, close drain, late callback handling, typed declared errors, repeated lifecycle, and JNI loading | Acceptance of the v0.1 token assembly, final Rust-only downstream, Swift, or direct-handle bind |
-| `spikes/boltffi-token-ingress/` runs the real Hub/registry/Rust-only sink with a generated Kotlin foreign backend; 21 Windows JVM mechanism tests include deterministic races and 10,000 lifecycles, followed by a separate bindings-JAR/native-DLL consumer test | The production-shaped token graph and clean local JVM artifact consumption work on the recorded environment | Swift/Android packaging, complete counters/performance, or final CI generator pinning |
+| `spikes/boltffi-token-ingress/` runs the real Hub/registry/Rust-only sink with a generated Kotlin foreign backend; official BoltFFI `0.30.1` passes 19 of 21 original mechanism tests and all 12 comparison/token-ACK probes, for 31 of 33 total | The production-shaped token graph, ordinary typed failures, races, 10,000 lifecycles, clean local JVM artifact consumption, and explicit token-ACK containment work; the two original failures remain enabled | A claim that raw Unit-result callbacks or non-Unit return-slot sentinels are safe, or that the token-ACK workaround has already been adopted by the production contract; complete counters/performance also remain |
 | The same fixture compiles generated Swift plus its generated C module against an MSVC Rust DLL on Windows; the smoke covers synchronous and Rust-thread callbacks, 64 concurrent pushes, idempotent dispose, closed stale tokens, and 10,000 unique-token ARC release cycles | The production-shaped foreign-trait/token mechanism and language-level Swift ARC run on the recorded Windows Swift host | CoreBluetooth, Objective-C interop, Apple queue semantics, Apple artifacts/package consumption, or final macOS ARC behavior |
-| The old JVM spike reproduces unchecked Kotlin exceptions being cleared by generated JNI glue and reported as a zero/void success; the new fixture safely maps typed and unchecked failures after regeneration from a clean `8f862c8...` archive | The exception boundary works for the clean revision and exact production-shaped candidate tested | Every future ABI shape/release has the same behavior; fault subprocess and pre-freeze reruns remain required |
-| Raw Kotlin output for error payload fields named `message` fails to compile; the Phase 0 JVM fixture applies a generated-source `override` workaround | The runtime lane can continue without renaming the reviewed wire field | Stock BoltFFI generation is production-ready; the workaround must be removed after an upstream/fork fix |
+| Official BoltFFI Android pack produces `arm64-v8a` and `x86_64` libraries; API 36 instrumented tests and a separate AAR-only consumer pass on an x86_64 emulator and arm64-v8a device | Android VM attachment, Handler/Looper availability, concurrent token ingress, lifecycle behavior, AAR assembly, artifact-only consumption, and 10,000 explicit token-ACK exception failures work on both ART ABIs | Real Bluetooth hardware/RF, a production Android backend, vendor BLE callback behavior, or release strip/signing policy |
+| Raw Kotlin output for exported error payload fields named `message` fails to compile (#871); BleHub uses `detail` for those fields and compiles raw generated output without patching | The project avoids a generated-source workaround while preserving typed errors | BoltFFI accepts `message` fields correctly for other users or the public name should automatically change after an upstream fix |
 
 ### 2.2 Still unverified for the production ABI candidate
 
-- macOS Swift runtime/ARC/queue behavior, immutable CI generator pinning, and final Android/Apple package consumers remain open.
+- macOS Swift runtime/ARC/queue behavior and the clean Apple XCFramework/SPM consumer remain open; the workflow is prepared but unexecuted.
 - Complete wrapper/native-handle/weak-state counters for the `BleHub -> foreign backend -> token -> registry Weak -> EventIngressState -> Rust sink` lifetime.
 - Registration failure, repeated bind, and complete unexpected foreign failure subprocess coverage without partial Hub exposure or double cleanup.
 - Lock-free registry lookup with no snapshot guard held across weak upgrade, validation, downstream code, or close waiting.
 - Complex `BleEventPayload` generation quality versus a tagged-record fallback.
 - Final-path panic containment, payload ownership release, lifecycle stress, throughput, callback latency, and close latency.
-- macOS/Apple ARC and queue behavior, clean Swift Apple package consumption, and later Android ART/Handler/Looper behavior.
+- macOS/Apple ARC and queue behavior plus clean Swift Apple package consumption; Android ART/Handler/Looper and clean AAR consumption now pass on the API 36 emulator.
+
+### 2.3 Prepared macOS comparative run
+
+`.github/workflows/phase0-apple.yml` prepares one GitHub Actions workflow run with two independent `macos-15` jobs. The jobs deliberately use separate clean runners so BoltFFI and UniFFI cannot share generated bindings, native libraries, SwiftPM caches, or DerivedData by accident.
+
+The BoltFFI job runs the pinned official `boltffi_cli 0.30.1`, the production-shaped token-ingress Swift runtime smoke, XCFramework metadata checks, a clean macOS SwiftPM consumer, and generic iOS simulator/device compile-link checks. Its runtime smoke covers synchronous and Rust-created-thread callbacks, concurrent push serialization, declared and undeclared callback errors, bind rollback, in-flight dispose drain, late push rejection, idempotent dispose, ARC backend release, and 10,000 unique-token lifecycle cycles.
+
+The UniFFI job runs stable UniFFI direct-ingress runtime and packaging checks with the corresponding retained-handle, declared/undeclared error, in-flight dispose, late callback, ARC counter, 10,000-cycle, XCFramework, macOS consumer, and generic iOS simulator/device cases.
+
+Both jobs record macOS, architecture, Xcode, Swift, Rust, and Cargo versions. Each uploads its runtime log, package log, environment log, and generated Apple package as a 14-day artifact. These are prepared checks, not passing evidence, until the workflow has run on GitHub and its logs and artifacts have been reviewed.
 
 ## 3. Fixture set
 
@@ -54,11 +64,11 @@ Fixture names below identify responsibilities, not permanent public package name
 
 | Fixture | Role | Required consumers |
 |---|---|---|
-| Production-shaped token ingress fixture | Minimal inert `BleBackend`, one-time capabilities query and bind, process-local registry, exported push, `EventIngressState`, Rust-only recording sink, and `BleHub` lifecycle | Pure Rust, desktop Kotlin/JVM, Swift host |
+| Production-shaped token ingress fixture | Minimal inert `BleBackend`, one-time capabilities query and bind, process-local registry, exported push, `EventIngressState`, Rust-only recording sink, and `BleHub` lifecycle | Pure Rust, desktop Kotlin/JVM, Android ART, Windows Swift host, macOS Swift CI |
 | Error-shape fixture | Public BoltFFI errors, production `derive_more::Display/Error`, the recorded `thiserror` scanner incompatibility, constructor/command/bind/dispose results, event status, expected and unexpected foreign failures | Rust, Kotlin/JVM, Swift |
 | Event-shape fixture | Every `BleEventPayload` variant and tagged-record fallback from the same semantic vectors | Rust, Kotlin/JVM, Swift |
 | Race and stress harness | Deterministic barriers, counters, watchdogs, state-sequence runner, 10,000-cycle loop, and payload bursts | Reused by all runtime lanes |
-| Packaging consumers | Clean projects that consume only produced artifacts, not source-tree classpaths or implicit build outputs | Gradle/JVM and XCFramework/SPM; Android AAR later |
+| Packaging consumers | Clean projects that consume only produced artifacts, not source-tree classpaths or implicit build outputs | Gradle/JVM, Android AAR, and XCFramework/SPM |
 | Existing class-handle probe | Expected failure on the current revision and an expected-pass trigger after issue #869 is fixed | Generator first; Kotlin/JVM and Swift runtime only after generation passes |
 
 The old `spikes/boltffi-lifecycle/` remains historical evidence. Do not count extensions to its builder/foreign-sink graph as acceptance of either the Phase 0 production-shaped mechanism or the complete pre-freeze ABI candidate.
@@ -202,7 +212,7 @@ Assertions apply after every action:
 
 ## 6. Kotlin/JVM lane
 
-The desktop JVM lane validates the common generated JNI and object graph. Android ART, Handler/Looper, Android thread attachment, and clean AAR consumption remain a separate Android lane unless Phase 0 explicitly brings them forward.
+The desktop JVM lane validates the common generated JNI and object graph. Android ART, Handler/Looper, Android thread attachment, and clean AAR consumption are a separate Phase 0 lane and now pass on the managed API 36 emulator. That result does not weaken the desktop JVM #872 blocker or claim real-device BLE behavior.
 
 ### 6.1 Build and packaging
 
@@ -233,6 +243,10 @@ Fault cases run one per subprocess to distinguish a typed failure from process c
 
 A subprocess passes only if the fault is reported as a failure appropriate to that boundary, no Rust unwind or JVM exception crosses the ABI, cleanup counters are emitted, and the call is not reported as `Ok`, command success, or `Delivered`. The currently observed JNI `ExceptionClear` plus zero/void success behavior is an explicit blocker.
 
+The supplementary #872 workaround probe must retain the bad `Result<(), E>` baseline. Current official `0.30.1` evidence rejects every return-slot ACK: a closed enum can abort Rust with an invalid discriminant, while primitive and record results leave `return_out` unwritten on the unchecked-exception path. The x86_64 ART run observed stale `true` and falsely accepted a record ACK that desktop JVM and arm64 ART happened to reject. Magic values or nonces cannot make an unwritten result slot safe.
+
+The current workaround candidate uses an independent one-shot token registered by Rust. The foreign Unit callback must invoke an exported ACK function only at its accepted linearization point; Rust checks and removes the token after the callback returns. The probe must cover unchecked exception before ACK, normal return without ACK, duplicate/stale ACK, explicit success, typed rejection before ACK, ACK-plus-rejection contradiction, concurrency, and pending-token cleanup. The focused desktop JVM and both Android ART ABIs currently pass the first four semantic cases and 10,000 unchecked exceptions; the remaining lifecycle/concurrency cases and Swift lanes are still required before production adoption. Passing this probe does not alter the production contract automatically.
+
 ## 7. Swift host lane
 
 The Swift host lane validates generated protocol conformance, top-level push, ARC, queues, errors, and clean package consumption. It does not claim iOS BLE behavior.
@@ -257,7 +271,7 @@ pixi run just swift-doctor
 
 Pixi supplies sccache for ordinary Rust compilation and the generated JNI C glue. Cargo incremental is disabled in Pixi environments so the project does not maintain both incremental object graphs and whole-crate sccache entries. `SCCACHE_DIR` and `SCCACHE_CACHE_SIZE` remain standard machine/CI overrides; sccache reduces repeat compilation, not the required final libraries or packages, and its cache consumes separate disk space. BoltFFI metadata generation deliberately uses a dedicated Cargo target and removes a sccache Rust wrapper: metadata mode changes macro output through dedicated cfg/environment inputs that are not safely separated from ordinary artifacts by the current cache key. The BoltFFI CLI itself remains in the ordinary sccache-enabled target, so only the much smaller metadata dependency graph is duplicated. Swift and Kotlin compilation use their own build-system caches and do not run through sccache.
 
-The Windows Swift lane consumes a Rust `x86_64-pc-windows-msvc` DLL and MSVC import library. This matches Swift's reported `x86_64-unknown-windows-msvc` target and Windows C ABI. The LLVM-MinGW `x86_64-pc-windows-gnu` Rust/JNI artifacts are a separate Kotlin/JVM spike lane and must not be linked into the Swift executable.
+The Windows Swift and desktop Kotlin/JVM lanes both consume Rust `x86_64-pc-windows-msvc` DLLs and MSVC import libraries. The generated JVM JNI C bridge is compiled and linked with Pixi-managed `clang-cl` and `lld-link`; Swift continues to use its official `x86_64-unknown-windows-msvc` toolchain. Sharing the Windows ABI avoids GNU/MSVC import-library and runtime shims, while Android remains a separate NDK/Bionic/ART lane.
 
 The Windows lane is supplementary. It may prove generated-source compilation, pure Swift API ergonomics, Windows FFI loading, callback/thread behavior, explicit disposal, language-level ARC, payload ownership, and host performance where the generated BoltFFI runtime is portable. It cannot prove CoreBluetooth, Objective-C interoperability, Apple dispatch/CoreBluetooth queue semantics, XCFramework/SPM Apple packaging, signing, simulator/device behavior, or the final Apple object graph. Those remain macOS gates, and Windows success does not satisfy the Apple packaging requirements below.
 
@@ -410,7 +424,7 @@ A runtime lane is incomplete until a clean consumer proves artifact boundaries:
 - exported symbols resolve in a fresh process;
 - Rust core, generated bindings, backend, DTOs, and closed enums come from one ABI-major contract build;
 - lifecycle shutdown succeeds when the consumer owns the last wrapper reference;
-- Kotlin/JVM consumer passes now; Android AAR and ART checks are reported separately when that lane runs;
+- Kotlin/JVM ordinary artifact consumption and Android AAR/ART artifact consumption pass; the JVM unchecked-exception blocker remains independently failing;
 - Swift XCFramework/SPM consumer passes on the supported host target before any iOS BLE claim.
 
 ## 13. Pass and blocker criteria
@@ -445,7 +459,7 @@ Any of the following blocks ABI freeze regardless of other passing cases:
 - inability to build and run a clean consumer from produced artifacts;
 - unexplained performance behavior indicating global serialization, unbounded close delay, or bridge-level payload retention.
 
-Failures specific to Android ART/Handler/Looper or AAR packaging block the Android lane, not the desktop JVM evidence; they must still be closed before Android production support. Swift host success similarly does not substitute for later iOS device BLE validation.
+Failures specific to Android ART/Handler/Looper or AAR packaging block the Android lane, not the desktop JVM evidence; the current emulator mechanism lane passes, while real-device BLE validation remains later work. Swift host success similarly does not substitute for macOS packaging or later iOS device BLE validation.
 
 ## 14. Future direct-handle probe
 

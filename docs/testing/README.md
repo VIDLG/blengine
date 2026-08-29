@@ -36,6 +36,16 @@
 
 Bridge 只负责 wire/shape、必填 ID、FFI size guard、closed 状态和串行 delivery。Backend sequence、session/handle 使用和 terminal obligation 由共享 conformance 检查；duplicate/orphan/stale/timeout 的运行时分类由测试用 downstream projection 演示和验证，不进入 BleHub production state。
 
+### Android 本地测试设备选择
+
+Android mechanism/instrumentation recipe 默认使用 `auto` 模式：先采用 `BLEHUB_ANDROID_SERIAL`或`ANDROID_SERIAL`显式指定的ready设备；未指定时优先唯一ready真机；没有ready真机才复用已启动的模拟器，仍没有时才启动项目管理的`medium_phone` AVD。真机与模拟器同时在线时只选择真机，并通过`ANDROID_SERIAL`与Gradle的`android.injected.device.serial`同时固定目标。多台同类ready设备不会随机选择，而是要求显式serial。
+
+- `pixi run just android-test-device`：只报告`auto`将选择的目标；可追加`physical`或`emulator`检查显式模式。
+- `pixi run just ffi-phase0-test-android`与`pixi run just ffi-spike-test-uniffi-android`：默认`auto`，也可追加`physical`或`emulator`。
+- 历史名称带`-emulator`的recipe保留为兼容入口，但同样使用`auto`，避免沿用旧命令时绕过已连接真机；需要固定模拟器时使用通用recipe并追加`emulator`参数。
+
+该fallback只适用于不依赖真实RF的FFI、ART、AAR和fake-backend instrumentation。Android BLE HIL必须显式使用`physical`模式并记录真机身份；模拟器通过绝不能替代权限、controller、vendor BLE callback或RF验收。
+
 ## `FakeBackend`、`EventScenario` 与 conformance 的职责
 
 ### `FakeBackend`

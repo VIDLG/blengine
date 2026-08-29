@@ -22,16 +22,31 @@ rust = "1.95.*"
 openjdk = "17.*"
 gradle = "8.11.*"
 
-[feature.jvm.target.win-64.dependencies]
-rust-std-x86_64-pc-windows-gnu = "1.95.*"
+[feature.windows-jni-host.target.win-64.dependencies]
+clang = "22.*"
+lld = "22.*"
 
 [feature.android.dependencies]
 openjdk = "17.*"
+rust-std-aarch64-linux-android = "1.95.*"
+rust-std-x86_64-linux-android = "1.95.*"
+
+[feature.apple-ci.dependencies]
+rust-std-aarch64-apple-ios = "1.95.*"
+rust-std-aarch64-apple-ios-sim = "1.95.*"
+rust-std-x86_64-apple-ios = "1.95.*"
+
+[feature.apple-ci.target.osx-64.dependencies]
+rust-std-aarch64-apple-darwin = "1.95.*"
+
+[feature.apple-ci.target.osx-arm64.dependencies]
+rust-std-x86_64-apple-darwin = "1.95.*"
 
 [environments]
 default = { features = ["rust"], solve-group = "development" }
-jvm = { features = ["rust", "jvm"], solve-group = "development" }
+jvm = { features = ["rust", "jvm", "windows-jni-host"], solve-group = "development" }
 android = { features = ["rust", "jvm", "android"], solve-group = "development" }
+apple-ci = { features = ["rust", "apple-ci"], solve-group = "development" }
 
 [activation.env]
 RUSTC_WRAPPER = "sccache"

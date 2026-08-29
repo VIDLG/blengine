@@ -1,24 +1,21 @@
-use super::{BleFailure, BleOperationError, CommandId, ConnectionId, ErrorCategory, ScanSessionId};
+use super::{BleEventError, CommandId, ConnectionId, ScanSessionId};
 
 const MAX_DIAGNOSTIC_BYTES: usize = 1024;
 
 #[boltffi::data]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ConnectionPhase {
-    Connecting,
-    Connected,
-    Disconnecting,
-    Disconnected,
-    Failed,
+pub enum ScanStopReason {
+    Requested { command_id: CommandId },
+    SystemSuspended,
 }
 
 #[boltffi::data]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum CommandOutcome {
-    Succeeded,
-    Failed,
-    TimedOut,
-    Cancelled,
+pub enum ConnectionState {
+    Connecting,
+    Connected,
+    Disconnecting,
+    Disconnected,
 }
 
 #[boltffi::data]
@@ -26,18 +23,23 @@ pub enum CommandOutcome {
 pub enum BleEventPayload {
     ScanStarted {
         command_id: CommandId,
-        scan_session_id: ScanSessionId,
+        scan_id: ScanSessionId,
+    },
+    ScanStopped {
+        scan_id: ScanSessionId,
+        reason: Result<ScanStopReason, BleEventError>,
     },
     ConnectionStateChanged {
         command_id: Option<CommandId>,
         connection_id: ConnectionId,
-        phase: ConnectionPhase,
-        error: Option<BleFailure>,
+        state: Result<ConnectionState, BleEventError>,
     },
     CommandCompleted {
         command_id: CommandId,
-        outcome: CommandOutcome,
-        error: Option<BleOperationError>,
+        error: Option<BleEventError>,
+    },
+    BackendError {
+        error: BleEventError,
     },
 }
 
@@ -51,8 +53,7 @@ pub struct BleEvent {
 pub(crate) enum EventValidationError {
     #[display("{field} must be nonzero")]
     ZeroId { field: &'static str },
-    #[display("invalid error shape for {context}")]
-    InvalidErrorShape { context: &'static str },
+
     #[display("{field} exceeds {MAX_DIAGNOSTIC_BYTES} UTF-8 bytes")]
     DiagnosticTooLong { field: &'static str },
 }
@@ -62,73 +63,43 @@ impl BleEvent {
         match &self.payload {
             BleEventPayload::ScanStarted {
                 command_id,
-                scan_session_id,
+                scan_id,
             } => {
                 validate_id(command_id.is_valid(), "command_id")?;
-                validate_id(scan_session_id.is_valid(), "scan_session_id")
+                validate_id(scan_id.is_valid(), "scan_id")
+            }
+            BleEventPayload::ScanStopped { scan_id, reason } => {
+                validate_id(scan_id.is_valid(), "scan_id")?;
+                match reason {
+                    Ok(ScanStopReason::Requested { command_id }) => {
+                        validate_id(command_id.is_valid(), "command_id")
+                    }
+                    Ok(ScanStopReason::SystemSuspended) => Ok(()),
+                    Err(error) => validate_event_error(error),
+                }
             }
             BleEventPayload::ConnectionStateChanged {
                 command_id,
                 connection_id,
-                phase,
-                error,
+                state,
             } => {
                 if let Some(command_id) = command_id {
                     validate_id(command_id.is_valid(), "command_id")?;
                 }
                 validate_id(connection_id.is_valid(), "connection_id")?;
-                match phase {
-                    ConnectionPhase::Failed if error.is_none() => {
-                        return Err(EventValidationError::InvalidErrorShape {
-                            context: "ConnectionStateChanged(Failed)",
-                        });
-                    }
-                    ConnectionPhase::Connecting
-                    | ConnectionPhase::Connected
-                    | ConnectionPhase::Disconnecting
-                        if error.is_some() =>
-                    {
-                        return Err(EventValidationError::InvalidErrorShape {
-                            context: "non-failing ConnectionStateChanged",
-                        });
-                    }
-                    _ => {}
-                }
-                if let Some(error) = error {
-                    validate_failure(error)?;
+                if let Err(error) = state {
+                    validate_event_error(error)?;
                 }
                 Ok(())
             }
-            BleEventPayload::CommandCompleted {
-                command_id,
-                outcome,
-                error,
-            } => {
+            BleEventPayload::CommandCompleted { command_id, error } => {
                 validate_id(command_id.is_valid(), "command_id")?;
-                let valid = match (outcome, error.as_ref()) {
-                    (CommandOutcome::Succeeded, None) => true,
-                    (CommandOutcome::Failed, Some(error)) => !matches!(
-                        error.failure.category,
-                        ErrorCategory::Timeout | ErrorCategory::Cancelled
-                    ),
-                    (CommandOutcome::TimedOut, Some(error)) => {
-                        error.failure.category == ErrorCategory::Timeout
-                    }
-                    (CommandOutcome::Cancelled, Some(error)) => {
-                        error.failure.category == ErrorCategory::Cancelled
-                    }
-                    _ => false,
-                };
-                if !valid {
-                    return Err(EventValidationError::InvalidErrorShape {
-                        context: "CommandCompleted",
-                    });
-                }
                 if let Some(error) = error {
-                    validate_failure(&error.failure)?;
+                    validate_event_error(error)?;
                 }
                 Ok(())
             }
+            BleEventPayload::BackendError { error } => validate_event_error(error),
         }
     }
 }
@@ -141,9 +112,9 @@ fn validate_id(valid: bool, field: &'static str) -> Result<(), EventValidationEr
     }
 }
 
-fn validate_failure(failure: &BleFailure) -> Result<(), EventValidationError> {
-    validate_text(&failure.message, "failure.message")?;
-    if let Some(platform) = &failure.platform {
+fn validate_event_error(error: &BleEventError) -> Result<(), EventValidationError> {
+    validate_text(&error.message, "error.message")?;
+    if let Some(platform) = &error.platform {
         for (value, field) in [
             (platform.code.as_ref(), "platform.code"),
             (platform.name.as_ref(), "platform.name"),

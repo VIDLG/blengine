@@ -1,10 +1,10 @@
 use boltffi::UnexpectedFfiCallbackError;
 
-use super::{CommandKind, Platform};
+use super::Platform;
 
 #[boltffi::data]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ErrorCategory {
+pub enum BleErrorCategory {
     Permission,
     AdapterUnavailable,
     InvalidState,
@@ -12,6 +12,9 @@ pub enum ErrorCategory {
     Timeout,
     Cancelled,
     Connection,
+    Gatt,
+    Protocol,
+    NotSupported,
     Backend,
     Internal,
 }
@@ -28,40 +31,34 @@ pub struct PlatformErrorDetails {
 #[boltffi::data]
 #[derive(Clone, Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 #[display("{category:?}: {message}")]
-pub struct BleFailure {
-    pub category: ErrorCategory,
+pub struct BleEventError {
+    pub category: BleErrorCategory,
     pub message: String,
     pub platform: Option<PlatformErrorDetails>,
-}
-
-#[boltffi::data]
-#[derive(Clone, Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
-#[display("{operation:?}: {failure}")]
-pub struct BleOperationError {
-    pub operation: CommandKind,
-    pub failure: BleFailure,
 }
 
 #[boltffi::error]
 #[derive(Clone, Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub enum BleHubError {
-    #[display("backend assembly failed: {message}")]
-    BackendAssembly { message: String },
-    #[display("backend cleanup failed: {message}")]
+    #[display("backend assembly failed: {detail}")]
+    BackendAssembly { detail: String },
+    #[display("backend cleanup failed: {detail}")]
     BackendCleanup {
-        message: String,
+        detail: String,
         platform: Option<PlatformErrorDetails>,
     },
-    #[display("backend resource is busy: {message}")]
-    ResourceBusy { message: String },
-    #[display("FFI contract error: {message}")]
-    FfiContract { message: String },
+    #[display("backend resource is busy: {detail}")]
+    ResourceBusy { detail: String },
+    #[display("invalid configuration `{field}`: {detail}")]
+    InvalidConfiguration { field: String, detail: String },
+    #[display("FFI contract error: {detail}")]
+    FfiContract { detail: String },
 }
 
 impl From<UnexpectedFfiCallbackError> for BleHubError {
     fn from(error: UnexpectedFfiCallbackError) -> Self {
         Self::FfiContract {
-            message: error.to_string(),
+            detail: error.to_string(),
         }
     }
 }
@@ -69,32 +66,25 @@ impl From<UnexpectedFfiCallbackError> for BleHubError {
 #[boltffi::error]
 #[derive(Clone, Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
 pub enum CommandDispatchError {
-    #[display("BleHub is closed; cannot dispatch {operation:?}")]
-    Closed { operation: CommandKind },
-    #[display("invalid {operation:?} request: {message}")]
-    InvalidRequest {
-        operation: CommandKind,
-        message: String,
-    },
-    #[display("invalid backend state for {operation:?}: {message}")]
-    InvalidState {
-        operation: CommandKind,
-        message: String,
-    },
-    #[display("backend unavailable for {operation:?} dispatch: {message}")]
+    #[display("BleHub is closed; cannot dispatch command")]
+    Closed,
+    #[display("invalid command request: {detail}")]
+    InvalidRequest { detail: String },
+    #[display("invalid backend state: {detail}")]
+    InvalidState { detail: String },
+    #[display("backend unavailable for command dispatch: {detail}")]
     BackendUnavailable {
-        operation: CommandKind,
-        message: String,
+        detail: String,
         platform: Option<PlatformErrorDetails>,
     },
-    #[display("unexpected foreign backend exception: {message}")]
-    FfiContract { message: String },
+    #[display("unexpected foreign backend exception: {detail}")]
+    FfiContract { detail: String },
 }
 
 impl From<UnexpectedFfiCallbackError> for CommandDispatchError {
     fn from(error: UnexpectedFfiCallbackError) -> Self {
         Self::FfiContract {
-            message: error.to_string(),
+            detail: error.to_string(),
         }
     }
 }

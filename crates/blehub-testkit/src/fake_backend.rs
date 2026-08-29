@@ -63,20 +63,17 @@ impl FakeBackend {
     fn dispatch(&self, operation: CommandKind) -> Result<(), CommandDispatchError> {
         if self.state.disposed.load(Ordering::Acquire) {
             return Err(CommandDispatchError::InvalidState {
-                operation,
-                message: "fake backend is disposed".to_owned(),
+                detail: "fake backend is disposed".to_owned(),
             });
         }
         let Some(scenario) = self.state.scenarios.lock().unwrap().pop_front() else {
             return Err(CommandDispatchError::InvalidState {
-                operation,
-                message: "no scripted scenario remains".to_owned(),
+                detail: "no scripted scenario remains".to_owned(),
             });
         };
         if scenario.operation != operation {
             return Err(CommandDispatchError::InvalidState {
-                operation,
-                message: format!("expected {:?} scenario", scenario.operation),
+                detail: format!("expected {:?} scenario", scenario.operation),
             });
         }
 
@@ -85,11 +82,11 @@ impl FakeBackend {
             ScenarioDispatch::Accept => Ok(()),
             ScenarioDispatch::Reject(error) => Err(error),
             ScenarioDispatch::EmitBeforeReturn(events) => {
-                self.push_events(operation, events)?;
+                self.push_events(events)?;
                 Ok(())
             }
             ScenarioDispatch::EmitBeforeReject { events, error } => {
-                self.push_events(operation, events)?;
+                self.push_events(events)?;
                 Err(error)
             }
         };
@@ -105,19 +102,14 @@ impl FakeBackend {
         result
     }
 
-    fn push_events(
-        &self,
-        operation: CommandKind,
-        events: Vec<blehub::BleEvent>,
-    ) -> Result<(), CommandDispatchError> {
+    fn push_events(&self, events: Vec<blehub::BleEvent>) -> Result<(), CommandDispatchError> {
         let token =
             self.state
                 .token
                 .lock()
                 .unwrap()
                 .ok_or_else(|| CommandDispatchError::InvalidState {
-                    operation,
-                    message: "event ingress is not bound".to_owned(),
+                    detail: "event ingress is not bound".to_owned(),
                 })?;
         let statuses = events
             .into_iter()
@@ -137,12 +129,12 @@ impl BleBackend for FakeBackend {
         let mut current = self.state.token.lock().unwrap();
         if current.is_some() {
             return Err(BleHubError::BackendAssembly {
-                message: "event ingress is already bound".to_owned(),
+                detail: "event ingress is already bound".to_owned(),
             });
         }
         if !token.is_valid() {
             return Err(BleHubError::FfiContract {
-                message: "event ingress token must be nonzero".to_owned(),
+                detail: "event ingress token must be nonzero".to_owned(),
             });
         }
         *current = Some(token);
@@ -195,18 +187,18 @@ impl FakeBackendHandle {
 #[cfg(test)]
 mod tests {
     use blehub::{
-        BleEvent, BleEventPayload, BleHub, CommandId, CommandOutcome, ConnectionId,
-        ConnectionPhase, PeripheralId, ScanSessionId,
+        BleEvent, BleEventPayload, BleHub, CommandId, ConnectionId, ConnectionState, PeripheralId,
+        ScanSessionId,
     };
 
     use super::*;
-    use crate::{RecordingSink, ReferenceProjection};
+    use crate::{ProjectedCommandOutcome, RecordingSink, ReferenceProjection};
 
     fn scan_started(command_id: CommandId, scan_session_id: ScanSessionId) -> BleEvent {
         BleEvent {
             payload: BleEventPayload::ScanStarted {
                 command_id,
-                scan_session_id,
+                scan_id: scan_session_id,
             },
         }
     }
@@ -215,7 +207,6 @@ mod tests {
         BleEvent {
             payload: BleEventPayload::CommandCompleted {
                 command_id,
-                outcome: CommandOutcome::Succeeded,
                 error: None,
             },
         }
@@ -251,7 +242,7 @@ mod tests {
         }
         assert_eq!(
             projection.outcome(command_id),
-            Some(CommandOutcome::Succeeded)
+            Some(ProjectedCommandOutcome::Succeeded)
         );
         assert_eq!(
             handle.push_statuses(),
@@ -262,8 +253,7 @@ mod tests {
     #[test]
     fn dispatch_rejection_emits_no_event() {
         let error = CommandDispatchError::BackendUnavailable {
-            operation: CommandKind::Connect,
-            message: "scripted rejection".to_owned(),
+            detail: "scripted rejection".to_owned(),
             platform: None,
         };
         let (backend, _) =
@@ -287,8 +277,7 @@ mod tests {
         let command_id = CommandId::new(7);
         let scan_session_id = ScanSessionId::new(11);
         let error = CommandDispatchError::BackendUnavailable {
-            operation: CommandKind::StartScan,
-            message: "rejected after emission".to_owned(),
+            detail: "rejected after emission".to_owned(),
             platform: None,
         };
         let (backend, handle) = FakeBackend::scripted([EventScenario::emit_before_reject(
@@ -327,8 +316,7 @@ mod tests {
             payload: BleEventPayload::ConnectionStateChanged {
                 command_id: None,
                 connection_id: ConnectionId::new(9),
-                phase: ConnectionPhase::Disconnected,
-                error: None,
+                state: Ok(ConnectionState::Disconnected),
             },
         };
 

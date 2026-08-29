@@ -22,8 +22,9 @@ htmlcov/
 # Rust build output
 **/target/
 
-# Gradle and Android build output
+# Gradle, Kotlin, and Android build output
 **/.gradle/
+**/.kotlin/
 **/build/
 **/out/
 local.properties
