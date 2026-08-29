@@ -1,4 +1,4 @@
-import BleHubPhase0FfiFixtureFFI
+import ConsumerLibrary
 
-precondition(boltffi_const_blehub_phase0_ffi_fixture_fixture_contract_version() == 2)
+precondition(fixtureContractVersionFromArtifact() == 2)
 print("swift_package_artifact_consumer=passed")

@@ -1,6 +1,14 @@
 import Dispatch
 import Foundation
 
+final class WeakBox<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}
+
 enum NativeFailure: Error {
     case undeclared
 }
@@ -207,7 +215,7 @@ func runErrorTests() throws {
 
 func runLifecycleCycle(_ command: StartScanCommand, tokens: inout Set<UInt64>) throws {
     var backend: TestBackend? = TestBackend(mode: .noEvent)
-    weak let releasedBackend = backend
+    let releasedBackend = WeakBox(backend!)
     var fixture: Phase0Fixture? = try Phase0Fixture(backend: backend!)
     let token = backend!.retainedToken()
     precondition(tokens.insert(token.value).inserted)
@@ -215,7 +223,7 @@ func runLifecycleCycle(_ command: StartScanCommand, tokens: inout Set<UInt64>) t
     backend = nil
     try fixture!.dispose()
     fixture = nil
-    precondition(releasedBackend == nil)
+    precondition(releasedBackend.value == nil)
     precondition(pushBackendEvent(token: token, event: scanStarted(command)) == .closed)
 }
 

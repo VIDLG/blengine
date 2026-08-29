@@ -2,6 +2,14 @@ import BleHubUniFfiLifecycle
 import Dispatch
 import Foundation
 
+final class WeakBox<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}
+
 enum NativeFailure: Error {
     case undeclared
 }
@@ -175,14 +183,14 @@ func runErrorTests() throws {
 
 func runLifecycleCycle(_ sequence: UInt64) throws {
     var backend: TestBackend? = TestBackend(mode: .noEvent)
-    weak let releasedBackend = backend
+    let releasedBackend = WeakBox(backend!)
     var fixture: Phase0Fixture? = try Phase0Fixture(backend: backend!)
     let ingress = backend!.retainedIngress()
 
     backend = nil
     try fixture!.dispose()
     fixture = nil
-    precondition(releasedBackend == nil)
+    precondition(releasedBackend.value == nil)
     precondition(
         ingress.push(event: BleEvent(sequence: sequence, commandId: nil, payload: Data())) == .closed
     )

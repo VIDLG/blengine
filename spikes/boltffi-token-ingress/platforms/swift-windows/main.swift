@@ -1,6 +1,14 @@
 import Dispatch
 import Foundation
 
+final class WeakBox<Value: AnyObject> {
+    weak var value: Value?
+
+    init(_ value: Value) {
+        self.value = value
+    }
+}
+
 final class TestBackend: BleBackend {
     private(set) var token: BackendEventIngressToken?
     private(set) var capabilitiesCount = 0
@@ -23,7 +31,7 @@ final class TestBackend: BleBackend {
         let event = BleEvent(
             payload: .scanStarted(
                 commandId: command.commandId,
-                scanSessionId: command.scanSessionId
+                scanId: command.scanSessionId
             )
         )
         precondition(pushBackendEvent(token: token, event: event) == .delivered)
@@ -38,7 +46,7 @@ final class TestBackend: BleBackend {
 
 let backend = TestBackend()
 var fixture: Phase0Fixture? = try Phase0Fixture(backend: backend)
-precondition(fixtureContractVersion == 1)
+precondition(fixtureContractVersion == 2)
 precondition(backend.capabilitiesCount == 1)
 precondition(backend.bindCount == 1)
 precondition(fixture!.capabilities().platform == .test)
@@ -57,7 +65,7 @@ DispatchQueue.concurrentPerform(iterations: 64) { _ in
         event: BleEvent(
             payload: .scanStarted(
                 commandId: command.commandId,
-                scanSessionId: command.scanSessionId
+                scanId: command.scanSessionId
             )
         )
     )
@@ -78,7 +86,7 @@ precondition(
         event: BleEvent(
             payload: .scanStarted(
                 commandId: command.commandId,
-                scanSessionId: command.scanSessionId
+                scanId: command.scanSessionId
             )
         )
     ) == .closed
@@ -89,7 +97,7 @@ fixture = nil
 var lifecycleTokens = Set<UInt64>()
 for _ in 0..<10_000 {
     var lifecycleBackend: TestBackend? = TestBackend()
-    weak let releasedBackend = lifecycleBackend
+    let releasedBackend = WeakBox(lifecycleBackend!)
     var lifecycleFixture: Phase0Fixture? = try Phase0Fixture(backend: lifecycleBackend!)
     let lifecycleToken = lifecycleBackend!.token!
     precondition(lifecycleTokens.insert(lifecycleToken.value).inserted)
@@ -97,14 +105,14 @@ for _ in 0..<10_000 {
     lifecycleBackend = nil
     try lifecycleFixture!.dispose()
     lifecycleFixture = nil
-    precondition(releasedBackend == nil)
+    precondition(releasedBackend.value == nil)
     precondition(
         pushBackendEvent(
             token: lifecycleToken,
             event: BleEvent(
                 payload: .scanStarted(
                     commandId: command.commandId,
-                    scanSessionId: command.scanSessionId
+                    scanId: command.scanSessionId
                 )
             )
         ) == .closed

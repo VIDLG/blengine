@@ -12,7 +12,7 @@ FIXTURE_ROOT = PROJECT_ROOT / "spikes" / "boltffi-token-ingress"
 PACKAGE_ROOT = FIXTURE_ROOT / "generated" / "apple"
 CONSUMER_ROOT = FIXTURE_ROOT / "platforms" / "swift-package-consumer"
 DERIVED_DATA_ROOT = PROJECT_ROOT / ".work" / "boltffi-apple-derived-data"
-PACKAGE_SCHEME = "BleHubPhase0FfiFixtureFFI"
+CONSUMER_SCHEME = "ConsumerLibrary"
 XCFRAMEWORK = PACKAGE_ROOT / "BleHubPhase0FfiFixture.xcframework"
 
 
@@ -34,6 +34,7 @@ def _require_package() -> None:
         XCFRAMEWORK / "Info.plist",
         CONSUMER_ROOT / "Package.swift",
         CONSUMER_ROOT / "Sources" / "Consumer" / "main.swift",
+        CONSUMER_ROOT / "Sources" / "ConsumerLibrary" / "ContractProbe.swift",
     ]
     missing = [path for path in required if not path.exists()]
     if missing:
@@ -117,7 +118,7 @@ def _build_ios_destination(xcodebuild: str, destination: str, output_name: str) 
         [
             xcodebuild,
             "-scheme",
-            PACKAGE_SCHEME,
+            CONSUMER_SCHEME,
             "-destination",
             destination,
             "-derivedDataPath",
@@ -125,7 +126,7 @@ def _build_ios_destination(xcodebuild: str, destination: str, output_name: str) 
             "CODE_SIGNING_ALLOWED=NO",
             "build",
         ],
-        cwd=PACKAGE_ROOT,
+        cwd=CONSUMER_ROOT,
     )
 
 
@@ -141,7 +142,6 @@ def main() -> int:
     _validate_xcframework(plutil)
     _run([swift, "package", "--package-path", str(PACKAGE_ROOT), "reset"])
     _run([swift, "package", "--package-path", str(PACKAGE_ROOT), "describe"])
-    _run([swift, "build", "--package-path", str(PACKAGE_ROOT), "-c", "release"])
 
     _run([swift, "package", "--package-path", str(CONSUMER_ROOT), "reset"])
     _run([swift, "run", "--package-path", str(CONSUMER_ROOT), "-c", "release"])

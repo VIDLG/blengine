@@ -3,19 +3,30 @@ import PackageDescription
 
 let package = Package(
     name: "BleHubPhase0PackageConsumer",
-    platforms: [.macOS(.v13)],
+    platforms: [
+        .iOS(.v16),
+        .macOS(.v13),
+    ],
     dependencies: [
         .package(path: "../../generated/apple")
     ],
+    products: [
+        .library(name: "ConsumerLibrary", targets: ["ConsumerLibrary"]),
+        .executable(name: "Consumer", targets: ["Consumer"]),
+    ],
     targets: [
-        .executableTarget(
-            name: "Consumer",
+        .target(
+            name: "ConsumerLibrary",
             dependencies: [
                 .product(
                     name: "BleHubPhase0FfiFixtureFFI",
                     package: "apple"
                 )
             ]
-        )
+        ),
+        .executableTarget(
+            name: "Consumer",
+            dependencies: ["ConsumerLibrary"]
+        ),
     ]
 )
