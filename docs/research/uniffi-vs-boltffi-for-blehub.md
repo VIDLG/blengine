@@ -47,21 +47,21 @@ BleHub 需要选择一个 Rust 与 Kotlin/Swift 原生 backend 之间的 FFI 生
 - `thiserror::Error` 与 `uniffi::Error` 可以共同 derive；
 - 因此 UniFFI 没有复现 BoltFFI #869、#870 和 #872 的关键限制。
 
-但是，**现在还不应直接修改 `.plan/PLAN.md` 或把生产 crate 从 BoltFFI 改成 UniFFI**，因为：
+用户已决定在public ABI冻结前迁移到Stable UniFFI `0.32.0`，并在本次Plan Review中明确接受下列已知边界：
 
-- 稳定 UniFFI Kotlin backend 使用 JNA，而当前 BoltFFI 路径是直接 JNI；同机实测 UniFFI/JNA 的单次跨边界开销明显更高；
-- Android ART、发布 AAR、clean consumer、生命周期、异常、payload 和性能比较已经通过，但性能取舍仍需用户明确接受；
-- UniFFI 自己明确不提供完整 XCFramework/SPM packaging，BleHub 必须维护已经通过 gate 的 Apple 打包脚本；
-- Stable UniFFI Swift 已在真实 `macos-15` runner 上通过 retained direct ingress、ARC/lifecycle、错误、XCFramework、clean macOS SPM consumer 和 generic iOS simulator/device compile-link；
-- UniFFI 稳定和实验 Kotlin 后端都仍有与 BoltFFI #871 等价的 `message`/`cause` 错误字段冲突。
+- Stable UniFFI Kotlin backend使用JNA，而BoltFFI比较路径是direct JNI；同机实测UniFFI/JNA单次跨边界开销明显更高；
+- Android ART、AAR、clean consumer、生命周期、异常、representative payload和性能比较已经通过；final ABI仍需绝对throughput/latency/包体回归；
+- UniFFI不提供完整XCFramework/SPM packaging，BleHub继续维护已通过gate的Apple打包脚本；
+- Stable UniFFI Swift已在真实`macos-15` runner上通过retained direct ingress、ARC/lifecycle、错误、XCFramework、clean macOS SPM consumer和generic iOS simulator/device compile-link；
+- Stable/experimental Kotlin仍有与BoltFFI #871相似的`message`/`cause` error-field collision，public callable error字段继续使用`detail`。
 
-### 2.2 推荐决策
+### 2.2 已选择方向
 
-建议把 UniFFI 保持为 **Phase 0 首选候选**。Android correctness 和 Apple gate 已经完成；最终框架决定现在只剩一个需要用户确认的产品取舍：
+本报告的Go/No-Go比较已经结束：**Stable UniFFI `0.32.0`是拟议production FFI foundation，当前等待修订后的Plan Review；production code尚未迁移。**
 
-> 用户是否接受物理 Android 设备上约 `16×`（push）和 `21×`（command）的 JNA/JNI 相对开销。绝对 push 吞吐仍约为每秒 `7,900` 次，通常高于 BLE event 需求，但这是产品取舍而不是框架替用户决定。
+选择同时接受物理Android representative benchmark中约`16×`（push）和`21×`（command）的JNA/JNI相对开销；绝对push吞吐约每秒`7,900`次。该接受不免除final candidate的绝对性能、payload、close latency与package-size gate。
 
-Apple 条件已经满足。如果用户接受该 Android 开销，建议在 public ABI 冻结前切换到 UniFFI，并删除 token ingress registry 与 BoltFFI ACK workaround 候选；如果不接受，则继续使用 BoltFFI并优先等待官方 #869/#872 修复，而不是把两套永久 workaround 静默冻结进 v0.1 contract。
+迁移删除project-authored token registry、free push与BoltFFI ACK workaround；历史fixture只保留为benchmark、rollback与决策证据，production不得保留双入口。
 
 因此当前比较是：
 
@@ -575,7 +575,7 @@ Apple 侧已在权威 macOS run `33249751300` 实际通过：
 | API 36 x86_64 emulator | UniFFI/JNA | 约 `167,344 ns/op` | 约 `187,481 ns/op` |
 | API 36 x86_64 emulator | BoltFFI/JNI | 约 `7,067 ns/op` | 约 `5,443 ns/op` |
 
-物理设备相对差距约为 push `16×`、command `21×`；emulator 约为 `24×` 与 `34×`。JNA 相对开销明显且真实，不能描述为与 JNI 性能相当。另一方面，物理设备 empty-event push 的绝对吞吐约为每秒 `7,900` 次，通常仍高于 BLE event 流量。是否接受这一余量必须由用户 review。
+物理设备相对差距约为 push `16×`、command `21×`；emulator 约为 `24×` 与 `34×`。JNA 相对开销明显且真实，不能描述为与 JNI 性能相当。另一方面，物理设备 empty-event push 的绝对吞吐约为每秒 `7,900` 次，通常仍高于 BLE event 流量。用户已通过本次迁移决定接受该已知取舍；final candidate仍需记录绝对throughput、payload/close latency与包体，防止回归。
 
 现有运行没有发现 deadlock、事件丢失、错误 success 或 lifecycle counter 漂移，但尚未形成低端设备、长时间运行、p95/p99、GC 与 per-process RSS 证据。不能用 Android `/proc/meminfo` 的系统级数据推导 app RSS。
 
@@ -603,7 +603,7 @@ BleHub event 不是音视频级数据流，但可能出现：
 - 一台目标最低配置 Android 设备；
 - release/minified consumer 的启动和 library loading。
 
-不建议在没有产品 event-rate 上限时继续增加 synthetic loop 次数。当前决策应先由用户 review 已测得的 BoltFFI baseline、UniFFI 绝对吞吐和架构简化收益。
+不建议在没有产品event-rate上限时仅增加synthetic loop次数。当前迁移已基于BoltFFI baseline、UniFFI绝对吞吐和架构简化收益作出；后续benchmark应围绕final payload、目标最低配置设备、tail latency、GC/RSS和release package回归。
 
 ## 12. 迁移成本评估
 
@@ -681,17 +681,19 @@ UniFFI job 通过：
 
 该 gate 验证了真实 Swift runtime、ARC、Clang module 和 package consumer，但不验证 CoreBluetooth RF；后者仍属于 production backend/HIL 阶段。
 
-### 14.3 切换 Go 条件
+### 14.3 切换 Go 状态
 
-满足以下全部条件后，建议修改计划并迁移：
+框架选择条件状态：
 
-- Android stable JNA correctness 全通过；**已满足**；
-- Android 性能和包体积经用户 review 可接受；**待用户明确接受约 `16×`/`21×` 相对开销**；
-- macOS ARC/XCFramework/SPM 全通过；**已满足**；
-- 不需要 experimental JNI；
-- direct ingress 删除 token registry 后 rollback/close invariant 仍完整；
-- generated API/ABI snapshot 和 consumer test 建立；
-- migration diff 明确，不混入 production BLE backend 实现。
+- Android Stable JNA correctness：**已满足**；
+- Android representative性能/包体取舍：**用户已接受，final regression gate保留**；
+- macOS ARC/XCFramework/SPM：**已满足**；
+- experimental JNI：**不需要且不进入v0.1 production path**；
+- framework choice：**Stable UniFFI Go**；
+- Plan：**迁移修订待Review**；
+- production migration：**尚未实施**。
+
+实施Go仍要求direct ingress删除token registry后完整保留rollback/close invariant，建立generated API/ABI snapshot与consumer test，并让迁移diff不混入production BLE backend实现。
 
 ### 14.4 UniFFI No-Go 条件
 
@@ -710,30 +712,29 @@ No-Go 后优先顺序应是：
 3. 不把本地未发布 BoltFFI patch 静默当作 production dependency；
 4. 不因 FFI 问题改变 BleHub 的 fire-and-forget、caller-owned runtime 设计。
 
-## 15. 对已批准计划的影响
+## 15. 对Plan的影响
 
-本报告不直接修改 `.plan/PLAN.md`。当前计划仍以 BoltFFI 和 token ingress workaround 为已批准方向。
+本报告已经触发明确的Plan修订：从BoltFFI `0.30.1`迁移到Stable UniFFI `0.32.0`。修订当前等待用户Review；在Review通过前不修改production crate。
 
-如果用户批准执行 UniFFI gate，建议只新增一个 Phase 0 候选评估任务，不立即重写 production crate：
+Plan修订应：
 
-1. 复用本报告 fixture 形成 Android stable JNA AAR lane；
-2. 形成 macOS Swift direct-handle lane；
-3. 用相同 workload 与 BoltFFI 对比；
-4. 提交独立 Go/No-Go 结果供 review；
-5. 只有 Go 后，才在计划中显式把 BoltFFI 改为 UniFFI，并列出 token registry 删除和 packaging migration。
+1. 把Stable UniFFI设为唯一production FFI foundation；
+2. 删除project-authored token、registry、registration guard、free push与ACK workaround；
+3. 保留Rust-owned `BleHub`、Rust-only sink、`Weak<EventIngressState>`、close drain和fire-and-forget语义；
+4. 明确backend `dispose()`主动释放root retained ingress，即使另有backend owner存活；
+5. 对最终对象图重跑capabilities、rollback、panic、lifecycle、event wire和artifact-only consumer gate；
+6. 一次性协调Rust annotations、generated Kotlin/Swift、Android AAR、Apple package与contract version，禁止双入口或新旧产物混装。
 
-这样避免一边实现 production backend、一边更换 FFI foundation，也避免 sunk cost 代替技术决策。
+这样避免一边实现production backend、一边更换FFI foundation，也避免把历史投入误当作继续workaround的理由。
 
 ## 16. 最终判断
 
-**如果只比较 BleHub 的核心 contract，UniFFI 是当前更好的选择。** 它原生支持 BleHub 想要的 `Arc<dyn BleBackend>` 与 direct Rust ingress object，正确处理 undeclared foreign exception，并与 `thiserror` 协作；这些正是薄层设计最重要的 ownership 和 dispatch correctness。
+**Stable UniFFI `0.32.0`已被选择为BleHub拟议production FFI foundation。** 它支持`Arc<dyn BleBackend>`与direct Rust ingress object，能够映射undeclared foreign exception，并允许删除BoltFFI能力缺口造成的project-authored routing/ACK绕路。
 
-**Android gate 已经证明 stable UniFFI/JNA 可以正确运行和发布消费，但不能忽略约 `16×`/`21×` 的物理设备相对开销。** 其绝对吞吐对通常 BLE workload 仍有很大余量，且 fixture APK/AAR size 没有表现出劣势；是否接受应由用户明确决定。
+**Android Stable UniFFI/JNA correctness与artifact消费已通过，约`16×`/`21×`的物理设备相对开销已被用户接受。** 这不是性能等同声明；final ABI仍保留绝对throughput、tail latency、GC/RSS和包体回归gate。
 
-**最终技术 gate 只剩 Apple。** Windows Swift host 已证明 BleHub-shaped direct handle、跨线程回调、error 与 10,000 lifecycle 能工作；项目也已实现 static slices、XCFramework、SPM 和 iOS compile-link recipes。只有这些 recipe 在真实 macOS/Xcode runner 上通过后，才能把 Apple 风险关闭。
+**Apple framework gate已通过。** 权威macOS run验证了Swift runtime、ARC、XCFramework、clean SPM consumer与generic iOS compile-link；它不验证CoreBluetooth、签名、设备安装或BLE/RF。
 
-因此当前推荐：
+当前边界是：Plan修订待Review，production迁移尚未实施。迁移后Phase 0必须用最终`Weak<EventIngressState> -> Rust BleEventSink`对象图重新关闭capabilities、constructor rollback、backend root-handle release、Rust panic containment、完整event data enum和artifact-only consumer gate。
 
-> 暂不修改 `.plan/PLAN.md`，也不重写 production。先运行 UniFFI Apple gate；若通过且用户接受 Android JNA 性能取舍，则在 ABI freeze 前迁移到 UniFFI。若 Apple gate 失败或性能取舍不可接受，则保留 BoltFFI，并等待 official #869/#872 或显式 review workaround。
-
-完整 gate 跑完后，证据已经足以做 UniFFI/BoltFFI 的最终选择；不再存在必须等真实 BLE 硬件才能判断的 FFI foundation 风险。真实 Android/iOS BLE、权限和 RF 仍属于后续 backend/HIL gate，而不是本次 FFI 选型 gate。
+FFI foundation选择不再依赖真实BLE硬件；真实Android/iOS BLE、权限、CoreBluetooth和RF仍属于后续backend/HIL gate。

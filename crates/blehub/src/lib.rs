@@ -7,4 +7,6 @@ pub mod types;
 pub use backend::BleBackend;
 pub use contract::*;
 pub use hub::BleHub;
-pub use ingress::{BackendEventIngressToken, BleEventSink, EventIngressStatus, push_backend_event};
+pub use ingress::{BackendEventIngressHandle, BleEventSink, EventIngressStatus};
+
+uniffi::setup_scaffolding!();

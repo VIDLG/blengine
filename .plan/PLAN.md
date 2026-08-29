@@ -4,9 +4,13 @@
 
 **日期：2026-08-29**
 
-**硬件状态：QEMU/BLESS HIL 等待 USB 蓝牙适配器到货，当前不执行。**
+**当前阶段：Phase 0的Windows/Android Stable UniFFI mechanism与production-object-graph gate已完成；进入Phase 1统一薄契约实现，public ABI仍未冻结。Phase 1退出前不得开始production Windows backend。**
 
-本文件是 BleHub 唯一规划来源。Review 通过前不创建脚手架或实现代码；通过后从 Phase 0 开始执行。本文同时作为未来架构文档、API 文档和平台接入文档的来源。
+**硬件状态：开发期临时Peripheral使用Android真机LightBlue；2026-08-29已从Windows验证广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe。自动notification delivery、异常时序和soak仍未覆盖。QEMU/BLESS managed HIL继续等待USB蓝牙适配器到货。真实macOS/iOS production-candidate runtime/package与RF测试按用户决定延后到Apple Phase 5前，不阻塞Phase 1和Windows优先开发。**
+
+**本次修订：Stable UniFFI `0.32.0` production candidate已在Windows Kotlin/JVM、Windows Swift与Android真机/模拟器通过最终weak-ingress对象图gate；Windows Kotlin/JNA checksum carrier workaround被限制在Windows并有独立完整性校验。Apple production candidate与最终package延后，但代表性macOS机制证据保留。**
+
+本文件是BleHub唯一规划来源。Phase 0已完成框架选择、production FFI迁移、最小scan/connect contract/bridge和Windows/Android真实runtime gate；Phase 1从平台无关公共契约与共享conformance继续，不跳过该gate直接实现Windows backend。本文同时作为未来架构文档、API文档和平台接入文档的来源。
 
 ---
 
@@ -19,7 +23,7 @@ BleHub 是一个以 Rust 为核心、支持 Windows、Android、iOS、macOS 和 
 开发顺序：
 
 1. **Windows**：第一开发平台、参考实现和主要测试宿主。
-2. **Android**：验证 BoltFFI 跨语言 backend 抽象，与 Windows 一起组成 v0.1。
+2. **Android**：验证 Stable UniFFI 跨语言 backend 抽象，与 Windows 一起组成 v0.1。
 3. **iOS/macOS**：复用稳定契约接入 Swift CoreBluetooth。
 4. **Linux**：复用稳定契约接入 BlueZ D-Bus。
 
@@ -66,7 +70,7 @@ BleHub 是一个以 Rust 为核心、支持 Windows、Android、iOS、macOS 和 
 - 多应用订阅合并、后台任务调度和复杂资源仲裁
 - 通用异步 `ShutdownCommand`；四个平台都没有统一的整体 BLE shutdown completion，v0.1 只提供本地幂等 `dispose/close`
 - 等所有平台完整后才发布第一个版本
-- 用 Tauri mobile plugin 的 JSON command/event bridge 替代统一 `BleBackend`、BoltFFI trait object 或 backend event ingress
+- 用 Tauri mobile plugin 的 JSON command/event bridge 替代统一 `BleBackend`、UniFFI foreign trait object 或 backend event ingress
 - 在 v0.1 发布通用 `tauri-plugin-blehub`；首版只提供 repository-owned reference app，是否提取和发布插件须按真实复用需求另行评审
 
 ---
@@ -76,17 +80,17 @@ BleHub 是一个以 Rust 为核心、支持 Windows、Android、iOS、macOS 和 
 | 领域 | 决策 |
 |---|---|
 | 核心语言 | Rust 2024 edition |
-| FFI | BoltFFI；Rust crates与CLI均使用官方crates.io精确版本`0.30.1`，由各`Cargo.lock`和项目tool bootstrap固定；相邻源码checkout只用于审计，不参与构建/生成 |
+| FFI | Stable UniFFI `0.32.0` proc-macro interface；Rust crates、bindgen与language runtime必须精确锁定并随contract lockstep；相邻源码checkout只用于审计，不参与production构建/生成 |
 | backend | Rust 定义 `BleBackend: Send + Sync` trait object |
 | backend 方法 | 普通同步 `fn`，不使用 `async fn` |
 | 调用模型 | fire-and-forget：同步 `Result` 表示即时校验/投递是否成功；`Ok` 后的平台 operation 结果通过事件完成 |
-| 事件上行 | 平台 callback 经 backend 映射为统一 `BleEvent`；v0.1 调用 Rust exported `push_backend_event(BackendEventIngressToken, BleEvent)`，由 registry 解析到 `Weak<EventIngressState>` 后进入 bridge，再调用 Rust downstream `BleEventSink` trait object；BoltFFI #869 修复后迁移为 exported class handle 直推 |
+| 事件上行 | 平台 callback 经 backend 映射为统一 `BleEvent`；backend retain Rust exported `BackendEventIngressHandle` 并调用 `handle.push(event)`，handle只持`Weak<EventIngressState>`，upgrade后进入bridge，再调用Rust downstream `BleEventSink` trait object；无token、无process-local registry、无free push function |
 | 事件落点 | 下游 `BleEventSink` 自行投递到 channel、Handler、actor、UI loop 或自选 runtime |
 | 执行模型 | BleHub core 无 mailbox、无 pump、无 executor、无线程、无自有事件循环 |
 | 状态归属 | 调用方拥有业务/command/session 状态；backend 拥有 native handle 状态；BleHub 不维护 canonical BLE state |
 | Windows | Rust + `windows-rs` |
-| Android | Kotlin + Android BLE API + BoltFFI trait object |
-| Apple | Swift + CoreBluetooth + BoltFFI trait object |
+| Android | Kotlin + Android BLE API + Stable UniFFI foreign trait；稳定Kotlin binding使用JNA，已接受其相对JNI开销并保留final-ABI性能回归gate |
+| Apple | Swift + CoreBluetooth + Stable UniFFI foreign trait |
 | Linux | Rust + `dbus-rs` + BlueZ D-Bus |
 | Consumer validation | 每个平台使用独立、只消费 staged/release artifact 的 clean consumer；不允许源码路径、Gradle project dependency 或未打包本地产物掩盖 packaging 问题 |
 | 跨平台展示 | Tauri 2 reference app；其 Rust core 是 BleHub downstream，Web frontend 只通过产品 Rust adapter 发 command、收 projection/event；Tauri 不进入 BleHub core 或 backend contract |
@@ -121,14 +125,14 @@ BleHub 不依赖或照搬 SimpleBLE 的统一 C++ object model、blocking `scan_
 
 - **Thin Bridge**：Rust 中无 executor、无线程、无领域状态机的同步桥；只持有 backend、`EventIngressState`、command/close synchronization gate 和最小 lifecycle state。
 - **Backend**：实现 `BleBackend` 的平台适配对象，负责把同步 command 投递给 WinRT、Android BLE、CoreBluetooth 或 BlueZ。
-- **Closed Flag**：`EventIngressState` 内部从 `false` 单向变为 `true` 的原子 lifecycle 标记；它不是 event tag，也不是锁。`push` 用它快速拒绝 close 后 callback。
+- **Ingress Phase**：`EventIngressState` mutex内部的`Binding | Active | Closed`单向lifecycle phase；它不是event tag。`Binding`拒绝并记录过早push，`Active`允许串行delivery，`Closed`拒绝close后callback。
 - **Command/Close Gate**：保护 backend ownership 的读写同步边界；command 取得 shared/read guard，close 取得 exclusive/write guard，防止 backend method 执行期间释放 backend。
 - **Event Tag**：`BleEvent` tagged union 中标识 payload variant 的判别值；结构校验检查 tag 与 payload 是否匹配，与 Hub 是否 closed 无关。
 - **Command Dispatch / 命令投递**：public method 的短同步阶段。backend 在自己的串行执行边界内原子完成“登记 correlation、取得 cleanup ownership、提交到执行路径”时，command 线性化为 accepted。`Ok(())` 只确认该事实；它不表示 native API、OS/BLE operation 或外设业务已成功。
 - **Dispatch Rejection / 投递拒绝**：accepted 线性化点之前的同步 `Err(CommandDispatchError)`；backend 此时不得创建 callback source、保留 correlation/cleanup ownership或 emit event，因此该 `CommandId` 后续严格无事件。
 - **Operation Completion / 操作完成**：accepted command 后由平台 callback/async result、D-Bus reply或明确定义的 backend-local completion point提供证据。到达该点后，backend 对需要公开状态/数据结果的 operation 先尝试一次 domain event（若有），再必须且至多一次尝试发送 terminal `CommandCompleted`；这不是 sink delivery guarantee。`CommandCompleted { error: None }`的强度按command/platform逐项定义，绝不统一解释为“外设已处理”。
-- **Backend Event Ingress**：backend 把最终 `BleEvent` 送回 Rust 的受控入口。v0.1 是 opaque `BackendEventIngressToken` + exported `push_backend_event(token, event)` + process-local `token -> Weak<EventIngressState>` registry；BoltFFI #869 修复后迁移为 backend retain 的 exported `BackendEventIngressHandle`。两者都不是 downstream sink trait object。
-- **Downstream Event Sink**：Rust application 实现并传给 BleHub 的 `BleEventSink: Send + Sync` trait object；它不是 BoltFFI foreign trait object。Rust bridge 完成最小结构校验后同步调用 `on_event(BleEvent) -> Result<(), EventSinkError>`。
+- **Backend Event Ingress**：backend 把最终 `BleEvent` 送回 Rust 的受控入口。v0.1 是 backend retain 的 UniFFI exported `BackendEventIngressHandle`；handle只持`Weak<EventIngressState>`并暴露`push(event)`。它不是 downstream sink trait object，也不需要opaque token、全局registry或free push function。
+- **Downstream Event Sink**：Rust application 实现并传给 BleHub 的 `BleEventSink: Send + Sync` trait object；它不是 UniFFI foreign trait object。Rust bridge 完成最小结构校验后同步调用 `on_event(BleEvent) -> Result<(), EventSinkError>`。
 - **Event Dispatch**：`BleEventSink` 的实现只负责按调用方策略接纳事件，例如放入 Rust channel、actor 或自选 runtime，并立即返回。`Ok(())` 表示 sink 已按自己的策略接纳事件，`Err(EventSinkError)` 表示未接纳。
 - **Caller State**：command terminal、active scan/connection/GATT/subscription、timeout/retry 和业务状态均由调用方维护。
 - **Backend State**：native adapter/device/GATT object、callback token、pending correlation 和 opaque public handle 映射由每个平台 backend 私有维护；只有 backend 的 command implementation 与 platform callback handler 访问，BleHub 不查询、不复制也不对外暴露这些状态。
@@ -154,23 +158,23 @@ BLE 与测试硬件术语：
 
 | 依赖/能力 | v0.1 决策 |
 |---|---|
-| `boltffi` | 必需；公共 DTO、foreign trait object 和 Rust class/handle 绑定 |
+| `uniffi` | 必需并精确锁定`0.32.0`；公共DTO、foreign trait、Rust object handle和Kotlin/Swift binding；只使用stable Kotlin/JNA backend，不以experimental JNI作为v0.1基础 |
 | `uuid` | 建议复用；Rust 内部解析、校验和规范化 BLE UUID；FFI wire 首版仍使用 canonical string |
 | `windows` (`windows-rs`) | Windows backend 必需，不能泄漏到公共 DTO |
 | `dbus` (`dbus-rs`) | Linux Phase 6 backend 使用，不进入 Windows/Android 首批依赖图 |
 | `serde` / `serde_json` | test scenario、BLESS 控制面和日志 fixture 使用；不是 BleHub 事件运行时依赖 |
 | `proptest` | dev-dependency 候选，用于 command result、duplicate/stale/orphan 和 close race 的状态序列测试 |
-| `loom` | Phase 0 dev-dependency 候选，用于枚举纯 Rust closed flag、mutex、RwLock 与 Arc/Weak interleaving；不替代真实 JNI/Swift runtime stress，引入前按 local-first 规则固定版本并检查源码 |
-| `thiserror` | 非 BoltFFI 扫描路径可优先使用；它仍是生成 `Display`/`std::error::Error` 的宏，不替代标准 trait。BoltFFI `0.30.1` 会把其必须使用的未限定 `#[error(...)]` 误判为 BoltFFI marker（上游 [#870](https://github.com/boltffi/boltffi/issues/870)），因此 scanned contract 暂不使用，直到 generator/scanner 修复并通过兼容性 spike；不得因此把 typed error 降级成字符串 |
-| `derive_more` / `delegate` / `getset` | 可在确实减少重复样板时引入；当前 scanned contract 使用已通过 Rust 与 Kotlin/Swift binding generation 的 `derive_more::Display/Error`。不为一两个显然的 getter/delegation 增加宏，并且任何进入 BoltFFI scanned crate 的 attribute macro 都必须先通过 binding generation 验证，不得遮蔽 ownership、validation、FFI 或 lifecycle 语义 |
-| 同步与并发生态 | per-Hub gate/mutex 优先 `std`；v0.1 ingress registry 的 read-mostly 小表优先评估 `arc-swap` immutable snapshot/RCU，避免每个 event 获取全局锁；只有 entry/write 规模证明需要时才评估 `papaya`/`scc::HashIndex`，不默认使用仍有分片锁的 `dashmap`；core 不自建 channel，但 downstream adapter 可直接复用 `crossbeam`/`flume`/Tokio channel |
-| `slotmap`/generational arena | Phase 1 评估 opaque handle 生命周期；若满足 BoltFFI `u64` wire 与不复用规则，优先复用而不是手写 generation/arena |
+| `loom` | Phase 0 dev-dependency候选，用于枚举纯Rust ingress phase mutex、RwLock与Arc/Weak interleaving；不替代真实Stable UniFFI Kotlin/JNA和Swift runtime stress，引入前按local-first规则固定版本并检查源码 |
+| `thiserror` | Rust error统一优先使用；public callable error已验证可同时派生`thiserror::Error + uniffi::Error`，event-data error可组合`thiserror::Error + uniffi::Record`，Rust-only error只需`thiserror::Error`。`thiserror`只生成`Display`/`std::error::Error`，不定义FFI wire；每次升级仍须重跑Kotlin/Swift error generation和runtime consumer，不得把typed error降级成字符串 |
+| `derive_more` / `delegate` / `getset` | 可在确实减少重复样板时引入；不为一两个显然的getter/delegation增加宏。任何进入UniFFI exported type或impl的attribute macro都必须先通过binding generation验证，不得遮蔽ownership、validation、FFI或lifecycle语义 |
+| 同步与并发生态 | per-Hub command/close gate与ingress delivery mutex优先`std`；direct handle删除process-local registry，因此不引入`arc-swap`/concurrent map；core不自建channel，但downstream adapter可直接复用`crossbeam`/`flume`/Tokio channel |
+| `slotmap`/generational arena | Phase 1评估backend opaque discovery handle生命周期；若满足UniFFI `u64` wire与不复用规则，优先复用而不是手写generation/arena |
 | Tokio/async runtime | 不进入 core/backend trait；具体 backend 可使用平台已有 callback context 或调用方注入执行器 |
 | `bitflags` | 可用于 Rust/backend 内部 property flags；FFI public shape 首版使用生成语言更清晰的 bool record 或显式整数 mask |
 | `tracing` | 建议用于 structured diagnostics、command/session correlation 和 HIL 日志；subscriber 由调用方安装 |
 | `insta` | dev-dependency 候选，用于稳定 event scenario/FFI shape snapshot；若普通断言更清晰则不强制 |
 
-FFI payload 首版仍使用 BoltFFI 支持最稳定的 `Vec<u8>`/record/enum；backend 或 downstream 内部可以使用 `bytes`、channel、actor 等成熟生态并在边界转换。原则不是“能手写就不依赖”，而是“不让依赖改变已确定的薄层职责”。
+FFI payload首版使用Stable UniFFI支持的primitive、`String`、`Vec<u8>`、`Option`、record和data-carrying enum。callable `Result<T, E>`只作为抛错通道；event内成功/失败互斥值固定使用语义等价的显式data enum，不尝试导出nested Rust `Result`，也不退回互相约束的tag加多个`Option`。backend或downstream内部可以使用`bytes`、channel、actor等成熟生态并在边界转换。原则不是“能手写就不依赖”，而是“不让依赖改变已确定的薄层职责”。
 
 ### 2.4 官方平台 API 证据库
 
@@ -208,7 +212,7 @@ pixi run just docs-update
 11. **先 contract，再平台**：事件序列和异常组合先由纯 Rust FakeBackend/conformance harness 固定；状态机是契约参考，不是 BleHub 内部实现。
 12. **调用方拥有运行时和事件队列**：BleHub core 不创建 mailbox、executor、线程池或事件循环；下游 sink 决定事件进入哪个线程、channel、Looper 或 DispatchQueue。
 13. **成熟生态优先、按职责拆 crate**：优先复用经过验证的 Rust crate，不以最少依赖为目标；共享 contract/bridge、可复用 testkit 和各平台 backend 按依赖与发布边界拆分，但不把某个 async runtime 固化为公共 API。
-14. **Ingress state 最小化**：`EventIngressState` 只保留 downstream ownership、closed flag 和用于 delivery/close-drain 的 mutex；Hub 另有 command/close gate。两者都不保留 command/device/connection/GATT registry。
+14. **Ingress state 最小化**：`EventIngressState`只保留ingress phase、bind-push违约标记、downstream ownership和统一用于delivery/close-drain的mutex；Hub另有command/close gate。两者都不保留command/device/connection/GATT registry。
 
 ---
 
@@ -218,10 +222,10 @@ pixi run just docs-update
 
 | 端点 | 创建或实现方 | 持有并调用方 | 作用 |
 |---|---|---|---|
-| `BackendEventIngressToken` | BleHub/Rust 分配的 opaque FFI data token | platform backend | v0.1 backend 调用 `push_backend_event(token, event)` 时定位对应 Rust ingress state |
+| `BackendEventIngressHandle` UniFFI object | BleHub/Rust 创建，内部只持 `Weak<EventIngressState>` | platform backend retain并调用 | backend 调用 `handle.push(event)` 时进入对应Rust ingress state |
 | `BleEventSink` Rust trait object | Rust application 实现并传给 BleHub | Rust bridge | bridge 把已校验的 `BleEvent` 交给调用方自己的队列或运行时 |
 
-`BackendEventIngressToken` 不是 downstream trait object，也不是 Rust pointer。v0.1 因 BoltFFI #869 使用 process-local registry 将 token 解析为 `Weak<EventIngressState>`；backend 仍不能直接持有或调用应用 sink，否则会绕过 BleHub 的 close gate、结构校验和 delivery serialization。理想形态是 backend 直接持有 exported `BackendEventIngressHandle`，但当前 BoltFFI 不能把该 class handle 作为 foreign trait method 参数。两种形态共享相同的一次性 bind、Weak ownership 和 event delivery 语义。
+`BackendEventIngressHandle`不是downstream trait object，也不直接持有应用sink。backend只能调用handle公开的`push`；handle先upgrade私有`Weak<EventIngressState>`，再由state执行close gate、结构校验和delivery serialization。BleHub production contract和project-authored routing code不形成`Hub -> backend -> handle -> state -> sink`强引用环，也不引入raw pointer、整数化`Arc`、token allocator、process-local `token -> Weak` registry或free push function；UniFFI generated opaque object handle和foreign callback handle map是framework-managed实现细节，必须纳入lifecycle counter。
 
 ```mermaid
 flowchart TB
@@ -231,9 +235,7 @@ flowchart TB
     BackendApi[BleBackend trait object]
     BackendImpl[Inert platform backend]
     NativeApi[Native BLE API]
-    Token[BackendEventIngressToken]
-    Push[push_backend_event]
-    Registry[Process-local ingress registry]
+    Handle[BackendEventIngressHandle]
     State[Arc EventIngressState]
     Downstream[Rust BleEventSink trait object]
     CallerQueue[Caller-owned queue actor UI loop or runtime]
@@ -242,25 +244,24 @@ flowchart TB
     App -->|provide backend and sink| Assemble
     Assemble -->|create and own| State
     State -->|own| Downstream
-    Assemble -->|allocate token| Token
-    Assemble -->|bind_event_ingress token once| BackendApi
-    BackendApi -->|BoltFFI proxy or direct Rust call| BackendImpl
-    Assemble -->|register token to Weak state| Registry
-    Assemble -->|return only after bind and registration| Hub
+    Assemble -->|create with Weak state| Handle
+    Assemble -->|bind_event_ingress handle once| BackendApi
+    BackendApi -->|UniFFI proxy or direct Rust call| BackendImpl
+    BackendImpl -->|retain after successful bind| Handle
+    Assemble -->|return after successful bind| Hub
     App -->|command with caller-owned IDs| Hub
     Hub -->|forward command| BackendApi
     BackendImpl -->|call| NativeApi
     NativeApi -->|platform callback| BackendImpl
-    BackendImpl -->|push token and final BleEvent| Push
-    Push -->|lock-free snapshot lookup| Registry
-    Registry -->|upgrade Weak| State
+    BackendImpl -->|push final BleEvent| Handle
+    Handle -->|upgrade Weak| State
     State -->|synchronous on_event| Downstream
     Downstream -->|dispatch and return| CallerQueue
     CallerQueue --> App
 ```
 
-Windows/Linux 的 `BackendApi` 与 `BackendImpl` 通常是同一个 Rust object；Android/Apple 则由 BoltFFI command proxy 把 `BackendApi` 调用转到 Kotlin/Swift `BackendImpl`。OS callback 只进入 backend implementation/delegate handler，再调用 exported `push_backend_event`；它不回调 `BleBackend` command trait 或其 vtable。
-Windows/Linux 的 `BleBackend` 通常是 Rust object；Android/Apple 则是 Kotlin/Swift object 经 BoltFFI trait object 进入 Rust。BleHub downstream 固定为 Rust application 实现的普通 Rust trait object：Android/Apple 事件只在 backend 调用 `push_backend_event(token, event)` 时发生一次 native→Rust FFI crossing；registry lookup 只取得 `Weak` 并立即释放全局锁，随后 `EventIngressState::push -> BleEventSink::on_event` 都是 Rust 内部调用。
+Windows/Linux的`BackendApi`与`BackendImpl`通常是同一个Rust object；Android/Apple则由Stable UniFFI foreign-trait proxy把command调用转到Kotlin/Swift `BackendImpl`。OS callback只进入backend implementation/delegate handler，再调用retained `BackendEventIngressHandle::push`；它不回调`BleBackend` command trait或其vtable。
+Windows/Linux的`BleBackend`通常是Rust object；Android/Apple则是Kotlin/Swift object经UniFFI foreign trait进入Rust。BleHub downstream固定为Rust application实现的普通Rust trait object：Android/Apple event在`handle.push(event)`时发生一次native→Rust FFI crossing；`Weak` upgrade后`EventIngressState::push -> BleEventSink::on_event`都是Rust内部调用。
 
 ### 4.1 命令下行
 
@@ -280,43 +281,41 @@ Windows/Linux 的 `BleBackend` 通常是 Rust object；Android/Apple 则是 Kotl
 
 1. Rust application 实现 `BleEventSink: Send + Sync`。
 2. platform factory 在 Kotlin/Swift/Rust 本地构造不含 ingress、尚未启动 BLE 工作且不会产生 callback 的 inert backend。
-3. application 调用 `BleHub::new(backend, event_sink)`；constructor 创建并强持有 `Arc<EventIngressState>`，把 Rust sink 保存到 state，并分配非零、进程生命周期内永不复用的 `BackendEventIngressToken`。
-4. constructor 调用一次 `backend.bind_event_ingress(token)`。bind 期间 token 尚未注册；backend 必须保持 inert、不得调用 `push_backend_event`，`Err` 必须表示未 retain token。
-5. bind 成功后，constructor 才在 process-local registry 中注册 `token -> Weak<EventIngressState>`，保存该 entry 的 instance-owned registration guard，然后返回完整 Hub。registry 只负责 FFI ingress 路由，不是 BLE domain state。
-6. bind 失败时，constructor 关闭 state、best-effort `dispose` backend 并返回 `BleHubError`；token 永不复用。bind 成功但 registry registration 失败时同样 rollback，backend 已 retain 的 token只能得到 `Closed`，随后由 dispose 释放。
-7. close 先关闭并排空 state，再 dispose backend，最后注销 registry entry；因此 dispose 中或其后的迟到 callback 要么解析到 closed state，要么查不到 token，统一返回 `Closed`。
+3. application调用`BleHub::new(backend, event_sink)`；constructor创建并强持有`Arc<EventIngressState>`，把Rust sink保存到state，再创建只含`Weak<EventIngressState>`的`Arc<BackendEventIngressHandle>`。
+4. constructor调用一次`backend.bind_event_ingress(handle)`。backend必须保持inert且bind期间不得调用`handle.push`；`Err`必须表示未retain handle，`Ok`必须表示已retain唯一handle。
+5. bind成功后constructor直接返回完整Hub；没有registration、process-global write或第二个可失败的routing步骤。
+6. bind失败时constructor先关闭并排空state，再best-effort `dispose` backend，释放local handle/backend ownership并返回`BleHubError`。application拿不到半初始化Hub。
+7. close先把state切到`Closed`并排空，再dispose并释放backend；dispose中或之后的迟到callback要么看到closed phase，要么在Hub/state释放后因`Weak` upgrade失败而返回`Closed`。
 
-理想方案是 constructor 创建只含 `Weak<EventIngressState>` 的 `BackendEventIngressHandle` 并直接调用 `backend.bind_event_ingress(handle)`，从而删除 token registry。当前 BoltFFI `0.30.1` 无法生成 foreign trait method 的 exported Rust class-handle 参数，证据为 `spikes/boltffi-class-handle-callback-param/` 与上游 [issue #869](https://github.com/boltffi/boltffi/issues/869)。因此 v0.1 明确采用 token workaround；不使用 raw pointer、不会把 `Arc` 地址编码成整数，也不恢复 builder。
+Stable UniFFI `0.32.0`的representative direct-object fixture已经在Android ART/AAR与Apple Swift/XCFramework/SPM验证框架机制；production candidate进一步在Windows Kotlin/JVM、Windows Swift、Android 16 arm64真机与x86_64模拟器验证最终`Weak<EventIngressState> -> Rust BleEventSink`对象图、binding phase、constructor rollback、backend dispose主动释放root handle、close drain、Rust downstream panic containment和10,000次lifecycle。真实macOS production candidate与最终Apple package、完整event wire和性能/package gate仍未完成。BoltFFI #869/#872和token-ACK只作为历史比较证据，不进入production contract。
 
 平台 callback 到达时：
 
 1. backend 用自己的 native handle/correlation state 构造最终统一 `BleEvent`。event 由关联字段和 public FFI-safe payload 组成：既可携带 caller-owned IDs/backend opaque handles，也可携带 advertisement 数据、adapter/connection 状态、GATT hierarchy、characteristic/notification bytes、RSSI 和统一错误等公共 DTO。禁止跨边界的是 WinRT/`BluetoothGatt`/`CBPeripheral`/D-Bus proxy 等 native object，以及只对 backend 有意义的 private key/token。诊断和 ingress delivery failure 使用 out-of-band structured tracing，不占用 public `BleEvent` variant。
-2. backend 调用 `push_backend_event(token, event)`。
-3. exported function从`ArcSwap<HashMap<...>>` immutable snapshot中lock-free查找token并clone对应`Weak<EventIngressState>`，在upgrade或调用state前释放snapshot guard。token不存在、已注销或weak upgrade失败时返回`Closed`；成功后通过state的downstream mutex串行化同一hub的delivery attempt，并校验唯一variant/body、ID/wire value和size guard。它不做ID映射、stale/duplicate判断或状态归约。
-4. state 在当前 callback 线程同步调用 `BleEventSink::on_event(event)`。
-5. downstream sink 只按调用方策略把事件接纳到 Rust channel、actor 或 runtime，然后尽快返回 typed `Result`。
+2. backend调用retained `BackendEventIngressHandle::push(event)`。
+3. handle upgrade其`Weak<EventIngressState>`；upgrade失败返回`Closed`，成功后通过state的ingress mutex原子检查phase并串行化同一hub的delivery attempt，再校验唯一variant/body、ID/wire value和size guard。它不做ID映射、stale/duplicate判断或状态归约。
+4. state在当前callback线程同步调用`BleEventSink::on_event(event)`。
+5. downstream sink只按调用方策略把事件接纳到Rust channel、actor或runtime，然后尽快返回typed `Result`。
 
 `Delivered`只表示`on_event`返回`Ok(())`，不表示downstream业务已处理。`InvalidEvent`/`DownstreamFailed`消费当前attempt：backend记录诊断但不得解析message、重试同一event或把它当BLE failure；它仍提交terminal/correlation cleanup并继续后续event，只有`Closed`才停止push。`BleEventSink` contract要求实现不得panic，所有预期失败走typed `Result`。Kotlin/Swift exception边界在foreign backend method与exported ingress wrapper，`downstream.on_event`本身不跨FFI。
 
 ### 4.3 并发、同步 callback 与 close
 
-BleHub 每实例只需要两个互不嵌套的 lifecycle/delivery 同步边界和一个原子标记。v0.1 token workaround 另有 process-local immutable registry snapshot：event lookup 通过 `ArcSwap` lock-free load，不增加 per-event 全局 mutex；极少发生的 insert/remove 使用 RCU 复制小表并原子替换：
+BleHub每实例只需要两个互不嵌套的lifecycle/delivery同步边界。Direct handle只做一次`Weak` upgrade，不存在process-local registry、全局锁或RCU write：
 
 | 机制 | 保护什么 | 不保护什么 |
 |---|---|---|
-| command/close gate | backend ownership；command 使用 shared guard，close 使用 exclusive guard | 不保存 command table，不参与 event ingress |
-| `EventIngressState.downstream` mutex | `Option<Box<dyn BleEventSink>>` ownership、串行 `validation -> on_event`、close 排空 in-flight delivery | 不等待 downstream 业务处理，不保护 BLE protocol state，不拥有 downstream queue |
-| closed flag | 单向标记 ingress lifecycle；供 `push` 在加锁前后检查 | 不是 mutex，不是 event tag，不单独提供 in-flight drain 保证 |
-| process-local registry snapshot | v0.1 `token -> Weak` immutable map；lookup lock-free，insert/remove 用 RCU replacement | snapshot guard 不跨 `Weak` upgrade、validation、sink call 或 close；不保存 BLE state |
+| command/close gate | backend ownership；command使用shared guard，close使用exclusive guard | 不保存command table，不参与event ingress |
+| `EventIngressState.inner` mutex | `Binding | Active | Closed` phase、bind期间push违约标记、`Option<Box<dyn BleEventSink>>` ownership、串行`validation -> on_event`、close排空in-flight delivery | 不等待downstream业务处理，不保护BLE protocol state，不拥有downstream queue |
 
-close 在持有 exclusive command/close gate 后，先把 closed flag 置为 `true`，再取得 downstream mutex。该锁会等待已经进入的 `on_event` 返回；随后 close `take()` 并释放 downstream sink，再 dispose backend，最后注销 token entry。新 `push` 要么查到 state 后看到 closed，要么在注销后查不到 token，因此不会在 close 排空后开始新的 delivery。snapshot lookup 与 RCU unregister 的竞争只决定 callback 从哪条路径返回 `Closed`。
+state初始为`Binding`。backend bind期间的任何`push`只记录违约并返回`Closed`，不进入sink；bind返回`Ok`后只有未发生该违约时才能原子切换为`Active`，否则constructor close/drain、dispose backend并返回`FfiContract`。close在持有exclusive command/close gate后取得ingress mutex；该锁会等待已经进入的`on_event`返回，然后close把phase改为`Closed`、`take()`并释放downstream sink，再dispose并释放backend。后续`push`要么upgrade到state后观察`Closed`，要么在Hub/state释放后upgrade失败，因此不会在close排空后开始新的delivery。
 
 由此得到以下约束：
 
 - backend 可以在 command method 返回前同步 `push`；ingress 不获取 command/close gate，因此不会因这条路径自锁。
 - event 可能先于公共 method 的 `Ok(())` 到达 downstream。request/event 必须自带完整关联 ID；backend 一旦为该 command 发出任何事件，就不得再返回 `Err`。
-- downstream `on_event` 在 `EventIngressState.downstream` mutex 的 delivery 临界区内被调用，所以只能快速 dispatch，不能同步重入同一个 `BleHub`；后续命令必须在 downstream 自己的执行位置发出。
-- close 先阻止新 command，将 ingress 标记为 closed，排空已经进入的 callback并释放 downstream sink，再 dispose/release backend、注销 token entry；`close()` 返回后没有活跃或可新开始的 downstream callback。晚到 callback 因 closed state、missing token 或 weak upgrade failure 返回 `Closed`。
+- downstream `on_event`在`EventIngressState.inner` mutex的delivery临界区内被调用，所以只能快速dispatch，不能同步重入同一个`BleHub`；后续命令必须在downstream自己的执行位置发出。
+- close先阻止新command，在ingress mutex下把phase切换为`Closed`、排空已经进入的callback并释放downstream sink，再dispose/release backend；`close()`返回后没有活跃或可新开始的downstream callback。晚到callback因closed phase或weak upgrade failure返回`Closed`。
 - BleHub 没有 protocol state lock、线程、mailbox、pump 或 executor。callback 从哪个线程进入，`on_event` 就在哪个线程被同步调用；业务线程由 downstream 决定。
 
 详细 ownership graph、linearization point、竞态矩阵、备选方案与 Phase 0 验证方法见 [`docs/research/ffi-lifecycle-concurrency.md`](../docs/research/ffi-lifecycle-concurrency.md)。该调研记录证据与推荐，不替代本 Plan 的已审决策。
@@ -332,28 +331,25 @@ close 在持有 exclusive command/close gate 后，先把 closed flag 置为 `tr
 ```rust
 pub struct BleHub {
     // 同时是 backend ownership slot 和 command/close gate。
-    backend: RwLock<Option<Box<dyn BleBackend>>>,
+    backend: RwLock<Option<Arc<dyn BleBackend>>>,
     // Constructor 从 inert backend 读取并校验一次，之后不再跨 FFI 查询。
     capabilities: BackendCapabilities,
     ingress: Arc<EventIngressState>,
-    // BoltFFI #869 修复并迁移到 direct handle 后删除。
-    ingress_registration: BackendEventIngressRegistration,
 }
 ```
 
-`BleHub` 不再另设一份 closed flag：command path 在 backend slot 中观察 `None`，event path 观察 `EventIngressState.closed`。字段声明顺序不承担 lifecycle 协议；显式 `dispose/close` 和 Rust `Drop` fallback 必须走 8.12 的同一幂等关闭逻辑。
+`BleHub`不再另设一份closed flag：command path在backend slot中观察`None`，event path在`EventIngressState.inner` mutex下观察`Binding | Active | Closed` phase。字段声明顺序不承担lifecycle协议；显式`dispose/close`和Rust `Drop` fallback必须走8.12的同一幂等关闭逻辑。
 
 **拥有：**
 
-- 一个 `Box<dyn BleBackend>`；
+- 一个`Arc<dyn BleBackend>`；Rust backend与UniFFI foreign backend使用同一ownership shape；
 - constructor从backend读取并校验后缓存的一份`BackendCapabilities`静态metadata；
-- 强引用 `Arc<EventIngressState>`；state 内含 closed flag 和 `Mutex<Option<Box<dyn BleEventSink>>>`；
-- v0.1 ingress token 的私有 `BackendEventIngressRegistration` RAII guard；
-- command/close gate 和 backend ownership。
+- 强引用`Arc<EventIngressState>`；state以单个mutex原子保护ingress phase、bind-push违约标记和`Option<Box<dyn BleEventSink>>`；
+- command/close gate和backend ownership。
 
 **负责：**
 
-- 在 `BleHub::new` 内从inert backend读取并校验静态capabilities，再创建`EventIngressState`、分配ingress token、一次性绑定backend并注册`token -> Weak<EventIngressState>`，只在全部assembly步骤成功后向application返回完整Hub；
+- 在`BleHub::new`内从inert backend读取并校验静态capabilities，再创建`EventIngressState`和只持其`Weak`的`BackendEventIngressHandle`，一次性绑定backend，只在bind成功后向application返回完整Hub；
 - 同步接收 command，只执行context-free wire/shape/hard-limit校验和command/close gate检查，再原样转发caller-owned IDs与backend dispatch `Result`；
 - 按 4.2 将 ingress event 交给 downstream sink；
 - 执行幂等 close，并切断后续 event delivery。
@@ -362,18 +358,21 @@ pub struct BleHub {
 
 ### 5.2 `BleBackend`
 
-**输入：**`BleHub` 转发的 FFI-safe command，以及装配阶段交付的 opaque `BackendEventIngressToken`。
+**输入：**`BleHub`转发的FFI-safe command，以及装配阶段交付的`Arc<BackendEventIngressHandle>`。
 
 **负责：**
 
 - 按平台线程模型投递 command，并准确返回即时 accepted/rejected；
 - 管理 native BLE object、callback token、串行 GATT operation 和最小 callback correlation；
-- 把平台 callback 转为最终 `BleEvent`，回显 caller-owned IDs，再通过 `push_backend_event(token, event)` 上送；
-- 按 lifecycle/session 回收平台资源并通过共享 conformance contract。
+- 把平台callback转为最终`BleEvent`，回显caller-owned IDs，再通过retained `BackendEventIngressHandle::push(event)`上送；
+- 按 lifecycle/session 回收平台资源并通过共享 conformance contract；
+- `dispose()`在返回前（包括cleanup error路径）必须先永久标记backend closed、detach/invalidate native callbacks与correlation，再原子取走backend保存的root `BackendEventIngressHandle`，显式释放Kotlin generated wrapper或Swift strong reference，然后继续其余best-effort cleanup；不得恢复ingress或callback delivery。已排队/在途closure可以暂时保留自己的handle并安全收到`Closed`。
 
 **不得：**直接调用 downstream `BleEventSink`、让 native object 跨公共边界、把平台状态复制成 BleHub canonical registry，或依赖 BleHub 修正 backend 发出的跨事件语义。
 
-accepted transaction不整体上提到BleHub：correlation登记、cleanup ownership、native handle lookup和平台执行位置提交必须在同一个backend串行边界内完成，否则core与backend会各保存一份pending状态，却仍无法原子覆盖native queue/callback注册。accepted线性化点前任一步失败时，backend必须撤销已经建立的callback source、correlation、queue entry和cleanup owner，再返回`Err`；不得留下稍后emit的路径。accepted后任何native失败都只走event。BleHub只统一无状态validation、close gate和trait转发；accepted/rejected、terminal attempt和cleanup不变量由公共contract与共享conformance tests固定。Rust backend可以复用crate-private dispatch helper，Kotlin/Swift backend也可以各自封装同构helper，但helper不得成为第二套public状态机或改变线性化点。
+Rust实现的backend不得panic；BleHub不对backend trait call使用项目级`catch_unwind`，也不把Rust panic降级成`BleHubError`/`CommandDispatchError` fallback。Kotlin/Swift声明内及未声明exception由Stable UniFFI callback error channel转换为对应typed `Result`；Rust panic若到达exported UniFFI scaffolding只能按framework的ABI containment处理，仍是阻塞gate的实现bug，不具有可恢复语义。该决策不影响`BackendEventIngressHandle::push`对Rust downstream sink panic的专用containment，因为后者必须同步向foreign backend返回`EventIngressStatus`并保护ABI。
+
+accepted transaction不整体上提到BleHub：correlation登记、cleanup ownership、native handle lookup和平台执行位置提交必须在同一个backend串行边界内完成，否则core与backend会各保存一份pending状态，却仍无法原子覆盖native queue/callback注册。accepted线性化点前任一步失败时，backend必须撤销已经建立的callback source、correlation、queue entry和cleanup owner，再返回`Err`；不得留下稍后emit的路径。accepted后任何native失败都只走event。BleHub只统一无状态validation、close gate和trait转发；所有command通过同一个crate-private `dispatch_to_backend`持有command-gate read guard直到trait call返回，避免重复poison/closed映射并保证dispose的write guard不能在dispatch中途移除backend。accepted/rejected、terminal attempt和cleanup不变量由公共contract与共享conformance tests固定。Rust backend可以复用crate-private dispatch helper，Kotlin/Swift backend也可以各自封装同构helper，但helper不得成为第二套public状态机或改变线性化点。
 
 backend-private 状态及释放边界：
 
@@ -394,17 +393,37 @@ Android callback 不直接携带 caller `CommandId`，WinRT/CoreBluetooth/BlueZ 
 
 所有disconnect、GATT session replacement、subscription cleanup和backend dispose路径都先停止/解除本owner的callback delivery并使pending correlation失效，再best-effort停止notification/native operation，释放child GATT handle，最后释放parent connection/device/manager。任一步native teardown失败只形成typed cleanup result或structured diagnostic，不恢复callback delivery，也不跳过后续可安全释放的ownership。
 
-### 5.3 `EventIngressState`、token 与 registry
+### 5.3 `EventIngressState` 与 direct ingress handle
 
-v0.1 保留同一个最小私有 state，但因 BoltFFI #869 使用 opaque data token 和 process-local routing registry：
+v0.1保留最小私有state，并通过Stable UniFFI exported object直接把只含`Weak`的handle交给backend：
 
 ```rust
-struct EventIngressState {
-    closed: AtomicBool,
-    downstream: Mutex<Option<Box<dyn BleEventSink>>>,
+enum EventIngressPhase {
+    Binding { push_attempted: bool },
+    Active,
+    Closed,
 }
 
-#[boltffi::data]
+#[derive(Debug, thiserror::Error)]
+enum EventIngressActivationError {
+    #[error("backend attempted to push an event while binding ingress")]
+    PushAttemptedDuringBind,
+    #[error("event ingress is already active")]
+    AlreadyActive,
+    #[error("event ingress is closed")]
+    Closed,
+}
+
+struct EventIngressInner {
+    phase: EventIngressPhase,
+    downstream: Option<Box<dyn BleEventSink>>,
+}
+
+struct EventIngressState {
+    inner: Mutex<EventIngressInner>,
+}
+
+#[derive(uniffi::Enum)]
 pub enum EventIngressStatus {
     Delivered,
     Closed,
@@ -413,13 +432,31 @@ pub enum EventIngressStatus {
 }
 
 impl EventIngressState {
-    fn push(&self, event: BleEvent) -> EventIngressStatus {
-        if self.closed.load(Ordering::Acquire) {
-            return EventIngressStatus::Closed;
+    fn activate(&self) -> Result<(), EventIngressActivationError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match inner.phase {
+            EventIngressPhase::Binding {
+                push_attempted: false,
+            } => {
+                inner.phase = EventIngressPhase::Active;
+                Ok(())
+            }
+            EventIngressPhase::Binding {
+                push_attempted: true,
+            } => Err(EventIngressActivationError::PushAttemptedDuringBind),
+            EventIngressPhase::Active => {
+                Err(EventIngressActivationError::AlreadyActive)
+            }
+            EventIngressPhase::Closed => Err(EventIngressActivationError::Closed),
         }
+    }
 
-        let downstream = match self.downstream.lock() {
-            Ok(downstream) => downstream,
+    fn push(&self, event: BleEvent) -> EventIngressStatus {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
             Err(error) => {
                 return EventIngressStatus::DownstreamFailed {
                     message: error.to_string(),
@@ -427,12 +464,16 @@ impl EventIngressState {
             }
         };
 
-        // close may have started while this push was waiting for the mutex.
-        if self.closed.load(Ordering::Acquire) {
-            return EventIngressStatus::Closed;
+        match &mut inner.phase {
+            EventIngressPhase::Binding { push_attempted } => {
+                *push_attempted = true;
+                return EventIngressStatus::Closed;
+            }
+            EventIngressPhase::Closed => return EventIngressStatus::Closed,
+            EventIngressPhase::Active => {}
         }
 
-        let Some(downstream) = downstream.as_deref() else {
+        let Some(downstream) = inner.downstream.as_deref() else {
             return EventIngressStatus::Closed;
         };
 
@@ -442,100 +483,51 @@ impl EventIngressState {
             };
         }
 
-        match downstream.on_event(event) {
-            Ok(()) => EventIngressStatus::Delivered,
-            Err(error) => EventIngressStatus::DownstreamFailed {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            downstream.on_event(event)
+        })) {
+            Ok(Ok(())) => EventIngressStatus::Delivered,
+            Ok(Err(error)) => EventIngressStatus::DownstreamFailed {
                 message: error.to_string(),
             },
+            Err(_) => {
+                trace_downstream_panic();
+                EventIngressStatus::DownstreamFailed {
+                    message: "downstream panicked while handling an event".into(),
+                }
+            }
         }
     }
-}
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct BackendEventIngressToken {
-    pub value: u64,
-}
-
-type EventIngressRegistrySnapshot =
-    HashMap<u64, Weak<EventIngressState>>;
-
-struct BackendEventIngressRegistry {
-    next_token: AtomicU64,
-    entries: ArcSwap<EventIngressRegistrySnapshot>,
-}
-
-impl BackendEventIngressRegistry {
-    fn allocate_token(&self) -> Result<BackendEventIngressToken, BleHubError>;
-
-    fn register(
-        self: &Arc<Self>,
-        token: BackendEventIngressToken,
-        state: Weak<EventIngressState>,
-    ) -> Result<BackendEventIngressRegistration, BleHubError>;
-
-    fn lookup(
-        &self,
-        token: BackendEventIngressToken,
-    ) -> Option<Weak<EventIngressState>> {
-        self.entries.load().get(&token.value).cloned()
-    }
-
-    fn unregister(&self, token: BackendEventIngressToken);
-}
-
-// register/unregister use ArcSwap::rcu to clone the small immutable
-// snapshot, insert/remove one entry, and atomically replace it.
-
-struct BackendEventIngressRegistration {
-    registry: Arc<BackendEventIngressRegistry>,
-    token: BackendEventIngressToken,
-    registered: AtomicBool,
-}
-
-impl BackendEventIngressRegistration {
-    fn unregister(&self) {
-        if self.registered.swap(false, Ordering::AcqRel) {
-            self.registry.unregister(self.token);
-        }
+    /// Waits for any admitted delivery and releases the sink before returning.
+    fn close(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.phase = EventIngressPhase::Closed;
+        inner.downstream.take();
     }
 }
 
-impl Drop for BackendEventIngressRegistration {
-    fn drop(&mut self) {
-        self.unregister();
+#[derive(uniffi::Object)]
+pub struct BackendEventIngressHandle {
+    state: Weak<EventIngressState>,
+}
+
+impl BackendEventIngressHandle {
+    fn new(state: Weak<EventIngressState>) -> Self {
+        Self { state }
     }
 }
 
-static BACKEND_EVENT_INGRESS_REGISTRY: LazyLock<
-    Arc<BackendEventIngressRegistry>,
-> = LazyLock::new(|| Arc::new(BackendEventIngressRegistry::new()));
-
-fn global_backend_event_ingress_registry() -> &'static Arc<BackendEventIngressRegistry> {
-    &BACKEND_EVENT_INGRESS_REGISTRY
-}
-
-fn push_backend_event_with_registry(
-    registry: &BackendEventIngressRegistry,
-    token: BackendEventIngressToken,
-    event: BleEvent,
-) -> EventIngressStatus {
-    let Some(state) = registry.lookup(token).and_then(|state| state.upgrade()) else {
-        return EventIngressStatus::Closed;
-    };
-    state.push(event)
-}
-
-#[boltffi::export]
-pub fn push_backend_event(
-    token: BackendEventIngressToken,
-    event: BleEvent,
-) -> EventIngressStatus {
-    push_backend_event_with_registry(
-        global_backend_event_ingress_registry().as_ref(),
-        token,
-        event,
-    )
+#[uniffi::export]
+impl BackendEventIngressHandle {
+    pub fn push(&self, event: BleEvent) -> EventIngressStatus {
+        self.state
+            .upgrade()
+            .map_or(EventIngressStatus::Closed, |state| state.push(event))
+    }
 }
 ```
 
@@ -545,37 +537,34 @@ ownership 链：
 downstream creates Box<dyn BleEventSink>
 -> BleHub owns Arc<EventIngressState>
 -> EventIngressState owns downstream sink
--> BleHub owns BackendEventIngressRegistration
--> process-local registry entry owns only Weak<EventIngressState>
--> backend owns only opaque BackendEventIngressToken
+-> BleHub owns Arc<dyn BleBackend>
+-> backend retains Arc<BackendEventIngressHandle>
+-> BackendEventIngressHandle owns only Weak<EventIngressState>
 ```
 
-`Mutex<Option<Box<dyn BleEventSink>>>`有三个明确用途：串行化同一hub的`on_event`、让close等待in-flight delivery返回、让close通过`take()`确定性释放downstream。它不是额外trait abstraction。data enum路径的`BleEvent::validate_shape`只校验ID/wire value/size；tagged-record fallback再校验唯一tag/body。`downstream.on_event(event)`是普通Rust trait调用，所有可预期失败由typed `Result`表达；它不得panic。通用Rust panic containment属于最外层generated/manual FFI trampoline，不属于event delivery算法，也不能把panic解释为普通downstream rejection。
+`Mutex<EventIngressInner>`有四个明确用途：在bind完成前阻止sink delivery并记录过早push、串行化同一hub的`on_event`、让close等待in-flight delivery返回、让close通过`take()`确定性释放downstream。它不是额外trait abstraction。data enum路径的`BleEvent::validate_shape`只校验ID/wire value/size；tagged-record fallback再校验唯一tag/body。`downstream.on_event(event)`是普通Rust trait调用，所有可预期失败由typed `Result`表达；它不得panic。项目代码唯一的显式panic guard只包围这次sink调用：sink panic仍是contract violation，先通过out-of-band structured trace与普通sink rejection区分，再向foreign backend返回`DownstreamFailed`，同时不poison ingress mutex；不得扩大guard去吞掉或误标内部ingress bug。UniFFI generated scaffolding只作其他意外panic不跨ABI的defense-in-depth。
 
 - `Delivered`：同步 `downstream.on_event` 返回 `Ok(())`；表示 sink 已按自己的策略接纳，不表示 downstream 业务已处理事件。
-- `Closed`：token 未注册/已注销、weak upgrade 失败、closed flag 已置位或 downstream 已被 close 取走；未知或迟到 token 安全 no-op。
+- `Closed`：weak upgrade失败、state仍处于`Binding`、phase已变为`Closed`或downstream已被close取走；bind期间push会额外记录违约并阻止constructor activation，迟到handle安全no-op。
 - `InvalidEvent { message }`：variant/body、ID、wire value或size guard非法，属于backend contract violation；当前attempt被消费，message不能用于stale/duplicate判断。
-- `DownstreamFailed { message }`：downstream返回`Err(EventSinkError)`、mutex poison/failure，或最外层FFI trampoline containment了downstream panic；当前attempt被消费且不重试，backend照常清理correlation并继续后续event。message必须有长度限制且只供structured diagnostic，不是稳定机器协议。panic仍是downstream contract violation，不是`EventSinkError`；out-of-band trace必须把它与普通sink rejection区分。若BoltFFI generated trampoline不能在不让panic越过ABI的前提下返回该status，使用最小manual no-unwind wrapper；Phase 0必须证明实际生成行为。`close_and_drain`必须恢复poisoned downstream mutex、`take()`并释放sink，然后继续其余cleanup。
-- token是opaque routing identifier，不是地址、Rust pointer、native object ID、认证credential或不受信任plugin隔离边界；`0`无效，分配器溢出时constructor失败而不是wrap。token在同一进程生命周期内永不复用，防止stale callback路由到后来创建的Hub。
-- `BackendEventIngressRegistry` 封装 token allocator、`ArcSwap` entries 和 `register/lookup/unregister`。private `LazyLock<Arc<...>>` 是 production FFI 唯一实例，`global_backend_event_ingress_registry()` 隔离 static access；不得在运行时替换该全局实例。
-- exported `push_backend_event` 只把全局 registry 传给 private `push_backend_event_with_registry`。pure Rust tests 直接构造独立 registry并调用 helper；Hub assembly tests 调 private `BleHub::new_with_registry`，避免并行测试共享/替换全局状态。
-- registry 是 crate/process 级 FFI 基础设施，但 entry 生命周期由对应 Hub 的私有 `BackendEventIngressRegistration` RAII guard 管理；它只保存 `Weak`，不会延长 Hub/downstream 生命周期。guard 由 `BackendEventIngressRegistry::register` 创建、存入 Hub，explicit close 调 `unregister()`，`Drop` 幂等兜底。`register`必须failure-atomic：返回`Err`时不存在该token entry、不返回registration ownership，也不留下需要constructor额外回收的registry资源。
-- `ArcSwap` lookup 只在 immutable snapshot guard 下 clone `Weak`；snapshot guard 不跨 upgrade、validation、sink call 或 close。register/unregister 是极低频 RCU write，复制 O(active Hub) 小表。
-- bind 成功后先注册 entry 再返回 Hub；close 在 closed/drain 和 backend dispose 之后注销 entry。未注册、已注销和 stale token 都返回 `Closed`，backend 不得自动重试。
-- 旧 Kotlin/JVM builder spike 只部分验证了 exported class wrapper 的 Weak ownership、Rust/JVM 跨线程调用、clone/free 和 close race；v0.1 token registry 对象图必须由新的 Kotlin/JVM 与 Swift spike 验证。
-- `push_backend_event` 不调用 reducer，不判断 stale/duplicate，也不拥有 queue。
+- `DownstreamFailed { message }`：downstream返回`Err(EventSinkError)`、ingress mutex poison/failure，或最外层FFI trampoline containment了downstream panic；当前attempt被消费且不重试，backend照常清理correlation并继续后续event。message必须有长度限制且只供structured diagnostic，不是稳定机器协议。panic仍是downstream contract violation，不是`EventSinkError`；out-of-band trace必须把它与普通sink rejection区分。Stable UniFFI scaffolding与最外层Rust实现必须共同保证panic不越过ABI；Phase 0以真实生成binding/runtime验证。`close`必须恢复poisoned ingress mutex、等待已接纳的delivery返回、切换`Closed`、`take()`并释放sink，然后继续其余cleanup。
+- `BackendEventIngressHandle`是同进程可信backend使用的capability object，不是native object ID、认证credential或不受信任plugin sandbox。它只暴露`push`，不暴露state或downstream。
+- `EventIngressState`不实现自定义`Drop`：in-flight `push`持有upgrade所得临时强`Arc`，所以state只能在这些调用返回后析构；strong count归零后所有晚到handle都无法upgrade，字段析构也会自动释放sink。逻辑关闭与`ingress close -> backend dispose`顺序仍由`BleHub::dispose`显式执行，并由`BleHub::Drop`调用同一路径兜底，不能推迟到state析构。
+- handle只持`Weak<EventIngressState>`；backend或迟到native callback持有handle不会延长Hub/downstream生命周期，也不会形成强引用环。Hub存在但closed时返回`Closed`；Hub/state已释放时`Weak` upgrade失败并返回`Closed`。
+- bind成功必须由backend retain唯一handle并保持inert，随后Rust constructor调用`activate()`；bind期间任何push返回`Closed`且使activation失败。bind `Err`按contract不得retain，但rollback仍必须处理恶意/错误backend先retain再返回`Err`的路径。repeated bind、bind rollback、backend release、handle create/drop counters、跨线程push、close drain和late callback由shared runtime tests固定。
+- direct handle没有process-global mutable state、token allocator、registry registration failure或unregister race；pure Rust tests可直接构造state/handle，不需要替换global。
+- `BackendEventIngressHandle::push`不调用reducer，不判断stale/duplicate，也不拥有queue。
 
 ### 5.4 Thin bridge state
 
 BleHub 仅保留：
 
-- `Box<dyn BleBackend>` ownership。
+- `Arc<dyn BleBackend>` ownership。
 - constructor校验后缓存的`BackendCapabilities`静态metadata。
-- `Arc<EventIngressState>` ownership；state 内部持有 closed flag 和可在 close 时取走的 downstream sink。
-- 一个私有 `BackendEventIngressRegistration` RAII guard，负责在 explicit close 或 Drop 时幂等注销本 Hub 的 `token -> Weak<EventIngressState>` entry。
-- command/close synchronization gate，防止本地 `close()` 与正在下发的同步 backend method 发生资源释放竞争；它不序列化所有 BLE command，也不保存 command 数据。
+- `Arc<EventIngressState>` ownership；state内部以单个mutex持有phase、bind-push违约标记和可在close时取走的downstream sink。
+- command/close synchronization gate，防止本地`close()`与正在下发的同步backend method发生资源释放竞争；它不序列化所有BLE command，也不保存command数据。
 
-backend 只持有 opaque token，registry entry 只持有 `Weak<EventIngressState>`；因此 backend、stale token 或晚到 callback 不会延长 Hub/downstream 生命周期。state 的 downstream mutex 同时负责串行 delivery 与 close drain，不再增加 bridge trait 或另一把 delivery lock。registry 使用 `ArcSwap` immutable snapshot；read path lock-free，snapshot guard 在进入 state 前释放，RCU write 只发生在 Hub 构造/关闭。
+backend retain的`BackendEventIngressHandle`只持有`Weak<EventIngressState>`；因此backend或晚到callback不会延长Hub/downstream生命周期。state的ingress mutex同时负责binding activation、串行delivery与close drain，不再增加closed atomic、bridge trait、另一把delivery lock或process-global registry。
 
 BleHub 明确不保留：
 
@@ -593,8 +582,8 @@ BleHub 明确不保留：
 ### 5.5 Downstream event sink
 
 ```rust
-#[derive(Debug, derive_more::Display, derive_more::Error)]
-#[display("downstream rejected the event: {message}")]
+#[derive(Debug, thiserror::Error)]
+#[error("downstream rejected the event: {message}")]
 pub struct EventSinkError {
     pub message: String,
 }
@@ -604,10 +593,10 @@ pub trait BleEventSink: Send + Sync {
 }
 ```
 
-- sink trait object 由 Rust application 实现并传给 `BleHub::new`；它保留 `Send + Sync`，因为 callback 虽由 state 的 downstream mutex 串行，但调用线程可能来自 WinRT/JVM/Swift/BlueZ callback context。
-- `BleEventSink` 是普通 Rust trait，不使用 `#[boltffi::export]`；v0.1 Kotlin/Swift backend 只能调用 exported `push_backend_event(token, event)`，未来 direct-handle backend 只能调用 exported `BackendEventIngressHandle`，两者都不能实现或持有 downstream sink。BleHub 不提供 native application consumer API 或 native sink adapter；若下游项目需要向 Kotlin/Swift 暴露事件，由该项目在 BleHub 之外自行使用 BoltFFI 或其他 FFI 包装其 Rust application/sink，额外边界不属于 BleHub contract。
+- sink trait object由Rust application实现并传给`BleHub::new`；它保留`Send + Sync`，因为callback虽由state的ingress mutex串行，但调用线程可能来自WinRT/JVM/Swift/BlueZ callback context。
+- `BleEventSink`是普通Rust trait，不使用`#[uniffi::export]`；Kotlin/Swift backend只能调用exported `BackendEventIngressHandle`，不能实现或持有downstream sink。BleHub不提供native application consumer API或native sink adapter；若下游项目需要向Kotlin/Swift暴露事件，由该项目在BleHub之外自行使用UniFFI或其他FFI包装其Rust application/sink，额外边界不属于BleHub contract。
 - BleHub 不保存 public event queue，不提供 pump/stream，也不决定 backpressure policy。
-- `on_event` 可从平台 callback thread 进入 Rust 后被同步调用；`EventIngressState.downstream` mutex 保证同一 hub 的 event callback 串行；下游可在自己的 queue 中编号。
+- `on_event`可从平台callback thread进入Rust后被同步调用；`EventIngressState.inner` mutex保证同一hub的event callback串行；下游可在自己的queue中编号。
 - sink 实现必须快速 dispatch 并返回，不执行长业务逻辑，不同步重入 BleHub，并且不得 panic；所有可预期失败必须返回 `Err(EventSinkError)`。
 - `Ok(())`表示sink已按自身queue/drop/coalesce策略接纳该delivery attempt；`Err(EventSinkError)`表示未接纳。BleHub返回`DownstreamFailed { message }`；当前attempt不重试，backend继续后续event并照常清理terminal/correlation，只有`Closed`停止push。
 - `EventSinkError.message` 和 ingress status message 都只是简短 UTF-8 diagnostic，不是稳定错误码，不得包含 secret，也不得由 backend 解析成控制流；结构化分类由 `EventIngressStatus` variant 提供。
@@ -618,7 +607,7 @@ pub trait BleEventSink: Send + Sync {
 
 ## 6. 公共契约数据结构
 
-6.1–6.16只列会进入command/event/error/capability ABI的production DTO；不为downstream materialized state定义public`*Record`。6.17单独给出非API projection示例。准确derive、BoltFFI attribute和字段类型在实现时按生成器限制调整。
+6.1–6.16只列会进入command/event/error/capability ABI的production DTO；不为downstream materialized state定义public`*Record`。6.17单独给出非API projection示例。准确derive、UniFFI attribute和字段类型在实现时按生成器限制调整。
 
 ### 6.1 ID 与作用域
 
@@ -659,7 +648,7 @@ ID 所有权：
 - backend 生成的 discovery ID 是 FFI-safe opaque handle，不是 MAC、native pointer 或平台对象。
 - `PeripheralId` 不承诺跨 backend restart、应用重启或重新安装稳定。
 - backend 私有 map 负责 `PeripheralId/GATT ID -> native object`；WinRT device ID、Android address/object、CoreBluetooth UUID/object 和 BlueZ object path 不跨公共边界。
-- typed `u64` 是首版 wire shape；如 BoltFFI 目标语言生成质量要求调整，可改为 data record/string token，但所有权语义不变。
+- typed `u64`是首版wire shape；如UniFFI目标语言生成质量要求调整，可改为record/string token，但所有权语义不变。
 
 ### 6.2 Caller-owned command envelope
 
@@ -745,16 +734,20 @@ pub struct ReadRssiCommand {
 }
 ```
 
+不定义携带上述DTO的公共`BleCommand` data enum，也不把backend收缩成单个`dispatch(BleCommand)`。统一payload enum只会把typed method的重复转移到每个平台的exhaustive match，并暗示BleHub拥有queue/mailbox/command bus；这些都不属于薄core。各command保留独立record和独立typed backend method；无payload的`CommandKind`只用于事件、测试、diagnostic与conformance分类。
+
+每个command DTO在Rust core内提供crate-private `validate(&self) -> Result<(), CommandDispatchError>`，负责ID、wire value、payload size及字段组合等纯shape校验，不访问backend或平台状态；校验失败直接返回现有`CommandDispatchError::InvalidRequest`，不再增加只有单一消费者的中间validation error类型或重复variant。非法command必须在获取backend command gate和进入foreign trait前被拒绝。随着Phase 1补齐DTO，校验跟随对应record定义放在`contract/commands.rs`，不得在每个Hub delegation或平台backend中复制一套基础wire校验。
+
 `NotificationModeRequest::PlatformDefault` 允许平台按 characteristic capability和自身 API选择；成功事件在 backend 能证明时返回 `actual_mode=Some(...)`，BlueZ 等不能证明时为 `None`。`RequireNotification`/`RequireIndication` 是严格要求：backend 只有能证明满足时才可成功，否则 terminal `NotSupported`，不得静默替换。disable 只通过原 `SubscriptionId` 识别已建立的 subscription，不要求 caller 重复 mode；disable成功事件固定使用`NotificationState::Disabled`，类型上不携带`actual_mode`。`NotificationAction` 是概念语义 shape，其 complex enum生成必须在 Phase 0 验证；必要时降为无重复真值的 tagged record。平台证据见 [`docs/research/cross-platform-command-event-contract.md`](../docs/research/cross-platform-command-event-contract.md#49-setnotifications)。
 
 概念上的 backend trait：
 
 ```rust
-#[boltffi::export]
+#[uniffi::export(foreign)]
 pub trait BleBackend: Send + Sync {
     fn bind_event_ingress(
         &self,
-        token: BackendEventIngressToken,
+        ingress: Arc<BackendEventIngressHandle>,
     ) -> Result<(), BleHubError>;
     fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
     fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
@@ -775,9 +768,9 @@ pub trait BleBackend: Send + Sync {
 
 - backend 必须以 inert 状态构造：没有 ingress，不启动 BLE 工作，不注册会产生 domain event 的 callback，也不接受 command。
 - `capabilities`是constructor在bind前调用一次的side-effect-free assembly query，不是BLE command：无`CommandId`、不创建callback source、不emit event。它返回`Result<BackendCapabilities, BleHubError>`以覆盖foreign invocation/DTO conversion failure；成功值由Hub校验并缓存，public `BleHub::capabilities()`不再调用backend。
-- `bind_event_ingress` 是 `BleHub::new` 内部调用的一次性 lifecycle assembly method，不是 BLE command：第一次成功后 backend 保存 opaque token，但仍保持无 callback source 的 inert 状态；重复 bind 必须返回 typed `BleHubError`；bind 期间不得执行 BLE operation、调用 `push_backend_event` 或 emit event。
-- `bind_event_ingress` 返回 `Err` 时，backend 保证未保存传入 token；constructor 随后关闭 state、best-effort dispose backend 并返回错误。application 在 constructor 成功前拿不到 Hub，因此不存在公开的 unbound command 状态。
-- v0.1 token 是对 BoltFFI [issue #869](https://github.com/boltffi/boltffi/issues/869) 的明确 workaround。它只通过受控 exported function 查找 `Weak`，绝不编码 raw pointer。理想 direct-handle 迁移保留相同 method 名、一次性 bind 和 rollback 语义，只把参数换成 `BackendEventIngressHandle` 并把 `push_backend_event(token, event)` 换成 `handle.push(event)`。
+- `bind_event_ingress`是`BleHub::new`内部调用的一次性lifecycle assembly method，不是BLE command：第一次成功后backend retain唯一`Arc<BackendEventIngressHandle>`，但仍保持无callback source的inert状态；重复bind必须返回typed `BleHubError`；bind期间不得执行BLE operation、调用`handle.push`或emit event。
+- `bind_event_ingress`返回`Err`时，backend保证未retain传入handle；constructor随后关闭state、best-effort dispose backend并返回错误。application在constructor成功前拿不到Hub，因此不存在公开的unbound command状态。
+- direct handle只持`Weak<EventIngressState>`并通过受控exported method进入bridge；不编码raw pointer，不暴露downstream，也不使用token、registry或free function。
 - BLE command method 返回 `Result<(), CommandDispatchError>`。backend 在自己的串行执行边界内原子完成 correlation登记、cleanup ownership取得和执行路径提交时，command线性化为 accepted并必须返回 `Ok(())`；这里的“原子”是协议上的单一线性化点，各平台可以用direct call、serial queue、dispatcher或D-Bus request等不同机制实现。此前可返回 `Err`，但不得创建 callback source、保留该 command状态或 emit event。
 - accepted 后调用 native API得到的 `false`、Android non-success status、HRESULT/exception或D-Bus error，无论发生得多快，都必须成为 terminal failure；不能反悔返回 `Err`。若 backend 在 trait method 返回前同步 emit 任一事件，method必须返回 `Ok(())`。
 - `initialize` 是每 backend lifecycle 唯一一次的 command。bind 后、initialize terminal success前，backend只接受`initialize`和`dispose`；public `BleHub::capabilities()`只读取constructor缓存，不再次进入backend。其他 command同步返回 `InvalidState`。Off/Unauthorized/Unavailable snapshot不等于 initialize失败；只要初始监听和snapshot建立成功，initialize即可成功。accepted initialize若因setup contract失败而terminal failed，该backend不可重试，caller应dispose并重建；并发或重复 initialize同步返回 `InvalidState`。
@@ -790,7 +783,7 @@ v0.1 不提供通用 `BleHubConfig`。唯一公开构造入口接收 inert backe
 ```rust
 impl BleHub {
     pub fn new(
-        backend: Box<dyn BleBackend>,
+        backend: Arc<dyn BleBackend>,
         event_sink: Box<dyn BleEventSink>,
     ) -> Result<BleHub, BleHubError>;
 
@@ -810,6 +803,8 @@ impl BleHub {
 }
 ```
 
+每个公开command方法采用固定顺序：先调用具体DTO的`command.validate()?`，再通过私有`with_backend`取得command-gate读锁并在backend调用返回前持续持有，最后调用同名typed `BleBackend` method。`with_backend`只统一closed/poisoned gate处理和dispose互斥，不做命令分类、排队、重试或状态投影。这样公共API保持可发现和强类型，同时避免每个delegation重复锁与closed检查。
+
 平台 backend crate/package 负责提供构造 inert backend 的 factory，并在构造阶段接收只有该平台需要的依赖，例如 Android `Context`/`Handler`、Apple dispatch queue policy 或 Windows adapter selector；factory 在 trait object 交给 `BleHub::new` 前完成同 physical adapter 的 active-owner 仲裁并以 `BleHubError::ResourceBusy`拒绝冲突。具体factory函数签名在对应平台Phase按真实构建系统确定，不进入统一`BleBackend` trait，也不引入第二套backend abstraction。Android AAR与未来Apple package提供的是供Rust application integration使用的backend产物，不是BleHub native application consumer API；clean consumer 或 Tauri showcase 若有 Kotlin/Swift/Web UI，必须由各自产品 Rust adapter 暴露所需方法和 event projection，native UI/glue 不直接持有 downstream sink。
 
 概念上的 constructor 实现如下；准确 error conversion、foreign ownership transfer 与 best-effort cleanup 次序必须由 Phase 0 固定：
@@ -817,20 +812,8 @@ impl BleHub {
 ```rust
 impl BleHub {
     pub fn new(
-        backend: Box<dyn BleBackend>,
+        backend: Arc<dyn BleBackend>,
         downstream: Box<dyn BleEventSink>,
-    ) -> Result<Self, BleHubError> {
-        Self::new_with_registry(
-            backend,
-            downstream,
-            Arc::clone(global_backend_event_ingress_registry()),
-        )
-    }
-
-    fn new_with_registry(
-        backend: Box<dyn BleBackend>,
-        downstream: Box<dyn BleEventSink>,
-        registry: Arc<BackendEventIngressRegistry>,
     ) -> Result<Self, BleHubError> {
         let capabilities = match backend
             .capabilities()
@@ -843,44 +826,26 @@ impl BleHub {
             }
         };
         let ingress = Arc::new(EventIngressState::new(downstream));
-        let token = match registry.allocate_token() {
-            Ok(token) => token,
-            Err(error) => {
-                ingress.close_and_drain();
-                let _ = backend.dispose();
-                return Err(error);
-            }
-        };
+        let ingress_handle = Arc::new(BackendEventIngressHandle::new(
+            Arc::downgrade(&ingress),
+        ));
 
-        if let Err(error) = backend.bind_event_ingress(token) {
-            ingress.close_and_drain();
+        if let Err(error) = backend.bind_event_ingress(ingress_handle) {
+            ingress.close();
             let _ = backend.dispose();
             return Err(error);
         }
-
-        let registration = match registry.register(
-            token,
-            Arc::downgrade(&ingress),
-        ) {
-            Ok(registration) => registration,
-            Err(error) => {
-                ingress.close_and_drain();
-                let _ = backend.dispose();
-                return Err(error);
-            }
-        };
 
         Ok(Self {
             backend: RwLock::new(Some(backend)),
             capabilities,
             ingress,
-            ingress_registration: registration,
         })
     }
 }
 ```
 
-这里依赖明确的 backend contract：`capabilities`在bind前无副作用且只调用一次；读取/校验失败时constructor best-effort dispose inert backend并返回`BleHubError`。`bind_event_ingress` 返回 `Err` 时没有 retain token；返回 `Ok` 时已保存唯一 token，但仍不启动 callback source，且 bind 过程中没有 event。registration 在 bind 成功后、Hub 返回前完成；若 registration 失败，constructor 关闭 state并 dispose 已绑定 backend。public facade 不重解释 backend 的 command 返回值：它只在本地 closed/wire validation 失败时直接返回 `CommandDispatchError`，否则原样返回 backend 的 dispatch `Result`。所有 command request 均按 value 传递并携带 caller-owned IDs。`dispose()` 是单独的本地 lifecycle API，不进入 command/event contract；准确导出名需在 Phase 0 避免与 BoltFFI Kotlin `AutoCloseable.close()` 生成方法冲突。
+这里依赖明确的backend contract：`capabilities`在bind前无副作用且只调用一次；读取/校验失败时constructor best-effort dispose inert backend并返回`BleHubError`。`bind_event_ingress`返回`Err`时没有retain handle；返回`Ok`时已retain唯一handle，但仍不启动callback source，且bind过程中没有event。public facade不重解释backend的command返回值：它只在本地closed/wire validation失败时直接返回`CommandDispatchError`，否则原样返回backend的dispatch `Result`。所有command request均按value传递并携带caller-owned IDs。`dispose()`是单独的本地lifecycle API，不进入command/event contract；准确导出名和generated object release顺序须在Phase 0 final-candidate runtime consumer固定。
 
 原则：
 
@@ -888,7 +853,7 @@ impl BleHub {
 - `BleBackend`/`BleEventSink` trait 自身已经声明 `Send + Sync`，所以 `Box<dyn Trait>` 自动保留这些约束，无需在每个使用点重复 `+ Send + Sync`。
 - event queue、容量、drop/coalesce 和 backpressure 由下游 sink 配置。
 - timeout scheduler 由下游拥有；BleHub 不维护 clock/timer。
-- BleHub 没有 recent command retention、public ID allocator 或 BLE domain registry。v0.1 唯一的 process-local ingress registry 是 `ArcSwap<HashMap<u64, Weak<EventIngressState>>>` immutable snapshot，只保存 O(active Hub) 的 FFI routing entry，不需要用户配置。
+- BleHub没有recent command retention、public ID allocator、BLE domain registry或process-local ingress registry。direct handle对象图每Hub固定O(1)，不需要用户配置。
 
 ### 6.4 Platform 与 capabilities
 
@@ -901,8 +866,13 @@ pub enum Platform {
     Test,
 }
 
+pub const BLEHUB_CONTRACT_VERSION: u32 = 3;
+
 pub struct BackendCapabilities {
     pub platform: Platform,
+    /// Diagnostic/packaging metadata for the lockstep candidate. It does not
+    /// make an already ABI-incompatible foreign trait safe to construct.
+    pub contract_version: u32,
     pub supports_duplicate_scan_results: bool,
     pub supports_connectable_flag: bool,
     pub supports_read_rssi: bool,
@@ -912,7 +882,7 @@ pub struct BackendCapabilities {
 }
 ```
 
-capability 表示当前 public command/event contract 可实际消费的 backend 能力，不表示 adapter 当前可用。backend assembly query在`BleHub::new`内执行一次并返回typed`Result`；Hub校验后缓存。public `BleHub::capabilities()`只是同步返回缓存的静态metadata，无`CommandId`、无event、无foreign backend调用。动态状态通过adapter/permission event表达。MTU、connection priority、PHY、pairing和multiple-adapter尚无对应v0.1 command/event，不提前占用稳定 capability字段；它们随未来contract版本一起增加。
+capability 表示当前 public command/event contract 可实际消费的 backend 能力，不表示 adapter 当前可用。backend assembly query在`BleHub::new`内执行一次并返回typed`Result`；Hub必须先验证`contract_version == BLEHUB_CONTRACT_VERSION`及其他metadata，再缓存并执行ingress bind。public `BleHub::capabilities()`只是同步返回缓存的静态metadata，无`CommandId`、无event、无foreign backend调用。`contract_version`用于同一lockstep candidate的诊断、manifest与装配校验，不能让一个已经ABI不兼容的foreign trait object变得安全；若未来允许backend独立升级，必须在构造trait object前增加factory-level handshake。动态状态通过adapter/permission event表达。MTU、connection priority、PHY、pairing和multiple-adapter尚无对应v0.1 command/event，不提前占用稳定 capability字段；它们随未来contract版本一起增加。
 
 v0.1 connected one-shot RSSI capability 固定为：Windows `false`、Android `true`、Apple `true`、BlueZ/Linux `false`。Windows `RawSignalStrengthInDBm` 与 BlueZ `Device1.RSSI` 都是 advertisement/inquiry observation，不满足 `ReadRssiCommand` 语义。
 
@@ -1098,53 +1068,51 @@ public contract不定义`CommandRecord`、`CommandTarget`或`ProjectedCommandPha
 | `BleHubError` | Hub/backend 装配、配置、资源仲裁、dispose、FFI lifecycle | 同步 `Result` |
 | `CommandDispatchError` | command 到达 accepted 线性化点之前 | command method 的同步 `Result` |
 | `Option<BleEventError>` | accepted command terminal；`None`成功，`Some(error)`失败 | `CommandCompleted.error` data |
-| `Result<T, BleEventError>` | scan/connection等event中的正常data/state或失败data互斥 | 只作为`BleEventPayload`的嵌套data，不是callable error channel |
+| `ScanStopResult` / `ConnectionStateResult` | scan/connection event中的正常data/state或失败data互斥 | UniFFI data enum；不是callable error channel |
 | `BleEventError` | accepted command failure、passive domain failure或unscoped backend fault的统一稳定event详情 | 只作为`BleEventPayload`直接或间接嵌套data |
 | `EventSinkError` | Rust downstream 拒绝一次 event delivery attempt | Rust-only `BleEventSink::on_event` result |
 | `PlatformErrorDetails` | 对同步public error或`BleEventError`补充native code/name/message | 嵌套diagnostic DTO，不独立控制流程 |
 
 ```rust
-#[boltffi::error]
-#[derive(Clone, Debug, derive_more::Display, derive_more::Error)]
+#[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
 pub enum BleHubError {
-    #[display("backend assembly failed: {detail}")]
+    #[error("backend assembly failed: {detail}")]
     BackendAssembly { detail: String },
-    #[display("backend cleanup failed: {detail}")]
+    #[error("backend cleanup failed: {detail}")]
     BackendCleanup {
         detail: String,
         platform: Option<PlatformErrorDetails>,
     },
-    #[display("backend resource is busy: {detail}")]
+    #[error("backend resource is busy: {detail}")]
     ResourceBusy { detail: String },
-    #[display("invalid configuration `{field}`: {detail}")]
+    #[error("invalid configuration `{field}`: {detail}")]
     InvalidConfiguration { field: String, detail: String },
-    #[display("FFI contract error: {detail}")]
+    #[error("FFI contract error: {detail}")]
     FfiContract { detail: String },
 }
 
-#[boltffi::error]
-#[derive(Clone, Debug, derive_more::Display, derive_more::Error)]
+#[derive(Clone, Debug, thiserror::Error, uniffi::Error)]
 pub enum CommandDispatchError {
-    #[display("BleHub is closed; cannot dispatch command")]
+    #[error("BleHub is closed; cannot dispatch command")]
     Closed,
 
-    #[display("invalid command request: {detail}")]
+    #[error("invalid command request: {detail}")]
     InvalidRequest { detail: String },
 
-    #[display("invalid backend state: {detail}")]
+    #[error("invalid backend state: {detail}")]
     InvalidState { detail: String },
 
-    #[display("backend unavailable for command dispatch: {detail}")]
+    #[error("backend unavailable for command dispatch: {detail}")]
     BackendUnavailable {
         detail: String,
         platform: Option<PlatformErrorDetails>,
     },
 
-    #[display("unexpected foreign backend exception: {detail}")]
+    #[error("unexpected foreign backend exception: {detail}")]
     FfiContract { detail: String },
 }
 
-#[boltffi::data]
+#[derive(uniffi::Enum)]
 pub enum BleErrorCategory {
     Permission,
     AdapterUnavailable,
@@ -1160,7 +1128,7 @@ pub enum BleErrorCategory {
     Internal,
 }
 
-#[boltffi::data]
+#[derive(uniffi::Record)]
 pub struct PlatformErrorDetails {
     pub platform: Platform,
     pub code: Option<String>,
@@ -1168,9 +1136,15 @@ pub struct PlatformErrorDetails {
     pub message: Option<String>,
 }
 
-#[boltffi::data]
-#[derive(Clone, Debug, PartialEq, Eq, derive_more::Display, derive_more::Error)]
-#[display("{category:?}: {message}")]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    thiserror::Error,
+    uniffi::Record,
+)]
+#[error("{category:?}: {message}")]
 pub struct BleEventError {
     pub category: BleErrorCategory,
     pub message: String,
@@ -1178,34 +1152,34 @@ pub struct BleEventError {
 }
 ```
 
-`BleEventError`的名字表明它是event中携带的BLE/backend error data。它实现`std::error::Error`方便Rust downstream组合，但不声明BoltFFI `#[boltffi::error]`，因此嵌套在event的`Result`中时不是callable抛错通道。
+`BleEventError`的名字表明它是event中携带的BLE/backend error data。它实现`std::error::Error`方便Rust downstream组合，但只导出为UniFFI record，不派生`uniffi::Error`，因此出现在event data enum中时不是callable抛错通道。
 
 边界规则：
 
-- Rust error类型`BleHubError`、`CommandDispatchError`、`BleEventError`和Rust-only `EventSinkError`实现`std::error::Error`；当前由`derive_more::Display/Error`生成实现，以消除样板且避开BoltFFI `0.30.1`与thiserror helper attribute的冲突。`PlatformErrorDetails`只是嵌入同步public error或`BleEventError`的FFI-safe diagnostic DTO，不独立参与`Result`控制流。
-- Rust error derive只负责`Display/Error/source`，不定义FFI wire format。BoltFFI对callable return/callback return的`Result<T, E>`使用error channel，其中`E`必须按对应边界声明`#[boltffi::error]`；但data record/enum字段内的嵌套`Result<T, E>`走普通value codec。锁定的BoltFFI源码中，后者生成Kotlin `BoltFFIResult<T, E>`和Swift `Swift.Result<T, E>`，不会自动throw。`BleEventError`因此保持`#[boltffi::data]`，不能改成`#[boltffi::error]`。
+- Rust error类型`BleHubError`、`CommandDispatchError`、`BleEventError`和Rust-only `EventSinkError`实现`std::error::Error`；callable error另外派生`uniffi::Error`，event error只派生`uniffi::Record`。`PlatformErrorDetails`只是嵌入同步public error或`BleEventError`的FFI-safe diagnostic DTO，不独立参与`Result`控制流。
+- `thiserror::Error`只负责Rust `Display/Error/source`，UniFFI derive定义FFI role。Stable UniFFI `0.32.0` fixture已实际生成并运行同时派生`thiserror::Error + uniffi::Error`的fielded callable error，因此不再需要BoltFFI时期的`derive_more`/handwritten error workaround；event-data `BleEventError`则组合`thiserror::Error + uniffi::Record`。callable return/callback return的`Result<T, E>`使用error channel，其中`E`必须是UniFFI error；Stable UniFFI不把nested Rust `Result<T, E>`作为普通data field导出，因此event中的成功/失败互斥值使用显式`ScanStopResult`/`ConnectionStateResult` data enum。`BleEventError`不能派生`uniffi::Error`后再被误当成callable error channel。
 - `BleHubError`只用于constructor capabilities/bind assembly、platform factory的physical-adapter resource arbitration、config、dispose和FFI lifecycle这类同步失败；同一physical adapter已有active owner时返回`ResourceBusy`，不把资源竞争伪装成BLE command结果。backend dispose/cleanup失败使用`BackendCleanup`；即使返回该错误，Hub也已关闭且必须继续完成其余best-effort cleanup。
 - `CommandDispatchError`只用于accepted线性化点前的提交拒绝：Hub已关闭、request无法通过基础wire/shape校验、backend lifecycle为`InvalidState`，或dispatcher无法原子接管该command。它不表达扫描、连接、GATT等operation的最终结果。各variant不重复携带`CommandKind`：被调用的方法与caller在调用前登记的command record是operation的唯一权威；detached diagnostic需要operation时由调用侧structured tracing补充。
-- permission denied、adapter off/unavailable、already scanning、unknown/stale BLE handle、connection/GATT status等属于operation/domain结果；一旦command已被接受，其terminal failure必须通过event `CommandCompleted { error: Some(error) }`表达，不能再降格为dispatch `Err`。没有command的passive scan/connection failure使用相应event字段的`Err(error)`，不为error复制`CommandKind`。
+- permission denied、adapter off/unavailable、already scanning、unknown/stale BLE handle、connection/GATT status等属于operation/domain结果；一旦command已被接受，其terminal failure必须通过event `CommandCompleted { error: Some(error) }`表达，不能再降格为dispatch `Err`。没有command的passive scan/connection failure使用相应result-like data enum的`Err { error }` case，不为error复制`CommandKind`。
 - command method返回`Result<(), CommandDispatchError>`。`Ok(())`是“已投递/已接受”的acknowledgement，不是operation completion；completion通常由backend在native callback/async result/D-Bus reply中产生，没有native callback时才使用逐项定义的backend-local completion point。即使completion同步发生在method返回前，它仍走event ingress。不能删除该同步边界并让所有调用固定返回成功：closed/invalid wire/未进入backend/FFI invocation failure没有合法completion可发，也会让caller无法区分“从未接管”与“已接管但callback缺失”。
-- `BleEventError`是唯一event failure DTO，承载稳定category/message和optional platform诊断，只直接或间接嵌套于`BleEventPayload`。单独的`Option<BleEventError>`、标准`Result<T, BleEventError>`与`NotificationState`通过互斥case表达terminal/result/state，不再使用discriminator + `Option<error>`或额外operation-error包装。
+- `BleEventError`是唯一event failure DTO，承载稳定category/message和optional platform诊断，只直接或间接嵌套于`BleEventPayload`。单独的`Option<BleEventError>`、result-like data enum与`NotificationState`通过互斥case表达terminal/result/state，不再使用discriminator + `Option<error>`或额外operation-error包装。
 - `BackendError { error }`只报告无法归入具体command、scan、connection或其他domain状态变化的被动backend fault。能用具体domain event表达时必须优先使用具体event；它不是日志通道。downstream rejection和invalid ingress event分别通过`EventIngressStatus::DownstreamFailed`与`InvalidEvent`返回，绝不能递归生成`BackendError`。
-- `EventSinkError`是Rust-only downstream sink对单次delivery attempt的拒绝struct，不使用BoltFFI `#[error]`，不表达BLE operation结果，也不规定queue/backpressure策略。其message通过`DownstreamFailed { message }`供backend诊断，但不是稳定机器协议。
+- `EventSinkError`是Rust-only downstream sink对单次delivery attempt的拒绝struct，不导出到UniFFI，不表达BLE operation结果，也不规定queue/backpressure策略。其message通过`DownstreamFailed { message }`供backend诊断，但不是稳定机器协议。
 - 同一调用只能走一个边界：立即`Err(CommandDispatchError)`后不得有该ID的event；一旦backend emit任一该ID的event，就必须返回`Ok(())`，后续terminal使用`CommandCompleted.error`。
-- 现有代表性`#[boltffi::error/data] + derive_more::Display/Error`组合已经用锁定的Rust依赖和官方BoltFFI generator实际生成Kotlin/Swift bindings；顶层error诊断字段使用`detail`，避免BoltFFI `0.30.1`生成Kotlin `Exception`子类时让`message`隐藏`Throwable.message`的缺陷（上游[#871](https://github.com/boltffi/boltffi/issues/871)）。本次简化后的无operation `CommandDispatchError`、`BleEventError`、nested data `Result`和`BackendError`是新的ABI candidate，实施时必须重新生成并运行desktop Kotlin/JVM、Android ART/AAR、Windows Swift与macOS Swift/package consumer，不能沿用旧生成证据。以后升级任一宏或generator同样必须重跑兼容性检查。BoltFFI [#870](https://github.com/boltffi/boltffi/issues/870)修复thiserror marker冲突后，可以在保持相同wire shape与display文本的前提下重新评估同步error derive实现。
-- BoltFFI foreign callback若抛出声明类型之外的Kotlin/Swift exception，契约要求通过`UnexpectedFfiCallbackError`进入Rust；`BleHubError`和`CommandDispatchError`必须实现对应`From`，稳定映射到`FfiContract`，不能让exception穿越FFI或随意映射成某个BLE domain error。官方BoltFFI `0.30.1`对`Result<(), E>` Kotlin callback违反该要求并把unchecked exception伪装成success，已由上游[#872](https://github.com/boltffi/boltffi/issues/872)跟踪；这是Phase 0 blocker，不得通过skip或generated-source patch隐藏。
-- 顶层`#[boltffi::error]` variant的自由文本字段统一命名为`detail`；event data中的`BleEventError.message`和`PlatformErrorDetails.message`保留`message`。这些字段都只用于诊断，不是稳定的机器分支协议。`CommandDispatchError::Closed`不增加自由文本；所有dispatch variant都由正在调用的方法与caller command record确定operation。`FfiContract.detail`只记录foreign exception，不复制operation。
+- Stable UniFFI `0.32.0`代表性fixture已经验证fielded callable error、declared/undeclared foreign callback error和`UnexpectedUniFFICallbackError`转换。完整`BleEventPayload`与本节result-like data enum仍须作为final ABI candidate重新生成并运行desktop Kotlin/JVM、Android ART/AAR、Windows Swift与macOS Swift/package consumer，不能沿用简化fixture证据。以后升级任一macro、runtime或bindgen同样必须重跑兼容性检查。
+- UniFFI foreign callback若抛出声明类型之外的Kotlin/Swift exception，`BleHubError`和`CommandDispatchError`必须实现`From<uniffi::UnexpectedUniFFICallbackError>`并稳定映射到`FfiContract`，不能让exception穿越FFI、panic或随意映射成某个BLE domain error。Android与Apple runtime gate已证明该机制；完整candidate仍必须重跑。
+- 顶层`uniffi::Error` variant的自由文本字段统一命名为`detail`；event data中的`BleEventError.message`和`PlatformErrorDetails.message`保留`message`。本地collision fixture已证明Stable UniFFI Kotlin对error字段名`message`/`cause`同样存在生成冲突，因此不得放宽。字段都只用于诊断，不是稳定机器分支协议。`CommandDispatchError::Closed`不增加自由文本；所有dispatch variant都由正在调用的方法与caller command record确定operation。`FfiContract.detail`只记录foreign exception，不复制operation。
 - 平台错误映射必须保留原始code/name，同时给出稳定category，方便业务决策与诊断；native exception不得直接穿过Rust FFI栈。
-- 删除`CommandOutcome`/operation-error wrapper、移除dispatch error中的operation，并引入`BleEventError`与nested data `Result`会改变FFI wire shape；实施该修订时必须递增`BLEHUB_CONTRACT_VERSION`，旧生成binding/native library不得与新candidate混用。ABI尚未冻结不等于可以静默复用旧contract version。
+- 删除`CommandOutcome`/operation-error wrapper、移除dispatch error中的operation，并引入`BleEventError`与显式result-like data enum会改变FFI wire shape；实施该修订时必须递增`BLEHUB_CONTRACT_VERSION`，旧生成binding/native library不得与新candidate混用。ABI尚未冻结不等于可以静默复用旧contract version。
 - capability为false的可选command（v0.1主要是Windows/BlueZ connected RSSI）若仍被调用，backend接受后使用`BleErrorCategory::NotSupported` terminal failure；不得用cached advertisement RSSI伪装成功。
 - 公共错误不提供`retryable`、recommended backoff或user-facing action等策略字段；retry、提示、降级和结果优先级由downstream根据operation/category/platform context决定。
 
 ### 6.15 Unified event payload
 
-backend直接构造最终统一事件。`BleEventPayload`按“发生了什么可观察事实”组织，而不是把整个event stream全局拆成success/error：advertisement、notification和被动状态变化本身都不是command success。其variant分为domain/state/data事实、终结accepted command的`CommandCompleted`，以及无法归入具体domain事实的`BackendError`。`CommandCompleted.error: Option<BleEventError>`以`None | Some(error)`直接保证terminal成功/失败互斥；scan和connection在成功侧携带数据，因此复用nested data `Result`，notification用领域enum消除互相约束的字段组合。command/session/opaque IDs只出现在拥有其语义的variant/case中，不在外层重复。BoltFFI complex enum生成不适合时，可以把对应层降为explicit tagged record，但tag和每个ID仍只能有一个权威位置，不能退回额外discriminator + `Option<error>`；`CommandCompleted.error`是唯一判别值，不存在第二个outcome字段。
+backend直接构造最终统一事件。`BleEventPayload`按“发生了什么可观察事实”组织，而不是把整个event stream全局拆成success/error：advertisement、notification和被动状态变化本身都不是command success。其variant分为domain/state/data事实、终结accepted command的`CommandCompleted`，以及无法归入具体domain事实的`BackendError`。`CommandCompleted.error: Option<BleEventError>`以`None | Some(error)`直接保证unit terminal成功/失败互斥；scan和connection在成功侧携带数据，因此使用UniFFI可导出的result-like data enum，notification用领域enum消除互相约束的字段组合。command/session/opaque IDs只出现在拥有其语义的variant/case中，不在外层重复。若Stable UniFFI对完整complex enum的目标语言质量不满足要求，可以把对应层降为explicit tagged record，但tag和每个ID仍只能有一个权威位置，不能退回额外discriminator + 多个互相约束的`Option`；`CommandCompleted.error`是唯一判别值，不存在第二个outcome字段。
 
 ```rust
-#[boltffi::data]
+#[derive(uniffi::Enum)]
 pub enum ScanStopReason {
     /// A stop command ended the active scan successfully.
     Requested {
@@ -1215,7 +1189,7 @@ pub enum ScanStopReason {
     SystemSuspended,
 }
 
-#[boltffi::data]
+#[derive(uniffi::Enum)]
 pub enum ConnectionState {
     Connecting,
     Connected,
@@ -1224,7 +1198,19 @@ pub enum ConnectionState {
     Disconnected,
 }
 
-#[boltffi::data]
+#[derive(uniffi::Enum)]
+pub enum ScanStopResult {
+    Ok { reason: ScanStopReason },
+    Err { error: BleEventError },
+}
+
+#[derive(uniffi::Enum)]
+pub enum ConnectionStateResult {
+    Ok { state: ConnectionState },
+    Err { error: BleEventError },
+}
+
+#[derive(uniffi::Enum)]
 pub enum NotificationState {
     /// Notifications are enabled; the actual mode is absent only when the
     /// platform cannot report whether notification or indication was chosen.
@@ -1235,7 +1221,7 @@ pub enum NotificationState {
     Disabled,
 }
 
-#[boltffi::data]
+#[derive(uniffi::Enum)]
 pub enum BleEventPayload {
     AdapterStateChanged {
         command_id: Option<CommandId>,
@@ -1250,14 +1236,14 @@ pub enum BleEventPayload {
     },
     ScanStopped {
         scan_id: ScanSessionId,
-        /// Ok carries a non-failing stop reason; Err is an abnormal passive stop.
-        reason: Result<ScanStopReason, BleEventError>,
+        /// Ok carries a non-failing reason; Err is an abnormal passive stop.
+        result: ScanStopResult,
     },
     ConnectionStateChanged {
         command_id: Option<CommandId>,
         connection_id: ConnectionId,
         /// Ok carries the observed state; Err means the lifecycle failed.
-        state: Result<ConnectionState, BleEventError>,
+        result: ConnectionStateResult,
     },
     GattDiscovered {
         command_id: CommandId,
@@ -1320,13 +1306,13 @@ pub struct BleEvent {
 
 ### 6.16 Public event
 
-v0.1 调用 `push_backend_event(token, event)`，未来 direct-handle路径调用 `BackendEventIngressHandle::push(event)`；两者进入同一个Rust state。enum形状由类型系统保证，bridge只做ID/wire-value/size guard；若Phase 0采用tagged-record fallback，`BleEvent::validate_shape`再校验唯一tag与body匹配。bridge把同一个语义值传给downstream，不维护第二套IDs或kind。
+v0.1统一调用`BackendEventIngressHandle::push(event)`进入Rust state。enum形状由类型系统保证，bridge只做ID/wire-value/size guard；若Phase 0 final-candidate验证采用tagged-record fallback，`BleEvent::validate_shape`再校验唯一tag与body匹配。bridge把同一个语义值传给downstream，不维护第二套IDs或kind。
 
 一次backend `push`严格对应一次downstream `on_event` attempt，bridge不推导、复制或合成额外domain event。成功command需要表达lifecycle/data update时，backend按顺序尝试两个带同一IDs的事件：先domain event，再`CommandCompleted { error: None }`；失败默认只尝试`CommandCompleted { error: Some(error) }`，真实state也变化时才先发携带同值`BleEventError`的state event。passive OS event不发`CommandCompleted`。caller-local`Pending/Superseded/AbandonedByDispose`不是backend result。
 
 `CommandCompleted`是该`CommandId`唯一的terminal event，而不是所有后续session event的结束标记。例如`StartScan`在`ScanStarted -> CommandCompleted`后已经结束，但同一`ScanSessionId`仍持续产生advertisement；enable notification在state event与completion后结束，但同一`SubscriptionId`仍持续产生notification。其直接触发源通常是native callback/async result/D-Bus reply；无callback的平台才使用规范定义的backend-local completion point。无论completion是在method返回后异步发生，还是同步发生在返回前，都必须通过event ingress表达，不能改写成dispatch success/failure。
 
-6.15代码中的nested `Result`和enum case就是规范性error shape，conformance tests直接从这些可构造值派生，不再维护另一张组合校验表。`CommandCompleted`只携带`CommandId + Option<BleEventError>`；operation和target由caller调用前登记的command record确定。同一command-associated error若按failure state event后terminal failed形成一组有序attempt，两个event中的`BleEventError`值必须相等；它们分别更新domain projection与command projection。state/cause/category是稳定机器语义，message和`PlatformErrorDetails`只补充诊断。
+6.15代码中的result-like data enum和其他enum case就是规范性error shape，conformance tests直接从这些可构造值派生，不再维护另一张组合校验表。`CommandCompleted`只携带`CommandId + Option<BleEventError>`；operation和target由caller调用前登记的command record确定。同一command-associated error若按failure state event后terminal failed形成一组有序attempt，两个event中的`BleEventError`值必须相等；它们分别更新domain projection与command projection。state/cause/category是稳定机器语义，message和`PlatformErrorDetails`只补充诊断。
 
 ### 6.17 Downstream projection（非 BleHub API）
 
@@ -1380,17 +1366,17 @@ pub struct ExampleApplicationBleState {
 
 - domain/state/data event必须回显其适用的caller-owned target/session IDs；target与event IDs不一致属于contract violation。`CommandCompleted`只回显同一backend lifecycle内唯一且不复用的`CommandId`，caller从调用前登记的command record解析target，不在terminal中复制target IDs。晚到callback必须保留原command/session IDs，不得改挂到当前session。unknown或错误`CommandId`是orphan/contract violation；terminal不重复target字段本身不是错误。
 - v0.1同一时间最多支持一个active scan。第二个scan command若已accepted，应以`InvalidState` terminal failure结束；只有尚未accepted时才返回`Err(CommandDispatchError)`。
-- `StartScan`以`ScanStarted` domain event后terminal `error: None`；scan session继续存在并产生advertisement。`StopScan`使用新的`CommandId`并携带原`ScanSessionId`。主动stop成功使用`ScanStopped { reason: Ok(ScanStopReason::Requested { command_id: stop_command }) }`；被动挂起使用`Ok(ScanStopReason::SystemSuspended)`，被动失败使用`Err(error)`；后二者不携带stop command，也不为已完成的start command生成第二个terminal。
+- `StartScan`以`ScanStarted` domain event后terminal `error: None`；scan session继续存在并产生advertisement。`StopScan`使用新的`CommandId`并携带原`ScanSessionId`。主动stop成功使用`ScanStopped { result: ScanStopResult::Ok { reason: ScanStopReason::Requested { command_id: stop_command } } }`；被动挂起使用`Ok { reason: SystemSuspended }`，被动失败使用`Err { error }`；后二者不携带stop command，也不为已完成的start command生成第二个terminal。
 - `AdvertisementObserved.scan_session_id`必须回显start request的scan ID；stop/failed后晚到advertisement仍携带旧ID。同一backend lifecycle中，同一平台peripheral的duplicate advertisement必须复用`PeripheralId`。
 - 每个connect intent使用新的`ConnectionId`。v0.1同一peripheral最多一个active connection；违规请求在accepted前可同步拒绝，accepted后必须以`InvalidState` terminal failure结束。`Connected`回显connect `CommandId + ConnectionId`；被动断连可以没有command ID，但必须携带`ConnectionId`。
 - discover request携带`ConnectionId + GattSessionId`，每个discover intent使用新的`GattSessionId`；非连接状态同样按accepted边界同步拒绝或terminal failure。duplicate UUID合法，backend必须生成不同GATT ID，不得按UUID去重。
 - backend必须校验read/write/notify的characteristic handle属于request指定的connection/GATT session。enable notification前必须校验notify/indicate capability；callback必须回显connection/GATT session/subscription/characteristic typed IDs。enable command与持续notification data分开；对已移除/unknown subscription的重复disable在accepted前同步返回`InvalidState`且零event，不重复native side effect。`dispose/close`单独保持幂等成功。
-- adapter非`Ready`时不得把operation伪装成成功：request若可accepted，应通过terminal failure报告adapter state；只有无法进入异步完成通道时才返回`Err(CommandDispatchError)`。adapter离开`Ready`时应在相关`ScanStopped.reason`或`ConnectionStateChanged.state`中emit `Err(error)`；由此导致的accepted command失败必须在terminal回显对应`CommandId`。permission与adapter phase分开表达，BleHub不预先维护adapter state。
+- adapter非`Ready`时不得把operation伪装成成功：request若可accepted，应通过terminal failure报告adapter state；只有无法进入异步完成通道时才返回`Err(CommandDispatchError)`。adapter离开`Ready`时应在相关`ScanStopped.result`或`ConnectionStateChanged.result`中emit `Failed { error }`；由此导致的accepted command失败必须在terminal回显对应`CommandId`。permission与adapter phase分开表达，BleHub不预先维护adapter state。
 
 **Sink status与delivery order**
 
 - `InvalidEvent`或`DownstreamFailed`消费当前emission attempt：backend不重试同一event，仍提交terminal/correlation cleanup并继续后续event；只有`Closed`才停止向该ingress push。backend不得通过同一失败sink递归发送diagnostic。
-- `EventIngressState.downstream` mutex只保证同一BleHub的`on_event`调用不并发。多个native callback线程并发push时，mutex取得顺序就是实际delivery-attempt顺序，但BleHub不宣称它是平台因果总序。
+- `EventIngressState.inner` mutex只保证同一BleHub的`on_event`调用不并发。多个native callback线程并发push时，mutex取得顺序就是实际delivery-attempt顺序，但BleHub不宣称它是平台因果总序。
 - backend必须保持同一command的`domain -> terminal`以及同一session teardown相关事件的程序顺序；不同command/source之间不保证全序。v0.1不携带统一platform timestamp；需要时间线的caller在接纳event时使用自己的clock记录。
 - v0.1不分配event sequence，也不提供sink拒绝造成的gap检测。未来增加sequence属于public ABI变更，不能暗示v0.1已有gap语义。
 - conformance harness必须验证：相同caller-owned IDs、相同backend attempt order和相同sink acceptance结果产生相同的可观察delivery结果；并覆盖本节全部accepted/rejected、ID回显、domain/terminal、terminal attempt、sink status、delivery order、session/handle validation、completion semantics和平台约束。
@@ -1404,7 +1390,7 @@ backend与BleHub obligation固定如下，不混入caller projection policy：
 | accepted command后续失败 | 返回`Ok(())`；作唯一`CommandCompleted { error: Some(error) }` attempt；真实state变化时可先attempt携带同值`BleEventError`的failure state event | 对每个attempt返回ingress status，不合成错误 |
 | 平台/backend确认timeout | 作唯一`CommandCompleted { error: Some(error) }` terminal，`error.category = Timeout` | 不启动timer |
 | 平台/backend确认实际取消 | 原operation才可作唯一`CommandCompleted { error: Some(error) }` terminal，`error.category = Cancelled`；stop scan、disconnect、disable notification等cleanup operation使用各自的新`CommandId` | 不合成取消结果 |
-| 可归入domain的passive failure | 在对应scan/connection或其他具体domain event中发送`Err(error)` | 对wire-valid event直接转发 |
+| 可归入domain的passive failure | 在对应scan/connection或其他具体domain event中发送显式`Failed { error }` case | 对wire-valid event直接转发 |
 | 无法归入domain的passive backend fault | 发送`BackendError { error }`；不得把它当日志通道 | 对wire-valid event直接转发，不合成command结果 |
 | passive或晚到event | 保留原有IDs并翻译平台事实 | 对所有wire-valid `BleEvent`一视同仁，不过滤stale/orphan/duplicate |
 | duplicate terminal attempt | contract violation | wire-valid时仍转发，不在bridge内修复 |
@@ -1557,7 +1543,7 @@ sequenceDiagram
     participant App
     participant Hub as Rust BleHub
     participant Backend as Inert backend
-    participant Registry as Ingress registry
+    participant Ingress as BackendEventIngressHandle
     participant Output as Rust BleEventSink
     participant OS
 
@@ -1567,16 +1553,14 @@ sequenceDiagram
     Hub->>Backend: capabilities()
     Backend-->>Hub: capabilities or BleHubError
     Hub->>Hub: validate and cache capabilities or fail assembly
-    Hub->>Hub: create state and allocate token
-    Hub->>Backend: bind_event_ingress(token)
+    Hub->>Hub: create state and direct handle with Weak state
+    Hub->>Backend: bind_event_ingress(handle)
     alt bind rejected
-        Backend-->>Hub: Err without retaining token
+        Backend-->>Hub: Err without retaining handle
         Hub->>Hub: close state and best-effort dispose backend
         Hub-->>App: Err(BleHubError)
     else bind accepted
-        Backend-->>Hub: Ok after retaining token
-        Hub->>Registry: register token to weak ingress state
-        Registry-->>Hub: registration guard
+        Backend-->>Hub: Ok after retaining handle
         Hub-->>App: Ok(BleHub)
         App->>App: allocate and register CommandId
         App->>Hub: initialize(command_id)
@@ -1589,9 +1573,9 @@ sequenceDiagram
             Hub-->>App: Ok(())
             Backend->>OS: query adapter and permission
             OS-->>Backend: state callback
-            Backend->>Registry: push_backend_event(token event)
-            Registry->>Registry: lock-free snapshot lookup then clone Weak
-            Registry->>Output: validate then on_event
+            Backend->>Ingress: push(event)
+            Ingress->>Ingress: upgrade Weak state
+            Ingress->>Output: validate then on_event
             Output->>Output: dispatch to caller-owned execution context
         end
     end
@@ -1599,8 +1583,8 @@ sequenceDiagram
 
 初始化规则：
 
-- platform factory只构造inert backend；backend在`bind_event_ingress`成功前不启动BLE工作、不接受command、不调用`push_backend_event`。
-- `BleHub::new`先调用一次side-effect-free `backend.capabilities()`并校验/cache结果，再执行唯一一次token bind并注册`token -> Weak<EventIngressState>`；全部assembly步骤成功才返回完整Hub。capabilities/bind/registration任一步失败都best-effort dispose backend并返回typed`BleHubError`，不暴露半初始化Hub；bind `Err`必须表示backend未retain token，重复bind必须被backend拒绝。
+- platform factory只构造inert backend；backend在`bind_event_ingress`成功前不启动BLE工作、不接受command、不调用`handle.push`。
+- `BleHub::new`先调用一次side-effect-free `backend.capabilities()`并校验/cache结果，再创建direct handle并执行唯一一次bind；全部assembly步骤成功才返回完整Hub。capabilities/bind任一步失败都best-effort dispose backend并返回typed`BleHubError`，不暴露半初始化Hub；bind `Err`必须表示backend未retain handle，重复bind必须被backend拒绝。
 - initialize是该backend lifecycle唯一一次attempt；它成功建立初始监听并按`AdapterStateChanged(command_id=Some(...)) -> CommandCompleted { error: None }`尝试交付。初始snapshot可为Off/Unauthorized/Unavailable。initialize成功前其他BLE command同步`InvalidState`；并发/重复initialize同样拒绝；accepted setup failure后backend必须dispose/recreate。
 - 应用提供的`BleEventSink`是dispatch adapter，不应在callback栈中执行长业务逻辑。
 - `on_event` 可能在公共 command method 返回前同步发生，因此 caller 必须在调用前分配并登记 ID，事件只依赖自身携带的 ID/payload。
@@ -1615,7 +1599,7 @@ sequenceDiagram
     participant Hub
     participant Backend
     participant OS
-    participant Ingress as Token ingress registry
+    participant Ingress as BackendEventIngressHandle
     participant Output as Rust BleEventSink
 
     App->>App: allocate and register CommandId and ScanSessionId
@@ -1625,12 +1609,12 @@ sequenceDiagram
     Hub-->>App: Ok(()) dispatch accepted
     Backend->>OS: invoke platform scan start
     OS-->>Backend: platform-specific start evidence or local return
-    Backend->>Ingress: push token ScanStarted and completion
-    Ingress->>Ingress: lookup Weak then validate events
+    Backend->>Ingress: push ScanStarted and completion
+    Ingress->>Ingress: upgrade Weak then validate events
     Ingress->>Output: ScanStarted then CommandCompleted
     OS-->>Backend: advertisement callback
-    Backend->>Ingress: push token AdvertisementObserved
-    Ingress->>Ingress: lookup Weak then validate shape
+    Backend->>Ingress: push AdvertisementObserved
+    Ingress->>Ingress: upgrade Weak then validate shape
     Ingress->>Output: AdvertisementObserved
     Output->>Output: dispatch to caller-owned execution context
 ```
@@ -1649,9 +1633,9 @@ sequenceDiagram
 1. caller 分配新的 stop `CommandId`，调用 `stop_scan(command_id, scan_session_id)`。
 2. BleHub 原样转发。
 3. backend 停止 watcher 并解除 callback token。
-4. 成功且scan lifecycle确实从active转为stopped时，backend发送`ScanStopped { scan_id, reason: Ok(ScanStopReason::Requested { command_id: stop_command }) }`，随后发送同一command的`CommandCompleted { error: None }`。
+4. 成功且scan lifecycle确实从active转为stopped时，backend发送`ScanStopped { scan_id, result: ScanStopResult::Ok { reason: ScanStopReason::Requested { command_id: stop_command } } }`，随后发送同一command的`CommandCompleted { error: None }`。
 5. 若scan已经stopped/aborted，重复stop幂等terminal `error: None`，但不伪造第二个`ScanStopped`状态变化。
-6. 平台因system suspend被动停止时发送`reason: Ok(ScanStopReason::SystemSuspended)`；因adapter lost、permission revoked、platform error或其他异常停止时发送`reason: Err(error)`。两者都没有stop command，也不为已完成的start command再发completion。
+6. 平台因system suspend被动停止时发送`result: ScanStopResult::Ok { reason: ScanStopReason::SystemSuspended }`；因adapter lost、permission revoked、platform error或其他异常停止时发送`result: ScanStopResult::Err { error }`。两者都没有stop command，也不为已完成的start command再发completion。
 7. 后续晚到 advertisement 仍携带旧 scan ID，由下游忽略。
 
 ### 8.4 建立连接
@@ -1682,14 +1666,14 @@ sequenceDiagram
 - backend 使用自己的 private map 查找或创建 native device handle。
 - backend 以 caller-provided `ConnectionId` 标记该 native connection lifecycle。
 - `Connecting` 可以是 backend-local command lifecycle state；Windows 没有文档化的 connecting callback，不能声称每个平台都由 OS 产生该事件。
-- connect成功按`ConnectionStateChanged { state: Ok(ConnectionState::Connected) } -> CommandCompleted { error: None }`交付；Windows不能把`BluetoothLEDevice.FromIdAsync` object创建当成Connected。
-- connect failure必须回显同一`CommandId + ConnectionId`；若连接projection确实进入失败state，按`ConnectionStateChanged { state: Err(error) } -> CommandCompleted { error: Some(error) }`交付，并保证两个event中的`BleEventError`值相等；否则只发terminal failure。
+- connect成功按`ConnectionStateChanged { result: ConnectionStateResult::Ok { state: ConnectionState::Connected } } -> CommandCompleted { error: None }`交付；Windows不能把`BluetoothLEDevice.FromIdAsync` object创建当成Connected。
+- connect failure必须回显同一`CommandId + ConnectionId`；若连接projection确实进入失败state，按`ConnectionStateChanged { result: ConnectionStateResult::Err { error } } -> CommandCompleted { error: Some(error) }`交付，并保证两个event中的`BleEventError`值相等；否则只发terminal failure。
 - connect timeout、晚到 Connected 接受/忽略和是否主动 disconnect 都由 caller runtime/state policy 决定。
 
 #### 主动断开
 
 1. caller为disconnect分配新的`CommandId`，并传入当前`ConnectionId`。backend仍拥有active或connecting lifecycle、且能在当前dispatch边界原子取得logical teardown与cleanup ownership时才可accept；已移除/unknown connection返回`InvalidState`，dispatcher/ownership无法接管时返回`BackendUnavailable`，两者都发生在accepted前且该disconnect ID零event，因此重复调用不会产生第二次native side effect或状态事件。
-2. connected lifecycle成功断开时，backend先尝试`ConnectionStateChanged { command_id: Some(disconnect_command), state: Ok(ConnectionState::Disconnected), ... }`，再尝试`CommandCompleted { command_id: disconnect_command, error: None }`。成功只表示BleHub logical connection lifecycle与owned resources已结束，不承诺系统物理链路立即消失。
+2. connected lifecycle成功断开时，backend先尝试`ConnectionStateChanged { command_id: Some(disconnect_command), result: ConnectionStateResult::Ok { state: ConnectionState::Disconnected }, ... }`，再尝试`CommandCompleted { command_id: disconnect_command, error: None }`。成功只表示BleHub logical connection lifecycle与owned resources已结束，不承诺系统物理链路立即消失。
 3. disconnect针对仍pending的connect时，backend分别保留两个correlation。平台能确认原connect**由该disconnect实际取消**时，原connect command先作唯一`CommandCompleted { error: Some(error), ... }`且`error.category = Cancelled`的attempt，再按上一条完成disconnect；若平台返回的是独立connect failure，则按原证据terminal failed而不是cancelled。Windows等不能确认native connect cancellation的平台不得伪造`Cancelled`：backend可在logical lifecycle与owned resources结束后完成disconnect，原connect仍按其既有completion evidence/liveness规则等待；caller deadline可先终结projection，任何晚到结果保留原connect IDs。
 4. passive disconnect与已accepted disconnect竞争时，只emit一次`Disconnected`状态变化；只要disconnect目标已经按7.1语义达到，disconnect terminal succeeded。若平台拒绝且logical lifecycle仍未结束，disconnect terminal failed；真实state同时变化时才先发对应state event。
 5. disconnect完成后backend释放active connection/GATT/subscription native object；若native pending connect不能取消，只保留将晚到callback关联到原IDs所必需的最小correlation，直到native completion或Hub dispose，且不得让晚到callback重新成为当前logical connection。caller projection按旧IDs忽略该结果。
@@ -1766,7 +1750,7 @@ Windows 与 Android conformance 文档必须明确两种 write 的成功语义�
 ### 8.10 被动断连
 
 1. 平台产生可无 command ID、但必须带 `ConnectionId` 的 Disconnected callback。
-2. 正常或远端正常结束时，backend emit统一`ConnectionStateChanged { command_id: None, state: Ok(ConnectionState::Disconnected), ... }`；link loss或其他异常终止使用`state: Err(error)`。
+2. 正常或远端正常结束时，backend emit统一`ConnectionStateChanged { command_id: None, result: ConnectionStateResult::Ok { state: ConnectionState::Disconnected }, ... }`；link loss或其他异常终止使用`result: ConnectionStateResult::Err { error }`。
 3. bridge 直接交付。
 4. caller 比较当前 connection ID；旧 session event 可忽略。
 5. caller projection 使对应 GATT session/subscription 失效。
@@ -1791,18 +1775,15 @@ sequenceDiagram
     participant Hub
     participant State as EventIngressState
     participant Backend
-    participant Registry as Token registry
 
     App->>App: locally settle or abandon pending command projections
     App->>Hub: dispose()
     Hub->>Hub: acquire exclusive command/close gate
-    Hub->>State: set closed flag
-    Hub->>State: acquire mutex and drain in-flight on_event
-    Hub->>State: take and release downstream sink
+    Hub->>State: acquire ingress mutex and drain in-flight on_event
+    Hub->>State: set phase Closed and release downstream sink
     Hub->>Backend: dispose owned native resources
     Backend-->>Hub: cleanup result or BleHubError
-    Hub->>Registry: unregister token entry
-    Hub->>Hub: release backend ownership
+    Hub->>Hub: release backend and retained handle ownership
     Hub-->>App: lifecycle result and hub remains closed either way
 ```
 
@@ -1818,9 +1799,8 @@ impl BleHub {
             return Ok(());
         };
 
-        self.ingress.close_and_drain();
+        self.ingress.close();
         let backend_result = backend.dispose();
-        self.ingress_registration.unregister();
         drop(backend);
         backend_result
     }
@@ -1841,11 +1821,11 @@ impl Drop for BleHub {
 
 - `dispose/close` 是本地 lifecycle operation，不是 BLE command：不创建 `CommandId`、不产生 domain event 或 `CommandCompleted`。
 - caller在调用前把pending command projection标记为`AbandonedByDispose`；BleHub不替它批量生成`Cancelled`。dispose取得exclusive command/close gate是本地关闭线性化点，此后撤销尚未到达completion point的backend terminal义务，backend只做correlation/native resource cleanup。
-- Hub先阻止新command，再置位ingress closed flag；随后取得downstream mutex，等待已经进入的`on_event`返回并`take()`/释放sink，再要求backend best-effort stop scan、取消/断开本backend连接、撤销callback token并释放native handles，最后注销ingress token entry。close只drain正在执行的sink调用，不drain downstream自己的queue；dispose前已被接纳的event仍可能在业务层晚于dispose处理。close期间和之后的callback因closed state或missing token返回`Closed`。
+- Hub先阻止新command，再取得ingress mutex；该锁等待已经进入的`on_event`返回，随后Hub把phase切换为`Closed`并`take()`/释放sink，再要求backend best-effort stop scan、取消/断开本backend连接、撤销native callback registration并释放native handles及retained ingress handle。close只drain正在执行的sink调用，不drain downstream自己的queue；dispose前已被接纳的event仍可能在业务层晚于dispose处理。close期间和之后的callback因closed phase或`Weak` upgrade失败返回`Closed`。
 - backend `dispose` 的同步 `Err(BleHubError)` 只报告清理异常；Hub 仍进入 closed 状态并释放可安全释放的 ownership，不能继续发令。
-- `dispose/close`幂等；重复调用返回`Ok(())`。Rust`Drop`直接调用public`dispose()`并只能structured-log其cleanup error，不再增加private同义wrapper或第二份清理顺序。BoltFFI wrapper release只作为未显式dispose时的best-effort fallback，文档仍要求显式调用。
+- `dispose/close`幂等；重复调用返回`Ok(())`。Rust`Drop`直接调用public`dispose()`并只能structured-log其cleanup error，不再增加private同义wrapper或第二份清理顺序。`BleHub`本身保持Rust-owned，不存在需要Kotlin/Swift关闭的generated Hub wrapper；产品/Tauri若另行导出application wrapper，其lifecycle在BleHub contract之外。
 - close 成功表示 BleHub/backend 持有的逻辑 lifecycle 和 native ownership 已结束，不保证 Windows/Apple 的系统物理链路立即断开，也不关闭 BlueZ daemon 或系统 Bluetooth radio。
-- 每个平台`BleBackend::dispose`本身必须幂等；Rust backend的`Drop`或Swift backend的`deinit`可直接调用同一个`dispose`作为兜底，不另设同义wrapper。Kotlin不能依赖GC/finalizer，必须由Hub确定性调用trait `dispose`。Kotlin生成class自带`AutoCloseable.close()`，Swift wrapper使用ARC/deinit；公开lifecycle method的最终命名与wrapper release顺序必须在Phase 0 spike固定，避免方法名冲突和double release。
+- 每个平台`BleBackend::dispose`本身必须幂等。它在返回前（包括cleanup error路径）必须按顺序：标记backend closed；detach/invalidate native callbacks与correlation；原子取走并显式释放root retained ingress wrapper/strong reference；继续其余best-effort native cleanup；永久禁止恢复ingress。即使application另持有一个backend `Arc`，root ingress也必须已经释放。已排队/在途closure可短暂保留自己的handle并安全收到`Closed`。Rust backend的`Drop`或Swift backend的`deinit`可调用同一个`dispose`兜底；Kotlin不能依赖GC/finalizer。Phase 0必须验证Kotlin destroy/Cleaner与Swift ARC的generated handle release、double-release防护，以及caller保留额外backend owner时的root-handle释放。
 
 ---
 
@@ -1859,7 +1839,7 @@ Rust bridge 对 backend 提供的每个统一 `BleEvent` 只检查：
 2. data enum或tagged-record fallback的唯一variant/body是否合法；不存在第二套外层kind/IDs。
 3. variant必填caller-owned ID/opaque handle是否非零且wire value合法。
 4. bytes/string/collection是否满足FFI安全和实现常量定义的hard size guard。
-5. 通过`EventIngressState.downstream` mutex直接串行尝试交付。
+5. 通过`EventIngressState.inner` mutex原子检查`Active` phase并直接串行尝试交付。
 
 Rust bridge不检查 command 是否 pending、哪个 scan/connection 是 current、state transition 是否允许，也不维护 backend key mapping。
 
@@ -1870,7 +1850,7 @@ Rust bridge不检查 command 是否 pending、哪个 scan/connection 是 current
 - immediate dispatch `Err` 是否严格不产生 event；已同步产生 event 的调用是否必定返回 `Ok(())`。
 - advertisement/notification/passive disconnect 是否携带正确 session IDs。
 - GATT opaque handle 是否只在声明的 connection/GATT session 中使用。
-- close 后 backend 是否停止 emit，或其晚到 callback 是否因 weak upgrade/closed flag 被安全拒绝；`close()` 返回后是否不存在活跃 downstream callback。
+- close后backend是否停止emit，或其晚到callback是否因weak upgrade/closed phase被安全拒绝；`close()`返回后是否不存在活跃downstream callback。
 
 运行时的 duplicate/orphan/stale/timeout 决策由 downstream state machine 使用显式 ID 完成。
 
@@ -1893,11 +1873,11 @@ BleHub 没有 queue，因此不实现 backpressure。直接调用链是 `backend
 
 ### 9.4 Panic 与 native exception
 
-- Rust FFI 导出边界不得让 panic 穿过 FFI；Kotlin/Swift exception/error 同样不得越过 BoltFFI boundary。
+- Rust FFI导出边界不得让panic穿过FFI；Kotlin/Swift exception/error同样不得越过UniFFI boundary。
 - Kotlin/Swift backend method 在 command 被接受/投递前抛出的 exception/error 转换为同步 `Err(CommandDispatchError)`，不得为该 `CommandId` emit event。
 - command已被接受后，平台调用或callback completion中发生的exception/error转换为event `CommandCompleted { error: Some(error) }`；若此前已经发出domain event，也必须保持method返回`Ok(())`。
-- backend callback数据转换失败时：若对应accepted command，产生terminal `CommandCompleted { error: Some(error) }`；若是passive callback且能映射到具体domain failure，在对应domain event的`Result`字段中发送`Err(error)`；无法归入具体domain但仍能安全构造诊断时发送`BackendError { error }`。无法安全构造wire-valid event时只记录out-of-band structured diagnostic，不发送伪造payload。
-- downstream返回`Err(EventSinkError)`或mutex poison映射为`DownstreamFailed { message }`。当前attempt被消费且不得重试；backend继续后续event并正常清理correlation，只有`Closed`才停止push。Rust sink panic是contract violation，不映射成普通dispatch failure；若BoltFFI同步exported wrapper未统一containment，则只在最外层FFI trampoline增加panic guard，防止unwind穿越ABI。
+- backend callback数据转换失败时：若对应accepted command，产生terminal `CommandCompleted { error: Some(error) }`；若是passive callback且能映射到具体domain failure，在对应domain event的显式result-like data enum中发送`Failed { error }`；无法归入具体domain但仍能安全构造诊断时发送`BackendError { error }`。无法安全构造wire-valid event时只记录out-of-band structured diagnostic，不发送伪造payload。
+- downstream返回`Err(EventSinkError)`或mutex poison映射为`DownstreamFailed { message }`。当前attempt被消费且不得重试；backend继续后续event并正常清理correlation，只有`Closed`才停止push。Rust sink panic是contract violation；`EventIngressState::push`必须只在`downstream.on_event(event)`这个最窄边界使用`catch_unwind`，先记录可区分于普通sink rejection的out-of-band violation trace，再返回固定、限长的`DownstreamFailed`。catch发生在ingress mutex guard内部，panic不得向外展开并poison ingress mutex，后续event仍可尝试交付；不得用包围整个exported `BackendEventIngressHandle::push`的catch把内部ingress bug误标为downstream panic。UniFFI generated scaffolding只作其他意外panic不跨ABI的defense-in-depth；runtime与subprocess tests必须证明sink panic不越过ABI、不伪装成`Delivered`且后续push仍可用。
 
 ---
 
@@ -1911,8 +1891,8 @@ BleHub 没有 queue，因此不实现 backpressure。直接调用链是 `backend
 blehub/
 ├── AGENTS.md
 ├── Cargo.toml                          # 批准实施后创建的 Rust workspace
-├── Cargo.lock                          # 锁定 Rust/BoltFFI 依赖
-├── boltffi.toml
+├── Cargo.lock                          # 锁定 Rust/UniFFI 依赖
+├── uniffi.toml                         # Kotlin/Swift binding配置与命名
 ├── pixi.toml
 ├── pixi.lock
 ├── justfile
@@ -1935,9 +1915,9 @@ blehub/
 │   │       ├── backend.rs              # BleBackend contract
 │   │       ├── hub.rs                  # BleHub 装配、dispatch 与 close-once
 │   │       └── ingress/
-│   │           ├── mod.rs              # token、push status 与导出入口
-│   │           ├── state.rs            # close/downstream 串行投递
-│   │           └── registry.rs         # token -> Weak<EventIngressState>
+│   │           ├── mod.rs              # status与审定re-export
+│   │           ├── state.rs            # close/downstream串行投递
+│   │           └── handle.rs           # UniFFI direct handle；只持Weak state
 │   │
 │   ├── blehub-testkit/                 # production crate 不依赖
 │   │   ├── Cargo.toml
@@ -2065,8 +2045,8 @@ blehub/
 
 ### 10.3 依赖与工具 ownership
 
-- Cargo 管理 Rust dependency、feature、workspace build graph 和 `Cargo.lock`；BoltFFI 版本及其 runtime/generator compatibility 随 lockstep ABI 固定。
-- Pixi 管理 Rust、Just、Python、JDK、LLVM、Node.js、RTK、sccache、QEMU/BLESS 等外部开发工具与可复现环境；`pixi.lock` 入库，不要求全局安装 Just、Python、Ruff、RTK、sccache 或 Node.js。Just 的 Cargo/Gradle test recipe 使用 RTK 压缩成功日志并保留失败详情与原始 exit code；RTK 只优化工具输出，不改变测试选择或通过条件。普通 Rust 编译和明确支持的 C/C++ glue 使用 Pixi-managed sccache，并关闭 Cargo incremental，避免 `target` incremental 与 sccache 双份缓存；sccache只减少重复编译，不减少最终库/包必需产物，Swift/Kotlin编译不走sccache。BoltFFI metadata build依赖专用cfg/env改变宏产物，这些输入不能安全依赖普通sccache key区分，因此binding generation必须使用独立Cargo target并绕过sccache，避免复用不含metadata的普通artifact；BoltFFI CLI自身仍在普通sccache-enabled target构建，只隔离较小的metadata依赖图。
+- Cargo管理Rust dependency、feature、workspace build graph和`Cargo.lock`；Stable UniFFI crate、bindgen及language runtime compatibility随lockstep ABI固定。`uniffi.toml`只保存binding配置，不替代lock与artifact manifest。
+- Pixi管理Rust、Just、Python、JDK、LLVM、Node.js、RTK、sccache、QEMU/BLESS等外部开发工具与可复现环境；`pixi.lock`入库，不要求全局安装Just、Python、Ruff、RTK、sccache或Node.js。Just的Cargo/Gradle test recipe使用RTK压缩成功日志并保留失败详情与原始exit code；RTK只优化工具输出，不改变测试选择或通过条件。普通Rust编译和明确支持的C/C++ glue使用Pixi-managed sccache，并关闭Cargo incremental，避免`target` incremental与sccache双份缓存；sccache只减少重复编译，不减少最终库/包必需产物，Swift/Kotlin编译不走sccache。UniFFI scaffolding由锁定的proc macro随普通Cargo build生成；Kotlin/Swift source/header/modulemap由锁定bindgen从同一candidate library生成，不保留BoltFFI metadata专用target或绕过sccache的特殊路径。
 - 根 npm manifest/lock 只管理 Mermaid 文档校验依赖；`examples/tauri-central` 使用自己的 `package.json`/`package-lock.json` 锁定 showcase frontend，不能污染根工具依赖。Node.js 和 `node_modules` 不进入 BleHub core/backend runtime 或发布物；Tauri 只打包构建后的 frontend assets。
 - Tauri CLI/Rust crate 与 frontend dependency 在 example 自己的 Cargo/npm lock 中固定，并由 Pixi + Just recipe 调用；Tauri 不是 BleHub core、platform backend 或 clean consumer 的依赖。
 - 本机工具链根目录按 `BLEHUB_<TOOL>_ROOT` 环境变量、ignored `blehub.local.toml` 的 `[toolchains].<tool>_root`、`~/.cache/blehub/toolchains/<tool>` fallback 顺序解析；CI使用环境变量，开发者可从入库的 `blehub.local.example.toml` 复制本地配置。local TOML只保存机器路径，不保存版本、URL、hash或license状态；这些可复现输入继续固定在入库脚本与lock中。`pixi run just toolchain-paths`报告最终路径及来源。
@@ -2112,7 +2092,7 @@ pixi run -e android just <android-recipe>
 
 ### 11.2 Android / Kotlin
 
-进入production backend前，必须按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)关闭Kotlin/JVM lane的foreign trait长期持有、caller/callback thread attach、token bind/push、exception、close、晚到callback和对象释放blocker。该执行清单不在Plan重复；规范性对象图、Rust-only downstream与12.5 production blocker不变。
+进入production backend前，必须按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)关闭Stable UniFFI Kotlin/JNA lane的foreign trait长期持有、caller/callback thread attach、direct-handle bind/push、exception、close、晚到callback和对象释放blocker。representative fixture已通过；完整ABI candidate仍按12.5重跑。该执行清单不在Plan重复；规范性对象图、Rust-only downstream与production blocker不变。
 
 真实 backend：
 
@@ -2132,7 +2112,7 @@ Android执行层、emulator定位、真机HIL和报告方式由[`docs/testing/RE
 
 ### 11.3 iOS/macOS / Swift
 
-进入CoreBluetooth production backend前，必须按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)关闭Swift lane的generated protocol、foreign object长期持有、token bind/push、serial queue、ARC、exception、close与晚到callback blocker。该执行清单不在Plan重复。
+进入CoreBluetooth production backend前，必须按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)关闭Stable UniFFI Swift lane的generated protocol、foreign object长期持有、direct-handle bind/push、serial queue、ARC、exception、close与晚到callback blocker。representative Apple runtime/XCFramework/SPM gate已通过；完整ABI candidate仍须重跑。该执行清单不在Plan重复。
 
 真实 backend：
 
@@ -2186,94 +2166,84 @@ Impactor 评估：
 
 ### 12.1 装配
 
-不变的架构contract是单入口装配：backend先以inert状态构造，application调用`BleHub::new(backend, rust_sink)`；constructor先执行一次typed capabilities query并缓存结果，再执行一次性ingress bind，只在完整可用后返回Hub。BoltFFI能力只影响这些assembly call和ingress capability如何跨FFI，不改变application API、Rust-only downstream、Weak ownership、close drain或command/event语义。
+不变的架构contract是单入口装配：backend先以inert状态构造，application调用`BleHub::new(backend, rust_sink)`；constructor先执行一次typed capabilities query并缓存结果，再执行一次性direct-ingress bind，只在完整可用后返回Hub。UniFFI只负责foreign backend、exported ingress object和DTO/error如何跨FFI，不改变Rust application API、Rust-only downstream、Weak ownership、close drain或command/event语义。
 
-**理想方案（BoltFFI 支持 #869 后）：**
-
-```text
-BleHub::new
-  -> backend.capabilities() -> validate and cache static metadata
-  -> create Arc<EventIngressState>
-  -> create BackendEventIngressHandle with Weak<EventIngressState>
-  -> backend.bind_event_ingress(handle) exactly once
-  -> backend calls handle.push(event)
-```
-
-该方案没有全局 registry；backend 由 BoltFFI generated wrapper 安全 retain exported Rust class handle。
-
-**v0.1 实施方案（当前 BoltFFI `0.30.1`）：**
+**v0.1实施方案（Stable UniFFI `0.32.0`）：**
 
 ```text
 BleHub::new
   -> backend.capabilities() -> validate and cache static metadata
   -> create Arc<EventIngressState>
-  -> allocate nonzero never-reused BackendEventIngressToken
-  -> backend.bind_event_ingress(token) exactly once
-  -> register token -> Weak<EventIngressState>
+  -> create Arc<BackendEventIngressHandle> with Weak<EventIngressState>
+  -> backend.bind_event_ingress(handle) exactly once while state is Binding
+  -> activate state only if bind succeeded with zero push attempts
   -> return usable BleHub
 
 native callback
-  -> push_backend_event(token, event)
-  -> lock-free snapshot lookup and clone Weak
-  -> upgrade Weak
+  -> retained handle.push(event)
+  -> upgrade Weak<EventIngressState>
   -> EventIngressState::push(event)
 ```
 
-registry 属于 BleHub Rust crate 的 process-local FFI routing 基础设施；每个 Hub 私有持有对应 `BackendEventIngressRegistration`，entry 只持有 `Weak`。token 不是 raw pointer，不包含 `Arc` 地址，不复用，也不进入 `BleEvent`。bind 时尚未注册 token且 backend 必须保持 inert；bind 成功后注册、然后才返回 Hub。close 顺序是 closed/drain -> backend dispose -> unregister；无映射、已注销或 weak upgrade 失败统一返回 `Closed`。
+BleHub project-authored routing没有全局registry、token allocator、registration guard、free push function、raw pointer或整数化`Arc`。UniFFI generated opaque object handle与foreign callback handle map仍是framework-managed实现细节并纳入lifecycle gate。backend通过Stable UniFFI generated wrapper retain exported Rust object；handle只持`Weak`，所以`Hub -> backend -> handle -> state`不形成强引用环。bind `Err`按contract不得retain handle，但rollback必须安全处理retain-before-error违约；bind `Ok`必须retain唯一handle且仍保持inert。state在bind完成前保持`Binding`，任何过早push只返回`Closed`并使activation失败；只有成功bind且零push attempt才切到`Active`。close顺序是phase `Closed`/drain -> backend dispose/release -> backend ownership drop；closed phase或weak upgrade failure统一返回`Closed`。
 
-官方 BoltFFI `0.30.1` 已编译复现 direct-handle 最小形状失败：generator 返回 `unsupported expansion: callback method parameter shape`。根因由上游 [issue #869](https://github.com/boltffi/boltffi/issues/869) 跟踪；expected-failure fixture `spikes/boltffi-class-handle-callback-param/` 保留为升级探针。data token parameter + exported free push function 已固化为production-shaped fixture，并已在Windows Kotlin/JVM、Windows Swift和Android ART/AAR运行；macOS Swift/XCFramework/SPM lane由GitHub Actions执行。各lane的当前结果与未关闭blocker记录在[`docs/research/phase0-token-ingress-runtime-results.md`](../docs/research/phase0-token-ingress-runtime-results.md)。
+representative UniFFI direct-object mechanism fixture已经在Windows Swift host、Android ART/AAR和真实macOS Swift/XCFramework/SPM运行；权威Apple证据为GitHub Actions run `33249751300`。依赖production `blehub` crate的candidate又在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机与x86_64模拟器实际覆盖`Weak<EventIngressState> -> Rust BleEventSink`、capabilities/version、binding phase、constructor rollback、retain-before-error、backend root release、close drain、panic containment和10,000次lifecycle，并由Android published-AAR consumer加载。真实macOS production candidate、最终Apple package、完整event wire和性能/package gate仍未完成。完整结论、Windows JNA checksum carrier约束与Android JNA性能取舍见[`docs/research/ffi-lifecycle-concurrency.md`](../docs/research/ffi-lifecycle-concurrency.md)和[`docs/research/uniffi-vs-boltffi-for-blehub.md`](../docs/research/uniffi-vs-boltffi-for-blehub.md)。
 
-**未来迁移边界：**
+BoltFFI token、#869 direct-handle probe、#872 unchecked-exception与token-ACK fixture保留在`spikes/`和research中作为迁移历史、benchmark与rollback evidence，不再定义production contract，也不得与UniFFI入口并存。迁移实施必须一次性协调Rust annotations、generated Kotlin/Swift bindings、Android AAR、Apple package、consumer与contract version，防止event重复上送或新旧产物混装。
 
-1. 升级到修复 #869 的 BoltFFI revision，使 expected-failure fixture 转为 pass。
-2. 用 Kotlin/Swift spike 验证 class wrapper retain/release、跨线程 push、bind failure/repeated bind 和 close race。
-3. 保持 `BleHub::new`、`bind_event_ingress` method 名、inert/bind/rollback 语义及所有 event DTO 不变；仅把参数从 `BackendEventIngressToken` 改为 `BackendEventIngressHandle`，backend 调用从 `push_backend_event(token, event)` 改为 `handle.push(event)`。
-4. 协调升级所有 generated backend binding并提升 backend ABI version；迁移完成后删除 token allocator、registry、registration guard 和 free push function。
-5. 不同时保留两套长期入口；需要过渡兼容期时必须单独评审，防止 event 重复上送。
-
-`spikes/boltffi-lifecycle/` 的旧 builder runtime spike 只是 exported class wrapper retain/release、跨线程 push、Weak state、close race 的部分历史证据。它使用 foreign sink、由 application 先取 ingress 再构造 backend，既不证明 v0.1 token registry 对象图，也不证明未来 direct-handle assembly。v0.1 不恢复 builder，也不使用 raw pointer。
-
-Kotlin wrapper 是 `AutoCloseable` 且没有 Cleaner/finalizer fallback；Swift wrapper 使用 ARC `deinit`。logical `dispose()` 与 wrapper `close()/deinit` 是两层 lifecycle，必须各自幂等且按顺序验证。领域 command/event 协议不受装配形状影响。
+logical `dispose()`与UniFFI wrapper/native handle release是两层lifecycle，必须各自幂等并按顺序验证。Kotlin不能依赖GC/finalizer，Swift不能只依赖ARC时机；领域command/event协议不受装配实现变化影响。
 
 ### 12.2 所有权
 
 - `BleHub`强持有backend trait object、constructor-cached`BackendCapabilities`和唯一的`Arc<EventIngressState>` owner。
-- `EventIngressState` 强持有 downstream `BleEventSink`，直到 close 在 downstream mutex 下将其 `take()`。
-- v0.1 backend只持有opaque `BackendEventIngressToken`；process-local registry entry只持有`Weak<EventIngressState>`，不反向延长Hub/downstream生命周期。token是trusted-process内防stale误路由的opaque ID，不是认证、sandbox或不受信任plugin隔离边界；BleHub v0.1只接受同进程可信backend。未来direct-handle方案由wrapper直接持有同一个`Weak`。
-- application强持有BleHub，直到自行把pending command projection标记为`AbandonedByDispose`，再显式调用本地`dispose/close`；Kotlin使用生成wrapper的确定性close/use，Swift必须验证显式dispose后ARC release顺序。
+- `EventIngressState`强持有downstream `BleEventSink`，并与phase和bind-push违约标记一起由ingress mutex保护，直到close在该mutex下切换`Closed`并将sink `take()`。
+- backend retain `Arc<BackendEventIngressHandle>`；handle只持有`Weak<EventIngressState>`，不反向延长Hub/downstream生命周期。handle是同进程可信backend的capability object，不是认证、sandbox或不受信任plugin隔离边界；BleHub v0.1只接受同进程可信backend。
+- Rust application强持有Rust-owned `BleHub`，直到自行把pending command projection标记为`AbandonedByDispose`，再显式调用本地`dispose/close`。UniFFI不导出`BleHub`本身；它只生成foreign backend callback-interface handle和exported ingress-object wrapper。Kotlin/Swift backend分别以确定性destroy/release或ARC强引用管理其root ingress wrapper。
 - 一个backend对象只能绑定一个Hub。v0.1不承诺同一进程中多个backend安全共享同一physical adapter；platform backend factory必须串行化/拒绝冲突生命周期，默认第二个active owner返回`BleHubError::ResourceBusy { detail }`。若未来支持共享，process-scoped coordinator、scan/connection/notification仲裁和dispose引用计数必须在core之外单独评审。OS其他进程造成的共享及BlueZ设备级`Disconnect()`副作用无法由Hub隔离，需平台文档明确提示。
-- `dispose/close` 通过 exclusive command/close gate 阻止新发令，置位 closed flag，在 downstream mutex 下排空 callback并释放 sink，然后调用 backend local dispose、注销 token entry并释放 backend ownership；不等待或生成 command completion。
+- `dispose/close`通过exclusive command/close gate阻止新发令，在ingress mutex下排空callback、切换phase为`Closed`并释放sink，然后调用backend local dispose并释放backend/retained-handle ownership；不等待或生成command completion。
 - 由于 sink 禁止同步重入同一个 BleHub，close 等待 delivery mutex 不会形成合法路径上的自锁。
-- close 后 platform callback 仍可能短暂到达；closed state、missing token 或 weak upgrade failure 必须使其返回 `Closed`，不访问已释放 sink。
+- close后platform callback仍可能短暂到达；closed phase或weak upgrade failure必须使其返回`Closed`，不访问已释放sink。
 
 ### 12.3 线程安全
 
-- BleHub exported class、foreign `BleBackend` trait object 与 Rust `BleEventSink` trait object 均以可跨线程使用为目标；Rust API 声明 `Send + Sync`。BoltFFI 只负责前两者的 Kotlin/Swift 生成与生命周期，Rust sink 的线程安全由 Rust 类型系统和 contract tests 验证。
-- 导出方法使用 `&self + interior mutability`。
+- Rust-owned `BleHub`、foreign `BleBackend` trait object、exported `BackendEventIngressHandle`与Rust `BleEventSink` trait object均以可跨线程使用为目标；Rust API声明`Send + Sync`。UniFFI只负责foreign backend callback interface、ingress object和公共DTO/error的Kotlin/Swift生成与生命周期；Rust Hub/sink的线程安全由Rust类型系统和contract tests验证。
+- exported ingress method使用 `&self + interior mutability`；`BleHub`无需为了native backend装配而导出。
 - 不采用 `single_threaded` 逃避线程安全，除非平台强约束且有验证。
 - backend trait implementation 在调用方进入 BleHub command 的线程被同步调用；BleHub 不指定或创建调用线程。
-- `push_backend_event(token, event)` 可以从 WinRT callback、JVM callback、DispatchQueue 和 D-Bus callback context 调用；ArcSwap snapshot guard 在进入 per-Hub state 前释放。
+- `BackendEventIngressHandle::push(event)`可以从WinRT callback、JVM callback、DispatchQueue和D-Bus callback context调用；handle在同一线程upgrade `Weak`并进入per-Hub state。
 - downstream sink 接受同一 callback context 的同步调用，并负责立即 dispatch；同一 hub 的 delivery 由 backend/bridge contract 串行化。
 
 ### 12.4 FFI 数据约束
 
 - 只跨 FFI 传 primitives、String、Vec、Option、data record 和受支持 enum。
 - 不跨 FFI 传借用、native pointer、Mutex guard 或 Rust lifetime。
-- UUID wire shape 初版使用规范字符串；BoltFFI type mapping 可映射到 Swift/Kotlin UUID。
+- UUID wire shape初版使用规范字符串；只有Stable UniFFI custom type mapping在Kotlin/Swift均通过generated API snapshot与runtime consumer后，才可映射为native UUID。
 - bytes使用`Vec<u8>`/native byte array。一次`WriteCharacteristicCommand`对应一次native characteristic write；BleHub/backend不做隐式应用层分片、重组或long-write业务协议。超过公共wire hard limit在accepted前返回`InvalidRequest`；wire合法但超过当前connection/platform有效write limit，在accepted后terminal `Gatt/Protocol` failure。
-- native callback中的borrowed buffer、`NSData`、JNI byte array、WinRT buffer或D-Bus message view必须在其native frame/lifetime结束前复制或移动为owned payload，再跨线程、排队或调用Rust ingress；禁止以original length描述已截断的fixed buffer。payload ownership、边界长度与callback返回后的可读性必须有跨语言runtime test。
+- native callback中的borrowed buffer、`NSData`、JNA/JNI byte array、WinRT buffer或D-Bus message view必须在其native frame/lifetime结束前复制或移动为owned payload，再跨线程、排队或调用Rust ingress；禁止以original length描述已截断的fixed buffer。payload ownership、边界长度与callback返回后的可读性必须有跨语言runtime test。
 - ATT attribute上限、negotiated MTU和with/without-response有效write length是不同概念。v0.1不提供MTU command；实现阶段必须按operation固定bytes/string/collection/GATT-tree hard guard常量和boundary tests，避免超大FFI allocation，但这些guard不能被描述成negotiated MTU。
-- native pointer、WinRT object、Android object/address policy、CoreBluetooth object和BlueZ object path留在backend private map；公共边界只传typed opaque ID。公开error和默认structured tracing必须限制长度并redact raw device address、object path、ingress token和完整advertisement/GATT payload；原始业务bytes只交付给显式downstream，不默认写日志。
-- v0.1采用lockstep packaging：Rust core、BoltFFI generated bindings、Kotlin/Swift backend和public DTO/closed enum必须来自同一contract/ABI major。trait method、DTO字段或closed-enum variant变化均提升ABI major并整体重新生成，禁止新旧产物混装。若未来需要backend独立升级，必须在构造foreign trait object之前增加factory-level version handshake；仅在`BackendCapabilities`增加version字段不能保护trait ABI。
+- native pointer、WinRT object、Android object/address policy、CoreBluetooth object和BlueZ object path留在backend private map；公共边界只传typed opaque ID。公开error和默认structured tracing必须限制长度并redact raw device address、object path和完整advertisement/GATT payload；原始业务bytes只交付给显式downstream，不默认写日志。
+- v0.1采用lockstep packaging：Rust core、Stable UniFFI generated bindings、Kotlin/Swift backend和public DTO/closed enum必须来自同一contract/ABI major。trait method、DTO字段或closed-enum variant变化均提升ABI major并整体重新生成，禁止新旧产物混装。若未来需要backend独立升级，必须在构造foreign trait object之前增加factory-level version handshake；仅在`BackendCapabilities`增加version字段不能保护trait ABI。
 - 每个平台package recipe必须断言artifact中的expected native library/architecture或ABI目录、contract ABI major、generator/runtime revision和manifest，拒绝missing/duplicate native entry与重复symbol/library；解包检查之后仍必须由artifact-only clean consumer实际运行backend assembly、一次callback ingress和显式close，不能以文件存在代替可消费性。
 
 ### 12.5 需要 spike 验证
 
-本地源码审计与使用官方`0.30.1`的`spikes/boltffi-class-handle-callback-param/`已验证：当前锁定release对foreign trait method接收exported Rust class handle返回`unsupported expansion: callback method parameter shape`，上游[issue #869](https://github.com/boltffi/boltffi/issues/869)是已确认的generator能力缺口。它阻塞未来 direct-handle 迁移，但不单独阻塞 v0.1 token routing；generator 接受语法也不能替代运行时 ownership、线程、关闭与释放证明。
+Stable UniFFI `0.32.0` representative direct-object mechanism已通过desktop Kotlin/JVM、Windows Swift host、Android ART/AAR与macOS Swift/XCFramework/SPM gate。production candidate又在Windows Kotlin/JVM、Windows Swift、Android ART真机/模拟器和published AAR consumer通过最终BleHub weak-ingress对象图的适用Phase 0 gate。Windows Kotlin/JNA因C `uint16_t` checksum carrier高位未可靠清零，仅该配置使用`omit_checksums = true`，并以未省略checksum的参考binding独立验证全部17个低16位checksum和两个精确contract version；Android与Swift保留normal generated checksum checks。当前结果不冻结完整production ABI，也不替代真实macOS production candidate、最终public DTO/event payload、performance与package验证。
 
-v0.1 在 Phase 4 production ABI freeze 前必须以desktop Kotlin/JVM、Android ART/AAR与macOS Swift **isolated FFI packaging spike consumer** 对**完整ABI candidate**证明最终 token 对象图：一次 capabilities query、inert backend 的一次性 bind、bind 期间零 push、非零且永不复用的 token、只持 `Weak` 的 registry、不会跨入 state/downstream/foreign code 的 snapshot guard、native callback 到 Rust-only downstream 的完整路径，以及 rollback、close drain、late callback、跨线程 race、重复 lifecycle、typed error/event shape、payload ownership、性能和 packaging。这些 consumer 位于对应 `spikes/` 树，只验证 FFI mechanism/package isolation，不替代 Phase 2–6 的 `tests/consumers/<platform>` release consumer。
+v0.1在Phase 4 production ABI freeze前必须以desktop Kotlin/JVM、Android ART/AAR与macOS Swift **isolated FFI packaging spike consumer** 对**完整ABI candidate**重新证明：
 
-任一 crash、UAF、double free、永久死锁、stale-event 误投、token/registry/reference 泄漏，未声明 native exception 或 Rust panic 穿越 ABI/伪装为成功，bind/registration failure 暴露半成品 Hub，close 后仍接纳 callback，cleanup 执行多次，或 isolated FFI packaging spike consumer 无法仅从产物构建运行，均阻塞 production ABI。完整 case、计数器、性能门槛、语言 lane 与 future direct-handle probe 见 [`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)。
+- capabilities成功、typed/undeclared failure、invalid `contract_version`/metadata，以及只查询一次并在bind前校验；
+- inert backend的一次性bind、bind期间零push、成功retain唯一handle、typed/undeclared bind failure、repeated bind，以及“先retain再返回error”的对抗路径；
+- rollback先close/drain再best-effort dispose，cleanup failure不覆盖原assembly error；
+- handle只持`Weak<EventIngressState>`，native callback完整到达Rust-only downstream，并以state/sink/handle/wrapper计数证明没有隐藏强环；
+- backend `dispose()`在所有返回路径主动释放root ingress，即使caller另持有backend `Arc`；queued/in-flight closure只可暂存自己的handle并在close后收到`Closed`；
+- command/close、push/close、root-release/queued-callback race，close drain、late callback与10,000次重复lifecycle；
+- sink rejection、mutex poison恢复和Rust downstream panic containment；panic必须产生独立out-of-band violation trace并向foreign backend返回`DownstreamFailed`；
+- callable error、`Option<BleEventError>`、`ScanStopResult`、`ConnectionStateResult`、`NotificationState`和完整`BleEventPayload`的generated API/runtime round-trip；
+- foreign callback frame结束后的payload ownership、绝对throughput、payload/tail/close latency、package size和artifact-only packaging。
+
+Stable Kotlin/JNA相对direct JNI的已知开销已作为框架选择取舍接受，但final candidate仍须防止绝对性能退化到不适合BLE workload。这些consumer位于对应`spikes/`树，只验证FFI mechanism/package isolation，不替代Phase 2–6的`tests/consumers/<platform>` release consumer。
+
+任一crash、UAF、double free、永久死锁、stale-event误投、handle/reference泄漏，未声明native exception或Rust panic穿越ABI/伪装为成功，invalid contract metadata被接受，bind failure暴露半成品Hub，backend dispose后仍拥有root ingress，close后仍接纳callback，cleanup/final-free执行多次，完整data enum/error无法无歧义生成，或isolated FFI packaging spike consumer无法仅从产物构建运行，均阻塞production ABI。完整case、计数器、性能门槛、language lane与historical BoltFFI comparison见[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)。
 
 ---
 
@@ -2292,7 +2262,7 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 - [Windows mapping、scripted integration 与 HIL](../docs/testing/windows.md)
 - [Managed Peripheral、provider 与硬件 spike](../docs/testing/managed-peripheral.md)
 - [Linux Phase 6 开发、双 VM 与 HIL](../docs/testing/linux.md)
-- [FFI token/direct-handle spike catalog](../docs/testing/ffi-spikes.md)
+- [FFI direct-handle 与历史框架对比 spike catalog](../docs/testing/ffi-spikes.md)
 
 ---
 
@@ -2300,30 +2270,33 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 
 ### Phase 0：Windows-first 工具链、FFI mechanism 与测试骨架
 
+**状态：完成（Windows/Android mechanism Go）。** Apple production-candidate runtime/package按当前用户指令延后到Phase 5前；该延期不表示Apple通过，也不冻结ABI。
+
 工作：
 
-- 在现有 Pixi/Just/官方文档更新工具基础上创建 Cargo workspace 和 BoltFFI 配置。
-- 建立最小 `BleBackend`、`BackendEventIngressToken`、process-local `token -> Weak<EventIngressState>` registry、exported `push_backend_event`、Rust downstream `BleEventSink` 与 `BleHub` 闭环；不得使用 raw pointer 或把 `Arc` 地址编码为 token。
+- 在现有Pixi/Just/官方文档更新工具与Cargo workspace基础上锁定Stable UniFFI `0.32.0`和binding配置；先迁移当前BoltFFI annotations/build，再继续扩展contract。
+- 建立最小`BleBackend`、只持`Weak<EventIngressState>`的exported `BackendEventIngressHandle`、Rust downstream `BleEventSink`与`BleHub`闭环；删除production token、registry、registration guard和free push function，不保留双入口。
 - 建立独立 `blehub-testkit` crate，提供 FakeBackend、EventScenario builder、recording sink 和 reference projection；最小 scan/connect scenario 必须经真实 ingress/bridge 注入。
-- 按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)使用**representative production-shaped** contract执行Windows Kotlin/JVM、Android ART/AAR与macOS Swift host的generation、runtime、race、typed error/event、panic/exception、性能和 isolated FFI packaging spike-consumer mechanism gate；它验证对象图与wire/macro策略，不冻结完整production ABI，也不替代后续平台 release consumer。保留#869 direct-handle expected-failure probe；它阻塞未来删除registry，不阻塞token路径的独立验证。旧builder spike只作历史证据。
+- 已按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)完成BoltFFI/UniFFI representative comparison；Stable UniFFI representative fixture在Android ART/AAR与macOS Swift/XCFramework/SPM通过机制gate。最终BleHub对象图candidate已在desktop Kotlin/JVM、Windows Swift、Android真机与模拟器重跑`Weak<EventIngressState> -> Rust BleEventSink`、capabilities、binding phase、rollback、root-handle release、close drain和Rust panic containment。Apple production candidate recipe/CI step已准备但延后执行；历史BoltFFI probe只作rollback/benchmark evidence。
 - 建立 Windows-first doctor、fmt、check、clippy、test recipes，并按[共享测试执行指南](../docs/testing/README.md)建立 contract/bridge 与 portability lane。
 
 退出条件：
 
 - Windows 上一条命令运行全部 contract/bridge 检查，最小扫描和连接 scenario 可执行；conformance 证明 immediate `Err` 后零 event、event 后只能 `Ok`、accepted command 的最终成功/失败只走 event。
-- `BleHubError`、`CommandDispatchError`和event-data `BleEventError`实现`std::error::Error`。`Option<BleEventError>`、`Result<ScanStopReason, BleEventError>`、`Result<ConnectionState, BleEventError>`、`NotificationState`、`BackendError`和统一event的BoltFFI wire/macro策略完成desktop Kotlin/JVM、Android ART/AAR、Windows Swift与macOS Swift/package generation/runtime验证，但字段全集和production ABI尚未冻结。
-- representative token assembly/push路径可为desktop Kotlin/JVM、Android ART和macOS Swift生成、运行和由isolated FFI packaging spike consumer消费；capabilities、bind、failure-atomic registration/command rollback、callback payload在foreign frame结束后仍有效、close、跨线程callback、stale/missing token与push/unregister/close race符合12.5。
-- token在进程生命周期内不复用；10,000次lifecycle后registry、backend、state、sink和wrapper计数回到baseline，close排空in-flight downstream callback且晚到event安全返回`Closed`。
-- 未声明Kotlin/Swift exception和Rust panic不得越过ABI或伪装为command success/`Delivered`。Phase 0通过只表示token/object-graph mechanism Go；任何mechanism blocker必须在进入Phase 1前修复或触发方案重审，完整catalog仍须对Phase 1后的ABI candidate重跑。
+- Phase 0 minimal callable error、event-data error和scan/connect event enum在Rust、desktop Kotlin/JVM、Android ART/AAR和Windows Swift完成generation/runtime验证；完整`Option<BleEventError>`、`ScanStopResult`、`ConnectionStateResult`、`NotificationState`、`BackendError`与统一event字段集属于Phase 1 ABI candidate，Apple runtime/package延后到Phase 5前，production ABI尚未冻结。
+- production direct-handle assembly/push路径已在desktop Kotlin/JVM、Android ART/AAR consumer和Windows Swift生成运行；`BackendCapabilities.contract_version`、capabilities、bind、retain-before-error、failure-atomic command/assembly rollback、close、跨线程callback、late handle与push/close race符合Phase 0适用case。Apple production candidate和完整artifact manifest/package gate明确延后，不记为已通过。
+- backend `dispose()`在typed/undeclared cleanup failure与caller额外保留backend `Arc`时仍主动释放root ingress；queued/in-flight closure只暂存自己的handle并在close后得到`Closed`。
+- 10,000次lifecycle后backend、ingress handle、state、sink和wrapper计数回到baseline，close排空in-flight downstream callback且晚到event安全返回`Closed`。
+- 未声明Kotlin/Swift exception和Rust panic不得越过ABI或伪装为command success/`Delivered`。Phase 0通过只表示Stable UniFFI direct-handle/object-graph mechanism Go；任何mechanism blocker必须在进入Phase 1前修复或触发方案重审，完整catalog仍须对Phase 1后的ABI candidate重跑。
 
 ### Phase 1：平台无关薄契约与 FFI bridge
 
 工作：
 
 - 定义 caller-owned 与 backend-owned ID、6.2 完整 command、event、error 和 capability DTO，包括 optional-command passive `ScanStopped`、`NotificationMode` 与 `NotSupported`。
-- 实现只持有backend、constructor-cached`BackendCapabilities`、`Arc<EventIngressState>`和command/close gate的薄`BleHub`；state以closed flag + `Mutex<Option<Box<dyn BleEventSink>>>`统一承担lifecycle、串行delivery、close drain和sink release，backend handle只持有`Weak`。实现无`CommandId`/无event的幂等local dispose，不实现`ShutdownCommand`。
+- 实现只持有backend、constructor-cached`BackendCapabilities`、`Arc<EventIngressState>`和command/close gate的薄`BleHub`；state以单个`Mutex<{ Binding | Active | Closed, bind violation, downstream }>`统一承担assembly activation、lifecycle、串行delivery、close drain和sink release，backend handle只持有`Weak`。实现无`CommandId`/无event的幂等local dispose，不实现`ShutdownCommand`。
 - 所有 public command 同步接收完整 request、原样调用 backend 并返回 `Result<(), CommandDispatchError>`；`Ok` 仅表示 accepted，`Err` 表示未进入事件生命周期。
-- backend提供的统一`BleEvent`只有一层variant/IDs；bridge校验唯一variant/body、ID/wire/size后直接交给downstream sink，不合成domain event、不增加sequence，也不为dispatch `Err`生成事件。BoltFFI需要fallback时只把这一层降为tagged record。
+- backend提供的统一`BleEvent`只有一层variant/IDs；bridge校验唯一variant/body、ID/wire/size后直接交给downstream sink，不合成domain event、不增加sequence，也不为dispatch `Err`生成事件。Stable UniFFI目标语言生成质量需要fallback时只把这一层降为tagged record。
 - 建立测试用 downstream projection，验证 caller 调用前登记 ID、immediate rejection、backend at-most-one terminal、accepted-and-resolved scenario terminal、caller exactly-one outcome、stale、duplicate、orphan 和 timeout race；projection 不进入 BleHub crate 的 production state。
 - 完成 adapter、scan、connection、GATT 和 notification conformance scenario，包括同native identity跨scan复用opaque ID、duplicate UUID instance不合并、event-before-command-return、timeout后late callback不命中新operation、subscription rollback与callback-first cleanup。
 - 固定共享 backend conformance 场景和 caller responsibility 文档。
@@ -2343,8 +2316,9 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 - 让 `WindowsBackend` 直接实现 `BleBackend`，建立 private mapping fixtures；只有真实调用点需要时才增加窄 native adapter，不复制第二套 backend trait。
 - 接入 `windows-rs` adapter/radio、scan、logical connect/disconnect、GATT 和 notify；connected RSSI 明确 capability false 并以 `NotSupported` 完成，不伪造实现。
 - 完成 HRESULT/error mapping、本地幂等 dispose、必要WinRT child handle retention、callback-first/child-to-parent清理和 `tests/consumers/windows` 独立 Cargo console consumer；consumer 只使用 staged crate，不以 workspace/path dependency 代替 packaging 验证。mapping覆盖logical/native disconnect evidence、duplicate GATT instance和synthetic scan observation。仅在 WinRT seam 证明必要时使用 OS callback/thread pool 或调用方注入的执行上下文，BleHub core 不创建 worker/runtime。
-- 硬件到货前按 [Windows 测试指南](../docs/testing/windows.md)完成共享 conformance、mapping、scripted integration、package 与全部无硬件 backend 工作。
-- 硬件到货后按 [Managed Peripheral 指南](../docs/testing/managed-peripheral.md)先完成 Windows QEMU USB passthrough 实机 spike，再执行 BLESS HIL smoke、至少 100 次扫描/连接 soak 和至少一个非 BLESS 参考外设 smoke；provider fallback 遵循第 13 节。
+- Phase 2开发期先使用已验证的Android真机LightBlue Peripheral做Windows真实RF smoke：扫描/广告、连接、GATT discovery、read、write with/without response、subscribe/unsubscribe，以及人工触发notification。该fixture可验证真实WinRT路径和基础BleHub event映射，但不能确定性制造failure、duplicate、late/stale callback、被动断连，也不能替代自动notification、资源泄漏和soak gate。
+- USB适配器到货前按[Windows测试指南](../docs/testing/windows.md)完成共享conformance、mapping、scripted integration、package和可由LightBlue支持的真实backend smoke。
+- USB适配器到货后按[Managed Peripheral指南](../docs/testing/managed-peripheral.md)完成Windows QEMU USB passthrough实机spike，再执行BLESS HIL smoke、至少100次扫描/连接soak和至少一个非BLESS参考外设smoke；provider fallback遵循第13节。LightBlue开发smoke不满足该退出条件。
 
 退出条件：
 
@@ -2357,11 +2331,11 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 
 工作：
 
-- 在 Phase 0 Kotlin/JVM 证据基础上完成 Android Runtime、Handler/Looper、JNI 装载和 callback thread 生命周期验证；未声明 exception 伪装成功仍是 production blocker。
+- 在Phase 0 Stable UniFFI证据基础上完成Android Runtime、Handler/Looper、JNA native library装载和callback thread生命周期验证；未声明exception伪装成功仍是production blocker。
 - 建立显式 `android-bootstrap <sdk-root>` 与 `android-doctor`，固定并验证 Android SDK/NDK、Rust targets、Gradle Wrapper/AGP/Kotlin、国内镜像、checksum、dependency verification/lock 和 license 流程；普通 build/test 不静默下载安装。
-- 创建 Android Gradle production library；Kotlin实现`BleBackend`并仅保存`BackendEventIngressToken`，通过exported`push_backend_event`上送；实现permission、scan failure、connect、带generation correlation的per-connection串行GATT、read/write、failure-atomic notification/indication、connected RSSI和explicit idempotent dispose。
-- 使用BoltFFI生成binding/JNI，运行共享conformance，并组装可被独立Rust-application integration consumer使用的AAR；package recipe断言ABI目录、native entry、contract/generator/runtime manifest和无duplicate library/symbol。`tests/consumers/android` 使用独立 Gradle build 和最小产品 Rust adapter，只消费同一 candidate 中 staged 的 BleHub Rust crate 与 Android AAR，不使用 workspace/path、`project(...)` 或源码树产物，并实际运行assembly、callback ingress和close。其 Kotlin UI 只调用 consumer 自己的产品 Rust adapter，不把 Rust-only `BleEventSink` 扩展成 BleHub native consumer API。
-- 非 production-ABI gate：Android clean consumer 通过后，可在 `spikes/tauri-downstream` 验证 Tauri Windows/Android app 中的 Rust image、AAR/JNI loading、native backend assembly、Activity/Context、permission、reload/suspend/close、late callback 与 WebView event throughput；spike 不以 Tauri mobile JSON command/event 代替 BoltFFI。只有机制获得 Go 后才创建 `examples/tauri-central` 的 Windows/Android target。
+- 创建Android Gradle production library；Kotlin实现`BleBackend`并retain唯一`BackendEventIngressHandle`，真实`ScanCallback`/`BluetoothGattCallback`通过`handle.push`上送；实现permission、scan failure、connect、带generation correlation的per-connection串行GATT、read/write、failure-atomic notification/indication、connected RSSI和explicit idempotent dispose。
+- 使用Stable UniFFI生成Kotlin/JNA binding，运行共享conformance，并组装可被独立Rust-application integration consumer使用的debug与release/minified AAR；package recipe断言ABI目录、native entry、contract/generator/runtime manifest、JNA传递依赖、R8/consumer rules和无duplicate library/symbol，并重跑final performance/package-size gate。`tests/consumers/android`使用独立Gradle build和最小产品Rust adapter，只消费同一candidate中staged的BleHub Rust crate与Android AAR，不使用workspace/path、`project(...)`或源码树产物，并实际运行assembly、callback ingress和close。其Kotlin UI只调用consumer自己的产品Rust adapter，不把Rust-only `BleEventSink`扩展成BleHub native consumer API。
+- 非production-ABI gate：Android clean consumer通过后，可在`spikes/tauri-downstream`验证Tauri Windows/Android app中的Rust image、AAR/JNA loading、native backend assembly、Activity/Context、permission、reload/suspend/close、late callback与WebView event throughput；spike不以Tauri mobile JSON command/event代替UniFFI。只有机制获得Go后才创建`examples/tauri-central`的Windows/Android target。
 - 按[共享测试执行指南](../docs/testing/README.md)先完成 JVM/Android deterministic、emulator fake-backend 与 packaging 层，再以 Android 真机通过真实 RF 连接[项目 managed peripheral](../docs/testing/managed-peripheral.md)完成第 15 节要求的 HIL；模拟器不作为真实 BLE 验收。
 
 退出条件：
@@ -2387,24 +2361,25 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 退出条件：
 
 - 第15节全部Windows/Android验收项通过；硬件skip、infrastructure failure或未执行项不得记为通过。
-- 对完整ABI candidate重跑12.5与[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)全部适用case；Kotlin/JVM、macOS Swift host、Android ART/AAR、isolated FFI spike-consumer 和 platform release clean-consumer evidence 齐全，零未关闭production blocker。
+- 对完整Windows/Android ABI candidate重跑12.5与[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)全部当前适用case；Kotlin/JVM、Windows Swift补充host、Android ART/AAR、isolated FFI spike-consumer和两个platform release clean-consumer evidence齐全，零未关闭Windows/Android production blocker。真实macOS production candidate/package不阻塞本阶段，必须在Phase 5开始实现CoreBluetooth前补跑。
 - Windows crate与Android AAR分别由 `tests/consumers/windows` 和 `tests/consumers/android` 验证；它们不依赖源码树，core、generated binding、backend package的ABI major、generator/runtime revision和artifact manifest lockstep一致，混装被确定性拒绝。
 - panic/native exception containment、failure-atomic assembly、close drain、10,000次lifecycle、长扫描、高频notification、反复重连和第15节HIL/stress报告均可追踪。
 - 仅在以上条件全部满足后冻结Windows+Android v0.1 production ABI、发布candidate并进入release流程。
 
 ### Phase 5：iOS + macOS
 
-- 按 [`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md) 关闭 Swift/BoltFFI lifecycle、ARC、queue、exception、packaging blocker。
+- Apple backend消费Phase 4已冻结的core contract与同一Stable UniFFI major；若为Apple修改trait、DTO、error或closed enum，必须重新打开ABI audit、提升contract/ABI version并重跑受影响的Windows/Android/Apple candidate gate，不能把Apple适配静默写回已冻结contract。
+- 在开始CoreBluetooth production实现前，先按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)对冻结contract的完整candidate补跑此前延后的真实macOS Stable UniFFI Swift lifecycle、ARC、queue、exception和XCFramework/SPM packaging gate；representative direct-handle Apple gate已通过，但不替代本次production candidate，也不替代CoreBluetooth、签名、设备安装或BLE/RF gate。
 - 实现CoreBluetooth backend，保持统一contract与caller-owned execution model；delegate/ARC state固定在serial queue，GATT使用native instance-backed opaque ID，read与notification严格分离，并验证callback-first teardown、delegate queue重入和late callback。
 - 按[共享测试执行指南](../docs/testing/README.md)先通过 Swift/shared conformance、mapping、scripted 与 simulator fake-backend 层，再使用真实 iPhone/iPad/Mac 和[同一 managed peripheral](../docs/testing/managed-peripheral.md)完成 HIL；simulator 不作为真实 CoreBluetooth/RF 验收。
 - 输出XCFramework + Swift Package；package recipe断言slice/architecture、native entry、contract/generator/runtime manifest和无duplicate library/symbol。`tests/consumers/apple/ios`与`tests/consumers/apple/macos`各自拥有独立产品Rust adapter、manifest、lock和build graph，并仅从同一批staged Rust/Apple artifacts实际运行assembly、callback ingress和close。
-- 非 Apple artifact release gate：Apple clean consumers 通过后可扩展 `spikes/tauri-downstream` 的 macOS/iOS assembly 与 lifecycle 证据；Go 时为 `examples/tauri-central` 增加 Apple target，仍使用 Swift/CoreBluetooth backend + BoltFFI，不发布通用 Tauri plugin，也不把 Windows 上可编译的纯 Swift 误当作 CoreBluetooth/Apple packaging 证据。
+- 非Apple artifact release gate：Apple clean consumers通过后可扩展`spikes/tauri-downstream`的macOS/iOS assembly与lifecycle证据；Go时为`examples/tauri-central`增加Apple target，仍使用Swift/CoreBluetooth backend + Stable UniFFI，不发布通用Tauri plugin，也不把Windows上可编译的纯Swift误当作CoreBluetooth/Apple packaging证据。
 
 退出条件：
 
 - CoreBluetooth backend 不修改核心领域语义即可通过 Apple shared conformance、mapping、scripted、simulator 与要求的真实设备/HIL 验证。
 - `tests/consumers/apple/ios` 与 `tests/consumers/apple/macos` 分别只使用同一批 staged Rust/Apple candidate 构建运行；任一 consumer 失败都阻塞对应 Apple artifact 发布。
-- Swift/BoltFFI lifecycle、ARC、queue、exception、close 与 packaging blocker 全部关闭；Tauri spike/showcase 状态不阻塞 Apple artifact release。
+- Stable UniFFI Swift lifecycle、ARC、queue、exception、close与packaging blocker全部关闭；Tauri spike/showcase状态不阻塞Apple artifact release。
 
 ### Phase 6：Linux
 
@@ -2451,7 +2426,7 @@ Windows 和 Android 均需在真实 BLE 外设上完成：
 18. Windows 使用至少一个非 BLESS 的真实参考外设通过 smoke，避免只适配测试外设。
 19. `tests/consumers/windows` 与 `tests/consumers/android` 只使用同一批 staged/release candidate 构建运行，不依赖源码路径、Gradle project dependency、未打包本地产物或 workspace feature unification。
 
-Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Windows/Android native loading、backend assembly、reload/suspend/close、late callback 和 event throughput 结论；Go 时 `examples/tauri-central` 完成 Rust-owned command/state/event 闭环，且不以 Tauri JSON mobile bridge 替代 `BleBackend`/BoltFFI。spike 未完成或 No-Go 不阻塞 production ABI，也不得通过修改公共 contract 掩盖；须保存证据并延后 showcase。
+Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Windows/Android native loading、backend assembly、reload/suspend/close、late callback 和 event throughput 结论；Go 时 `examples/tauri-central` 完成 Rust-owned command/state/event 闭环，且不以Tauri JSON mobile bridge替代`BleBackend`/UniFFI。spike 未完成或 No-Go 不阻塞 production ABI，也不得通过修改公共 contract 掩盖；须保存证据并延后 showcase。
 
 ---
 
@@ -2460,18 +2435,18 @@ Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Window
 | 风险 | 处理方式 |
 |---|---|
 | 核心被设计成 Windows 专属模型 | pure Rust core + 低成本 hosted Linux portability CI + Android conformance；不提前建设 Linux backend |
-| backend 在 command 返回前同步 callback 导致死锁 | ingress 不获取 command/close gate；state downstream mutex 串行 delivery，downstream sink 不同步重入 BleHub |
+| backend在command返回前同步callback导致死锁 | ingress不获取command/close gate；state ingress mutex串行delivery，downstream sink不同步重入BleHub |
 | 晚到 callback 污染调用方新状态 | event 回显 caller-owned scan/connection/GATT/subscription ID；调用方 projection 比较 ID 后忽略 |
 | 高频事件或慢 downstream sink 阻塞平台 callback | sink contract 要求只做快速 dispatch；queue 容量、try-send、drop/coalesce 和 telemetry 由下游实现并测试 |
 | Android GATT 并发不稳定 | 每connection严格串行operation queue；correlation包含command/operation/target/generation，late callback不能完成下一条operation |
 | duplicate native wrapper竞争callback或被另一owner清理 | 同一backend/adapter ownership domain内一个native identity只有一个owning record；重建使旧correlation失效 |
 | 平台身份差异 | backend生成session-scoped opaque`PeripheralId`/GATT handle并私有映射native object，不承诺MAC或跨重启稳定 |
-| BoltFFI 长期对象生命周期 | Android/Apple 接入前分别做 foreign backend + token ingress + Rust sink runtime spike；未声明 exception 不得伪装成功 |
-| token collision、registry 泄漏或 stale callback 误投 | token 非零且进程生命周期内永不复用；entry 只持 `Weak`；close 注销；10,000 次 lifecycle 与 race tests |
-| 引用环或延迟释放 | Hub 强持有 `Arc<EventIngressState>`，registry entry 仅持 `Weak`，backend 仅持 token；explicit close/drain/unregister + drop/deinit lifetime tests |
+| UniFFI长期对象生命周期 | Android/Apple接入前及完整ABI freeze前分别重跑foreign backend + direct handle + Rust sink runtime；未声明exception不得伪装成功 |
+| direct handle形成引用环或晚到callback访问已释放state | handle只持`Weak<EventIngressState>`；explicit close/drain、backend release、10,000次lifecycle与race tests |
+| Stable UniFFI Kotlin/JNA性能或包体开销 | 已接受representative benchmark中的相对JNI开销；final candidate记录绝对throughput/latency、AAR体积和高频notification结果，超过BLE workload门槛时先优化payload/call frequency，不切experimental JNI或恢复双框架 |
 | 工具链不可复现 | Pixi lock + Just 单入口 + doctor + CI |
 | clean consumer 与源码树耦合导致假通过 | 独立manifest/lock/build graph，只消费staged artifact；package先断言native entry/ABI/revision/manifest/duplicate，再实际运行assembly、callback和close；禁止path/project dependency |
-| Tauri mobile bridge 演变成第二套 BLE 协议 | Tauri Rust core 才是 downstream；native plugin/glue 只做 assembly/lifecycle，所有 BLE command/event 继续走统一 `BleBackend`、BoltFFI 与 ingress |
+| Tauri mobile bridge演变成第二套BLE协议 | Tauri Rust core才是downstream；native plugin/glue只做assembly/lifecycle，所有BLE command/event继续走统一`BleBackend`、UniFFI与ingress |
 | WebView/event 序列化阻塞平台 callback | sink 只可靠入队；projection、序列化和 `AppHandle::emit` 在 Tauri-owned task/runtime 执行，并单独压测 queue/throughput |
 | Tauri mobile 打包产生重复 native library/symbol 或生命周期泄漏 | `spikes/tauri-downstream` 先验证同一 Rust image、AAR/XCFramework loading、reload/suspend/close 和 late callback；失败不反向修改 core contract |
 | Apple 只能在 macOS 构建 | 独立 macOS CI，不跨平台最终打包 |

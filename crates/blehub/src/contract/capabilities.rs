@@ -1,10 +1,8 @@
 use super::BleHubError;
 
-#[boltffi::export]
-pub const BLEHUB_CONTRACT_VERSION: u32 = 2;
+pub const BLEHUB_CONTRACT_VERSION: u32 = 3;
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum Platform {
     Windows,
     Android,
@@ -13,8 +11,7 @@ pub enum Platform {
     Test,
 }
 
-#[boltffi::data]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct BackendCapabilities {
     pub platform: Platform,
     pub contract_version: u32,

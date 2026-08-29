@@ -1,6 +1,6 @@
 # BleHub 测试执行指南
 
-本目录把 [`.plan/PLAN.md`](../../.plan/PLAN.md) 中的测试要求组织为可随实施阶段演进的执行指南。当前 Plan 状态为 `待 Review`；本文档不批准或启动 Plan 中尚未获批的实现工作。
+本目录把[`.plan/PLAN.md`](../../.plan/PLAN.md)中的测试要求组织为可随实施阶段演进的执行指南。当前Plan状态为`已批准`，Windows/Android Phase 0 mechanism gate已完成，Phase 1统一薄契约实现正在进行；本文档不批准或启动Plan中尚未获批的实现工作。
 
 ## 文档定位与权威边界
 
@@ -29,10 +29,10 @@
 - caller-owned command/session ID 原样下发，并在相关 event 中回显；调用方在 command 调用前登记这些 ID。
 - backend-generated peripheral/GATT handle 作为 opaque typed ID 往返，不泄露 native object。
 - backend 构造的统一 `BleEvent` 通过 bridge shape check 后原值转发，不由 bridge 合成 domain event 或业务状态。
-- `EventIngressState.downstream` mutex 串行化同一 Hub 的 callback；downstream 可自行编号，且 sink 不在 BleHub protocol state lock 内调用，因为 BleHub 不拥有这种状态锁。
+- `EventIngressState.inner` mutex原子保护`Binding | Active | Closed` phase并串行化同一Hub的callback；downstream可自行编号，且sink不在BleHub protocol state lock内调用，因为BleHub不拥有这种状态锁。
 - command 返回前的同步 callback、跨线程 ingress、close 后晚到 callback，以及重复 close。
 - immediate `Err(CommandDispatchError)` 原样返回且不产生 event；accepted command 的异步成功或失败只通过 event 表达。只要 command method 返回前已经 emit event，就必须返回 `Ok(())`。
-- BleHub 不创建 public ID allocator、BLE domain registry、timer、queue 或 worker；v0.1 仅允许 Plan 定义的 O(active Hub) process-local ingress routing registry。
+- BleHub不创建public ID allocator、BLE domain registry、process-local ingress routing registry、timer、queue或worker；backend只持有Stable UniFFI direct ingress handle。
 
 Bridge 只负责 wire/shape、必填 ID、FFI size guard、closed 状态和串行 delivery。Backend sequence、session/handle 使用和 terminal obligation 由共享 conformance 检查；duplicate/orphan/stale/timeout 的运行时分类由测试用 downstream projection 演示和验证，不进入 BleHub production state。
 
@@ -41,7 +41,7 @@ Bridge 只负责 wire/shape、必填 ID、FFI size guard、closed 状态和串�
 Android mechanism/instrumentation recipe 默认使用 `auto` 模式：先采用 `BLEHUB_ANDROID_SERIAL`或`ANDROID_SERIAL`显式指定的ready设备；未指定时优先唯一ready真机；没有ready真机才复用已启动的模拟器，仍没有时才启动项目管理的`medium_phone` AVD。真机与模拟器同时在线时只选择真机，并通过`ANDROID_SERIAL`与Gradle的`android.injected.device.serial`同时固定目标。多台同类ready设备不会随机选择，而是要求显式serial。
 
 - `pixi run just android-test-device`：只报告`auto`将选择的目标；可追加`physical`或`emulator`检查显式模式。
-- `pixi run just ffi-phase0-test-android`与`pixi run just ffi-spike-test-uniffi-android`：默认`auto`，也可追加`physical`或`emulator`。
+- `pixi run just ffi-candidate-test-android`、`pixi run just ffi-phase0-test-android`与`pixi run just ffi-spike-test-uniffi-android`：默认`auto`，也可追加`physical`或`emulator`。
 - 历史名称带`-emulator`的recipe保留为兼容入口，但同样使用`auto`，避免沿用旧命令时绕过已连接真机；需要固定模拟器时使用通用recipe并追加`emulator`参数。
 
 该fallback只适用于不依赖真实RF的FFI、ART、AAR和fake-backend instrumentation。Android BLE HIL必须显式使用`physical`模式并记录真机身份；模拟器通过绝不能替代权限、controller、vendor BLE callback或RF验收。
@@ -53,7 +53,7 @@ Android mechanism/instrumentation recipe 默认使用 `auto` 模式：先采用 
 `FakeBackend` 位于计划中的 `blehub-testkit`，是测试基础设施，不是 production backend。它应：
 
 - 记录完整 backend command，供测试断言 typed ID、payload 和调用顺序。
-- 保存真实 `BackendEventIngressToken`，并只通过 production `push_backend_event(token, event)` 注入 `BleEvent`，不得绕过 registry、state 或 bridge。
+- 保存真实`Arc<BackendEventIngressHandle>`root，并只通过production `handle.push(event)`注入`BleEvent`，不得绕过weak state、shape validation或sink boundary；`dispose()`在所有返回路径释放root。
 - 提供 deterministic/manual 推进，不依赖 sleep 或真实 timer。
 - 支持同步、指定线程和并发 callback，覆盖 command 返回前事件、乱序、重复和 close 后晚到事件。
 - 覆盖 immediate `Err` 且无 event、`Ok` 后延迟成功、`Ok` 后延迟失败、先同步 event 再返回 `Ok`，并把 `event -> Err` 和 `Err -> later event` 固定为 contract violation。
@@ -114,7 +114,7 @@ caller-owned pre-registered IDs/state
 
 | Lane | Host/环境 | 执行内容与边界 |
 |---|---|---|
-| `core-primary` | Windows | fmt、clippy、core/event tests、BoltFFI check |
+| `core-primary` | Windows | fmt、clippy、core/event tests、Stable UniFFI binding generation与Windows production-candidate runtime gate |
 | `core-portability` | 标准 Linux runner | core/event/`FakeBackend` tests，防止 core 被塑造成 Windows API；不建设 QEMU/BlueZ 环境 |
 | `windows` | Windows | Windows backend、scripted conformance、package |
 | `windows-hil` | Windows + QEMU Linux Peripheral VM + 2 BLE controllers | Windows Central 到 BLESS managed peripheral 的 smoke/soak；独占 runner；不阻塞普通 PR |
@@ -129,6 +129,7 @@ caller-owned pre-registered IDs/state
 
 ## 平台测试文档索引
 
+- [LightBlue 手工测试外设](lightblue.md)：与共享 basic GATT scenario 对应的开发期扫描和 GATT smoke fixture。
 - [Windows](windows.md)：Phase 2 native mapping fixture、窄 adapter seam、event matrix、HIL 与报告要求。
 - [Managed Peripheral](managed-peripheral.md)：跨平台QEMU/BlueZ/BLESS外设、provider、doctor、scenario与硬件spike。
 - [Linux](linux.md)：Phase 6 guest-native build、D-Bus/BlueZ测试层、adapter选择与双VM HIL。

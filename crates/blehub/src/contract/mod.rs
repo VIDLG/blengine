@@ -10,5 +10,8 @@ pub use errors::{
     BleErrorCategory, BleEventError, BleHubError, CommandDispatchError, EventSinkError,
     PlatformErrorDetails,
 };
-pub use events::{BleEvent, BleEventPayload, ConnectionState, ScanStopReason};
+pub use events::{
+    BleEvent, BleEventPayload, ConnectionState, ConnectionStateResult, ScanStopReason,
+    ScanStopResult,
+};
 pub use ids::{CommandId, ConnectionId, PeripheralId, ScanSessionId};

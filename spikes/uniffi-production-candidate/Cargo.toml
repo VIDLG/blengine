@@ -1,0 +1,26 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "blehub-uniffi-production-candidate"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+name = "blehub_uniffi_production_candidate"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi_bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+blehub = { path = "../../crates/blehub" }
+uniffi = "=0.32.0"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -8,9 +9,11 @@ from pathlib import Path
 from tools.android_toolchain import toolchain_environment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = PROJECT_ROOT / "spikes" / "uniffi-lifecycle" / "Cargo.toml"
-OUTPUT_ROOT = PROJECT_ROOT / "spikes" / "uniffi-lifecycle" / "generated" / "android-jni"
-LIBRARY_NAME = "libblehub_uniffi_lifecycle.so"
+DEFAULT_MANIFEST = PROJECT_ROOT / "spikes" / "uniffi-lifecycle" / "Cargo.toml"
+DEFAULT_OUTPUT_ROOT = (
+    PROJECT_ROOT / "spikes" / "uniffi-lifecycle" / "generated" / "android-jni"
+)
+DEFAULT_LIBRARY_NAME = "libblehub_uniffi_lifecycle.so"
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,14 @@ TARGETS = (
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Build a UniFFI fixture for Android ABIs"
+    )
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument("--library-name", default=DEFAULT_LIBRARY_NAME)
+    arguments = parser.parse_args()
+
     environment = toolchain_environment()
     target_dir = Path(environment["CARGO_TARGET_DIR"])
     ndk_root = Path(environment["ANDROID_NDK_HOME"])
@@ -54,7 +65,7 @@ def main() -> int:
             "cargo",
             "build",
             "--manifest-path",
-            str(MANIFEST),
+            str(arguments.manifest),
             "--lib",
             "--release",
             "--target",
@@ -64,12 +75,12 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
 
-        source = target_dir / target.triple / "release" / LIBRARY_NAME
+        source = target_dir / target.triple / "release" / arguments.library_name
         if not source.is_file():
             raise SystemExit(
                 f"Cargo did not produce expected Android library: {source}"
             )
-        destination = OUTPUT_ROOT / target.abi / LIBRARY_NAME
+        destination = arguments.output_root / target.abi / arguments.library_name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
         print(f"android_native_{target.abi}={destination}")

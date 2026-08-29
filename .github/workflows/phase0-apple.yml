@@ -14,12 +14,14 @@ on:
       - "pixi.toml"
       - "spikes/boltffi-token-ingress/**"
       - "spikes/uniffi-lifecycle/**"
+      - "spikes/uniffi-production-candidate/**"
       - "tools/boltffi_toolchain.py"
       - "tools/package_uniffi_apple.py"
       - "tools/run_boltffi_cli.py"
       - "tools/test_boltffi_apple_package.py"
       - "tools/test_swift_macos.py"
       - "tools/test_uniffi_apple_package.py"
+      - "tools/test_uniffi_production_candidate_swift_macos.py"
       - "tools/test_uniffi_swift_macos.py"
   push:
     branches: [main]
@@ -34,12 +36,14 @@ on:
       - "pixi.toml"
       - "spikes/boltffi-token-ingress/**"
       - "spikes/uniffi-lifecycle/**"
+      - "spikes/uniffi-production-candidate/**"
       - "tools/boltffi_toolchain.py"
       - "tools/package_uniffi_apple.py"
       - "tools/run_boltffi_cli.py"
       - "tools/test_boltffi_apple_package.py"
       - "tools/test_swift_macos.py"
       - "tools/test_uniffi_apple_package.py"
+      - "tools/test_uniffi_production_candidate_swift_macos.py"
       - "tools/test_uniffi_swift_macos.py"
 
 permissions:
@@ -138,10 +142,15 @@ jobs:
             pixi run -e apple-ci cargo --version
           } 2>&1 | tee .work/reports/uniffi-apple-environment.log
 
-      - name: Run stable UniFFI Darwin Swift runtime and ARC smoke
+      - name: Run stable UniFFI representative Darwin Swift runtime and ARC smoke
         run: |
           pixi run -e apple-ci just ffi-spike-test-uniffi-swift-macos \
             2>&1 | tee .work/reports/uniffi-macos-runtime.log
+
+      - name: Run production-candidate Darwin Swift object-graph gate
+        run: |
+          pixi run -e apple-ci just ffi-candidate-test-swift-macos \
+            2>&1 | tee .work/reports/uniffi-production-candidate-macos-runtime.log
 
       - name: Build stable UniFFI XCFramework and test SPM consumers
         run: |
@@ -159,3 +168,4 @@ jobs:
             .work/reports/uniffi-apple-*.log
             .work/reports/uniffi-macos-runtime.log
             spikes/uniffi-lifecycle/generated/apple/
+            spikes/uniffi-production-candidate/generated/swift-macos/

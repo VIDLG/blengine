@@ -7,15 +7,14 @@ use std::{
 };
 
 use blehub::{
-    BackendCapabilities, BackendEventIngressToken, BleBackend, BleHubError, CommandDispatchError,
+    BackendCapabilities, BackendEventIngressHandle, BleBackend, BleHubError, CommandDispatchError,
     CommandKind, ConnectCommand, EventIngressStatus, Platform, StartScanCommand,
-    push_backend_event,
 };
 
 use crate::{EventScenario, ScenarioDispatch};
 
 struct FakeBackendState {
-    token: Mutex<Option<BackendEventIngressToken>>,
+    ingress: Mutex<Option<Arc<BackendEventIngressHandle>>>,
     scenarios: Mutex<VecDeque<EventScenario>>,
     push_statuses: Mutex<Vec<EventIngressStatus>>,
     contract_violations: Mutex<Vec<BackendContractViolation>>,
@@ -45,7 +44,7 @@ impl FakeBackend {
         scenarios: impl IntoIterator<Item = EventScenario>,
     ) -> (Self, FakeBackendHandle) {
         let state = Arc::new(FakeBackendState {
-            token: Mutex::new(None),
+            ingress: Mutex::new(None),
             scenarios: Mutex::new(scenarios.into_iter().collect()),
             push_statuses: Mutex::new(Vec::new()),
             contract_violations: Mutex::new(Vec::new()),
@@ -103,17 +102,14 @@ impl FakeBackend {
     }
 
     fn push_events(&self, events: Vec<blehub::BleEvent>) -> Result<(), CommandDispatchError> {
-        let token =
-            self.state
-                .token
-                .lock()
-                .unwrap()
-                .ok_or_else(|| CommandDispatchError::InvalidState {
-                    detail: "event ingress is not bound".to_owned(),
-                })?;
+        let ingress = self.state.ingress.lock().unwrap().clone().ok_or_else(|| {
+            CommandDispatchError::InvalidState {
+                detail: "event ingress is not bound".to_owned(),
+            }
+        })?;
         let statuses = events
             .into_iter()
-            .map(|event| push_backend_event(token, event))
+            .map(|event| ingress.push(event))
             .collect::<Vec<_>>();
         self.state.push_statuses.lock().unwrap().extend(statuses);
         Ok(())
@@ -125,19 +121,17 @@ impl BleBackend for FakeBackend {
         Ok(BackendCapabilities::new(Platform::Test))
     }
 
-    fn bind_event_ingress(&self, token: BackendEventIngressToken) -> Result<(), BleHubError> {
-        let mut current = self.state.token.lock().unwrap();
+    fn bind_event_ingress(
+        &self,
+        ingress: Arc<BackendEventIngressHandle>,
+    ) -> Result<(), BleHubError> {
+        let mut current = self.state.ingress.lock().unwrap();
         if current.is_some() {
             return Err(BleHubError::BackendAssembly {
                 detail: "event ingress is already bound".to_owned(),
             });
         }
-        if !token.is_valid() {
-            return Err(BleHubError::FfiContract {
-                detail: "event ingress token must be nonzero".to_owned(),
-            });
-        }
-        *current = Some(token);
+        *current = Some(ingress);
         Ok(())
     }
 
@@ -150,6 +144,7 @@ impl BleBackend for FakeBackend {
     }
 
     fn dispose(&self) -> Result<(), BleHubError> {
+        self.state.ingress.lock().unwrap().take();
         if !self.state.disposed.swap(true, Ordering::AcqRel) {
             self.state.dispose_count.fetch_add(1, Ordering::AcqRel);
         }
@@ -159,16 +154,22 @@ impl BleBackend for FakeBackend {
 
 impl FakeBackendHandle {
     pub fn emit(&self, event: blehub::BleEvent) -> EventIngressStatus {
-        let Some(token) = *self.state.token.lock().unwrap() else {
+        let Some(ingress) = self.state.ingress.lock().unwrap().clone() else {
             return EventIngressStatus::Closed;
         };
-        let status = push_backend_event(token, event);
+        let status = ingress.push(event);
         self.state
             .push_statuses
             .lock()
             .unwrap()
             .push(status.clone());
         status
+    }
+
+    /// Captures a temporary callback reference. Tests must call this before
+    /// dispose when they need to model queued native work completing late.
+    pub fn ingress_for_callback(&self) -> Option<Arc<BackendEventIngressHandle>> {
+        self.state.ingress.lock().unwrap().clone()
     }
 
     pub fn push_statuses(&self) -> Vec<EventIngressStatus> {
@@ -187,8 +188,8 @@ impl FakeBackendHandle {
 #[cfg(test)]
 mod tests {
     use blehub::{
-        BleEvent, BleEventPayload, BleHub, CommandId, ConnectionId, ConnectionState, PeripheralId,
-        ScanSessionId,
+        BleEvent, BleEventPayload, BleHub, CommandId, ConnectionId, ConnectionState,
+        ConnectionStateResult, PeripheralId, ScanSessionId,
     };
 
     use super::*;
@@ -225,7 +226,7 @@ mod tests {
             events,
         )]);
         let sink = RecordingSink::new();
-        let hub = BleHub::new(Box::new(backend), Box::new(sink.clone())).unwrap();
+        let hub = BleHub::new(Arc::new(backend), Box::new(sink.clone())).unwrap();
         let mut projection = ReferenceProjection::default();
         assert!(projection.register_command(command_id));
 
@@ -259,7 +260,7 @@ mod tests {
         let (backend, _) =
             FakeBackend::scripted([EventScenario::reject(CommandKind::Connect, error.clone())]);
         let sink = RecordingSink::new();
-        let hub = BleHub::new(Box::new(backend), Box::new(sink.clone())).unwrap();
+        let hub = BleHub::new(Arc::new(backend), Box::new(sink.clone())).unwrap();
 
         assert_eq!(
             hub.connect(ConnectCommand {
@@ -286,7 +287,7 @@ mod tests {
             error.clone(),
         )]);
         let sink = RecordingSink::new();
-        let hub = BleHub::new(Box::new(backend), Box::new(sink.clone())).unwrap();
+        let hub = BleHub::new(Arc::new(backend), Box::new(sink.clone())).unwrap();
 
         assert_eq!(
             hub.start_scan(StartScanCommand {
@@ -311,19 +312,22 @@ mod tests {
     fn late_event_after_dispose_is_closed_and_cleanup_is_once() {
         let (backend, handle) = FakeBackend::scripted([]);
         let sink = RecordingSink::new();
-        let hub = BleHub::new(Box::new(backend), Box::new(sink.clone())).unwrap();
+        let hub = BleHub::new(Arc::new(backend), Box::new(sink.clone())).unwrap();
+        let callback = handle.ingress_for_callback().unwrap();
         let event = BleEvent {
             payload: BleEventPayload::ConnectionStateChanged {
                 command_id: None,
                 connection_id: ConnectionId::new(9),
-                state: Ok(ConnectionState::Disconnected),
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Disconnected,
+                },
             },
         };
 
         hub.dispose().unwrap();
         hub.dispose().unwrap();
 
-        assert_eq!(handle.emit(event), EventIngressStatus::Closed);
+        assert_eq!(callback.push(event), EventIngressStatus::Closed);
         assert!(sink.events().is_empty());
         assert_eq!(handle.dispose_count(), 1);
     }

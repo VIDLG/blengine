@@ -1,5 +1,4 @@
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct CommandId {
     pub value: u64,
 }
@@ -14,8 +13,7 @@ impl CommandId {
     }
 }
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct ScanSessionId {
     pub value: u64,
 }
@@ -30,8 +28,7 @@ impl ScanSessionId {
     }
 }
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct ConnectionId {
     pub value: u64,
 }
@@ -46,8 +43,7 @@ impl ConnectionId {
     }
 }
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct PeripheralId {
     pub value: u64,
 }

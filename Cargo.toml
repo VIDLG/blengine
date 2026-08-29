@@ -9,6 +9,5 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
-arc-swap = "1.7"
-boltffi = "=0.30.1"
-derive_more = { version = "2.0.1", features = ["display", "error"] }
+thiserror = "2"
+uniffi = "=0.32.0"

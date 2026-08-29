@@ -2,15 +2,13 @@ use super::{BleEventError, CommandId, ConnectionId, ScanSessionId};
 
 const MAX_DIAGNOSTIC_BYTES: usize = 1024;
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum ScanStopReason {
     Requested { command_id: CommandId },
     SystemSuspended,
 }
 
-#[boltffi::data]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum ConnectionState {
     Connecting,
     Connected,
@@ -18,8 +16,19 @@ pub enum ConnectionState {
     Disconnected,
 }
 
-#[boltffi::data]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ScanStopResult {
+    Ok { reason: ScanStopReason },
+    Err { error: BleEventError },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ConnectionStateResult {
+    Ok { state: ConnectionState },
+    Err { error: BleEventError },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum BleEventPayload {
     ScanStarted {
         command_id: CommandId,
@@ -27,12 +36,12 @@ pub enum BleEventPayload {
     },
     ScanStopped {
         scan_id: ScanSessionId,
-        reason: Result<ScanStopReason, BleEventError>,
+        result: ScanStopResult,
     },
     ConnectionStateChanged {
         command_id: Option<CommandId>,
         connection_id: ConnectionId,
-        state: Result<ConnectionState, BleEventError>,
+        result: ConnectionStateResult,
     },
     CommandCompleted {
         command_id: CommandId,
@@ -43,18 +52,17 @@ pub enum BleEventPayload {
     },
 }
 
-#[boltffi::data]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct BleEvent {
     pub payload: BleEventPayload,
 }
 
-#[derive(Debug, derive_more::Display, derive_more::Error)]
+#[derive(Debug, thiserror::Error)]
 pub(crate) enum EventValidationError {
-    #[display("{field} must be nonzero")]
+    #[error("{field} must be nonzero")]
     ZeroId { field: &'static str },
 
-    #[display("{field} exceeds {MAX_DIAGNOSTIC_BYTES} UTF-8 bytes")]
+    #[error("{field} exceeds {MAX_DIAGNOSTIC_BYTES} UTF-8 bytes")]
     DiagnosticTooLong { field: &'static str },
 }
 
@@ -68,26 +76,28 @@ impl BleEvent {
                 validate_id(command_id.is_valid(), "command_id")?;
                 validate_id(scan_id.is_valid(), "scan_id")
             }
-            BleEventPayload::ScanStopped { scan_id, reason } => {
+            BleEventPayload::ScanStopped { scan_id, result } => {
                 validate_id(scan_id.is_valid(), "scan_id")?;
-                match reason {
-                    Ok(ScanStopReason::Requested { command_id }) => {
-                        validate_id(command_id.is_valid(), "command_id")
-                    }
-                    Ok(ScanStopReason::SystemSuspended) => Ok(()),
-                    Err(error) => validate_event_error(error),
+                match result {
+                    ScanStopResult::Ok {
+                        reason: ScanStopReason::Requested { command_id },
+                    } => validate_id(command_id.is_valid(), "command_id"),
+                    ScanStopResult::Ok {
+                        reason: ScanStopReason::SystemSuspended,
+                    } => Ok(()),
+                    ScanStopResult::Err { error } => validate_event_error(error),
                 }
             }
             BleEventPayload::ConnectionStateChanged {
                 command_id,
                 connection_id,
-                state,
+                result,
             } => {
                 if let Some(command_id) = command_id {
                     validate_id(command_id.is_valid(), "command_id")?;
                 }
                 validate_id(connection_id.is_valid(), "connection_id")?;
-                if let Err(error) = state {
+                if let ConnectionStateResult::Err { error } = result {
                     validate_event_error(error)?;
                 }
                 Ok(())

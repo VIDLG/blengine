@@ -346,12 +346,12 @@ v0.1 使用 process-local monotonic `AtomicU64` allocator：
 4. allocate never-reused token
 5. call backend.bind_event_ingress(token)
 6. if bind Err:
-     state.close_and_drain
+     state.close
      best-effort backend.dispose
      return Err
 7. register token -> Weak<EventIngressState>
 8. if registration Err:
-     state.close_and_drain
+     state.close
      best-effort backend.dispose
      return Err
 9. store backend, capabilities, state, registration guard

@@ -1,5 +1,12 @@
 jvm_run := "pixi run -e jvm"
 android_run := "pixi run -e android"
+ffi_library := if os() == "windows" {
+    ".work/cargo-target/debug/blehub.dll"
+} else if os() == "macos" {
+    ".work/cargo-target/debug/libblehub.dylib"
+} else {
+    ".work/cargo-target/debug/libblehub.so"
+}
 
 import "just/spikes.just"
 import "just/tests.just"
@@ -16,11 +23,16 @@ docs-check-mermaid:
     npm run check:mermaid
 
 
-generate-kotlin:
-    python -m tools.run_boltffi_cli --project . generate kotlin --deny-skipped
+build-bindings-library:
+    rtk cargo build -p blehub
 
-generate-swift:
-    python -m tools.run_boltffi_cli --project . generate swift --deny-skipped
+generate-kotlin: build-bindings-library
+    rm -rf generated/kotlin
+    rtk cargo run -p blehub --features bindgen --bin uniffi-bindgen -- generate {{ffi_library}} --language kotlin --config uniffi.toml --out-dir generated/kotlin --no-format
+
+generate-swift: build-bindings-library
+    rm -rf generated/swift
+    rtk cargo run -p blehub --features bindgen --bin uniffi-bindgen -- generate {{ffi_library}} --language swift --config uniffi.toml --out-dir generated/swift --no-format
 
 generate-bindings: generate-kotlin generate-swift
 
@@ -39,6 +51,9 @@ toolchain-paths:
 
 sccache-stats:
     sccache --show-stats
+
+ble-scan *args:
+    python -m tools.scan_ble {{args}}
 
 swift-bootstrap:
     python -m tools.swift_toolchain install

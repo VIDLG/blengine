@@ -183,6 +183,9 @@ impl BackendEventIngressHandle {
 
 #[uniffi::export(foreign)]
 pub trait BleBackend: Send + Sync {
+    /// Stable UniFFI objects cross the FFI as `Arc`-backed handles. Production
+    /// moves the sole long-lived root into the backend; only queued or in-flight
+    /// callbacks may retain temporary references.
     fn bind_event_ingress(
         &self,
         ingress: Arc<BackendEventIngressHandle>,
@@ -204,6 +207,9 @@ impl Phase0Fixture {
     #[uniffi::constructor]
     pub fn new(backend: Arc<dyn BleBackend>) -> Result<Arc<Self>, BleHubError> {
         let ingress = Arc::new(BackendEventIngressHandle::new());
+        // The fixture retains this clone for event inspection and callback-gate
+        // controls. Production must instead move its sole root into the backend
+        // and retain only the separate `Arc<EventIngressState>`.
         backend.bind_event_ingress(Arc::clone(&ingress))?;
         Ok(Arc::new(Self {
             backend: Mutex::new(Some(backend)),

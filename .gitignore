@@ -40,8 +40,8 @@ local.properties
 *.dSYM/
 *.ipa
 
-# BoltFFI generated bindings and package staging
-# Generated API/ABI snapshots will use a dedicated tracked directory when Phase 0 begins.
+# Generated FFI bindings and package staging
+# Reviewed API/ABI snapshots use a dedicated tracked directory when required.
 **/generated/
 **/gen/
 **/dist/
