@@ -1,0 +1,58 @@
+# Project-authored text uses LF on every development host.
+* text=auto
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+justfile text eol=lf
+gradlew text eol=lf
+
+*.c text eol=lf
+*.h text eol=lf
+*.java text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.kt text eol=lf
+*.kts text eol=lf
+*.lock text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.properties text eol=lf
+*.ps1 text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.sh text eol=lf
+*.swift text eol=lf
+*.toml text eol=lf
+*.ts text eol=lf
+*.txt text eol=lf
+*.xml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Native Windows command scripts require CRLF for broad tool compatibility.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Preserve downloaded official platform evidence byte-for-byte. It is refreshed
+# only by tools/update_platform_docs.py and must not be rewritten by Git checkout.
+/docs/platform-api-reference/windows/** -text !eol
+/docs/platform-api-reference/android/** -text !eol
+/docs/platform-api-reference/apple/** -text !eol
+/docs/platform-api-reference/bluez/** -text !eol
+
+# Common binary artifacts must never undergo text conversion.
+*.a binary
+*.aar binary
+*.dll binary
+*.dylib binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.jpeg binary
+*.jpg binary
+*.lib binary
+*.pdf binary
+*.png binary
+*.so binary
+*.webp binary
+*.zip binary
