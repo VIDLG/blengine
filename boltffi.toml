@@ -1,0 +1,32 @@
+[package]
+name = "blehub"
+
+[targets.android]
+enabled = true
+min_sdk = 24
+architectures = ["arm64", "x86_64"]
+
+[targets.android.kotlin]
+package = "dev.blehub.ffi"
+output = "generated/kotlin"
+error_style = "throwing"
+
+[targets.android.pack]
+output = "generated/android-jni"
+
+[targets.apple]
+enabled = true
+include_macos = true
+deployment_target = "16.0"
+
+[targets.apple.xcframework]
+output = "generated/apple/BleHub.xcframework"
+
+[targets.apple.spm]
+output = "generated/apple"
+layout = "split"
+
+[targets.apple.swift]
+module_name = "BleHubFfi"
+output = "generated/swift"
+error_style = "throwing"

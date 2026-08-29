@@ -7,7 +7,7 @@ Read it before researching, planning, or changing the project.
 
 ## Current Project State
 
-BleHub's architecture plan is approved; implementation has not started.
+BleHub's architecture plan is approved; Phase 0 implementation is in progress, but its gate is not yet complete and the public ABI is not frozen.
 
 - The single reviewed plan is [`.plan/PLAN.md`](.plan/PLAN.md).
 - The plan status is `已批准`.
@@ -110,7 +110,7 @@ The current intended architecture is a thin cross-platform BLE Central contract:
 - The caller owns command IDs, timeout policy, cancellation policy, stale/late/duplicate event handling, and business state.
 - BleHub core owns no runtime, executor, worker thread, mailbox, timer, event loop, or canonical BLE device/GATT state.
 - Backends own unavoidable platform handles, callback correlation, and serialized native GATT operations.
-- Native backends push events through a Rust-provided `BackendEventSinkHandle`.
+- In v0.1, native backends push events through exported `push_backend_event(BackendEventIngressToken, BleEvent)` and a process-local weak registry; migrate to a direct Rust-provided ingress handle when BoltFFI supports that foreign-trait parameter shape.
 - Downstream supplies `BleEventSink` and decides whether events go to a channel, actor, UI loop, or runtime.
 
 Current platform direction:
@@ -122,7 +122,7 @@ Current platform direction:
 | 3 | iOS/macOS | Swift + CoreBluetooth + BoltFFI |
 | 4 | Linux | Rust + `dbus-rs` + BlueZ D-Bus |
 
-The Kotlin/Swift foreign trait object and retained Rust event-ingress handle form a proposed design, not yet an end-to-end proven BleHub object graph. Phase 0 must validate ownership, cross-thread callbacks, exception/panic boundaries, disposal races, packaging, and performance before the public ABI is frozen.
+The Kotlin/JVM foreign trait object plus token ingress workaround has partial end-to-end Phase 0 evidence. Swift runtime/ARC, remaining lifecycle counters, fault isolation, packaging, and performance gates still require validation before the public ABI is frozen; the ideal direct ingress-handle shape remains blocked by BoltFFI #869.
 
 ## Dependency And Tooling Rules
 
@@ -136,7 +136,9 @@ The Kotlin/Swift foreign trait object and retained Rust event-ingress handle for
 pixi run just <recipe>
 ```
 
-Do not assume globally installed Python, Ruff, Just, or other tools.
+Do not assume globally installed Python, Ruff, Just, RTK, sccache, or other tools. Test recipes route verbose Cargo/Gradle output through Pixi-managed RTK; RTK is an output filter only and must preserve command selection, failure detail, and exit status. Pixi-managed sccache wraps ordinary Rust compilation and eligible C/C++ glue with Cargo incremental disabled to avoid duplicate caches; it does not reduce required final artifacts and does not cache Swift/Kotlin compilation. BoltFFI metadata generation must use a dedicated Cargo target and bypass sccache because its cfg/environment-driven macro output is not safely distinguished from ordinary Rust artifacts by the cache key; the CLI itself may remain in the ordinary cached target.
+
+Machine-local toolchain roots resolve in this order: `BLEHUB_<TOOL>_ROOT`, ignored `blehub.local.toml`, then `~/.cache/blehub/toolchains/<tool>`. Copy `blehub.local.example.toml` for stable developer-machine paths and use environment variables in CI. Keep only paths in local config; pin versions, URLs, hashes, repositories, and license policy in tracked scripts and locks. Use `pixi run just toolchain-paths` to inspect effective values. Bootstrap/install recipes must be explicit; ordinary build and test recipes must not silently install Android SDK/NDK, Swift, or accept licenses.
 
 Current recipes include:
 
@@ -147,7 +149,7 @@ pixi run just fmt
 pixi run just lint
 ```
 
-Prefer mature ecosystem libraries where they clearly reduce risk or maintenance. “Thin core” means limited responsibility, not a ban on dependencies. Do not add a runtime or heavyweight framework that changes the caller-owned execution model.
+Prefer mature ecosystem libraries where they clearly reduce risk or maintenance. “Thin core” means limited responsibility, not a ban on dependencies. Lightweight boilerplate-reduction crates such as `derive_more`, `delegate`, or `getset` are allowed when they remove meaningful repeated code without obscuring ownership, FFI, validation, or lifecycle behavior. Do not add accessor/delegation macros merely to replace one or two obvious lines, and verify any attribute macro used in a BoltFFI-scanned crate against binding generation. Do not add a runtime or heavyweight framework that changes the caller-owned execution model.
 
 ## Documentation Rules
 
@@ -170,6 +172,8 @@ Prefer mature ecosystem libraries where they clearly reduce risk or maintenance.
 - This directory may not yet be a Git repository; do not assume `git status` or `git diff` is available.
 
 ## Validation
+
+Do not add tests for trivial field assignment, obvious constructors/getters, derived trait behavior, or direct delegation that has no project-specific invariant. Prefer tests that protect FFI/wire compatibility, validation boundaries, lifecycle and rollback semantics, concurrency linearization, platform mapping, or previously observed regressions. Combine closely related boundary cases when that improves signal and readability; test count is not a goal.
 
 For documentation/tooling changes, run the narrowest applicable checks through Pixi. At minimum:
 

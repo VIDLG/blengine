@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
-import llvm_mingw
+import tomllib
+
+from tools import llvm_mingw
 
 
 def required_environment_path(name: str) -> Path:
@@ -47,27 +50,55 @@ def prepare_rust_gnu_compatibility_libraries(toolchain: Path, work_root: Path) -
     return compatibility_root
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build a BoltFFI Rust library and its generated Windows JNI bridge."
+    )
+    parser.add_argument(
+        "--project",
+        default="spikes/boltffi-lifecycle",
+        help="project directory relative to PIXI_PROJECT_ROOT",
+    )
+    return parser.parse_args()
+
+
+def configured_package(project: Path) -> str:
+    config = project / "boltffi.toml"
+    if not config.is_file():
+        raise SystemExit(f"missing BoltFFI project configuration: {config}")
+    with config.open("rb") as stream:
+        package = tomllib.load(stream).get("package", {}).get("name")
+    if not isinstance(package, str) or not package:
+        raise SystemExit(f"missing [package].name in {config}")
+    return package
+
+
 def main() -> int:
     if os.name != "nt":
         raise SystemExit("the Windows JVM bridge can only be built on Windows")
 
+    args = parse_args()
     project_root = required_environment_path("PIXI_PROJECT_ROOT")
     java_home = required_environment_path("JAVA_HOME")
     cargo_target = required_environment_path("CARGO_TARGET_DIR")
     toolchain = llvm_mingw.install()
     compiler = toolchain / "bin" / "x86_64-w64-mingw32-clang.exe"
+    compiler_cache = shutil.which("sccache")
+    if compiler_cache is None:
+        raise SystemExit("missing Pixi-managed sccache executable")
     compatibility_libraries = prepare_rust_gnu_compatibility_libraries(
         toolchain, project_root / ".work"
     )
 
-    package = "blehub_boltffi_lifecycle_spike"
-    spike_root = project_root / "spikes" / "boltffi-lifecycle"
+    spike_root = (project_root / args.project).resolve()
+    package = configured_package(spike_root)
     generated_root = spike_root / "generated" / "kotlin" / "jni"
     generated = generated_root / "jni_glue.c"
     manifest = spike_root / "Cargo.toml"
     rust_output = cargo_target / "x86_64-pc-windows-gnu" / "debug"
     output_directory = project_root / ".work" / "jvm-native"
     output_directory.mkdir(parents=True, exist_ok=True)
+    bridge_object = output_directory / f"{package}_jni.o"
     output = output_directory / f"{package}_jni.dll"
 
     for required in (
@@ -106,9 +137,10 @@ def main() -> int:
 
     run(
         [
+            compiler_cache,
             str(compiler),
             "-std=c11",
-            "-shared",
+            "-c",
             "-I",
             str(java_home / "include"),
             "-I",
@@ -116,6 +148,15 @@ def main() -> int:
             "-I",
             str(generated_root),
             str(generated),
+            "-o",
+            str(bridge_object),
+        ]
+    )
+    run(
+        [
+            str(compiler),
+            "-shared",
+            str(bridge_object),
             "-L",
             str(rust_output),
             f"-l{package}",
@@ -127,6 +168,8 @@ def main() -> int:
         raise SystemExit(f"JNI bridge compiler succeeded without producing {output}")
 
     shutil.copy2(rust_library, output_directory / rust_library.name)
+    print(f"project={spike_root}")
+    print(f"package={package}")
     print(f"toolchain={toolchain}")
     print(f"rust_library={output_directory / rust_library.name}")
     print(f"jni_library={output}")

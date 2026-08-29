@@ -1,0 +1,8 @@
+# Copy this file to blehub.local.toml and adjust paths for this machine.
+# Only machine-local paths belong here; versions and hashes remain in tracked scripts/locks.
+# BLEHUB_SWIFT_ROOT and BLEHUB_ANDROID_ROOT override these values for CI or one-off runs.
+# Without either override, BleHub falls back to ~/.cache/blehub/toolchains/<name>.
+
+[toolchains]
+swift_root = "D:/dev/swift"
+android_root = "D:/dev/android"

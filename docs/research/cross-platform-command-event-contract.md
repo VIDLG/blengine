@@ -175,12 +175,12 @@ pub struct PlatformErrorDetails {
 
 Rust trait约定也分层：
 
-- `BleHubError`和`CommandDispatchError`是同步`Result`的顶层error：实现`std::error::Error`，优先derive`thiserror::Error`，跨BoltFFI时同时使用`#[boltffi::error]`。`BleHubError::BackendCleanup`专门表示dispose/cleanup失败；该错误不重新打开已经closed的Hub。
+- `BleHubError`和`CommandDispatchError`是同步`Result`的顶层error：实现`std::error::Error`，当前由`derive_more::Display/Error`消除样板，跨BoltFFI时同时使用`#[boltffi::error]`。`BleHubError::BackendCleanup`专门表示dispose/cleanup失败；该错误不重新打开已经closed的Hub。
 - `BleFailure`是event中可复用的failure data record，承载稳定category、诊断message和optional platform evidence；它既可直接用于无command的passive state failure，也可嵌入`BleOperationError`。
-- `BleOperationError`只为accepted command的terminal failure增加原command的`CommandKind`。两者在Rust侧都实现`std::error::Error`/`thiserror::Error`以便ergonomics，但跨FFI仍按`#[boltffi::data]`传值，不自动throw。
-- `PlatformErrorDetails`只是嵌入`BleFailure`的FFI-safe diagnostic DTO，不独立参与`Result`控制流，默认不实现`std::error::Error`，也不需要`thiserror`；需要展示时由包含它的failure/error负责format。
+- `BleOperationError`只为accepted command的terminal failure增加原command的`CommandKind`。两者在Rust侧都实现`std::error::Error`以便ergonomics，但跨FFI仍按`#[boltffi::data]`传值，不自动throw。
+- `PlatformErrorDetails`只是嵌入`BleFailure`的FFI-safe diagnostic DTO，不独立参与`Result`控制流，默认不实现`std::error::Error`；需要展示时由包含它的failure/error负责format。
 - 所有自由文本`message`只用于诊断。`CommandDispatchError::Closed { operation }`的结构化信息已足够，因此不附加message；application不得解析其他variant、`BleFailure.message`或`PlatformErrorDetails.message`控制流程。
-- `#[boltffi::error] + thiserror`及`#[boltffi::data] + thiserror`的宏兼容性仍须Phase 0实际生成Kotlin/Swift binding验证；不兼容时保留wire shape并手写`Display/Error`或使用明确conversion wrapper。
+- BoltFFI `0.30.1`把thiserror在record error类型上必须使用的未限定`#[error(...)]` helper误判为自己的marker（上游[#870](https://github.com/boltffi/boltffi/issues/870)）；已验证的scanned-contract组合是`#[boltffi::error/data] + derive_more::Display/Error`。升级宏或generator时必须重新生成并编译Kotlin/Swift binding。
 
 建议映射原则：
 

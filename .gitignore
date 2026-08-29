@@ -1,4 +1,5 @@
 # Local project tooling
+/blehub.local.toml
 /.pixi/
 /.ruff_cache/
 /.codegraph/

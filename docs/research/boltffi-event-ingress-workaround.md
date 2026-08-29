@@ -76,7 +76,7 @@ D:\projects\contrib\boltffi\boltffi_macros\src\expansion\wrapper\callback.rs
 
 没有 annotation 可以补齐该能力。`#[data]` 会把类型改成 value DTO；`#[custom_ffi]` 会变成另一套 registry/token 设计；closure 不能长期保存。
 
-### 2.2 已通过临时 compile probe 验证
+### 2.2 已通过 compile probe 与 Phase 0 JVM fixture 验证
 
 以下形状在当前 BoltFFI 上可以生成：
 
@@ -101,17 +101,17 @@ pub fn push_backend_event(
 ) -> EventIngressStatus;
 ```
 
-该 probe 只证明 generator 接受参数形状，不证明 Kotlin/JVM、Android ART、Swift runtime、跨线程 callback、registry race 或 packaging。Phase 0 必须把它固化成提交到仓库的 runtime spike。
+该最初 probe 只证明 generator 接受参数形状。现已新增 `spikes/boltffi-token-ingress/`，通过真实 `BleHub`、全局 registry、Rust-only sink 与 Kotlin foreign backend 运行 production-shaped Windows JVM lane；21 个测试覆盖同步/异步/Rust-attached thread push、assembly rollback、typed/unexpected failure、close race、stale token 和 10,000 lifecycle。准确环境、已验证边界、dirty local generator 限制与未关闭 blocker 见 [`phase0-token-ingress-runtime-results.md`](phase0-token-ingress-runtime-results.md)。
 
-### 2.3 仍属设计推导、必须实测
+### 2.3 仍属设计推导或跨目标待实测
 
-以下结论由 Rust ownership 和同步模型推导，但尚未由最终对象图验证：
+以下结论尚未被当前 JVM fixture 完整证明：
 
-- registry entry 只持 `Weak` 可避免延长 Hub/sink 生命周期；
-- token 永不复用可避免 stale callback 的 ABA/误投；
-- ArcSwap lock-free snapshot lookup并在进入 state 前释放 guard，可避免全局串行化 downstream delivery；
-- close 先 drain、后 dispose、再 unregister 可让所有 race 安全收敛到 `Closed`；
-- Kotlin/Swift backend 在 bind 后保存 token 并跨 callback thread 调用 exported free function可稳定运行。
+- registry entry 的强弱引用和全部 wrapper/native handle 计数在所有失败与 race 后都回到 baseline；
+- ArcSwap snapshot guard scope 和 notification workload 性能满足最终门槛；
+- 未来 pinned generator/完整 ABI 的 unexpected exception 行为继续满足当前 clean `8f862c8...` candidate 已通过的结果；
+- Android ART/AAR 与 Swift runtime/ARC/packaging 通过；Windows/JVM bindings-JAR/native-DLL consumer 已通过；
+- foreign runtime registration failure injection、完整 payload boundary catalog 与各语言 object counters 通过；pure Rust near-overflow、并发分配和 registration rollback 已有测试。
 
 ## 3. 理想 direct-handle 方案
 

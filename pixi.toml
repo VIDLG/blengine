@@ -12,6 +12,8 @@ httpx = ">=0.28.1,<0.29"
 pooch = ">=1.8,<2"
 hishel = ">=1,<2"
 nodejs = ">=22,<27"
+rtk-cli = ">=0.46,<0.47"
+sccache = ">=0.16,<0.18"
 
 [feature.rust.dependencies]
 rust = "1.95.*"
@@ -30,6 +32,10 @@ openjdk = "17.*"
 default = { features = ["rust"], solve-group = "development" }
 jvm = { features = ["rust", "jvm"], solve-group = "development" }
 android = { features = ["rust", "jvm", "android"], solve-group = "development" }
+
+[activation.env]
+RUSTC_WRAPPER = "sccache"
+CARGO_INCREMENTAL = "0"
 
 [target.win-64.activation.env]
 CARGO_HOME = "%USERPROFILE%\\.cache\\mobile-ffi-toolchain\\cargo-home"

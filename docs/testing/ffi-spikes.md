@@ -33,17 +33,20 @@ Do not accept screenshots or a compile-only probe as runtime evidence. Preserve 
 | A temporary compile probe accepts named-field `BackendEventIngressToken`, typed `bind_event_ingress`, and top-level `push_backend_event` shapes | The token ABI is syntactically generatable | Kotlin/JVM or Swift execution, packaging, exception behavior, registry races, or final object lifetime |
 | Local BoltFFI source and generated Kotlin fixtures implement exported-class retain/release and idempotent `AutoCloseable.close()` | Existing wrapper primitives can support deterministic release | The final token registry graph, Rust-only downstream sink, or BleHub rollback order |
 | `spikes/boltffi-lifecycle/` runs Rust and Windows Kotlin/JVM tests for the old builder/foreign-sink graph | Partial evidence for wrapper retention, cross-thread calls, callback serialization, close drain, late callback handling, typed declared errors, repeated lifecycle, and JNI loading | Acceptance of the v0.1 token assembly, final Rust-only downstream, Swift, or direct-handle bind |
-| The old JVM spike reproduces unchecked Kotlin exceptions being cleared by generated JNI glue and reported as a zero/void success | A current production blocker exists at the unexpected-exception boundary | A safe catch-all mapping for the final command, bind, dispose, constructor, or ingress paths |
+| `spikes/boltffi-token-ingress/` runs the real Hub/registry/Rust-only sink with a generated Kotlin foreign backend; 21 Windows JVM mechanism tests include deterministic races and 10,000 lifecycles, followed by a separate bindings-JAR/native-DLL consumer test | The production-shaped token graph and clean local JVM artifact consumption work on the recorded environment | Swift/Android packaging, complete counters/performance, or final CI generator pinning |
+| The same fixture compiles generated Swift plus its generated C module against an MSVC Rust DLL on Windows; the smoke covers synchronous and Rust-thread callbacks, 64 concurrent pushes, idempotent dispose, closed stale tokens, and 10,000 unique-token ARC release cycles | The production-shaped foreign-trait/token mechanism and language-level Swift ARC run on the recorded Windows Swift host | CoreBluetooth, Objective-C interop, Apple queue semantics, Apple artifacts/package consumption, or final macOS ARC behavior |
+| The old JVM spike reproduces unchecked Kotlin exceptions being cleared by generated JNI glue and reported as a zero/void success; the new fixture safely maps typed and unchecked failures after regeneration from a clean `8f862c8...` archive | The exception boundary works for the clean revision and exact production-shaped candidate tested | Every future ABI shape/release has the same behavior; fault subprocess and pre-freeze reruns remain required |
+| Raw Kotlin output for error payload fields named `message` fails to compile; the Phase 0 JVM fixture applies a generated-source `override` workaround | The runtime lane can continue without renaming the reviewed wire field | Stock BoltFFI generation is production-ready; the workaround must be removed after an upstream/fork fix |
 
 ### 2.2 Still unverified for the production ABI candidate
 
-- Exact Kotlin and Swift generation and runtime behavior for `capabilities`, one-time token bind, top-level push, typed results, and disposal.
-- The complete `BleHub -> foreign backend -> token -> registry Weak -> EventIngressState -> Rust sink` lifetime.
-- Bind failure, registration failure, repeated bind, and unexpected foreign failure rollback without partial Hub exposure or double cleanup.
+- macOS Swift runtime/ARC/queue behavior, immutable CI generator pinning, and final Android/Apple package consumers remain open.
+- Complete wrapper/native-handle/weak-state counters for the `BleHub -> foreign backend -> token -> registry Weak -> EventIngressState -> Rust sink` lifetime.
+- Registration failure, repeated bind, and complete unexpected foreign failure subprocess coverage without partial Hub exposure or double cleanup.
 - Lock-free registry lookup with no snapshot guard held across weak upgrade, validation, downstream code, or close waiting.
 - Complex `BleEventPayload` generation quality versus a tagged-record fallback.
 - Final-path panic containment, payload ownership release, lifecycle stress, throughput, callback latency, and close latency.
-- Swift ARC and queue behavior, clean Kotlin/JVM and Swift consumer packaging, and later Android ART/Handler/Looper behavior.
+- macOS/Apple ARC and queue behavior, clean Swift Apple package consumption, and later Android ART/Handler/Looper behavior.
 
 ## 3. Fixture set
 
@@ -52,7 +55,7 @@ Fixture names below identify responsibilities, not permanent public package name
 | Fixture | Role | Required consumers |
 |---|---|---|
 | Production-shaped token ingress fixture | Minimal inert `BleBackend`, one-time capabilities query and bind, process-local registry, exported push, `EventIngressState`, Rust-only recording sink, and `BleHub` lifecycle | Pure Rust, desktop Kotlin/JVM, Swift host |
-| Error-shape fixture | Public BoltFFI errors, `thiserror`, constructor/command/bind/dispose results, event status, expected and unexpected foreign failures | Rust, Kotlin/JVM, Swift |
+| Error-shape fixture | Public BoltFFI errors, production `derive_more::Display/Error`, the recorded `thiserror` scanner incompatibility, constructor/command/bind/dispose results, event status, expected and unexpected foreign failures | Rust, Kotlin/JVM, Swift |
 | Event-shape fixture | Every `BleEventPayload` variant and tagged-record fallback from the same semantic vectors | Rust, Kotlin/JVM, Swift |
 | Race and stress harness | Deterministic barriers, counters, watchdogs, state-sequence runner, 10,000-cycle loop, and payload bursts | Reused by all runtime lanes |
 | Packaging consumers | Clean projects that consume only produced artifacts, not source-tree classpaths or implicit build outputs | Gradle/JVM and XCFramework/SPM; Android AAR later |
@@ -234,6 +237,30 @@ A subprocess passes only if the fault is reported as a failure appropriate to th
 
 The Swift host lane validates generated protocol conformance, top-level push, ARC, queues, errors, and clean package consumption. It does not claim iOS BLE behavior.
 
+On Windows, BleHub manages a pinned Swift toolchain through `tools/swift_toolchain.py`. The script delegates the official package download, hash verification, dependency handling, and upgrade transaction to WinGet, while BleHub fixes Swift `6.3.3` and the required feature selection. It disables the Swift Android platform and non-x64 Windows SDK payloads for this host lane. The root resolves from `BLEHUB_SWIFT_ROOT`, ignored `blehub.local.toml`, then the portable user cache; the recorded machine selects the shared `D:/dev/swift` root through local config. Ordinary generation and tests never install or update Swift implicitly:
+
+Machine-local toolchain roots are resolved in this order:
+
+1. `BLEHUB_SWIFT_ROOT` or `BLEHUB_ANDROID_ROOT`, for CI and one-off overrides;
+2. the corresponding key under `[toolchains]` in ignored `blehub.local.toml`;
+3. the portable fallback `~/.cache/blehub/toolchains/<name>`.
+
+Copy `blehub.local.example.toml` to `blehub.local.toml` when a stable machine-specific location is desired. This local file contains paths only; pinned versions, URLs, hashes, and dependency locks remain in tracked scripts and lockfiles. Relative TOML paths are resolved from the repository root. Inspect the effective values and manage the Swift host lane with:
+
+```text
+pixi run just toolchain-paths
+pixi run just sccache-stats
+pixi run just swift-report
+pixi run just swift-bootstrap
+pixi run just swift-doctor
+```
+
+Pixi supplies sccache for ordinary Rust compilation and the generated JNI C glue. Cargo incremental is disabled in Pixi environments so the project does not maintain both incremental object graphs and whole-crate sccache entries. `SCCACHE_DIR` and `SCCACHE_CACHE_SIZE` remain standard machine/CI overrides; sccache reduces repeat compilation, not the required final libraries or packages, and its cache consumes separate disk space. BoltFFI metadata generation deliberately uses a dedicated Cargo target and removes a sccache Rust wrapper: metadata mode changes macro output through dedicated cfg/environment inputs that are not safely separated from ordinary artifacts by the current cache key. The BoltFFI CLI itself remains in the ordinary sccache-enabled target, so only the much smaller metadata dependency graph is duplicated. Swift and Kotlin compilation use their own build-system caches and do not run through sccache.
+
+The Windows Swift lane consumes a Rust `x86_64-pc-windows-msvc` DLL and MSVC import library. This matches Swift's reported `x86_64-unknown-windows-msvc` target and Windows C ABI. The LLVM-MinGW `x86_64-pc-windows-gnu` Rust/JNI artifacts are a separate Kotlin/JVM spike lane and must not be linked into the Swift executable.
+
+The Windows lane is supplementary. It may prove generated-source compilation, pure Swift API ergonomics, Windows FFI loading, callback/thread behavior, explicit disposal, language-level ARC, payload ownership, and host performance where the generated BoltFFI runtime is portable. It cannot prove CoreBluetooth, Objective-C interoperability, Apple dispatch/CoreBluetooth queue semantics, XCFramework/SPM Apple packaging, signing, simulator/device behavior, or the final Apple object graph. Those remain macOS gates, and Windows success does not satisfy the Apple packaging requirements below.
+
 ### 7.1 Build and packaging
 
 1. Generate Swift bindings from the same Rust contract revision as the other lanes.
@@ -258,8 +285,9 @@ The Swift host lane validates generated protocol conformance, top-level push, AR
 
 Generate and compile these shapes in the same public Rust crate:
 
-- `#[boltffi::error]` with `#[derive(thiserror::Error)]` for public typed errors;
-- `#[boltffi::data]` records that contain error data and coexist with `thiserror` types;
+- public typed errors using the production `#[boltffi::error] + derive_more::Display/Error` combination;
+- `#[boltffi::data]` error records using the same Rust `Display/Error` derives;
+- a minimal probe recording the current scanner rejection of `thiserror`'s required type-level, unqualified `#[error(...)]` helper; it remains expected-failure until [BoltFFI #870](https://github.com/boltffi/boltffi/issues/870) is fixed;
 - `Result<BackendCapabilities, BleHubError>`;
 - `Result<(), BleHubError>` for bind and dispose;
 - `Result<(), CommandDispatchError>` for every command;

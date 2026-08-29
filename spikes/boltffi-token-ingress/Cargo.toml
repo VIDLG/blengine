@@ -1,0 +1,17 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "blehub-phase0-ffi-fixture"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+blehub = { path = "../../crates/blehub" }
+boltffi = "=0.30.1"
