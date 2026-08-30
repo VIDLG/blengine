@@ -9,24 +9,28 @@ pub struct BluetoothUuid {
     pub value: String,
 }
 
-/// Converts 16-bit, 32-bit, simple 128-bit, or hyphenated 128-bit Bluetooth UUID
-/// text to lowercase hyphenated 128-bit form.
-pub fn canonicalize_bluetooth_uuid(value: &str) -> Option<BluetoothUuid> {
-    let expanded = match value.len() {
-        4 if value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
-            format!("0000{value}{BLUETOOTH_BASE_UUID_SUFFIX}")
-        }
-        8 if value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
-            format!("{value}{BLUETOOTH_BASE_UUID_SUFFIX}")
-        }
-        32 | 36 => value.to_owned(),
-        _ => return None,
-    };
-    uuid::Uuid::parse_str(&expanded)
-        .ok()
-        .map(|value| BluetoothUuid {
+impl BluetoothUuid {
+    /// Converts 16-bit, 32-bit, simple 128-bit, or hyphenated 128-bit Bluetooth
+    /// UUID text to lowercase hyphenated 128-bit form.
+    pub fn canonicalize(value: &str) -> Option<Self> {
+        let expanded = match value.len() {
+            4 if value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+                format!("0000{value}{BLUETOOTH_BASE_UUID_SUFFIX}")
+            }
+            8 if value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+                format!("{value}{BLUETOOTH_BASE_UUID_SUFFIX}")
+            }
+            32 | 36 => value.to_owned(),
+            _ => return None,
+        };
+        uuid::Uuid::parse_str(&expanded).ok().map(|value| Self {
             value: value.hyphenated().to_string(),
         })
+    }
+
+    pub(crate) fn is_canonical(&self) -> bool {
+        Self::canonicalize(&self.value).as_ref() == Some(self)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
@@ -89,10 +93,10 @@ mod tests {
             "0000180D00001000800000805F9B34FB",
             "0000180D-0000-1000-8000-00805F9B34FB",
         ] {
-            assert_eq!(canonicalize_bluetooth_uuid(value), expected);
+            assert_eq!(BluetoothUuid::canonicalize(value), expected);
         }
         for value in ["", "0x180D", "180", "not-a-uuid"] {
-            assert_eq!(canonicalize_bluetooth_uuid(value), None);
+            assert_eq!(BluetoothUuid::canonicalize(value), None);
         }
     }
 }

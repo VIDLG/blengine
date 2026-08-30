@@ -78,17 +78,39 @@ caller-owned pre-registered IDs/state
 
 `EventScenario` builder 负责描述输入、backend emission attempts 和预期；`FakeBackend` 负责执行；recording sink/reference projection 负责观察。各 backend 的 conformance suite 复用同一组 scenario，不复制或改写它们的 contract 语义。
 
+### `blehub-testkit` 代码边界
+
+测试代码按以下单向依赖组织，避免 scenario、backend obligation 和 caller policy 混成第二套 production 状态机：
+
+| 模块 | 责任 | 不负责 |
+|---|---|---|
+| `scenario.rs` | `RecordedCommand`、dispatch script 与单条 `EventScenario` 数据 | ingress、assertion、projection、平台对象 |
+| `catalog.rs` | 命名的 Phase 1 场景数据和跨 backend 复用的 command/event 期望 | 执行、锁、sink behavior、平台 mapping |
+| `runner.rs` | 精确 command 匹配、同步/延迟 emission、manual advance、status/attempt 记录 | backend lifecycle、caller projection、平台线程模型 |
+| `conformance.rs` | 规范性的 ID、domain/terminal、error、strict mode 与 violation oracle | FakeBackend、sink、projection、平台实现 |
+| `fake_backend.rs` | `BleBackend` trait 适配、capabilities、ingress root 与幂等 dispose | 定义新的契约规则或业务状态 |
+| `projection.rs` | 非规范性的 caller command/session projection 示例 | 决定 bridge 是否交付、修复 backend event |
+| `fixtures.rs` | advertisement、GATT 与完整 event catalog DTO | backend 执行与 ingress integration |
+| `recording_sink.rs` | downstream accept/reject/panic 观察器 | scenario 与 contract 判断 |
+
+`src`中的私有单元测试只验证 oracle/projection 的内部纯逻辑；经过真实 `BleHub -> BackendEventIngressHandle -> BleEventSink` 的场景放在 `crates/blehub-testkit/tests/`，按 `runner`、`fake_backend`、`conformance_dispatch`、`conformance_operations`、`projection`和`fixtures`分组。共享 helper 只保留机械构造与重复推进，不承载规范性断言。
+
 ### 共享 backend conformance
+
+执行入口：`pixi run just conformance`。该 recipe 只运行 `blehub-testkit` 的平台无关 scenario、contract oracle、ingress fixture 和 caller projection；普通 `pixi run just test` 仍包含它。`pixi run just ble-fixture-check` 则通过 Bleak 和真实 RF 扫描、连接并验证 managed/LightBlue 外设 profile，需要独占本机 BLE adapter 和一个已启动广播的 fixture；它不是共享 backend conformance，也不证明尚未实现的平台 backend。
 
 共享 fixture 只组织输入、emission 和断言责任；规范预期直接引用 Plan 的[扫描配置 6.6](../../.plan/PLAN.md#66-扫描配置)、[统一 event payload 6.15](../../.plan/PLAN.md#615-unified-event-payload)、[public event 不变量 6.16](../../.plan/PLAN.md#616-public-event)和[backend 可观察契约 7.1](../../.plan/PLAN.md#71-backend-可观察契约规范性)，不在此复制完整矩阵。共享 conformance 至少验证：
 
 - accepted/rejected 线性化：immediate `Err` 后零 event；同步 emit event 的调用只能返回 `Ok(())`。
 - caller-owned ID 和 target ID 原样回显；passive/晚到 event 保留原 session ID。
 - 到达 completion point 的 accepted command 恰好尝试一次 terminal；同一 `CommandId` 至多一次 terminal attempt。
-- 成功时需要 domain data/state 的 command 按 `domain event -> CommandCompleted(Succeeded)` 尝试；outcome/error 组合使用 Plan 6.16 的正反例 vectors，拒绝不满足其不变量的 event。
-- failure fixture把passive/state event的`BleFailure`与accepted command terminal的`BleOperationError { operation, failure }`分开；terminal operation匹配caller预登记的command，稳定分类从`error.failure.category`读取。command-associated failure若按`failure state -> terminal`尝试交付，两处必须复用值相等的`BleFailure`。
+- 成功时需要domain data/state的command按`domain event -> CommandCompleted { error: None }`尝试；失败默认只发送`CommandCompleted { error: Some(error) }`。result-like data enum、`NotificationState`和terminal `Option<BleEventError>`直接提供互斥shape，不维护第二张组合表。
+- failure fixture把passive/state event携带的`BleEventError`与accepted command terminal的`CommandCompleted.error`分开；terminal target从caller预登记的command解析，稳定分类从`error.category`读取。command-associated failure若按`failure state -> terminal`尝试交付，两处必须复用值相等的`BleEventError`。
 - scan predicate fixture覆盖`service_uuids`中`BluetoothUuid.value`为空字符串或其他malformed文本时在accepted前返回`InvalidRequest`且零event，并以空`service_uuids` vector单独验证“无service约束”；另覆盖canonical service UUID any-of、大小写敏感name prefix、manufacturer匹配、三类已指定条件AND、缺少必需字段不匹配和`Some("")`的accepted前拒绝。service filtering始终是contract保证，不存在`supports_service_scan_filter` capability；native pushdown只是optional optimization，backend callback补过滤必须使结果始终符合Plan 6.6，bridge/downstream不代替backend过滤。
-- GATT fixture断言`GattDiscovered.database`嵌套完整`GattDatabase`，connection/GATT session ID不在variant顶层重复，并保留duplicate UUID instance。
+- advertisement fixture使用platform-normalized observation：字段不要求来自同一RF packet，空vector/`None`只表示本次mapped observation缺少证据；不把timestamp、scan-response flag、completeness、PHY/SID、TX power或raw bytes伪造进v0.1 DTO。
+- GATT fixture断言`GattDiscovered.database`嵌套flat `service -> characteristic -> descriptor`的完整`GattDatabase`，connection/GATT session ID不在variant顶层重复，保留各层duplicate UUID instance，并固定all-or-error而非partial database。
+- read/subscription conflict fixture固定同一characteristic的pending read与enable，以及enable-pending/active/disable-in-flight subscription与read，在accepted前返回`InvalidState`且零event；不得使用pending-read/next-value heuristic。
+- native GATT invalidation fixture固定旧native map立即失效、旧ID command显式失败、旧callback不关联新`GattSessionId`，且不伪造`BackendError` invalidation event。
 - cleanup fixture区分Plan的重复调用结果：重复stop是幂等terminal success且不伪造第二个`ScanStopped`；已移除或unknown target的重复disconnect/disable在accepted前返回`InvalidState`且零event、零重复native side effect。具体流程引用Plan [8.3](../../.plan/PLAN.md#83-停止扫描)、[8.4](../../.plan/PLAN.md#84-建立连接)和[8.8](../../.plan/PLAN.md#88-开启-notification)。
 - pending-connect fixture按Plan 8.4区分cancellation evidence：只有平台证据证明本次disconnect导致原connect被取消时才为原command尝试`Cancelled`；独立发生的connect failure仍是`Failed`。不能证明该因果关系时disconnect仍可在logical lifecycle/owned resources结束后成功，原connect继续受原completion evidence与caller deadline约束，晚到结果保留原connect IDs且不得成为当前连接。
 - sink 的 `InvalidEvent`/`DownstreamFailed`/`Closed` 状态、同一 command 的程序顺序和 close 后行为。

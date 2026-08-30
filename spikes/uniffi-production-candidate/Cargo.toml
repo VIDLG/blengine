@@ -23,4 +23,5 @@ bindgen = ["uniffi/cli"]
 
 [dependencies]
 blehub = { path = "../../crates/blehub" }
+blehub-testkit = { path = "../../crates/blehub-testkit" }
 uniffi = "=0.32.0"

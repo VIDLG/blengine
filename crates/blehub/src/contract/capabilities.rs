@@ -1,6 +1,6 @@
 use super::BleHubError;
 
-pub const BLEHUB_CONTRACT_VERSION: u32 = 4;
+pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum Platform {

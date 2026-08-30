@@ -55,9 +55,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="verify advertising and GATT structure without read/write/subscribe operations",
     )
+    parser.add_argument(
+        "--notification-timeout",
+        type=float,
+        default=0.0,
+        help=(
+            "keep each notify/indicate subscription open until one update arrives "
+            "or this many seconds elapse (default: do not wait)"
+        ),
+    )
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be greater than zero")
+    if args.notification_timeout < 0:
+        parser.error("--notification-timeout must not be negative")
+    if args.structure_only and args.notification_timeout > 0:
+        parser.error("--notification-timeout cannot be used with --structure-only")
     return args
 
 
@@ -155,6 +168,8 @@ async def _verify_operations(
     client: BleakClient,
     characteristic: BleakGATTCharacteristic,
     definition: dict[str, Any],
+    *,
+    notification_timeout: float,
 ) -> list[str]:
     properties = set(definition["properties"])
     role = definition.get("role", characteristic.uuid)
@@ -180,9 +195,44 @@ async def _verify_operations(
         completed.append("write-without-response")
 
     if "notify" in properties or "indicate" in properties:
-        await client.start_notify(characteristic, lambda _characteristic, _data: None)
-        await client.stop_notify(characteristic)
-        completed.append("subscribe/unsubscribe")
+        notification_received = asyncio.Event()
+        notification_value: bytes | None = None
+
+        def on_notification(_characteristic: Any, data: bytearray) -> None:
+            nonlocal notification_value
+            notification_value = bytes(data)
+            print(
+                f"notification_received role={role} "
+                f"uuid={characteristic.uuid} value={notification_value.hex()}",
+                flush=True,
+            )
+            notification_received.set()
+
+        await client.start_notify(characteristic, on_notification)
+        try:
+            if notification_timeout > 0:
+                print(
+                    f"notification_subscription=ready role={role} "
+                    f"uuid={characteristic.uuid} timeout={notification_timeout:g}s",
+                    flush=True,
+                )
+                try:
+                    await asyncio.wait_for(
+                        notification_received.wait(), timeout=notification_timeout
+                    )
+                except TimeoutError as error:
+                    raise RuntimeError(
+                        f"{role} subscription succeeded but no notification arrived "
+                        f"within {notification_timeout:g} seconds"
+                    ) from error
+        finally:
+            await client.stop_notify(characteristic)
+
+        if notification_timeout > 0:
+            assert notification_value is not None
+            completed.append(f"notification={notification_value.hex()}")
+        else:
+            completed.append("subscribe/unsubscribe")
 
     if initial is not None and "write" in properties:
         await client.write_gatt_char(characteristic, initial, response=True)
@@ -230,6 +280,7 @@ async def _verify(args: argparse.Namespace) -> None:
                         client,
                         characteristic,
                         definition,
+                        notification_timeout=args.notification_timeout,
                     )
                     if operations:
                         message += f" operations={','.join(operations)}"
@@ -237,10 +288,13 @@ async def _verify(args: argparse.Namespace) -> None:
 
     print(f"fixture={fixture['profile_id']} status=passed")
     if not args.structure_only:
-        print(
-            "notification_delivery=not-tested "
-            "(update the subscribed value in LightBlue for an interactive check)"
-        )
+        if args.notification_timeout > 0:
+            print("notification_delivery=passed")
+        else:
+            print(
+                "notification_delivery=not-tested "
+                "(rerun with --notification-timeout and trigger an update while subscribed)"
+            )
 
 
 def main() -> int:

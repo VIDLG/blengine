@@ -194,24 +194,24 @@ v0.1故意不提供通用AND/OR表达式、任意closure、地址过滤、RSSI�
 
 | 平台 | Service UUID | Name prefix | Company ID | Duplicates |
 |---|---|---|---|---|
-| Windows | 当前快照未闭环 filter API；即使可用也仅作 pushdown | 当前快照未闭环 | 当前快照未闭环 | watcher 有 observation event，但当前快照无逐包或 duplicate switch 保证 |
-| Android | `startScan(List<ScanFilter>, ...)` facility 已验证；具体 `ScanFilter` 字段页缺失 | native exact/prefix 能力未由当前快照证明 | native manufacturer filter 细节未由当前快照证明 | `ALL_MATCHES` 路径存在，但不保证 controller/OEM 不去重或不丢包 |
-| Apple | `scanForPeripherals(withServices:)` 原生 service filter 已验证 | 无 native prefix 证据，callback post-filter | 无 native company filter 证据，callback post-filter | options 详细页缺失；后台扫描时 scan option 无效已验证 |
+| Windows | watcher filter API 可作 pushdown；当前证据不把它提升为完整公共 predicate | callback 用 advertisement `ServiceUuids`/`LocalName` 复核 | callback 用 `ManufacturerData.CompanyId` 复核 | watcher 持续交付 observation，但没有公共逐包或 duplicate switch 保证 |
+| Android | `startScan(List<ScanFilter>, ...)` 可 pushdown，`ScanRecord` 负责最终字段映射 | native filter只作预筛选，callback仍按大小写敏感prefix复核 | native manufacturer filter只作预筛选，callback按company ID复核 | `CALLBACK_TYPE_ALL_MATCHES`支持重复报告；controller/OEM节流、去重和丢包仍不受保证 |
+| Apple | `scanForPeripherals(withServices:)` 原生 service filter已验证 | 无 native prefix 证据，callback post-filter | 无 native company filter 证据，callback post-filter | 前台allow-duplicates key可关闭coalescing；后台scan option无效，仍不等价逐包无损 |
 | BlueZ | `SetDiscoveryFilter.UUIDs` 是 any-of，可 pushdown；多 client filter 合并后必须复核 | `Pattern` 同时匹配地址或名称，且可能被其他 client 稀释，只能预筛选 | discovery filter 没有 company 字段；从 `ManufacturerData` property post-filter | `DuplicateData=true` 只明确增强 manufacturer/service data property updates，不等价逐包 |
 
 ### 4.3 各平台处理
 
 #### Windows
 
-当前本地快照证明 [`BluetoothLEAdvertisementWatcher`](../platform-api-reference/windows/bluetoothleadvertisementwatcher.md) 提供 advertisement observation，但没有保存 filter、local-name、manufacturer-data 的完整属性页。Windows backend 实现前应补齐这些页面；在此之前不能把“快照缺页”写成“不支持”。无论 native pushdown 是否存在，统一 predicate 都必须在 mapped observation 上成立。
+[`BluetoothLEAdvertisementWatcher`](../platform-api-reference/windows/bluetoothleadvertisementwatcher.md) 提供 advertisement observation；callback 的 [`Advertisement`](../platform-api-reference/windows/bluetoothleadvertisementreceivedeventargs_advertisement.md) 暴露同次 received payload，后端可从 [`LocalName`](../platform-api-reference/windows/bluetoothleadvertisement_localname.md)、[`ServiceUuids`](../platform-api-reference/windows/bluetoothleadvertisement_serviceuuids.md) 和 [`ManufacturerData`](../platform-api-reference/windows/bluetoothleadvertisement_manufacturerdata.md) 做最终复核。service data需要按raw data section的16/32/128-bit AD type解析；UUID prefix字节序和payload边界仍须用官方Bluetooth格式证据与fixture闭环。无论native pushdown是否存在，统一predicate都必须在mapped observation或完全等价的native positive evidence上成立。
 
 #### Android
 
-[`BluetoothLeScanner.startScan`](../platform-api-reference/android/BluetoothLeScanner.java) 接受 `List<ScanFilter>` 并交给 system service；offloaded filtering/tracking 资源会影响某些 scan settings。当前快照没有 `ScanFilter.java`、`ScanSettings.java` 和 `ScanRecord.java`，因此 service/name/manufacturer 的精确 native 组合语义仍为 **Unverified**。backend 不应把 deprecated wrapper 的 `containsAll` 行为提升为 BleHub any-of 语义。
+[`BluetoothLeScanner.startScan`](../platform-api-reference/android/BluetoothLeScanner.java) 接受 [`List<ScanFilter>`](../platform-api-reference/android/ScanFilter.java) 并交给system service；offloaded filtering/tracking资源会影响部分settings。[`ScanRecord`](../platform-api-reference/android/ScanRecord.java)提供local name、service UUID、manufacturer data与service data；[`ScanSettings`](../platform-api-reference/android/ScanSettings.java)证明`ALL_MATCHES`与immediate reporting路径。native filter和Framework parser仍不能替代BleHub callback post-filter，backend也不得把deprecated wrapper的`containsAll`行为提升为BleHub any-of语义。空options应显式允许non-legacy结果，避免Android builder默认legacy-only缩窄公共最宽stream。
 
 #### Apple
 
-[`scanForPeripherals(withServices:options:)`](../platform-api-reference/apple/cbcentralmanager-scanforperipherals.md) 可按 service UUID 预筛选；`nil` 表示扫描全部。当前页面没有把多 UUID 精确说明为 BleHub any-of，也没有 name/company pushdown，因此 callback mapping 仍是统一正确性边界。后台扫描要求 service filter，且 scan option 在后台无效；这会削弱 duplicate hint，但不能改变公共 predicate。
+[`scanForPeripherals(withServices:options:)`](../platform-api-reference/apple/cbcentralmanager-scanforperipherals.md) 可按service UUID预筛选；`nil`表示扫描全部。callback通过[`advertisementData`](../platform-api-reference/apple/cbcentralmanagerdelegate-diddiscover.md)提供local name、service UUID、manufacturer/service data和connectable；normal与overflow service UUID都属于advertised service observation，solicited UUID不混入。name/company没有native pushdown证据，因此callback mapping仍是统一正确性边界。前台[`AllowDuplicates`](../platform-api-reference/apple/cbcentralmanagerscanoptionallowduplicateskey.md)可关闭coalescing；后台扫描要求service filter且scan option无效，这会削弱duplicate hint，但不能改变公共predicate。
 
 #### BlueZ
 
@@ -280,7 +280,7 @@ Enable 必须按“local routing → CCCD write → descriptor completion”处�
 - `RequireIndication` 在 dual capability 上无法强制，必须 `NotSupported`；
 - indicate-only 的 actual mode 仍需结合 characteristic properties 和成功 callback 证明。
 
-`CBCharacteristicProperties` 与 detailed notification-state delegate 页面尚未保存，Apple backend 开始前需补齐。
+[`CBCharacteristicProperties`](../platform-api-reference/apple/cbcharacteristicproperties.md)已证明notify/indicate capability；[`didUpdateNotificationState`](../platform-api-reference/apple/cbperipheraldelegate-didupdatenotificationstate.md)以`error == nil`表示配置成功。结合CoreBluetooth在dual-capability characteristic上选择notification的规则，Apple可在成功路径报告可证明的actual mode；strict indication只在indicate-only characteristic上可兑现。
 
 #### BlueZ
 
@@ -305,9 +305,187 @@ Enable 必须按“local routing → CCCD write → descriptor completion”处�
 
 `Indication` 只表示 ATT indication mode，不表示应用业务已经处理数据。
 
-## 6. 信息保留与降级规则
+## 6. Advertisement observation 字段模型
 
-### 6.1 必须保留
+### 6.1 公共 shape 的证据
+
+```rust
+pub struct ManufacturerData {
+    pub company_id: u16,
+    pub payload: Vec<u8>,
+}
+
+pub struct ServiceData {
+    pub service_uuid: BluetoothUuid,
+    pub payload: Vec<u8>,
+}
+
+pub struct AdvertisementObservation {
+    pub scan_session_id: ScanSessionId,
+    pub peripheral_id: PeripheralId,
+    pub local_name: Option<String>,
+    pub advertised_services: Vec<BluetoothUuid>,
+    pub manufacturer_data: Vec<ManufacturerData>,
+    pub service_data: Vec<ServiceData>,
+    pub rssi: Option<i16>,
+    pub connectable: Option<bool>,
+}
+```
+
+字段级来源：
+
+| 字段 | Windows | Android | Apple | BlueZ |
+|---|---|---|---|---|
+| `local_name` | advertisement `LocalName` | `ScanRecord.getDeviceName()` | `CBAdvertisementDataLocalNameKey` | `Device1.Name`，但不保证来自当前包 |
+| `advertised_services` | advertisement `ServiceUuids` | `ScanRecord.getServiceUuids()` | normal + overflow service UUID keys | `Device1.UUIDs`，语义是available remote services而非严格本包字段 |
+| `manufacturer_data` | `CompanyId + Data` list | `SparseArray<company_id, bytes>` | 单个raw manufacturer `NSData`，company ID拆分仍需Bluetooth格式证据 | `dict<uint16, bytes>` |
+| `service_data` | raw 16/32/128-bit service-data section；parser细节仍待闭环 | `Map<ParcelUuid, bytes>` | `dict<CBUUID, NSData>` | `dict<uuid, bytes>` |
+| `rssi` | callback `short` dBm | `ScanResult.getRssi()` | discovery callback `NSNumber` dB | optional `int16` property |
+| `connectable` | callback bool | `ScanResult.isConnectable()` | optional advertisement key | 无远端property，固定`None` |
+
+证据：
+
+- Windows：[`BluetoothLEAdvertisement`](../platform-api-reference/windows/bluetoothleadvertisement.md)、[`BluetoothLEManufacturerData`](../platform-api-reference/windows/bluetoothlemanufacturerdata.md)、[`ReceivedEventArgs`](../platform-api-reference/windows/bluetoothleadvertisementreceivedeventargs.md)
+- Android：[`ScanRecord`](../platform-api-reference/android/ScanRecord.java)、[`ScanResult`](../platform-api-reference/android/ScanResult.java)
+- Apple：[`Advertisement Data Retrieval Keys`](../platform-api-reference/apple/advertisement-data-retrieval-keys.md)、[`didDiscover`](../platform-api-reference/apple/cbcentralmanagerdelegate-diddiscover.md)
+- BlueZ：[`Device1`](../platform-api-reference/bluez/org.bluez.Device.rst)
+
+### 6.2 Observation 的统一强度
+
+`AdvertisementObservation`是一次**platform-normalized observation**：
+
+- 它不是raw RF packet；
+- 它不是peripheral的完整或latest properties；
+- fields不保证来自同一physical packet；
+- empty vector或`None`只表示本observation没有可上行值，不表示设备永久没有该数据；
+- manufacturer/service data list不保证保留原始重复AD structure边界或顺序。
+
+具体损失：
+
+- Android对同company ID的多个manufacturer sections拼接payload，对同service UUID的service data以后值覆盖前值；BleHub不重新解析raw bytes恢复边界。
+- Apple和BlueZ的dictionary形态每个key最多提供一个当前值；Apple一次callback最多提供一个manufacturer-data blob。
+- BlueZ property observation可能混合缓存与不同时刻property，不能描述成单包快照。
+- Windows service data需要从raw section拆分UUID与payload；在parser证据闭环前仍是Windows mapping gate，不是删除公共字段的理由。
+
+### 6.3 v0.1 不增加的 advertisement metadata
+
+Windows提供scan-response和callback timestamp；Android提供timestamp、legacy/extended、data completeness、PHY、SID、TX power和periodic interval；BlueZ提供TxPower与AdvertisingFlags。v0.1暂不公共化这些字段：
+
+- 当前没有跨平台业务用例要求它们；
+- timestamp分属不同clock domain和观察时点，不能形成可信统一语义；
+- Android completeness不能证明其他平台的observation完整，增加`Unknown`不会改善公共predicate；
+- scan-response、PHY和SID属于raw/extended advertisement层，不应零散混入基础DTO。
+
+native值保留在backend tracing与平台mapping tests。若未来需要raw advertisement API，应整体设计packet provenance、timestamp、data type和raw bytes，而不是逐个添加低上下文optional字段。
+
+## 7. GATT database 跨平台模型
+
+### 7.1 Instance identity 与 duplicate UUID
+
+四个平台都要求按**native instance**寻址，UUID不是实例identity：
+
+| 平台 | Native identity evidence |
+|---|---|
+| Windows | discovery API针对具体service/characteristic instance返回child objects |
+| Android | service/characteristic instance ID区分同UUID实例；descriptor callback返回discovery tree对象 |
+| Apple | read/write/discovery API接收具体`CBService`/`CBCharacteristic` object |
+| BlueZ | service/characteristic/descriptor各有独立D-Bus object path与handle |
+
+因此`GattServiceId`、`GattCharacteristicId`和`GattDescriptorId`必须保留，并只在`ConnectionId + GattSessionId`内有效。backend必须枚举vector/list，不使用UUID-keyed map或“first matching UUID” accessor构造database；re-discovery可以为同一native attribute生成新public ID。
+
+### 7.2 Characteristic properties
+
+五个公共bool在四个平台均有直接映射：
+
+```rust
+pub struct CharacteristicProperties {
+    pub readable: bool,
+    pub writable_with_response: bool,
+    pub writable_without_response: bool,
+    pub notifiable: bool,
+    pub indicatable: bool,
+}
+```
+
+它们是common procedure capability subset，不是native flag的无损镜像，也不保证operation一定获准。公共层有意省略broadcast、signed/reliable write、extended properties以及encrypt/authenticate/authorize等平台flags；实际security、policy和remote ATT拒绝仍通过operation error表达。
+
+证据：
+
+- Windows [`GattCharacteristicProperties`](../platform-api-reference/windows/gattcharacteristicproperties.md)
+- Android [`BluetoothGattCharacteristic`](../platform-api-reference/android/BluetoothGattCharacteristic.java)
+- Apple [`CBCharacteristicProperties`](../platform-api-reference/apple/cbcharacteristicproperties.md)
+- BlueZ [`GattCharacteristic1.Flags`](../platform-api-reference/bluez/org.bluez.GattCharacteristic.rst)
+
+### 7.3 Discovery 完整性与 cache
+
+`GattDatabase`表示backend在本`GattSessionId`内成功构造的v0.1 traversal结果，不承诺是同一时点、uncached或remote ATT database的原子快照：
+
+- Windows多层async result分别有status、collection和optional protocol error；backend使用明确cache policy，任一层失败即丢弃staging。
+- Android successful `onServicesDiscovered`后Framework提供service/characteristic/descriptor hierarchy。
+- Apple必须聚合service → characteristic → descriptor多层callback；每层`error != nil`均使整体失败。
+- BlueZ在`ServicesResolved=true`后枚举自洽object tree；ObjectManager初始snapshot与signal排序仍未由当前BlueZ快照证明。
+
+统一policy是all-or-error：所有计划内层级成功才先发`GattDiscovered`，再发terminal success；任一失败不发布partial database。empty child vector只有在完整traversal成功后才表示该层确实为空。
+
+### 7.4 Included services 与 `primary`
+
+四个平台都能表示included-service relation，但当前Plan没有include edge。v0.1建议继续采用flat service → characteristic → descriptor scope，不遍历、不flatten、不公开included-service graph；“完整database”只指该明确scope。
+
+`primary`是否保留是ABI review项：
+
+- Android、Apple和BlueZ能直接提供primary/secondary；
+- Windows device-level `GattDeviceService`被定义为primary root，但included是另一个显式relation；
+- 保留`primary: Option<bool>`可提供真实分类，但不能替代include graph；
+- 删除它可进一步缩小DTO，但会丢失三平台直接提供、且可能用于诊断/选择的service分类。
+
+当前研究倾向**保留`primary`并明确它只是分类，不表示include topology**；除非调用方确认该分类没有用处，不因Windows root恒为primary而删除跨平台事实。
+
+## 8. GATT value routing 与 invalidation
+
+### 8.1 Read/notification source ambiguity
+
+Windows与Android分别有独立read result/callback和notification callback，可无歧义映射`CharacteristicRead`与`NotificationReceived`。Apple和BlueZ不同：
+
+- Apple [`didUpdateValueFor`](../platform-api-reference/apple/cbperipheraldelegate-didupdatecharacteristicvalue.md)同时由explicit read和notification value change触发，没有source/token/order discriminator。
+- BlueZ `GattCharacteristic1.Value` property既在successful read后更新，也在notification/indication后更新；`PropertiesChanged`没有reason。
+
+因此“存在pending read，所以下一次value callback一定属于read”不是可移植保证；按value相等或时间窗口去重同样会丢弃真实同值notification。
+
+ABI冻结前必须review以下策略：
+
+1. **推荐的最小策略**：统一禁止同一characteristic上的read与subscription生命周期重叠；backend在自己的串行边界以现有`CommandDispatchError::InvalidState`拒绝冲突dispatch，严格零event，保留现有两个清晰event。
+2. `ReadCharacteristic`与该characteristic的enable/active/disable-in-flight subscription冲突；pending read也与enable冲突。disable成功后的late value是否会与紧随其后的read混淆仍需Apple/BlueZ runtime gate；无法证明安全时，backend可在本`GattSessionId`剩余生命周期继续拒绝该characteristic的read，而不能猜测callback来源。
+3. 若产品必须重叠：重新设计value event/correlation；仅增加`source=Unknown`仍无法确定pending read何时完成。
+4. 不允许平台backend各自使用未文档化heuristic，让相同公共API在Apple/BlueZ上产生静默误分类。
+
+该决策不需要新增error variant，但会收紧command state语义，必须先更新并review Plan，再实现DTO/conformance。
+
+### 8.2 GATT database invalidation
+
+底层存在明确的数据库变化或旧对象失效信号：Android `onServiceChanged`、Apple [`didModifyServices`](../platform-api-reference/apple/cbperipheraldelegate-didmodifyservices.md)、Windows system GATT cache invalidation和BlueZ object lifecycle。当前v0.1 Plan把service-changed/cache invalidation延后，public event没有`GattDatabaseInvalidated`。
+
+v0.1若维持延后，backend最低义务是：
+
+- 立即废弃受影响`GattSessionId`的native mapping；
+- 不把旧对象callback关联到新session；
+- 后续旧`Gatt*Id` command明确失败；
+- 不用`BackendError`伪装domain invalidation；
+- 文档承认downstream可能直到下一次operation failure才发现失效。
+
+更强且更及时的候选是新增：
+
+```rust
+GattDatabaseInvalidated {
+    connection_id: ConnectionId,
+    gatt_session_id: GattSessionId,
+}
+```
+
+收到native invalidation后整体废弃旧session，由caller用新`GattSessionId`重新discover。是否把它提升到v0.1是Plan review项，不在研究文档中静默决定。
+
+## 9. 信息保留与降级规则
+
+### 9.1 必须保留
 
 - caller-owned command/session/connection/subscription IDs；
 - canonical `BluetoothUuid`；
@@ -316,7 +494,7 @@ Enable 必须按“local routing → CCCD write → descriptor completion”处�
 - Windows HRESULT/status、Android status、Apple Error、BlueZ D-Bus error name/message；
 - backend 私有 tracing 中的 raw adapter state、native flags 和 rollback result。
 
-### 6.2 公共 enum 有意压缩
+### 9.2 公共 enum 有意压缩
 
 - Windows `Disabled` 的原因不进入 `AdapterState`；
 - Android turning direction 不进入 `AdapterState`；
@@ -325,7 +503,7 @@ Enable 必须按“local routing → CCCD write → descriptor completion”处�
 - BlueZ dual notification mode不可知时使用 `None`；
 - duplicate observation 不代表 RF packet 计数。
 
-### 6.3 不允许的兼容方式
+### 9.3 不允许的兼容方式
 
 - 不用 cached device alias 冒充 advertisement local name；
 - 不把 native filter capability 变成公共 predicate 的前提；
@@ -335,9 +513,9 @@ Enable 必须按“local routing → CCCD write → descriptor completion”处�
 - 不从 value callback 猜 notification/indication mode；
 - 不因为当前快照缺页就冻结 capability=false。
 
-## 7. Conformance 与 runtime 验证
+## 10. Conformance 与 runtime 验证
 
-### 7.1 共享 mapping fixtures
+### 10.1 共享 mapping fixtures
 
 每个平台至少验证：
 
@@ -350,20 +528,25 @@ Enable 必须按“local routing → CCCD write → descriptor completion”处�
 7. adapter native state到公共state的完整映射；
 8. scan/connection authorization独立性或明确复制规则；
 9. notification default/strict、dual capability和actual mode unknown；
-10. enable/disable partial failure与late value保留原`SubscriptionId`。
+10. enable/disable partial failure与late value保留原`SubscriptionId`；
+11. advertisement字段来自同一platform-normalized observation，empty/absent和重复key损失不被解释成canonical device state；
+12. duplicate service/characteristic/descriptor UUID保留为不同opaque ID，且旧`GattSessionId` ID不复用于新discovery；
+13. GATT discovery任一层失败不发布partial database，成功结果只覆盖v0.1 flat traversal scope；
+14. read/subscription冲突在accepted前返回`InvalidState`且零event，不以pending-read heuristic分类Apple/BlueZ value callback；
+15. native GATT invalidation至少废弃旧mapping、隔离late callback并使旧ID command明确失败；若Plan提升public invalidation event，再增加domain-event conformance。
 
-### 7.2 仍需 runtime 或补快照
+### 10.2 仍需 runtime 或补快照
 
 | 平台 | 重点缺口 |
 |---|---|
-| Windows | advertisement filter/local-name/manufacturer pages；duplicate行为；CCCD enum/result status；close后late callback |
-| Android | `ScanFilter`/`ScanSettings`/`ScanRecord`；target SDK permission矩阵；OEM duplicate与descriptor callback行为 |
-| Apple | `CBManagerState`、`CBManagerAuthorization`、scan options、advertisement keys、characteristic properties；前后台duplicate差异 |
-| BlueZ | ObjectManager lifecycle、polkit/system bus policy、dual notify/indicate选择、多client filter/session干扰 |
+| Windows | service-data UUID/payload parser；local-name absence；duplicate行为；RSSI `-127`；multi-layer discovery与close后late callback |
+| Android | target SDK permission矩阵；OEM duplicate/extended truncation；rotating identity；service-changed与late callback行为 |
+| Apple | manufacturer company-ID字节格式；read/subscription overlap；前后台duplicate；disable后的late value与service invalidation |
+| BlueZ | ObjectManager lifecycle、polkit/system bus policy、read-induced `Value`歧义、dual notify/indicate选择、多client filter/session干扰 |
 
 真实 RF、厂商栈、permission revocation、adapter transition和multi-client行为不能仅由 API 文档证明；对应 backend phase 必须增加 mapping tests、runtime spike 和 HIL gate。
 
-## 8. 维护规则
+## 11. 维护规则
 
 1. 平台 API 快照只通过 `pixi run just docs-update` 更新，不手改四个平台目录。
 2. 新平台事实先引用本地官方快照，并标明 Verified/Inferred/Unverified。

@@ -17,10 +17,23 @@ lint:
 test:
     rtk cargo test --workspace
 
+# Run the platform-independent backend contract and caller projection gate.
+conformance:
+    rtk cargo test -p blehub-testkit
+
+# Accept intentional Rust/Kotlin/Swift public API shape changes.
+api-snapshots-update: generate-bindings
+    python -m tools.api_snapshots update
+
+# Verify generated bindings and Rust public API against reviewed snapshots.
+api-snapshots-check: generate-bindings
+    python -m tools.api_snapshots check
+
 ble-fixture-check *args:
     python -m tools.verify_ble_fixture {{args}}
 
 android-test-device mode="auto":
     {{android_run}} python -m tools.android_toolchain device-select --mode {{mode}}
 
-phase0-check: check lint test generate-bindings
+# Run the platform-independent candidate gate; workspace tests include conformance.
+verify: check lint test api-snapshots-check

@@ -1,9 +1,12 @@
+mod advertisement;
 mod capabilities;
 mod commands;
 mod errors;
 mod events;
+mod gatt;
 mod ids;
 
+pub use advertisement::{AdvertisementObservation, ManufacturerData, ServiceData};
 pub use capabilities::{
     AdapterSnapshot, AdapterState, AuthorizationState, BLEHUB_CONTRACT_VERSION,
     BackendCapabilities, Platform,
@@ -19,9 +22,13 @@ pub use errors::{
     BleErrorCategory, BleEventError, BleHubError, CommandDispatchError, PlatformErrorDetails,
 };
 pub use events::{
-    BleEvent, ConnectionState, ConnectionStateResult, ScanStopReason, ScanStopResult,
+    BleEvent, ConnectionState, ConnectionStateResult, NotificationState, ScanStopReason,
+    ScanStopResult,
+};
+pub use gatt::{
+    CharacteristicProperties, GattCharacteristic, GattDatabase, GattDescriptor, GattService,
 };
 pub use ids::{
     BluetoothUuid, CommandId, ConnectionId, GattCharacteristicId, GattDescriptorId, GattServiceId,
-    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId, canonicalize_bluetooth_uuid,
+    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId,
 };

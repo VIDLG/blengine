@@ -2,15 +2,15 @@
 
 **状态：已批准**
 
-**日期：2026-08-29**
+**日期：2026-08-30**
 
-**当前阶段：Phase 0的Windows/Android Stable UniFFI mechanism与production-object-graph gate已完成；进入Phase 1统一薄契约实现，public ABI仍未冻结。Phase 1退出前不得开始production Windows backend。**
+**当前阶段：Phase 0与Phase 1已完成；下一阶段为Phase 2 production Windows backend，public ABI仍未冻结。**
 
-**硬件状态：开发期临时Peripheral使用Android真机LightBlue；2026-08-29已从Windows验证广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe。自动notification delivery、异常时序和soak仍未覆盖。QEMU/BLESS managed HIL继续等待USB蓝牙适配器到货。真实macOS/iOS production-candidate runtime/package与RF测试按用户决定延后到Apple Phase 5前，不阻塞Phase 1和Windows优先开发。**
+**硬件状态：当前开发期临时Peripheral使用Android真机LightBlue；2026-08-29已从Windows验证广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe，但LightBlue编辑value会重建/停止advertising且没有形成可靠的主动notification delivery证据。Phase 2开始前后将同一Android真机改用项目管理的Kotlin BLE Peripheral fixture，提供显式notification/indication和ADB控制，作为Windows日常真实RF smoke。QEMU/BLESS authoritative managed HIL继续等待USB蓝牙适配器到货；nRF52840可在后续作为独立硬件参考Peripheral，但尚未采购或记录为通过。真实macOS/iOS production-candidate runtime/package与RF测试按用户决定延后到Apple Phase 5前，不阻塞Phase 1和Windows优先开发。**
 
-**本次修订：Stable UniFFI `0.32.0` production candidate已在Windows Kotlin/JVM、Windows Swift与Android真机/模拟器通过最终weak-ingress对象图gate；Windows Kotlin/JNA checksum carrier workaround被限制在Windows并有独立完整性校验。Apple production candidate与最终package延后，但代表性macOS机制证据保留。**
+**本次修订：Phase 1统一薄契约、共享conformance、同candidate Rust/Kotlin/Swift reviewed API snapshot gate及desktop Kotlin/JVM、Windows Swift、Android真机ART/AAR consumer runtime/package矩阵已通过；公共contract version固定为5。同时固定测试Peripheral分层和ownership：`tests/peripherals/android`承载近期Android真机开发fixture，QEMU Linux VM + BlueZ/BLESS继续作为确定性故障注入与soak基线，未来`tests/peripherals/nrf52840`可承载独立硬件参考固件；三者共享conformance profile但不互相伪装验证强度。Apple production-candidate runtime/package与真实RF仍按既定决定延后到Phase 5前，production ABI尚未冻结。**
 
-本文件是BleHub唯一规划来源。Phase 0已完成框架选择、production FFI迁移、最小scan/connect contract/bridge和Windows/Android真实runtime gate；Phase 1从平台无关公共契约与共享conformance继续，不跳过该gate直接实现Windows backend。本文同时作为未来架构文档、API文档和平台接入文档的来源。
+本文件是BleHub唯一规划来源。Phase 0已完成框架选择、production FFI迁移、最小scan/connect contract/bridge和Windows/Android真实runtime gate；Phase 1已完成平台无关公共契约、共享conformance、reviewed API snapshots和完整candidate runtime复核。后续从Phase 2 production Windows backend继续。本文同时作为未来架构文档、API文档和平台接入文档的来源。
 
 ---
 
@@ -57,7 +57,7 @@ BleHub 是一个以 Rust 为核心、支持 Windows、Android、iOS、macOS 和 
 
 ### 1.3 明确不做
 
-- BLE Peripheral / GATT Server
+- 把 BLE Peripheral / GATT Server 作为 BleHub 发布给下游的产品能力；`tests/peripherals/` 中仅服务于 Central 验证的项目测试 fixture 不受此限制
 - Classic Bluetooth
 - 用 MAC 地址承诺跨平台、跨安装或长期稳定的设备身份
 - 把所有平台错误压扁成字符串
@@ -144,11 +144,15 @@ BLE 与测试硬件术语：
 - **Controller**：真实蓝牙芯片/USB 蓝牙棒中的 HCI controller 和 radio。
 - **Adapter**：操作系统/backend 对 controller 的软件表示，例如 BlueZ `Adapter1`；文档谈物理硬件时优先使用 controller。
 - **Central**：扫描并发起连接的一侧，是 BleHub 支持的产品角色。
-- **Peripheral**：广播并提供 GATT Server 的一侧；项目测试中由 Linux VM + BlueZ + BLESS 承担。
+- **Peripheral**：广播并提供 GATT Server 的一侧。项目测试中的实现可以是Android真机fixture、Linux VM + BlueZ/BLESS或运行项目fixture固件的nRF52840。
+- **Managed Peripheral / 受控测试外设**：由项目管理profile、启动/停止、数据触发和telemetry的测试Peripheral；“managed”描述可控性，不限定Android、Linux或嵌入式实现。
+- **Android Development Peripheral**：运行`tests/peripherals/android` Kotlin应用的Android真机；用于Windows日常真实RF smoke和显式notification/indication，不作为异常时序与长时间soak的唯一证据。
+- **BLESS Managed Peripheral**：Linux Peripheral VM、BlueZ/BLESS和独占USB controller组成的确定性基线；承担可编程时序、故障注入、重连与soak。
+- **Hardware Reference Peripheral / 硬件参考外设**：运行独立fixture固件的真实设备，例如nRF52840；用于交叉验证Android Framework和BlueZ/BLESS之外的第三种GATT Server/controller实现，避免只适配单一测试栈。
 - **Central Controller（C-Controller）**：被测 Central 使用的物理蓝牙 controller。
-- **Peripheral Controller（P-Controller）**：Linux Peripheral VM 独占的物理蓝牙 controller。
+- **Peripheral Controller（P-Controller）**：Linux Peripheral VM独占并由BlueZ驱动的物理HCI controller。运行standalone Peripheral固件的nRF52840是完整外设fixture，不称为P-Controller；只有另行刷写并验证HCI controller固件、交由BlueZ管理时才属于该角色。
 - **DUT（Device Under Test）**：当前被测的 BleHub Central 平台实现，例如 Windows 或 Android。
-- **TPE（Test Peripheral Environment）**：Linux Peripheral VM、P-Controller、BlueZ、BLESS、scenario 和 telemetry 的整体。
+- **TPE（Test Peripheral Environment）**：BLESS基线中的Linux Peripheral VM、P-Controller、BlueZ、BLESS、scenario和telemetry整体。Android和nRF fixture属于并列的managed/reference Peripheral provider，不冒充TPE。
 
 文档不使用“主蓝牙棒/从蓝牙棒”作为正式术语。BLE 当前角色应写 Central/Peripheral；“主/从”还可能与 Host/Controller 层级混淆。
 
@@ -850,7 +854,7 @@ pub enum Platform {
     Test,
 }
 
-pub const BLEHUB_CONTRACT_VERSION: u32 = 4;
+pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
 
 pub struct BackendCapabilities {
     pub platform: Platform,
@@ -866,7 +870,7 @@ pub struct BackendCapabilities {
 }
 ```
 
-contract revision 4将单字段`BleEvent { payload }` envelope扁平化为直接的`BleEvent` data enum，因此与revision 3生成binding不兼容。capability 表示当前 public command/event contract 可实际消费的 backend 能力，不表示 adapter 当前可用。`BackendCapabilities.platform`是成功装配后整个`BleHub`的唯一平台身份来源；同一Hub内的adapter snapshot、普通event和其他domain DTO不得重复携带该静态字段。backend assembly query在`BleHub::new`内执行一次并返回typed`Result`；Hub必须先验证`contract_version == BLEHUB_CONTRACT_VERSION`及其他metadata，再缓存并执行ingress bind。public `BleHub::capabilities()`只是同步返回缓存的静态metadata，无`CommandId`、无event、无foreign backend调用。`contract_version`用于同一lockstep candidate的诊断、manifest与装配校验，不能让一个已经ABI不兼容的foreign trait object变得安全；若未来允许backend独立升级，必须在构造trait object前增加factory-level handshake。动态状态通过adapter snapshot event表达。MTU、connection priority、PHY、pairing和multiple-adapter尚无对应v0.1 command/event，不提前占用稳定 capability字段；它们随未来contract版本一起增加。
+contract revision 4将单字段`BleEvent { payload }` envelope扁平化为直接的`BleEvent` data enum，因此与revision 3生成binding不兼容；revision 5进一步固定当前Phase 1完整command/event/error、advertisement/GATT DTO和wire guard candidate，因此与revision 4生成binding不兼容。capability 表示当前 public command/event contract 可实际消费的 backend 能力，不表示 adapter 当前可用。`BackendCapabilities.platform`是成功装配后整个`BleHub`的唯一平台身份来源；同一Hub内的adapter snapshot、普通event和其他domain DTO不得重复携带该静态字段。backend assembly query在`BleHub::new`内执行一次并返回typed`Result`；Hub必须先验证`contract_version == BLEHUB_CONTRACT_VERSION`及其他metadata，再缓存并执行ingress bind。public `BleHub::capabilities()`只是同步返回缓存的静态metadata，无`CommandId`、无event、无foreign backend调用。`contract_version`用于同一lockstep candidate的诊断、manifest与装配校验，不能让一个已经ABI不兼容的foreign trait object变得安全；若未来允许backend独立升级，必须在构造trait object前增加factory-level handshake。动态状态通过adapter snapshot event表达。MTU、connection priority、PHY、pairing和multiple-adapter尚无对应v0.1 command/event，不提前占用稳定 capability字段；它们随未来contract版本一起增加。
 
 v0.1 connected one-shot RSSI capability 固定为：Windows `false`、Android `true`、Apple `true`、BlueZ/Linux `false`。Windows `RawSignalStrengthInDBm` 与 BlueZ `Device1.RSSI` 都是 advertisement/inquiry observation，不满足 `ReadRssiCommand` 语义。
 
@@ -954,6 +958,8 @@ pub struct AdvertisementObservation {
 
 `connectable` 是 `Option<bool>`，因为不是每个平台和每次 advertisement 都能可靠提供。`AdvertisementObservation` 就是 v0.1 对外的基础 peripheral scan-properties DTO；不再额外定义容易暗示“canonical/latest state”的 production `PeripheralProperties`。`PeripheralEntry`、merged latest properties、observation cache 和设备列表属于 downstream projection，不由 BleHub 定义或保存。
 
+`AdvertisementObservation`是**platform-normalized observation**，不是原始RF packet，也不是某个peripheral的canonical/latest state。一个observation中的字段可能来自平台对advertisement与scan response的合并视图，不保证来自同一个物理packet；空vector或`None`只表示该次mapped observation没有相应证据，不表示该peripheral永久不存在该字段。平台API可能合并或覆盖重复manufacturer/service-data AD structure，v0.1保留平台能提供的mapped entries但不承诺恢复原始结构边界。v0.1不导出platform timestamp、scan-response标记、Android data completeness、PHY/SID、TX power或raw advertisement bytes；这些信息损失不得由backend伪造。逐字段平台来源与压缩边界见[`platform-abstraction-and-compatibility.md`](../docs/research/platform-abstraction-and-compatibility.md)。
+
 ### 6.8 Scan session
 
 public contract不定义`ScanPhase`或`ScanSession` record：`ScanStarted`/`ScanStopped` event variant已经表达backend观察到的事实，caller再按自己的intent、deadline和late-event policy投影`Starting/Scanning/Stopping/Stopped/Failed`等本地phase。这样不会把某一种application状态机误冻结成BleHub ABI。`ScanStopReason`与nested `Result` shape在6.15第一次完整定义。
@@ -1005,7 +1011,11 @@ pub struct GattDescriptor {
 }
 ```
 
-backend 自己维护上述 opaque ID 到 native object 的私有 map。BleHub 不接触 backend key，不保存 GATT database；调用方若需要 cache，消费 `GattDiscovered` 后自行保存。duplicate UUID instance 通过不同 GATT ID 保留。
+backend 自己维护上述 opaque ID 到 native object 的私有 map。BleHub 不接触 backend key，不保存 GATT database；调用方若需要 cache，消费 `GattDiscovered` 后自行保存。duplicate UUID instance 通过不同 GATT ID 保留，service、characteristic和descriptor都不得按UUID去重或以UUID作为唯一operation key。
+
+v0.1的GATT database明确是`service -> characteristic -> descriptor`的flat traversal scope。`GattService.primary`只表达平台能够提供的primary/secondary分类：Android、Apple与BlueZ直接映射native分类，Windows device-level root service映射为`Some(true)`；无法可靠分类时为`None`。它不表达included-service topology。v0.1不遍历或导出included-service graph，也不增加`included_service_ids`；因此“完整GATT database”只表示在该flat scope内完成全部service、characteristic和descriptor枚举。
+
+GATT discovery采用all-or-error：只有flat scope全部成功映射后才emit一个`GattDiscovered`；任一必要层级发现或映射失败时不得发送partial database，按accepted command failure结束。native service-changed/cache invalidation event仍按1.2延后，不进入v0.1 ABI；但backend观察到native invalidation后必须立即使旧native GATT map失效，旧callback不得关联到新`GattSessionId`，使用旧GATT ID的command必须显式失败，且不得用`BackendError`伪装成invalidation event。v0.1允许downstream直到下一次operation failure才观察到该事实。
 
 ### 6.11 GATT command
 
@@ -1355,6 +1365,7 @@ pub struct ExampleApplicationBleState {
 - 每个connect intent使用新的`ConnectionId`。v0.1同一peripheral最多一个active connection；违规请求在accepted前可同步拒绝，accepted后必须以`InvalidState` terminal failure结束。`Connected`回显connect `CommandId + ConnectionId`；被动断连可以没有command ID，但必须携带`ConnectionId`。
 - discover request携带`ConnectionId + GattSessionId`，每个discover intent使用新的`GattSessionId`；非连接状态同样按accepted边界同步拒绝或terminal failure。duplicate UUID合法，backend必须生成不同GATT ID，不得按UUID去重。
 - backend必须校验read/write/notify的characteristic handle属于request指定的connection/GATT session。enable notification前必须校验notify/indicate capability；callback必须回显connection/GATT session/subscription/characteristic typed IDs。enable command与持续notification data分开；对已移除/unknown subscription的重复disable在accepted前同步返回`InvalidState`且零event，不重复native side effect。`dispose/close`单独保持幂等成功。
+- 同一characteristic的explicit read与subscription lifecycle不得重叠：enable pending、active subscription或disable in-flight时，`ReadCharacteristic`必须在accepted前返回`InvalidState`且零event；pending read存在时，enable notification同样返回`InvalidState`且零event。不得用“pending read消费下一条value callback”等heuristic分类Apple/BlueZ共享value callback。disable完成后的late value由backend runtime隔离；若平台不能证明后续read callback可安全分类，backend可在该`GattSessionId`剩余生命周期内继续保守拒绝该characteristic的read。
 - adapter非`PoweredOn`或当前operation group的authorization不是`Authorized | NotRequired`时不得把operation伪装成成功：request若可accepted，应通过terminal failure报告adapter/authorization state；只有无法进入异步完成通道时才返回`Err(CommandDispatchError)`。adapter离开`PoweredOn`或相关authorization变为不可用时，应在相关`ScanStopped.result`或`ConnectionStateChanged.result`中emit `Err { error }`；由此导致的accepted command失败必须在terminal回显对应`CommandId`。另一authorization group不参与本operation的可用性判断；BleHub不预先维护这些snapshot状态。
 
 **Sink status与delivery order**
@@ -1674,9 +1685,11 @@ sequenceDiagram
 6. bridge 按输入顺序逐个直接交付。
 7. caller 决定是否替换自己的 GATT cache，并使旧 GATT session/subscription projection 失效；失败时只消费 terminal failure，不替换 cache。
 
-发现结果必须保留重复 UUID instance，不能使用 UUID map 覆盖。
+发现结果必须保留重复 UUID instance，不能使用 UUID map 覆盖。发现采用all-or-error：只在v0.1 `service -> characteristic -> descriptor` flat traversal全部成功后发送一个database；included-service graph不在本阶段遍历或导出。
 
 ### 8.6 Characteristic read
+
+同一characteristic存在enable pending、active subscription或disable in-flight时，read在accepted前同步返回`InvalidState`且零event。该限制是公共contract，不是caller可选择的优化：Apple和BlueZ共享value callback无法可靠区分explicit read与notification，backend不得使用pending-read/next-callback heuristic。
 
 ```mermaid
 sequenceDiagram
@@ -1716,7 +1729,7 @@ Windows 与 Android conformance 文档必须明确两种 write 的成功语义�
 ### 8.8 开启 notification
 
 1. caller分配`CommandId + SubscriptionId`，并传connection/GATT session/characteristic ID和`NotificationAction::Enable { mode }`或`Disable`。
-2. backend校验handle/property；strict request只有能证明满足时才继续，否则terminal `NotSupported`。`PlatformDefault`允许native API选择，成功event尽可能报告`actual_mode`。
+2. backend校验handle/property；同一characteristic存在pending read时，enable在accepted前同步返回`InvalidState`且零event。strict request只有能证明满足时才继续，否则terminal `NotSupported`。`PlatformDefault`允许native API选择，成功event尽可能报告`actual_mode`。
 3. Android enable固定为：先`setCharacteristicNotification(true)`注册local routing，再按request写对应CCCD；CCCD失败时best-effort回滚local routing。
 4. Android disable 固定为：先写 disable CCCD并等待成功，再关闭 local routing；远端已 disabled 但 local unregister 失败时报告 partial failure，不能伪造完整成功。
 5. Windows enable 先注册 `ValueChanged` handler 再写 CCCD，避免早到 value 丢失；disable 在 CCCD 成功后撤销 handler。
@@ -1725,6 +1738,7 @@ Windows 与 Android conformance 文档必须明确两种 write 的成功语义�
 8. disable使用新的command ID和原subscription ID；active subscription成功时按`NotificationStateChanged { state: NotificationState::Disabled, ... } -> CommandCompleted { error: None }`交付，并从backend active routing中移除该subscription。
 9. 已成功disable、因disconnect/GATT session replacement而移除或unknown的subscription再次disable时，backend在accepted前同步返回`InvalidState`且零event；不保留只为重复成功服务的长期subscription tombstone，也不伪造第二个state event。
 10. disconnect、GATT session replacement或dispose/close后，caller将相关subscription视为失效；backend停止native callback。
+11. read与enable/active/disable-in-flight subscription在同一characteristic上始终互斥。disable完成后的late value必须保留旧subscription/session correlation并不得完成后续read；Apple/BlueZ backend若无法证明安全分类，可在该`GattSessionId`剩余生命周期内继续对该characteristic的read返回`InvalidState`。
 
 ### 8.9 RSSI read
 
@@ -1962,8 +1976,16 @@ blehub/
 │
 ├── tests/
 │   ├── conformance/
-│   │   ├── scenarios/                  # 跨 backend 的可复用行为输入
+│   │   ├── scenarios/                  # 跨 backend 与测试Peripheral共享的行为/profile输入
 │   │   └── fixtures/                   # wire/mapping fixture，不复制 contract
+│   ├── peripherals/                    # 只用于Central验证的项目测试Peripheral
+│   │   ├── README.md                   # provider能力、共享profile与验证强度
+│   │   ├── android/                    # Kotlin + Android Framework GATT Server开发fixture
+│   │   │   ├── settings.gradle.kts
+│   │   │   ├── build.gradle.kts
+│   │   │   └── app/src/                # UI、GATT server、CCCD、ADB control与tests
+│   │   ├── bless/                      # Phase 2：BLESS server/scenario glue；VM配置不在此
+│   │   └── nrf52840/                   # 可选后续硬件参考Peripheral固件；技术栈另行评审
 │   └── consumers/                      # 独立 artifact-only clean consumers
 │       ├── windows/                    # 独立 Cargo console consumer
 │       ├── android/                    # 独立 Gradle app + 最小产品 Rust adapter
@@ -1995,10 +2017,9 @@ blehub/
 │   ├── swift_toolchain.py                # Windows Swift host lane bootstrap/doctor
 │   ├── android_toolchain.py              # Phase 3：显式 bootstrap/doctor
 │   ├── check_mermaid.mjs                 # authored Markdown Mermaid 校验
-│   └── test-peripheral/
-│       ├── runner/                      # BLESS scenario 驱动
-│       ├── scenarios/                   # GATT 行为定义
-│       └── providers/                   # QEMU/KVM 等环境适配
+│   └── peripheral_fixture/               # host-side受控外设编排，不实现GATT profile
+│       ├── android.py                    # ADB install/start/notify/indicate/status
+│       └── bless.py                      # Phase 2：BLESS VM/provider编排
 │
 ├── vm/
 │   ├── linux-peripheral/                # 跨平台 HIL managed Peripheral VM
@@ -2022,10 +2043,11 @@ blehub/
 - `crates/blehub-windows` 与 Phase 6 的 `crates/blehub-linux` 是 Rust production backend，只依赖各自平台 API，并直接实现统一 `BleBackend`；平台 native 类型不得泄漏到公共 DTO。
 - `platforms/android` 与 `platforms/apple` 分别拥有 Kotlin/Swift production backend、generated binding 消费集成和平台 package；Gradle、SwiftPM/Xcode 的构建图不进入 Rust core。
 - `blehub-testkit`、`tests/conformance` 和平台 private mapping fixture 共同复用一套可观察 contract，不得复制第二套 command、event、error 或 backend lifecycle。
+- `tests/peripherals`只实现Central验证所需的GATT Server测试行为，不进入BleHub发布物，也不依赖production Android Central backend或UniFFI generated binding。Android、BLESS和可选nRF52840 provider必须复用`tests/conformance/scenarios/basic-gatt-peripheral.json`等共享profile，不各自手写漂移的UUID/property；provider特有控制能力可以扩展，但不能改变共享场景语义。
 - `tests/consumers/<platform>` 是发布与 packaging gate，不是共享实现：每个 consumer 有独立 manifest/lock/build graph，只消费 recipe staged 的 crate/AAR/XCFramework/Swift Package 等产物，不得引用 `crates/`、`platforms/` 或 `generated/` 源码路径，不得使用 Gradle `project(...)` 依赖，也不得依赖 workspace feature unification。嵌套 Cargo consumer 必须从根 workspace 排除或声明独立 workspace。
 - `examples/tauri-central` 是真实 downstream showcase，不是 clean consumer，也不替代任何平台 consumer gate。它可以为仓库内开发使用 workspace/path dependency，但 release smoke 必须能切换到同一批 staged candidate；其 Rust core 拥有 runtime/channel/projection，Tauri Web/native 层不改变 BleHub contract。
 - 每个 Tauri 平台 target 在提升为 example 前，须按对应 Phase 在 `spikes/tauri-downstream` 验证该平台 package、native symbol/loading、backend assembly、app suspend/reload/close 和高频 event 路径；Windows/Android 与 Apple target 分别按 Phase 3、Phase 5 推进，Linux target 到 Phase 6。只有多个真实项目证明 integration glue 值得复用时，才单独评审 `integrations/tauri-plugin-blehub`；只有该插件成为发布物后才增加 `tests/consumers/tauri`，二者都不预先创建。
-- `tools/test-peripheral` 与 `vm/linux-peripheral` 是测试基础设施，不是 BleHub Peripheral 产品能力；`vm/linux-central` 和 `blehub-linux` 到 Phase 6 才启动。
+- `tests/peripherals`、`tools/peripheral_fixture`与`vm/linux-peripheral`是测试基础设施，不是BleHub Peripheral产品能力：前者拥有外设实现，host工具只做ADB/SSH/provider编排，VM目录只拥有guest provisioning与USB passthrough。`vm/linux-central`和`blehub-linux`到Phase 6才启动。
 - `spikes/` 保存可复现的能力探针，不作为 production API 或长期兼容层。Durable 结论写入 `docs/research/`，规范性变化仍须回到本 Plan 评审。
 - `docs/research/` 保存证据与建议，`docs/testing/` 保存会随 runner、fixture、provider 和报告格式演进的执行指南，`docs/platform-api-reference/` 保存生成的官方证据；三者都不形成第二份 Plan。
 
@@ -2051,8 +2073,8 @@ pixi run -e android just <android-recipe>
 
 - 当前规划/文档阶段保留`docs-update`、`docs-install`、`docs-check-mermaid`、`fmt`、`lint`等recipe；`docs-install`通过lockfile显式安装文档检查依赖，普通`docs-check-mermaid`不得隐式安装、访问网络或改动依赖树。
 - 实施批准后，根 Justfile 提供薄的 `bootstrap`、`doctor`、`check`、`clippy`、`test`、`generate-bindings` 与 package 聚合入口；复杂下载、hash、原子安装、环境检查和报告逻辑放在项目脚本或平台 build system 中。
-- Android recipe 只在 Phase 3 创建；Apple package recipe 只在 Phase 5 创建；Linux Central build/test/VM recipe 只在 Phase 6 创建。
-- 无硬件测试、共享 conformance、managed peripheral 与 HIL recipe 在相应模块和 Phase 中按需创建。具体测试层、CI lane、runner、provider command、case 和报告路径归 [`docs/testing/README.md`](../docs/testing/README.md) 演进，不在 Plan 固定详细矩阵。
+- Android production backend/package recipe只在Phase 3创建；`tests/peripherals/android`的build/install/start/stop/notify/indicate/status recipe可在Phase 2 Windows RF开发开始前创建，两者使用不同Gradle工程和命名，测试fixture不得被production AAR依赖。Apple package recipe只在Phase 5创建；Linux Central build/test/VM recipe只在Phase 6创建。
+- 无硬件测试、共享conformance、Android development peripheral、BLESS managed peripheral、可选nRF52840 reference peripheral与HIL recipe在相应模块和Phase中按需创建。具体测试层、CI lane、runner、provider command、case和报告路径归[`docs/testing/README.md`](../docs/testing/README.md)演进，不在Plan固定详细矩阵。
 
 ---
 
@@ -2107,7 +2129,7 @@ Android执行层、emulator定位、真机HIL和报告方式由[`docs/testing/RE
 - scan start/stop 没有 native completion，使用 7.1 定义的 backend-local completion；connect/cancel、GATT、with-response write、notification 和 RSSI 使用 delegate completion。
 - without-response write 遵守 `canSendWriteWithoutResponse`/ready callback 背压，实际调用后只报告平台接受发送尝试。
 - 使用 CoreBluetooth peripheral identity，不假设 MAC；service/characteristic/descriptor以native instance-backed opaque ID表示，不用UUID-keyed operation dictionary合并duplicate instance。
-- characteristic read始终由read delegate completion关联，notification value只属于active subscription；不得因characteristic正在notifying而把下一条notification解释成read result。
+- CoreBluetooth的`didUpdateValueFor`同时承载explicit read与notification，native callback本身不提供source discriminator；因此同一characteristic的read与enable/active/disable-in-flight subscription按7.1在accepted前互斥并返回`InvalidState`，不得把pending read或“下一条value”当作分类heuristic。disable后的late delegate value必须保持旧correlation；若无法证明后续read可安全分类，可在该`GattSessionId`剩余生命周期内保守拒绝该characteristic的read。
 - authorization、state restoration 和 background mode 分阶段支持。
 - CoreBluetooth 无整体 shutdown；dispose在同一serial queue/lifecycle gate上先detach delegate/event delivery并invalidate correlation，再组合stop/cancel和child-to-parent ARC reference release，不生成command event。从delegate queue或callback中重入command的case必须进入mapping/runtime tests。
 - 输出 XCFramework + Swift Package。
@@ -2130,7 +2152,7 @@ Impactor 评估：
 - 使用 ObjectManager、Adapter1、Device1、GattService1、GattCharacteristic1。
 - 扫描事件来自 `InterfacesAdded` / `PropertiesChanged`；`StartDiscovery/StopDiscovery` reply 只管理本 D-Bus client 的 discovery session，不要求全局 `Discovering` 必然出现边沿。
 - `Connect` D-Bus reply 与 `ServicesResolved` 分层；GATT discovery 通过 `ServicesResolved=true` 后枚举 object tree，不虚构 BlueZ discover method。每个BlueZ object path在一个backend ownership domain内只有一个owning wrapper，避免重复owner竞争或清除callback。
-- read/write/notify 以 D-Bus method reply/error 作为 operation result；`Value.PropertiesChanged` 只作为 notification/passive value，不用于 read/write command correlation。pending D-Bus call timeout/cancel后先cancel或invalidate其correlation，再释放completion context；late reply不得完成新command。
+- read/write/notify 以 D-Bus method reply/error 作为 operation result；成功read也可能引发与notification共用的`Value.PropertiesChanged`，该signal不用于read/write command correlation。同一characteristic的read与enable/active/disable-in-flight subscription按7.1在accepted前互斥并返回`InvalidState`，不得用pending read或下一条property change分类source。pending D-Bus call timeout/cancel后先cancel或invalidate其correlation，再释放completion context；late reply或property change不得完成新command。
 - BlueZ 只有 inquiry/advertising RSSI，`supports_read_rssi=false`；没有全局 shutdown，不通过 `Powered=false` 关闭系统 adapter。
 - Linux 集成方提供/选择 D-Bus connection driver、poll loop 或 worker；BleHub core 不创建线程。trait method 只投递任务并立即返回。
 - 区分 BlueZ daemon、D-Bus permission、adapter capability、transport 和 BLE protocol error。
@@ -2144,7 +2166,7 @@ Impactor 评估：
 
 ### 11.5 平台测试环境边界
 
-不存在能够跨Android/iOS/desktop并可信覆盖真实controller、平台BLE stack、权限、后台行为和RF的通用模拟器。跨平台确定性行为由`FakeBackend`与共享conformance覆盖；真实蓝牙验收由各平台真机/真实host通过RF连接同一个managed Linux Peripheral完成。emulator、simulator、RootCanal、Android-x86或设备农场的具体采用与case归[`docs/testing/`](../docs/testing/README.md)阶段性评审，不进入公共架构或替代第15节HIL。
+不存在能够跨Android/iOS/desktop并可信覆盖真实controller、平台BLE stack、权限、后台行为和RF的通用模拟器。跨平台确定性行为由`FakeBackend`与共享conformance覆盖；真实蓝牙验收由各平台真机/真实host通过RF连接使用同一共享profile的项目测试Peripheral完成。Android真机fixture提供近期开发smoke；Linux VM/BLESS提供确定性故障注入和soak；nRF52840等独立硬件参考Peripheral提供跨GATT Server/controller实现的互操作交叉验证。emulator、simulator、RootCanal、Android-x86或设备农场的具体采用与case归[`docs/testing/`](../docs/testing/README.md)阶段性评审，不进入公共架构或替代第15节HIL。
 
 ---
 
@@ -2238,10 +2260,14 @@ Stable Kotlin/JNA相对direct JNI的已知开销已作为框架选择取舍接�
 - 本 Plan 是架构、公共契约、backend obligation、阶段退出条件和 v0.1 验收的唯一规范性来源。[测试执行指南](../docs/testing/README.md) 及其平台/spike 文档只说明 fixture、runner、lane、provider、case 和报告如何执行；它们可随实施演进，但不得形成第二份 Plan 或削弱本 Plan。
 - 测试必须先完成 contract/thin bridge、`FakeBackend`/共享 conformance、平台 mapping 与 scripted integration 等确定性层，再以 HIL 补充真实 OS、controller、driver、RF 和外设互操作证据。较高层不得替代较低层对失败、重复、乱序、stale、orphan 和 lifecycle race 的覆盖。
 - HIL 使用独占资源且默认不阻塞普通 PR；普通 PR 必须通过其适用的无硬件确定性层。达到各阶段退出条件或 release candidate/v0.1 验收时，本 Plan 要求的 HIL smoke、soak、真机和参考外设证据必须执行并保存；skip 或 infrastructure failure 不得记为通过。
-- 任何依赖真实 BLE Peripheral/RF 的测试在开始前都必须先向用户说明 DUT、所需 fixture 配置、预计时长和独占资源，并等待用户明确确认外设已准备完成；不得静默启动或把“未准备 fixture”记为测试失败。平台 real-RF lane 落地时统一由 Pixi-managed `just` recipe 启动，并在业务场景前执行 fixture preflight，核对可发现性以及当前场景所需的 advertisement/GATT shape；不满足前置条件应报告 fixture unavailable/misconfigured，不得伪装成 DUT 功能失败。USB BLE controller 到货前，Windows 开发期 RF smoke 由用户在 Android 真机 LightBlue 中人工配置临时 fixture；该路径只覆盖其实际执行的互操作 smoke，不得记为 managed BLESS fixture、自动化 fault injection 或 soak 证据。
+- 任何依赖真实 BLE Peripheral/RF 的测试在开始前都必须先向用户说明 DUT、所需 fixture 配置、预计时长和独占资源，并等待用户明确确认外设已准备完成；不得静默启动或把“未准备 fixture”记为测试失败。平台 real-RF lane 落地时统一由 Pixi-managed `just` recipe 启动，并在业务场景前执行 fixture preflight，核对可发现性以及当前场景所需的 advertisement/GATT shape；不满足前置条件应报告 fixture unavailable/misconfigured，不得伪装成 DUT 功能失败。项目Android Peripheral完成前，Windows开发期RF smoke仍可由用户在Android真机LightBlue中人工配置临时fixture；该路径只覆盖实际执行的互操作smoke，编辑value不等同主动notification且不得记为managed Android/BLESS fixture、自动化fault injection或soak证据。项目Android Peripheral完成后，它取代LightBlue成为日常开发fixture，但不提升为BLESS异常时序/soak证据。
 - 每次 spike/HIL 结果先保留原始日志、生成 API、计数器、环境身份与结构化报告，再将 durable 结论写入 `docs/research/`，明确区分 verified、inferred 与 unresolved。只有涉及规范性 contract、gate、表示、依赖或迁移条件的结果，才通过明确 Review 提升回本 Plan。
 
-Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM + BlueZ/BLESS + 独占 USB BLE controller**。这是可编程 GATT 外设环境，不是纯软件 BLE 模拟：controller、firmware、HCI、BlueZ、Central 平台栈、USB passthrough 与 RF 链路都是真实路径。Windows host 上的 QEMU USB passthrough 仍未验证，必须等待实际硬件后完成 capture、reset、reboot、recovery 与 soak spike；不得由配置推定可用。若 Windows QEMU 不稳定，首选在 Linux host 上使用 QEMU/KVM 承载同一 Peripheral VM；VMware Workstation 可作为经 capture、自动化、许可与可复现性评估后的本地 Windows fallback，但不是并行维护的默认基线。
+确定性Managed Peripheral的权威基线是项目管理的 **QEMU Linux Peripheral VM + BlueZ/BLESS + 独占 USB BLE controller**。这是可编程GATT外设环境，不是纯软件BLE模拟：controller、firmware、HCI、BlueZ、Central平台栈、USB passthrough与RF链路都是真实路径。Windows host上的QEMU USB passthrough仍未验证，必须等待实际硬件后完成capture、reset、reboot、recovery与soak spike；不得由配置推定可用。若Windows QEMU不稳定，首选在Linux host上使用QEMU/KVM承载同一Peripheral VM；VMware Workstation可作为经capture、自动化、许可与可复现性评估后的本地Windows fallback，但不是并行维护的默认基线。
+
+`tests/peripherals/android`是近期开发Managed Peripheral：纯Kotlin/Android Framework GATT Server，不含Rust、UniFFI或production Central backend依赖。它从共享JSON profile构造service/characteristic/CCCD，提供前台UI和ADB控制的start/stop、notification、indication、disconnect与status，用于Windows真实RF快速回归。首版不引入Compose、通用provider框架或foreground service；长时间soak确有需要时再评审后台保活。测试Android Central时不得让同一台手机同时承担DUT与Peripheral，必须改用BLESS、nRF52840或第二台手机。
+
+nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项目管理的standalone GATT Peripheral固件，复用同一profile并通过USB串口/控制端点触发数据。它直接满足“非BLESS独立参考外设”类别，并可补充稳定notification、重启和真实controller互操作；但在实现等价的故障脚本、telemetry、恢复控制和soak能力前，不替代BLESS authoritative gate。若把nRF52840另行刷成HCI controller固件并USB passthrough给Linux VM，它才是P-Controller候选；该模式与standalone fixture是两套互斥固件/验证路径，须先验证BlueZ advertising/GATT能力、reset和USB稳定性，不默认采用。
 
 执行细节索引：
 
@@ -2278,6 +2304,8 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 
 ### Phase 1：平台无关薄契约与 FFI bridge
 
+**状态：完成。** `pixi run just verify`固定长期platform-independent contract/conformance与reviewed Rust/Kotlin/Swift API snapshot gate；同一production candidate已通过desktop Kotlin/JVM、Windows Swift和Android真机ART/AAR clean consumer runtime/package矩阵。Apple runtime/package按既定决定延后，不记为已通过且不阻塞Phase 1。
+
 工作：
 
 - 定义 caller-owned 与 backend-owned ID、6.2 完整 command、event、error 和 capability DTO，包括 optional-command passive `ScanStopped`、`NotificationMode` 与 `NotSupported`。
@@ -2285,7 +2313,7 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 - 所有 public command 同步接收完整 request、原样调用 backend 并返回 `Result<(), CommandDispatchError>`；`Ok` 仅表示 accepted，`Err` 表示未进入事件生命周期。
 - backend提供的统一`BleEvent`只有一层variant/IDs；bridge校验唯一variant/body、ID/wire/size后直接交给downstream sink，不合成domain event、不增加sequence，也不为dispatch `Err`生成事件。Stable UniFFI目标语言生成质量需要fallback时只把这一层降为tagged record。
 - 建立测试用 downstream projection，验证 caller 调用前登记 ID、immediate rejection、backend at-most-one terminal、accepted-and-resolved scenario terminal、caller exactly-one outcome、stale、duplicate、orphan 和 timeout race；projection 不进入 BleHub crate 的 production state。
-- 完成 adapter、scan、connection、GATT 和 notification conformance scenario，包括同native identity跨scan复用opaque ID、duplicate UUID instance不合并、event-before-command-return、timeout后late callback不命中新operation、subscription rollback与callback-first cleanup。
+- 完成 adapter、scan、connection、GATT 和 notification conformance scenario，包括platform-normalized advertisement fixture及其缺失字段语义、同native identity跨scan复用opaque ID、duplicate GATT instance不合并、flat traversal scope与all-or-error discovery、同characteristic read/subscription冲突在accepted前返回`InvalidState`且零event、event-before-command-return、timeout后late callback不命中新operation、native invalidation使旧map失效且旧callback不命中新session、subscription rollback与callback-first cleanup。
 - 固定共享 backend conformance 场景和 caller responsibility 文档。
 
 退出条件：
@@ -2294,7 +2322,7 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 - BleHub production code 无 domain registry/reducer/snapshot/timer/queue/worker。
 - caller-owned IDs 端到端原样回显，backend opaque handles 不泄露 native object。
 - public API无平台类型和async trait；同步dispatch acknowledgement与异步operation completion的边界通过共享tests固定。
-- 6.1–6.16全部public method、DTO、closed enum、event/error invariant和wire hard guard已进入一份完整ABI candidate；Rust/Kotlin/Swift generated API snapshot与conformance fixture来自同一candidate，但此时仍不发布或承诺production ABI稳定。
+- 6.1–6.16全部public method、DTO、closed enum、event/error invariant和wire hard guard已进入一份完整ABI candidate；advertisement/GATT fixture固定四平台映射后的observation语义、duplicate instance、flat all-or-error discovery、read/subscription互斥及native invalidation isolation；Rust/Kotlin/Swift generated API snapshot与conformance fixture来自同一candidate，但此时仍不发布或承诺production ABI稳定。
 
 ### Phase 2：Windows backend
 
@@ -2303,16 +2331,16 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 - 让 `WindowsBackend` 直接实现 `BleBackend`，建立 private mapping fixtures；只有真实调用点需要时才增加窄 native adapter，不复制第二套 backend trait。
 - 接入 `windows-rs` adapter/radio、scan、logical connect/disconnect、GATT 和 notify；connected RSSI 明确 capability false 并以 `NotSupported` 完成，不伪造实现。
 - 完成 HRESULT/error mapping、本地幂等 dispose、必要WinRT child handle retention、callback-first/child-to-parent清理和 `tests/consumers/windows` 独立 Cargo console consumer；consumer 只使用 staged crate，不以 workspace/path dependency 代替 packaging 验证。mapping覆盖logical/native disconnect evidence、duplicate GATT instance和synthetic scan observation。仅在 WinRT seam 证明必要时使用 OS callback/thread pool 或调用方注入的执行上下文，BleHub core 不创建 worker/runtime。
-- Phase 2开发期先使用已验证的Android真机LightBlue Peripheral做Windows真实RF smoke：扫描/广告、连接、GATT discovery、read、write with/without response、subscribe/unsubscribe，以及人工触发notification。该fixture可验证真实WinRT路径和基础BleHub event映射，但不能确定性制造failure、duplicate、late/stale callback、被动断连，也不能替代自动notification、资源泄漏和soak gate。
-- USB适配器到货前按[Windows测试指南](../docs/testing/windows.md)完成共享conformance、mapping、scripted integration、package和可由LightBlue支持的真实backend smoke。
-- USB适配器到货后按[Managed Peripheral指南](../docs/testing/managed-peripheral.md)完成Windows QEMU USB passthrough实机spike，再执行BLESS HIL smoke、至少100次扫描/连接soak和至少一个非BLESS参考外设smoke；provider fallback遵循第13节。LightBlue开发smoke不满足该退出条件。
+- Phase 2真实RF开发开始时创建`tests/peripherals/android`：使用已具备的Android真机运行Kotlin GATT Server，从共享`basic-gatt-peripheral.json`构造广告/GATT profile，实现CCCD状态、read、write with/without response、显式notification/indication、断连、可观察日志和最小UI；随后增加ADB install/start/stop/notify/indicate/status控制。它不依赖production Android Central backend、Rust或UniFFI。
+- USB适配器到货前按[Windows测试指南](../docs/testing/windows.md)完成共享conformance、mapping、scripted integration、package，并以项目Android Peripheral完成Windows扫描/广告、连接、GATT discovery、read、write with/without response、subscribe/unsubscribe和确定payload的notification/indication真实backend smoke。项目fixture完成前LightBlue只作人工fallback，不把编辑value记为notification delivery。
+- USB适配器到货后按[Managed Peripheral指南](../docs/testing/managed-peripheral.md)完成Windows QEMU USB passthrough实机spike，再执行BLESS HIL smoke、至少100次扫描/连接soak和至少一个与BLESS/BlueZ独立的参考外设smoke；provider fallback遵循第13节。项目Android Peripheral可满足近期独立参考smoke，未来运行standalone fixture固件的nRF52840是更稳定的推荐参考实现；两者都不自动替代BLESS fault/soak退出条件。
 
 退出条件：
 
 - Windows 完成 v0.1 闭环并成为 conformance 参考实现。
 - `tests/consumers/windows` 只使用 staged Windows/core crate candidate 构建运行，不依赖 workspace/path source 或 feature unification。
 - 无已知 callback token/native handle 泄漏。
-- managed peripheral 环境可由 Just 启停并产生可追踪测试报告；硬件未就绪时该项保持明确 blocker，不把 skip 记为通过。
+- Android development peripheral可由Just构建、安装和触发确定payload的notification/indication；BLESS managed peripheral环境可由Just启停并产生可追踪测试报告。对应硬件未就绪时各自保持明确blocker，不把一个provider通过或另一个provider skip记为等价通过。
 
 ### Phase 3：Android backend
 
@@ -2323,7 +2351,7 @@ Managed Peripheral 的默认基线是项目管理的 **QEMU Linux Peripheral VM 
 - 创建Android Gradle production library；Kotlin实现`BleBackend`并retain唯一`BackendEventIngressHandle`，真实`ScanCallback`/`BluetoothGattCallback`通过`handle.push`上送；实现permission、scan failure、connect、带generation correlation的per-connection串行GATT、read/write、failure-atomic notification/indication、connected RSSI和explicit idempotent dispose。
 - 使用Stable UniFFI生成Kotlin/JNA binding，运行共享conformance，并组装可被独立Rust-application integration consumer使用的debug与release/minified AAR；package recipe断言ABI目录、native entry、contract/generator/runtime manifest、JNA传递依赖、R8/consumer rules和无duplicate library/symbol，并重跑final performance/package-size gate。`tests/consumers/android`使用独立Gradle build和最小产品Rust adapter，只消费同一candidate中staged的BleHub Rust crate与Android AAR，不使用workspace/path、`project(...)`或源码树产物，并实际运行assembly、callback ingress和close。其Kotlin UI只调用consumer自己的产品Rust adapter，不把Rust-only `BleEventSink`扩展成BleHub native consumer API。
 - 非production-ABI gate：Android clean consumer通过后，可在`spikes/tauri-downstream`验证Tauri Windows/Android app中的Rust image、AAR/JNA loading、native backend assembly、Activity/Context、permission、reload/suspend/close、late callback与WebView event throughput；spike不以Tauri mobile JSON command/event代替UniFFI。只有机制获得Go后才创建`examples/tauri-central`的Windows/Android target。
-- 按[共享测试执行指南](../docs/testing/README.md)先完成 JVM/Android deterministic、emulator fake-backend 与 packaging 层，再以 Android 真机通过真实 RF 连接[项目 managed peripheral](../docs/testing/managed-peripheral.md)完成第 15 节要求的 HIL；模拟器不作为真实 BLE 验收。
+- 按[共享测试执行指南](../docs/testing/README.md)先完成JVM/Android deterministic、emulator fake-backend与packaging层，再以Android真机DUT通过真实RF连接[项目managed peripheral](../docs/testing/managed-peripheral.md)完成第15节要求的HIL；Peripheral必须是BLESS、nRF52840或第二台Android设备，不能与DUT是同一台手机。模拟器不作为真实BLE验收。
 
 退出条件：
 
@@ -2409,8 +2437,8 @@ Windows 和 Android 均需在真实 BLE 外设上完成：
 14. Windows和Android通过同一批conformance scenario，符合Plan 7.1的统一成功语义，并按cross-platform research matrix验证各自completion evidence。
 15. 没有已知 use-after-free、double-free、引用环泄漏或锁死。
 16. 至少一台 Windows 主机和两档 Android API 真机通过 HIL smoke。
-17. Windows使用项目管理的BLESS managed peripheral完成至少100次扫描/连接soak；QEMU是默认provider，但验收不绑定未经实机验证的Windows USB passthrough实现。
-18. Windows 使用至少一个非 BLESS 的真实参考外设通过 smoke，避免只适配测试外设。
+17. Windows使用项目管理的BLESS managed peripheral完成至少100次扫描/连接soak；QEMU是默认provider，但验收不绑定未经实机验证的Windows USB passthrough实现。Android或nRF52840 fixture在具备等价故障脚本、telemetry与恢复控制前不得替代本项。
+18. Windows使用至少一个与BLESS/BlueZ实现独立的真实参考外设通过smoke，避免只适配测试栈。项目Android Peripheral可以满足该类别；运行项目standalone fixture固件的nRF52840是推荐的长期硬件参考外设，但不作为v0.1必须采购的指定型号。LightBlue只有在实际操作证据完整时才算其覆盖的普通互操作smoke，不能替代项目fixture的确定notification gate。
 19. `tests/consumers/windows` 与 `tests/consumers/android` 只使用同一批 staged/release candidate 构建运行，不依赖源码路径、Gradle project dependency、未打包本地产物或 workspace feature unification。
 
 Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Windows/Android native loading、backend assembly、reload/suspend/close、late callback 和 event throughput 结论；Go 时 `examples/tauri-central` 完成 Rust-owned command/state/event 闭环，且不以Tauri JSON mobile bridge替代`BleBackend`/UniFFI。spike 未完成或 No-Go 不阻塞 production ABI，也不得通过修改公共 contract 掩盖；须保存证据并延后 showcase。
@@ -2439,6 +2467,8 @@ Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Window
 | Apple 只能在 macOS 构建 | 独立 macOS CI，不跨平台最终打包 |
 | QEMU USB passthrough 在 Windows 不稳定 | Phase 2 先做 spike；按物理 USB 端口绑定；失败时把同一 Linux Peripheral VM 移到 Linux/KVM host，保持 guest/harness 不变 |
 | USB BLE adapter 不支持 peripheral/advertising | guest doctor 检查 BlueZ GATT/advertising manager 和 controller capabilities |
+| Android开发Peripheral受厂商后台限制或保存配置时重建GATT Server | 首版保持前台和亮屏、显式记录server/advertiser lifecycle；notification必须调用Framework发送API并等待completion callback，不以value编辑或UI状态推定成功 |
+| nRF52840角色混淆或固件与共享profile漂移 | standalone Peripheral固件与HCI P-Controller固件分开命名/报告；构建时消费或校验同一profile，记录firmware revision，未实现BLESS等价控制前只计reference smoke |
 | Linux Central 与 BLESS 误用同一 controller | 自包含 RF HIL 强制双 controller doctor；一个 controller 时明确 skip 或改用外部 peripheral |
 | 多 adapter 枚举顺序变化导致角色交换 | 显式 selector + object path/address/USB topology 解析；每次 scenario 记录最终绑定 |
 | Windows 交叉编译 Linux 缺 linker/sysroot/native dependency | 首版在 Linux guest 原生构建；cross compilation 作为后续独立能力验证 |

@@ -21,6 +21,7 @@ import dev.blehub.candidate.blehub.StartScanCommand
 import dev.blehub.candidate.blehub.StopScanCommand
 import dev.blehub.candidate.blehub.WriteCharacteristicCommand
 import dev.blehub.candidate.fixture.ProductionCandidateFixture
+import dev.blehub.candidate.fixture.fixtureContractVersion
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
@@ -65,7 +66,7 @@ class PublishedArtifactConsumerTest {
 
         override fun capabilities() = BackendCapabilities(
             platform = Platform.TEST,
-            contractVersion = 4u,
+            contractVersion = fixtureContractVersion(),
             supportsDuplicateScanResults = false,
             supportsConnectableFlag = false,
             supportsReadRssi = false,

@@ -25,6 +25,9 @@ import dev.blehub.candidate.blehub.StopScanCommand
 import dev.blehub.candidate.blehub.WriteCharacteristicCommand
 import dev.blehub.candidate.fixture.FixtureSinkBehavior
 import dev.blehub.candidate.fixture.ProductionCandidateFixture
+import dev.blehub.candidate.fixture.fixtureContractVersion
+import dev.blehub.candidate.fixture.fixtureEventCatalog
+import dev.blehub.candidate.fixture.fixtureEventCatalogMatches
 import dev.blehub.candidate.fixture.fixtureLifecycleCounters
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -66,6 +69,20 @@ class UniFfiProductionCandidateTest {
         )
         assertEquals(Platform.TEST, fixture.capabilities().platform)
         release(fixture, backend)
+    }
+
+    @Test
+    fun completeEventCatalogCrossesTheProductionIngressUnchanged() {
+        val backend = CandidateBackend(BackendMode.NO_EVENT)
+        val fixture = ProductionCandidateFixture(backend)
+        try {
+            val statuses = fixtureEventCatalog().map(backend::push)
+
+            assertTrue(statuses.all { it == EventIngressStatus.Delivered })
+            assertTrue(fixtureEventCatalogMatches(fixture.snapshot().events))
+        } finally {
+            release(fixture, backend)
+        }
     }
 
     @Test
@@ -343,8 +360,8 @@ private class CandidateBackend(
             BackendMode.TYPED_CAPABILITIES_FAILURE ->
                 throw BleHubException.BackendAssembly("declared capabilities failure")
             BackendMode.UNEXPECTED_CAPABILITIES_FAILURE -> error("undeclared capabilities failure")
-            BackendMode.INVALID_CONTRACT_VERSION -> 5u
-            else -> 4u
+            BackendMode.INVALID_CONTRACT_VERSION -> fixtureContractVersion() + 1u
+            else -> fixtureContractVersion()
         }
         return BackendCapabilities(
             platform = Platform.TEST,

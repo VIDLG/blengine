@@ -18,5 +18,6 @@ bindgen = ["uniffi/cli"]
 
 [dependencies]
 thiserror.workspace = true
+tracing.workspace = true
 uniffi.workspace = true
 uuid.workspace = true

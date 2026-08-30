@@ -1,6 +1,6 @@
 use super::{
-    BluetoothUuid, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId,
-    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId, canonicalize_bluetooth_uuid,
+    AdvertisementObservation, BluetoothUuid, CommandDispatchError, CommandId, ConnectionId,
+    GattCharacteristicId, GattSessionId, PeripheralId, ScanSessionId, SubscriptionId,
 };
 
 /// Bluetooth names are limited to 248 UTF-8 bytes, so a longer prefix cannot match.
@@ -59,7 +59,7 @@ pub struct ScanOptions {
 impl ScanOptions {
     fn validate_and_canonicalize(&mut self) -> Result<(), CommandDispatchError> {
         for (index, service_uuid) in self.service_uuids.iter_mut().enumerate() {
-            let Some(canonical) = canonicalize_bluetooth_uuid(&service_uuid.value) else {
+            let Some(canonical) = BluetoothUuid::canonicalize(&service_uuid.value) else {
                 return Err(CommandDispatchError::InvalidRequest {
                     detail: format!("service_uuids[{index}] is not a valid Bluetooth UUID"),
                 });
@@ -79,6 +79,36 @@ impl ScanOptions {
             }
         }
         Ok(())
+    }
+
+    /// Evaluates BleHub's fixed scan predicate against one mapped observation.
+    /// `allow_duplicates` is a reporting hint and does not affect matching.
+    pub fn matches(&self, observation: &AdvertisementObservation) -> bool {
+        if !self.service_uuids.is_empty()
+            && !self
+                .service_uuids
+                .iter()
+                .any(|required| observation.advertised_services.contains(required))
+        {
+            return false;
+        }
+        if let Some(prefix) = &self.name_prefix
+            && !observation
+                .local_name
+                .as_ref()
+                .is_some_and(|name| name.starts_with(prefix))
+        {
+            return false;
+        }
+        if let Some(company_id) = self.company_id
+            && !observation
+                .manufacturer_data
+                .iter()
+                .any(|data| data.company_id == company_id)
+        {
+            return false;
+        }
+        true
     }
 }
 
@@ -178,6 +208,29 @@ pub struct ReadRssiCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ManufacturerData;
+
+    fn uuid(value: &str) -> BluetoothUuid {
+        BluetoothUuid {
+            value: value.to_owned(),
+        }
+    }
+
+    fn observation() -> AdvertisementObservation {
+        AdvertisementObservation {
+            scan_session_id: ScanSessionId { value: 1 },
+            peripheral_id: PeripheralId { value: 2 },
+            local_name: Some("BleHub Fixture".to_owned()),
+            advertised_services: vec![uuid("0000180d-0000-1000-8000-00805f9b34fb")],
+            manufacturer_data: vec![ManufacturerData {
+                company_id: 0x1234,
+                payload: vec![1, 2],
+            }],
+            service_data: Vec::new(),
+            rssi: Some(-42),
+            connectable: None,
+        }
+    }
 
     fn assert_invalid<T>(result: Result<T, CommandDispatchError>, detail: &str) {
         assert_eq!(
@@ -186,6 +239,56 @@ mod tests {
                 detail: detail.to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn scan_predicate_uses_any_service_and_and_between_filter_groups() {
+        let observation = observation();
+        let matching = ScanOptions {
+            service_uuids: vec![
+                uuid("0000180f-0000-1000-8000-00805f9b34fb"),
+                uuid("0000180d-0000-1000-8000-00805f9b34fb"),
+            ],
+            name_prefix: Some("BleHub".to_owned()),
+            company_id: Some(0x1234),
+            allow_duplicates: false,
+        };
+        assert!(matching.matches(&observation));
+
+        for non_matching in [
+            ScanOptions {
+                service_uuids: vec![uuid("0000180f-0000-1000-8000-00805f9b34fb")],
+                ..matching.clone()
+            },
+            ScanOptions {
+                name_prefix: Some("blehub".to_owned()),
+                ..matching.clone()
+            },
+            ScanOptions {
+                company_id: Some(0xffff),
+                ..matching.clone()
+            },
+        ] {
+            assert!(!non_matching.matches(&observation));
+        }
+    }
+
+    #[test]
+    fn required_missing_observation_fields_do_not_match() {
+        let observation = AdvertisementObservation {
+            local_name: None,
+            advertised_services: Vec::new(),
+            manufacturer_data: Vec::new(),
+            ..observation()
+        };
+        let options = ScanOptions {
+            service_uuids: vec![uuid("0000180d-0000-1000-8000-00805f9b34fb")],
+            name_prefix: Some("BleHub".to_owned()),
+            company_id: Some(0x1234),
+            allow_duplicates: true,
+        };
+        assert!(!options.matches(&observation));
+        assert!(ScanOptions::default().matches(&observation));
     }
 
     #[test]

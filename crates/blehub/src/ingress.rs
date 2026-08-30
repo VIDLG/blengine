@@ -55,10 +55,19 @@ impl EventIngressState {
     /// attempted during bind is a contract violation and makes activation fail.
     /// The error text is diagnostic only; callers handle all failures uniformly.
     pub(crate) fn activate(&self) -> Result<(), &'static str> {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(error) => {
+                tracing::error!(
+                    target: "blehub::ingress",
+                    diagnostic = "ingress_mutex_poisoned",
+                    operation = "activate",
+                    detail = %error,
+                    "recovered poisoned event ingress mutex"
+                );
+                error.into_inner()
+            }
+        };
         match inner.phase {
             EventIngressPhase::Binding {
                 push_attempted: false,
@@ -69,8 +78,24 @@ impl EventIngressState {
             EventIngressPhase::Binding {
                 push_attempted: true,
             } => Err("backend attempted to push an event while binding ingress"),
-            EventIngressPhase::Active => Err("event ingress is already active"),
-            EventIngressPhase::Closed => Err("event ingress is closed"),
+            EventIngressPhase::Active => {
+                tracing::error!(
+                    target: "blehub::ingress",
+                    diagnostic = "ingress_activation_invalid_phase",
+                    phase = "active",
+                    "event ingress activation attempted from an invalid phase"
+                );
+                Err("event ingress is already active")
+            }
+            EventIngressPhase::Closed => {
+                tracing::error!(
+                    target: "blehub::ingress",
+                    diagnostic = "ingress_activation_invalid_phase",
+                    phase = "closed",
+                    "event ingress activation attempted from an invalid phase"
+                );
+                Err("event ingress is closed")
+            }
         }
     }
 
@@ -78,19 +103,40 @@ impl EventIngressState {
         let mut inner = match self.inner.lock() {
             Ok(inner) => inner,
             Err(error) => {
-                return EventIngressStatus::DownstreamFailed {
-                    message: error.to_string(),
-                };
+                let message = error.to_string();
+                tracing::error!(
+                    target: "blehub::ingress",
+                    diagnostic = "ingress_mutex_poisoned",
+                    operation = "push",
+                    detail = %message,
+                    "failed to acquire event ingress mutex"
+                );
+                return EventIngressStatus::DownstreamFailed { message };
             }
         };
 
         match &mut inner.phase {
             EventIngressPhase::Binding { push_attempted } => {
                 *push_attempted = true;
+                tracing::warn!(
+                    target: "blehub::ingress",
+                    diagnostic = "push_during_bind",
+                    "backend attempted to push before event ingress activation"
+                );
                 return EventIngressStatus::Closed;
             }
             EventIngressPhase::Closed => return EventIngressStatus::Closed,
             EventIngressPhase::Active => {}
+        }
+
+        if let Err(message) = event.validate() {
+            tracing::warn!(
+                target: "blehub::ingress",
+                diagnostic = "invalid_event",
+                detail = %message,
+                "rejected backend event with an invalid wire invariant"
+            );
+            return EventIngressStatus::InvalidEvent { message };
         }
 
         let Some(downstream) = inner.downstream.as_deref() else {
@@ -99,22 +145,44 @@ impl EventIngressState {
 
         match catch_unwind(AssertUnwindSafe(|| downstream.on_event(event))) {
             Ok(Ok(())) => EventIngressStatus::Delivered,
-            Ok(Err(error)) => EventIngressStatus::DownstreamFailed {
-                message: error.to_string(),
-            },
-            Err(_) => EventIngressStatus::DownstreamFailed {
-                message: "downstream panicked while handling an event".to_owned(),
-            },
+            Ok(Err(error)) => {
+                let message = error.to_string();
+                tracing::warn!(
+                    target: "blehub::ingress",
+                    diagnostic = "downstream_rejected",
+                    detail = %message,
+                    "downstream rejected an event delivery attempt"
+                );
+                EventIngressStatus::DownstreamFailed { message }
+            }
+            Err(_) => {
+                let message = "downstream panicked while handling an event".to_owned();
+                tracing::error!(
+                    target: "blehub::ingress",
+                    diagnostic = "downstream_panicked",
+                    "contained downstream panic at the event ingress boundary"
+                );
+                EventIngressStatus::DownstreamFailed { message }
+            }
         }
     }
 
     /// Closes the ingress, waits for any admitted delivery to return, and
     /// releases the downstream sink before returning.
     pub(crate) fn close(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(error) => {
+                tracing::error!(
+                    target: "blehub::ingress",
+                    diagnostic = "ingress_mutex_poisoned",
+                    operation = "close",
+                    detail = %error,
+                    "recovered poisoned event ingress mutex"
+                );
+                error.into_inner()
+            }
+        };
         inner.phase = EventIngressPhase::Closed;
         inner.downstream.take();
     }

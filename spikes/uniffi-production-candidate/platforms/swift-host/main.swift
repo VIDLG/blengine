@@ -79,7 +79,7 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         case .invalidContractVersion:
             return BackendCapabilities(
                 platform: .test,
-                contractVersion: 5,
+                contractVersion: fixtureContractVersion() + 1,
                 supportsDuplicateScanResults: false,
                 supportsConnectableFlag: false,
                 supportsReadRssi: false,
@@ -90,7 +90,7 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         default:
             return BackendCapabilities(
                 platform: .test,
-                contractVersion: 4,
+                contractVersion: fixtureContractVersion(),
                 supportsDuplicateScanResults: false,
                 supportsConnectableFlag: false,
                 supportsReadRssi: false,
@@ -244,6 +244,16 @@ func release(_ fixture: inout ProductionCandidateFixture?, backend: CandidateBac
     fixture = nil
     precondition(backend.disposeCount == 1)
     precondition(!backend.hasIngress())
+}
+
+func runCompleteEventCatalogTest() throws {
+    let backend = CandidateBackend(mode: .noEvent)
+    var fixture: ProductionCandidateFixture? = try ProductionCandidateFixture(backend: backend)
+    let statuses = fixtureEventCatalog().map { backend.push($0) }
+
+    precondition(statuses.allSatisfy { $0 == .delivered })
+    precondition(fixtureEventCatalogMatches(events: fixture!.snapshot().events))
+    try release(&fixture, backend: backend)
 }
 
 func runSynchronousAndThreadTests() throws {
@@ -472,6 +482,7 @@ func runLifecycleStressTest() throws {
     precondition(after.sinkDropped == before.sinkDropped + 10_000)
 }
 
+try runCompleteEventCatalogTest()
 try runSynchronousAndThreadTests()
 try runDispatchAndAssemblyFailureTests()
 try runBindRollbackTests()

@@ -13,6 +13,18 @@ pub struct BleHub {
     ingress: Arc<EventIngressState>,
 }
 
+fn dispose_after_assembly_failure(backend: &dyn BleBackend, stage: &'static str) {
+    if let Err(error) = backend.dispose() {
+        tracing::error!(
+            target: "blehub::lifecycle",
+            diagnostic = "assembly_rollback_failed",
+            stage,
+            error = %error,
+            "backend cleanup failed while rolling back BleHub assembly"
+        );
+    }
+}
+
 impl BleHub {
     pub fn new(
         backend: Arc<dyn BleBackend>,
@@ -24,7 +36,7 @@ impl BleHub {
         {
             Ok(capabilities) => capabilities,
             Err(error) => {
-                let _ = backend.dispose();
+                dispose_after_assembly_failure(backend.as_ref(), "capabilities");
                 return Err(error);
             }
         };
@@ -36,12 +48,12 @@ impl BleHub {
         // only the separate ingress state; callback work may clone temporarily.
         if let Err(error) = backend.bind_event_ingress(ingress_handle) {
             ingress.close();
-            let _ = backend.dispose();
+            dispose_after_assembly_failure(backend.as_ref(), "bind_event_ingress");
             return Err(error);
         }
         if let Err(detail) = ingress.activate() {
             ingress.close();
-            let _ = backend.dispose();
+            dispose_after_assembly_failure(backend.as_ref(), "activate_ingress");
             return Err(BleHubError::FfiContract {
                 detail: detail.to_owned(),
             });
@@ -64,13 +76,18 @@ impl BleHub {
         &self,
         dispatch: impl FnOnce(&dyn BleBackend) -> Result<(), CommandDispatchError>,
     ) -> Result<(), CommandDispatchError> {
-        let backend =
-            self.backend
-                .read()
-                .map_err(|_| CommandDispatchError::BackendUnavailable {
-                    detail: "command gate is poisoned".to_owned(),
-                    platform_details: None,
-                })?;
+        let backend = self.backend.read().map_err(|error| {
+            tracing::error!(
+                target: "blehub::lifecycle",
+                diagnostic = "command_gate_poisoned",
+                detail = %error,
+                "failed to acquire BleHub command gate"
+            );
+            CommandDispatchError::BackendUnavailable {
+                detail: "command gate is poisoned".to_owned(),
+                platform_details: None,
+            }
+        })?;
         let backend = backend.as_deref().ok_or(CommandDispatchError::Closed)?;
         dispatch(backend)
     }
@@ -127,16 +144,33 @@ impl BleHub {
     }
 
     pub fn dispose(&self) -> Result<(), BleHubError> {
-        let mut backend_slot = self
-            .backend
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut backend_slot = match self.backend.write() {
+            Ok(backend_slot) => backend_slot,
+            Err(error) => {
+                tracing::error!(
+                    target: "blehub::lifecycle",
+                    diagnostic = "command_gate_poisoned",
+                    operation = "dispose",
+                    detail = %error,
+                    "recovered poisoned BleHub command gate"
+                );
+                error.into_inner()
+            }
+        };
         let Some(backend) = backend_slot.take() else {
             return Ok(());
         };
 
         self.ingress.close();
         let backend_result = backend.dispose();
+        if let Err(error) = &backend_result {
+            tracing::error!(
+                target: "blehub::lifecycle",
+                diagnostic = "backend_dispose_failed",
+                error = %error,
+                "backend cleanup failed during BleHub dispose"
+            );
+        }
         drop(backend);
         backend_result
     }
@@ -144,9 +178,7 @@ impl BleHub {
 
 impl Drop for BleHub {
     fn drop(&mut self) {
-        if let Err(error) = self.dispose() {
-            eprintln!("BleHub dispose failed during Drop: {error}");
-        }
+        let _ = self.dispose();
     }
 }
 
@@ -383,7 +415,7 @@ mod tests {
     fn invalid_contract_version_rolls_back_before_binding() {
         let (backend, state) = backend(
             Ok(BackendCapabilities {
-                contract_version: 5,
+                contract_version: 6,
                 ..BackendCapabilities::new(Platform::Test)
             }),
             Ok(()),

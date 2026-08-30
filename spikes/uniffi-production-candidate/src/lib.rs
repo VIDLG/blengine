@@ -7,11 +7,12 @@ use std::{
 };
 
 use blehub::{
-    BackendCapabilities, BleBackend, BleEvent, BleEventSink, BleHub, BleHubError,
-    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand, EventSinkError,
-    InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
-    StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    BLEHUB_CONTRACT_VERSION, BackendCapabilities, BleBackend, BleEvent, BleEventSink, BleHub,
+    BleHubError, CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
+    EventSinkError, InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand,
+    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
 };
+use blehub_testkit::unified_event_catalog_fixture;
 
 static FIXTURE_CREATED: AtomicU64 = AtomicU64::new(0);
 static FIXTURE_DROPPED: AtomicU64 = AtomicU64::new(0);
@@ -39,6 +40,21 @@ pub struct FixtureLifecycleCounters {
     pub fixture_dropped: u64,
     pub sink_created: u64,
     pub sink_dropped: u64,
+}
+
+#[uniffi::export]
+pub fn fixture_contract_version() -> u32 {
+    BLEHUB_CONTRACT_VERSION
+}
+
+#[uniffi::export]
+pub fn fixture_event_catalog() -> Vec<BleEvent> {
+    unified_event_catalog_fixture()
+}
+
+#[uniffi::export]
+pub fn fixture_event_catalog_matches(events: Vec<BleEvent>) -> bool {
+    events == unified_event_catalog_fixture()
 }
 
 #[uniffi::export]
