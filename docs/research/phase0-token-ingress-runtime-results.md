@@ -4,7 +4,7 @@
 - Date: 2026-08-29
 - Normative source: [`.plan/PLAN.md`](../../.plan/PLAN.md)
 - Execution catalog: [`docs/testing/ffi-spikes.md`](../testing/ffi-spikes.md)
-- Fixture: [`spikes/boltffi-token-ingress/`](../../spikes/boltffi-token-ingress/)
+- Archived fixture: [`spikes/archive/boltffi-token-ingress/`](../../spikes/archive/boltffi-token-ingress/)
 
 ## 1. Conclusion
 
@@ -29,13 +29,13 @@ This is not yet a Phase 0 Go decision. The original production-shaped desktop JV
 | Windows native tools | Pixi Clang/LLD `22.1.8`; VS Build Tools `17.14`, MSVC `14.44.35207`, Windows SDK `10.0.26100.0` |
 | Android | API 36 x86_64 emulator and API 36 arm64-v8a device; build-tools `36.0.0`; NDK `28.2.13676358`; AGP `8.10.1`; Gradle `8.11.1`; JDK 17 |
 | Rust `boltffi` dependency | crates.io exact `0.30.1`, locked by each fixture `Cargo.lock` |
-| BoltFFI CLI | official crates.io `boltffi_cli 0.30.1`, installed by `tools/boltffi_toolchain.py`; Cargo verifies the crates.io package checksum |
+| BoltFFI CLI | official crates.io `boltffi_cli 0.30.1`, installed by the now-archived `spikes/archive/tools/boltffi_toolchain.py`; Cargo verifies the crates.io package checksum |
 
-The CLI is installed into ignored project work storage through an isolated Cargo home, so it does not depend on the sibling source checkout or the machine's global Cargo mirror configuration. `tools/run_boltffi_cli.py` verifies and invokes that executable for Kotlin/Swift generation and Android/Apple packaging. Generated source and package output remain ignored artifacts and are always reproducible from the exact fixture contract plus the pinned official CLI.
+The CLI is installed into ignored project work storage through an isolated Cargo home, so it does not depend on the sibling source checkout or the machine's global Cargo mirror configuration. The now-archived `spikes/archive/tools/run_boltffi_cli.py` verified and invoked that executable for Kotlin/Swift generation and Android/Apple packaging. Generated source and package output remain ignored artifacts and are always reproducible from the exact fixture contract plus the pinned official CLI.
 
 ## 3. Implemented object graph
 
-`spikes/boltffi-token-ingress` is a separate test harness crate. It depends on `crates/blehub` instead of copying registry or Hub implementation. Its exported `Phase0Fixture` performs only test adaptation:
+The archived `spikes/archive/boltffi-token-ingress` is a separate test harness crate. It depends on `crates/blehub` instead of copying registry or Hub implementation. Its exported `Phase0Fixture` performs only test adaptation:
 
 ```text
 Kotlin TestBackend
@@ -184,7 +184,7 @@ Phase 0 therefore remains blocked pending either an official BoltFFI fix or expl
 
 ## 6. Build and source policy
 
-All generation and packaging lanes use the pinned official CLI:
+At the time of this investigation, all generation and packaging lanes used the pinned official CLI. The following recipe names are now retired with the archived fixtures and remain here only as an execution record:
 
 ```text
 pixi run just boltffi-bootstrap
@@ -195,7 +195,7 @@ pixi run just ffi-phase0-test-android-emulator
 
 `boltffi-bootstrap` is explicit; ordinary generation and tests verify the CLI and fail with installation guidance rather than silently downloading it.
 
-`tools/build_windows_jvm_bridge.py` accepts `--project`, reads the native package name from that project's `boltffi.toml`, builds the Rust DLL for `x86_64-pc-windows-msvc`, and compiles and links the generated JNI C bridge with Pixi-managed `clang-cl` and `lld-link`. The desktop JVM and Windows Swift host lanes therefore share the Windows MSVC ABI without making JVM validation depend on the separately installed Swift toolchain. This does not approximate or replace the later Android NDK/Bionic/ART lane.
+The archived `spikes/archive/tools/build_windows_jvm_bridge.py` accepts `--project`, reads the native package name from that project's `boltffi.toml`, builds the Rust DLL for `x86_64-pc-windows-msvc`, and compiles and links the generated JNI C bridge with Pixi-managed `clang-cl` and `lld-link`. The desktop JVM and Windows Swift host lanes therefore share the Windows MSVC ABI without making JVM validation depend on the separately installed Swift toolchain. This does not approximate or replace the later Android NDK/Bionic/ART lane.
 
 Both Gradle projects use the Pixi JDK and Gradle. Plugin and dependency resolution are restricted to Aliyun mirrors in `settings.gradle.kts`; no official Gradle Plugin Portal or Maven Central repository is configured. The producer compiles generated source and creates a bindings JAR. The separate consumer has no generated-source directory on its source set and compiles only against that JAR, while loading the produced Rust/JNI DLLs from the native artifact directory.
 

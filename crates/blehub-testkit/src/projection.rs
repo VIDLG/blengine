@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use blehub::{BleEvent, BleEventError, BleEventPayload, CommandId};
+use blehub::{BleEvent, BleEventError, CommandId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventDisposition {
@@ -23,13 +23,11 @@ pub struct ReferenceProjection {
 
 impl ReferenceProjection {
     pub fn register_command(&mut self, command_id: CommandId) -> bool {
-        command_id.is_valid()
-            && !self.outcomes.contains_key(&command_id)
-            && self.pending.insert(command_id)
+        !self.outcomes.contains_key(&command_id) && self.pending.insert(command_id)
     }
 
     pub fn apply(&mut self, event: &BleEvent) -> EventDisposition {
-        let BleEventPayload::CommandCompleted { command_id, error } = &event.payload else {
+        let BleEvent::CommandCompleted { command_id, error } = event else {
             return EventDisposition::Accepted;
         };
 

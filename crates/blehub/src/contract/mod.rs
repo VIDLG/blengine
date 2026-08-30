@@ -4,14 +4,24 @@ mod errors;
 mod events;
 mod ids;
 
-pub use capabilities::{BLEHUB_CONTRACT_VERSION, BackendCapabilities, Platform};
-pub use commands::{CommandKind, ConnectCommand, StartScanCommand};
+pub use capabilities::{
+    AdapterSnapshot, AdapterState, AuthorizationState, BLEHUB_CONTRACT_VERSION,
+    BackendCapabilities, Platform,
+};
+pub use commands::{
+    CommandKind, ConnectCommand, DisconnectCommand, DiscoverGattCommand, InitializeCommand,
+    MAX_SCAN_NAME_PREFIX_BYTES, MAX_WRITE_VALUE_BYTES, NotificationAction, NotificationMode,
+    NotificationModeRequest, ReadCharacteristicCommand, ReadRssiCommand, ScanOptions,
+    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    WriteType,
+};
 pub use errors::{
-    BleErrorCategory, BleEventError, BleHubError, CommandDispatchError, EventSinkError,
-    PlatformErrorDetails,
+    BleErrorCategory, BleEventError, BleHubError, CommandDispatchError, PlatformErrorDetails,
 };
 pub use events::{
-    BleEvent, BleEventPayload, ConnectionState, ConnectionStateResult, ScanStopReason,
-    ScanStopResult,
+    BleEvent, ConnectionState, ConnectionStateResult, ScanStopReason, ScanStopResult,
 };
-pub use ids::{CommandId, ConnectionId, PeripheralId, ScanSessionId};
+pub use ids::{
+    BluetoothUuid, CommandId, ConnectionId, GattCharacteristicId, GattDescriptorId, GattServiceId,
+    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId, canonicalize_bluetooth_uuid,
+};

@@ -18,8 +18,12 @@ docs-update:
     python tools/update_platform_docs.py
 
 
+# Install locked Node dependencies used by documentation checks.
+docs-install:
+    npm ci --ignore-scripts --no-audit --no-fund
+
+# Validate Mermaid syntax in project-authored Markdown.
 docs-check-mermaid:
-    npm install --ignore-scripts --no-audit --no-fund
     npm run check:mermaid
 
 
@@ -37,14 +41,6 @@ generate-swift: build-bindings-library
 generate-bindings: generate-kotlin generate-swift
 
 
-boltffi-bootstrap:
-    python -m tools.boltffi_toolchain install
-
-boltffi-doctor:
-    python -m tools.boltffi_toolchain verify
-
-boltffi-report:
-    python -m tools.boltffi_toolchain report
 
 toolchain-paths:
     python -m tools.local_config report

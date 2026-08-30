@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     BackendCapabilities, BackendEventIngressHandle, BleHubError, CommandDispatchError,
-    ConnectCommand, StartScanCommand,
+    ConnectCommand, DisconnectCommand, DiscoverGattCommand, InitializeCommand,
+    ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand, StartScanCommand,
+    StopScanCommand, WriteCharacteristicCommand,
 };
 
 /// Platform implementation boundary. Rust implementations must not panic:
@@ -21,9 +23,34 @@ pub trait BleBackend: Send + Sync {
         ingress: Arc<BackendEventIngressHandle>,
     ) -> Result<(), BleHubError>;
 
+    fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+
     fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
 
+    fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
+
     fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
+
+    fn disconnect(&self, command: DisconnectCommand) -> Result<(), CommandDispatchError>;
+
+    fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError>;
+
+    fn read_characteristic(
+        &self,
+        command: ReadCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError>;
+
+    fn write_characteristic(
+        &self,
+        command: WriteCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError>;
+
+    fn set_notifications(
+        &self,
+        command: SetNotificationsCommand,
+    ) -> Result<(), CommandDispatchError>;
+
+    fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
 
     fn dispose(&self) -> Result<(), BleHubError>;
 }

@@ -1,25 +1,17 @@
 fmt:
-    cargo fmt --all
-    cargo fmt --manifest-path spikes/boltffi-token-ingress/Cargo.toml
-    cargo fmt --manifest-path spikes/uniffi-lifecycle/Cargo.toml
-    cargo fmt --manifest-path spikes/uniffi-production-candidate/Cargo.toml
-    cargo fmt --manifest-path spikes/uniffi-error-field-collision/Cargo.toml
+    rtk cargo fmt --all
+    rtk cargo fmt --manifest-path spikes/uniffi-production-candidate/Cargo.toml
     ruff check --fix tools
     ruff format tools
 
 check:
-    cargo check --workspace
+    rtk cargo check --workspace
 
 lint:
-    cargo fmt --all -- --check
-    cargo fmt --manifest-path spikes/boltffi-token-ingress/Cargo.toml -- --check
-    cargo fmt --manifest-path spikes/uniffi-lifecycle/Cargo.toml -- --check
-    cargo fmt --manifest-path spikes/uniffi-production-candidate/Cargo.toml -- --check
-    cargo fmt --manifest-path spikes/uniffi-error-field-collision/Cargo.toml -- --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    cargo clippy --manifest-path spikes/uniffi-lifecycle/Cargo.toml --all-targets -- -D warnings
-    cargo clippy --manifest-path spikes/uniffi-production-candidate/Cargo.toml --all-targets -- -D warnings
-    cargo clippy --manifest-path spikes/uniffi-error-field-collision/Cargo.toml --all-targets -- -D warnings
+    rtk cargo fmt --all -- --check
+    rtk cargo fmt --manifest-path spikes/uniffi-production-candidate/Cargo.toml -- --check
+    rtk cargo clippy --workspace --all-targets -- -D warnings
+    rtk cargo clippy --manifest-path spikes/uniffi-production-candidate/Cargo.toml --all-targets -- -D warnings
     ruff check tools
 
 test:

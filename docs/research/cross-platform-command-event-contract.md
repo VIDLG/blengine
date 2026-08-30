@@ -119,8 +119,7 @@ pub enum CommandKind {
     DiscoverGatt,
     ReadCharacteristic,
     WriteCharacteristic,
-    EnableNotifications,
-    DisableNotifications,
+    SetNotifications,
     ReadRssi,
 }
 
@@ -451,7 +450,7 @@ CommandCompleted(Failed/TimedOut/Cancelled, BleOperationError { operation, failu
 概念 API 应避免同一 ID 同时存在于 `BleEvent` 顶层和 payload variant：
 
 ```rust
-pub enum BleEventPayload {
+pub enum BleEvent {
     ScanStopped {
         command_id: Option<CommandId>,
         scan_id: ScanSessionId,
@@ -478,18 +477,13 @@ pub enum BleEventPayload {
     },
     // ...
 }
-
-pub struct BleEvent {
-    pub payload: BleEventPayload,
-}
 ```
 
-该建议已写回Plan：`BleEvent`外层只包装一份`BleEventPayload`语义enum，IDs只存在于对应variant。若BoltFFI complex enum生成不满足要求，只把这一层降为explicit tagged record；tag与IDs仍各有一个权威位置，不恢复外层kind/IDs加payload IDs的双重真值。
+该建议已写回Plan：`BleEvent`本身就是语义enum，不再增加单字段payload wrapper；IDs只存在于对应variant。若Stable UniFFI complex enum生成不满足要求，再把`BleEvent`降为explicit tagged record；tag与IDs仍各有一个权威位置，不恢复外层kind/IDs加variant IDs的双重真值。
 
 Phase 0 必须用真实 Kotlin/Swift生成结果比较：
 
-- complex data enum；
-- `BleEvent { payload: BleEventPayload }`；
+- 直接作为`push`/`on_event`参数的`BleEvent` complex data enum；
 - explicit tagged record fallback。
 
 最终 shape应优先保证无重复真值、生成 API可读、unknown variant/versioning策略明确，而不是仅追求 Rust端最短定义。

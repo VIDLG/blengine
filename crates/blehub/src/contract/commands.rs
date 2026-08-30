@@ -1,13 +1,108 @@
-use super::{CommandDispatchError, CommandId, ConnectionId, PeripheralId, ScanSessionId};
+use super::{
+    BluetoothUuid, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId,
+    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId, canonicalize_bluetooth_uuid,
+};
+
+/// Bluetooth names are limited to 248 UTF-8 bytes, so a longer prefix cannot match.
+pub const MAX_SCAN_NAME_PREFIX_BYTES: usize = 248;
+
+/// ATT limits an attribute value to 512 octets; a platform's per-write limit may be lower.
+pub const MAX_WRITE_VALUE_BYTES: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum CommandKind {
+    Initialize,
     StartScan,
+    StopScan,
     Connect,
+    Disconnect,
+    DiscoverGatt,
+    ReadCharacteristic,
+    WriteCharacteristic,
+    SetNotifications,
+    ReadRssi,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum WriteType {
+    WithResponse,
+    WithoutResponse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum NotificationMode {
+    Notification,
+    Indication,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum NotificationModeRequest {
+    PlatformDefault,
+    RequireNotification,
+    RequireIndication,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum NotificationAction {
+    Enable { mode: NotificationModeRequest },
+    Disable,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct ScanOptions {
+    pub service_uuids: Vec<BluetoothUuid>,
+    pub name_prefix: Option<String>,
+    pub company_id: Option<u16>,
+    pub allow_duplicates: bool,
+}
+
+impl ScanOptions {
+    fn validate_and_canonicalize(&mut self) -> Result<(), CommandDispatchError> {
+        for (index, service_uuid) in self.service_uuids.iter_mut().enumerate() {
+            let Some(canonical) = canonicalize_bluetooth_uuid(&service_uuid.value) else {
+                return Err(CommandDispatchError::InvalidRequest {
+                    detail: format!("service_uuids[{index}] is not a valid Bluetooth UUID"),
+                });
+            };
+            *service_uuid = canonical;
+        }
+        if let Some(name_prefix) = &self.name_prefix {
+            if name_prefix.is_empty() {
+                return Err(CommandDispatchError::InvalidRequest {
+                    detail: "name_prefix must not be empty".to_owned(),
+                });
+            }
+            if name_prefix.len() > MAX_SCAN_NAME_PREFIX_BYTES {
+                return Err(CommandDispatchError::InvalidRequest {
+                    detail: format!("name_prefix exceeds {MAX_SCAN_NAME_PREFIX_BYTES} UTF-8 bytes"),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct InitializeCommand {
+    pub command_id: CommandId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct StartScanCommand {
+    pub command_id: CommandId,
+    pub scan_session_id: ScanSessionId,
+    pub options: ScanOptions,
+}
+
+impl StartScanCommand {
+    pub(crate) fn validated(mut self) -> Result<Self, CommandDispatchError> {
+        self.options.validate_and_canonicalize()?;
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct StopScanCommand {
     pub command_id: CommandId,
     pub scan_session_id: ScanSessionId,
 }
@@ -19,120 +114,132 @@ pub struct ConnectCommand {
     pub peripheral_id: PeripheralId,
 }
 
-impl StartScanCommand {
-    pub(crate) fn validate(&self) -> Result<(), CommandDispatchError> {
-        validate_id(self.command_id.is_valid(), "command_id")?;
-        validate_id(self.scan_session_id.is_valid(), "scan_session_id")
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DisconnectCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
 }
 
-impl ConnectCommand {
-    pub(crate) fn validate(&self) -> Result<(), CommandDispatchError> {
-        validate_id(self.command_id.is_valid(), "command_id")?;
-        validate_id(self.connection_id.is_valid(), "connection_id")?;
-        validate_id(self.peripheral_id.is_valid(), "peripheral_id")
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DiscoverGattCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub gatt_session_id: GattSessionId,
 }
 
-fn validate_id(valid: bool, field: &'static str) -> Result<(), CommandDispatchError> {
-    if valid {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ReadCharacteristicCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub gatt_session_id: GattSessionId,
+    pub characteristic_id: GattCharacteristicId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct WriteCharacteristicCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub gatt_session_id: GattSessionId,
+    pub characteristic_id: GattCharacteristicId,
+    pub value: Vec<u8>,
+    pub write_type: WriteType,
+}
+
+impl WriteCharacteristicCommand {
+    pub(crate) fn validate(&self) -> Result<(), CommandDispatchError> {
+        if self.value.len() > MAX_WRITE_VALUE_BYTES {
+            return Err(CommandDispatchError::InvalidRequest {
+                detail: format!(
+                    "value contains {} bytes; maximum is {MAX_WRITE_VALUE_BYTES}",
+                    self.value.len()
+                ),
+            });
+        }
         Ok(())
-    } else {
-        Err(CommandDispatchError::InvalidRequest {
-            detail: format!("{field} must be nonzero"),
-        })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct SetNotificationsCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub gatt_session_id: GattSessionId,
+    pub subscription_id: SubscriptionId,
+    pub characteristic_id: GattCharacteristicId,
+    pub action: NotificationAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ReadRssiCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn valid_commands_pass_validation() {
+    fn assert_invalid<T>(result: Result<T, CommandDispatchError>, detail: &str) {
         assert_eq!(
-            StartScanCommand {
-                command_id: CommandId::new(1),
-                scan_session_id: ScanSessionId::new(2),
-            }
-            .validate(),
-            Ok(())
-        );
-        assert_eq!(
-            ConnectCommand {
-                command_id: CommandId::new(1),
-                connection_id: ConnectionId::new(2),
-                peripheral_id: PeripheralId::new(3),
-            }
-            .validate(),
-            Ok(())
+            result.err(),
+            Some(CommandDispatchError::InvalidRequest {
+                detail: detail.to_owned(),
+            })
         );
     }
 
     #[test]
-    fn validation_identifies_each_zero_id() {
-        let valid_start_scan = StartScanCommand {
-            command_id: CommandId::new(1),
-            scan_session_id: ScanSessionId::new(2),
+    fn scan_options_enforce_wire_guards() {
+        let valid = StartScanCommand {
+            command_id: CommandId { value: 1 },
+            scan_session_id: ScanSessionId { value: 2 },
+            options: ScanOptions {
+                service_uuids: vec![BluetoothUuid {
+                    value: "180D".to_owned(),
+                }],
+                name_prefix: Some("BleHub".to_owned()),
+                company_id: Some(0x1234),
+                allow_duplicates: true,
+            },
         };
-        for (command, field) in [
-            (
-                StartScanCommand {
-                    command_id: CommandId::new(0),
-                    ..valid_start_scan
-                },
-                "command_id",
-            ),
-            (
-                StartScanCommand {
-                    scan_session_id: ScanSessionId::new(0),
-                    ..valid_start_scan
-                },
-                "scan_session_id",
-            ),
-        ] {
-            assert_eq!(
-                command.validate(),
-                Err(CommandDispatchError::InvalidRequest {
-                    detail: format!("{field} must be nonzero"),
-                })
-            );
-        }
+        let canonical = valid.clone().validated().unwrap();
+        assert_eq!(
+            canonical.options.service_uuids,
+            vec![BluetoothUuid {
+                value: "0000180d-0000-1000-8000-00805f9b34fb".to_owned(),
+            }]
+        );
 
-        let valid_connect = ConnectCommand {
-            command_id: CommandId::new(1),
-            connection_id: ConnectionId::new(2),
-            peripheral_id: PeripheralId::new(3),
+        let mut command = valid.clone();
+        command.options.service_uuids = vec![BluetoothUuid {
+            value: String::new(),
+        }];
+        assert_invalid(
+            command.validated(),
+            "service_uuids[0] is not a valid Bluetooth UUID",
+        );
+
+        let mut command = valid.clone();
+        command.options.name_prefix = Some(String::new());
+        assert_invalid(command.validated(), "name_prefix must not be empty");
+
+        let mut command = valid;
+        command.options.name_prefix = Some("x".repeat(MAX_SCAN_NAME_PREFIX_BYTES + 1));
+        assert_invalid(command.validated(), "name_prefix exceeds 248 UTF-8 bytes");
+    }
+
+    #[test]
+    fn write_value_enforces_wire_guard() {
+        let mut write = WriteCharacteristicCommand {
+            command_id: CommandId { value: 1 },
+            connection_id: ConnectionId { value: 2 },
+            gatt_session_id: GattSessionId { value: 3 },
+            characteristic_id: GattCharacteristicId { value: 4 },
+            value: vec![0; MAX_WRITE_VALUE_BYTES],
+            write_type: WriteType::WithResponse,
         };
-        for (command, field) in [
-            (
-                ConnectCommand {
-                    command_id: CommandId::new(0),
-                    ..valid_connect
-                },
-                "command_id",
-            ),
-            (
-                ConnectCommand {
-                    connection_id: ConnectionId::new(0),
-                    ..valid_connect
-                },
-                "connection_id",
-            ),
-            (
-                ConnectCommand {
-                    peripheral_id: PeripheralId::new(0),
-                    ..valid_connect
-                },
-                "peripheral_id",
-            ),
-        ] {
-            assert_eq!(
-                command.validate(),
-                Err(CommandDispatchError::InvalidRequest {
-                    detail: format!("{field} must be nonzero"),
-                })
-            );
-        }
+        assert_eq!(write.validate(), Ok(()));
+        write.value.push(0);
+        assert_invalid(write.validate(), "value contains 513 bytes; maximum is 512");
     }
 }

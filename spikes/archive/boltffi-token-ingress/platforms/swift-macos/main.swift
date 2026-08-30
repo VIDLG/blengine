@@ -74,7 +74,7 @@ final class TestBackend: BleBackend, @unchecked Sendable {
         case .reject:
             throw CommandDispatchError.backendUnavailable(
                 detail: "declared rejection",
-                platform: nil
+                platformDetails: nil
             )
         case .unexpected:
             throw NativeFailure.undeclared

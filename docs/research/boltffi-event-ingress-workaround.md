@@ -54,7 +54,7 @@ BleHub 保持一个不因 BoltFFI 能力变化而改变的装配 contract：
 
 相邻 BoltFFI checkout 仅用于按 local-first 规则审计对应实现源码，不参与 BleHub 构建或生成。
 
-`spikes/boltffi-class-handle-callback-param/` 复现：
+已归档的`spikes/archive/boltffi-class-handle-callback-param/`复现：
 
 ```rust
 #[boltffi::export]
@@ -103,7 +103,7 @@ pub fn push_backend_event(
 ) -> EventIngressStatus;
 ```
 
-该最初 probe 只证明 generator 接受参数形状。现已新增 `spikes/boltffi-token-ingress/`，通过真实 `BleHub`、全局 registry、Rust-only sink 与 foreign backend 运行 production-shaped Windows JVM、Windows Swift 和 Android ART/AAR lanes。官方 `0.30.1` 的 JVM suite 有 19/21 项通过；两个 unchecked Kotlin exception case 暴露 [#872](https://github.com/boltffi/boltffi/issues/872) 并保持失败。Android emulator/AAR consumer 与 Windows Swift smoke 已通过。准确环境、已验证边界和未关闭 blocker 见 [`phase0-token-ingress-runtime-results.md`](phase0-token-ingress-runtime-results.md)。
+该最初probe只证明generator接受参数形状。后续已归档的`spikes/archive/boltffi-token-ingress/`通过真实 `BleHub`、全局 registry、Rust-only sink 与 foreign backend 运行 production-shaped Windows JVM、Windows Swift 和 Android ART/AAR lanes。官方 `0.30.1` 的 JVM suite 有 19/21 项通过；两个 unchecked Kotlin exception case 暴露 [#872](https://github.com/boltffi/boltffi/issues/872) 并保持失败。Android emulator/AAR consumer 与 Windows Swift smoke 已通过。准确环境、已验证边界和未关闭 blocker 见 [`phase0-token-ingress-runtime-results.md`](phase0-token-ingress-runtime-results.md)。
 
 ### 2.3 仍属设计推导或跨目标待实测
 

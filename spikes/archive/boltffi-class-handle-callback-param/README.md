@@ -14,7 +14,7 @@ pub trait BleBackend: Send + Sync {
 Run from the BleHub repository root:
 
 ```text
-cargo check --manifest-path spikes/boltffi-class-handle-callback-param/Cargo.toml
+cargo check --manifest-path spikes/archive/boltffi-class-handle-callback-param/Cargo.toml
 ```
 
 Expected result on the currently inspected local BoltFFI revision: compilation fails with `unsupported expansion: callback method parameter shape`.

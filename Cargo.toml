@@ -11,3 +11,4 @@ publish = false
 [workspace.dependencies]
 thiserror = "2"
 uniffi = "=0.32.0"
+uuid = "1"

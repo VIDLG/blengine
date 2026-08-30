@@ -77,9 +77,27 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         case .unexpectedCapabilitiesFailure:
             throw NativeFailure.undeclared("undeclared capabilities failure")
         case .invalidContractVersion:
-            return BackendCapabilities(platform: .test, contractVersion: 4)
+            return BackendCapabilities(
+                platform: .test,
+                contractVersion: 5,
+                supportsDuplicateScanResults: false,
+                supportsConnectableFlag: false,
+                supportsReadRssi: false,
+                supportsRequiredNotification: false,
+                supportsRequiredIndication: false,
+                reportsActualNotificationMode: false
+            )
         default:
-            return BackendCapabilities(platform: .test, contractVersion: 3)
+            return BackendCapabilities(
+                platform: .test,
+                contractVersion: 4,
+                supportsDuplicateScanResults: false,
+                supportsConnectableFlag: false,
+                supportsReadRssi: false,
+                supportsRequiredNotification: false,
+                supportsRequiredIndication: false,
+                reportsActualNotificationMode: false
+            )
         }
     }
 
@@ -102,6 +120,8 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         }
     }
 
+    func initialize(command: InitializeCommand) throws {}
+
     func startScan(command: StartScanCommand) throws {
         switch mode {
         case .synchronous:
@@ -114,7 +134,7 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         case .rejectCommand:
             throw CommandDispatchError.BackendUnavailable(
                 detail: "declared dispatch rejection",
-                platform: nil
+                platformDetails: nil
             )
         case .unexpectedCommand:
             throw NativeFailure.undeclared("undeclared command failure")
@@ -123,7 +143,21 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         }
     }
 
+    func stopScan(command: StopScanCommand) throws {}
+
     func connect(command: ConnectCommand) throws {}
+
+    func disconnect(command: DisconnectCommand) throws {}
+
+    func discoverGatt(command: DiscoverGattCommand) throws {}
+
+    func readCharacteristic(command: ReadCharacteristicCommand) throws {}
+
+    func writeCharacteristic(command: WriteCharacteristicCommand) throws {}
+
+    func setNotifications(command: SetNotificationsCommand) throws {}
+
+    func readRssi(command: ReadRssiCommand) throws {}
 
     func dispose() throws {
         let root = lock.withLock { () -> BackendEventIngressHandle? in
@@ -141,7 +175,7 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
         case .typedDisposeFailure:
             throw BleHubError.BackendCleanup(
                 detail: "declared cleanup failure",
-                platform: nil
+                platformDetails: nil
             )
         case .unexpectedDisposeFailure:
             throw NativeFailure.undeclared("undeclared cleanup failure")
@@ -170,11 +204,7 @@ final class CandidateBackend: BleBackend, @unchecked Sendable {
     private func emitSuccessfulScan(_ command: StartScanCommand) {
         let statuses = [
             push(scanStarted(command)),
-            push(
-                BleEvent(
-                    payload: .commandCompleted(commandId: command.commandId, error: nil)
-                )
-            ),
+            push(.commandCompleted(commandId: command.commandId, error: nil)),
         ]
         lock.withLock { pushStatuses.append(contentsOf: statuses) }
     }
@@ -191,16 +221,20 @@ extension Optional {
 func scanCommand(_ value: UInt64) -> StartScanCommand {
     StartScanCommand(
         commandId: CommandId(value: value),
-        scanSessionId: ScanSessionId(value: value + 100)
+        scanSessionId: ScanSessionId(value: value + 100),
+        options: ScanOptions(
+            serviceUuids: [],
+            namePrefix: nil,
+            companyId: nil,
+            allowDuplicates: false
+        )
     )
 }
 
 func scanStarted(_ command: StartScanCommand) -> BleEvent {
-    BleEvent(
-        payload: .scanStarted(
-            commandId: command.commandId,
-            scanId: command.scanSessionId
-        )
+    .scanStarted(
+        commandId: command.commandId,
+        scanId: command.scanSessionId
     )
 }
 
@@ -221,7 +255,7 @@ func runSynchronousAndThreadTests() throws {
     precondition(
         fixture!.snapshot().events == [
             scanStarted(command),
-            BleEvent(payload: .commandCompleted(commandId: command.commandId, error: nil)),
+            .commandCompleted(commandId: command.commandId, error: nil),
         ]
     )
     precondition(backend.pushStatuses == [.delivered, .delivered])
@@ -332,12 +366,6 @@ func runBindRollbackTests() throws {
 func runSinkBoundaryTests() throws {
     let backend = CandidateBackend(mode: .noEvent)
     var fixture: ProductionCandidateFixture? = try ProductionCandidateFixture(backend: backend)
-    let invalid = BleEvent(
-        payload: .scanStarted(commandId: CommandId(value: 0), scanId: ScanSessionId(value: 1))
-    )
-    if case .invalidEvent = backend.push(invalid) {} else {
-        preconditionFailure("expected invalid event")
-    }
 
     fixture!.setSinkBehavior(behavior: .reject)
     if case .downstreamFailed = backend.push(scanStarted(scanCommand(3))) {} else {

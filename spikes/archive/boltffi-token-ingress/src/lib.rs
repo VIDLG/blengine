@@ -259,7 +259,7 @@ impl BleEventSink for RecordingSink {
                 self.state.events.lock().unwrap().push(event);
                 Ok(())
             }
-            value if value == FixtureSinkBehavior::Reject as u8 => Err(EventSinkError::Rejected {
+            value if value == FixtureSinkBehavior::Reject as u8 => Err(EventSinkError {
                 message: "phase0 fixture sink rejected the event".to_owned(),
             }),
             value if value == FixtureSinkBehavior::Panic as u8 => {

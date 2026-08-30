@@ -45,7 +45,7 @@ impl BleEventSink for RecordingSink {
                 self.events.lock().unwrap().push(event);
                 Ok(())
             }
-            SinkBehavior::Reject { message } => Err(EventSinkError::Rejected { message }),
+            SinkBehavior::Reject { message } => Err(EventSinkError { message }),
             SinkBehavior::Panic => panic!("recording sink panic requested by scenario"),
         }
     }

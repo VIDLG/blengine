@@ -4,17 +4,25 @@ import dev.blehub.candidate.blehub.BackendCapabilities
 import dev.blehub.candidate.blehub.BackendEventIngressHandle
 import dev.blehub.candidate.blehub.BleBackend
 import dev.blehub.candidate.blehub.BleEvent
-import dev.blehub.candidate.blehub.BleEventPayload
 import dev.blehub.candidate.blehub.BleHubException
 import dev.blehub.candidate.blehub.CommandDispatchException
 import dev.blehub.candidate.blehub.CommandId
 import dev.blehub.candidate.blehub.ConnectCommand
 import dev.blehub.candidate.blehub.ConnectionId
+import dev.blehub.candidate.blehub.DisconnectCommand
+import dev.blehub.candidate.blehub.DiscoverGattCommand
 import dev.blehub.candidate.blehub.EventIngressStatus
+import dev.blehub.candidate.blehub.InitializeCommand
 import dev.blehub.candidate.blehub.PeripheralId
 import dev.blehub.candidate.blehub.Platform
+import dev.blehub.candidate.blehub.ReadCharacteristicCommand
+import dev.blehub.candidate.blehub.ReadRssiCommand
+import dev.blehub.candidate.blehub.ScanOptions
 import dev.blehub.candidate.blehub.ScanSessionId
+import dev.blehub.candidate.blehub.SetNotificationsCommand
 import dev.blehub.candidate.blehub.StartScanCommand
+import dev.blehub.candidate.blehub.StopScanCommand
+import dev.blehub.candidate.blehub.WriteCharacteristicCommand
 import dev.blehub.candidate.fixture.FixtureSinkBehavior
 import dev.blehub.candidate.fixture.ProductionCandidateFixture
 import dev.blehub.candidate.fixture.fixtureLifecycleCounters
@@ -45,12 +53,12 @@ class UniFfiProductionCandidateTest {
         val events = fixture.snapshot().events
         assertEquals(2, events.size)
         assertEquals(
-            BleEventPayload.ScanStarted(command.commandId, command.scanSessionId),
-            events[0].payload,
+            BleEvent.ScanStarted(command.commandId, command.scanSessionId),
+            events[0],
         )
         assertEquals(
-            BleEventPayload.CommandCompleted(command.commandId, null),
-            events[1].payload,
+            BleEvent.CommandCompleted(command.commandId, null),
+            events[1],
         )
         assertEquals(
             listOf<EventIngressStatus>(EventIngressStatus.Delivered, EventIngressStatus.Delivered),
@@ -179,15 +187,9 @@ class UniFfiProductionCandidateTest {
     }
 
     @Test
-    fun sinkFailurePanicAndInvalidPayloadStayInsideTheIngressBoundary() {
+    fun sinkFailureAndPanicStayInsideTheIngressBoundary() {
         val backend = CandidateBackend(BackendMode.NO_EVENT)
         val fixture = ProductionCandidateFixture(backend)
-
-        val invalid = BleEvent(
-            BleEventPayload.ScanStarted(CommandId(0uL), ScanSessionId(1uL)),
-        )
-        assertIs<EventIngressStatus.InvalidEvent>(backend.push(invalid))
-        assertTrue(fixture.snapshot().events.isEmpty())
 
         fixture.setSinkBehavior(FixtureSinkBehavior.REJECT)
         assertIs<EventIngressStatus.DownstreamFailed>(backend.push(scanStarted(scanCommand(6uL))))
@@ -337,13 +339,23 @@ private class CandidateBackend(
 
     override fun capabilities(): BackendCapabilities {
         capabilitiesCount.incrementAndGet()
-        return when (mode) {
+        val contractVersion = when (mode) {
             BackendMode.TYPED_CAPABILITIES_FAILURE ->
                 throw BleHubException.BackendAssembly("declared capabilities failure")
             BackendMode.UNEXPECTED_CAPABILITIES_FAILURE -> error("undeclared capabilities failure")
-            BackendMode.INVALID_CONTRACT_VERSION -> BackendCapabilities(Platform.TEST, 4u)
-            else -> BackendCapabilities(Platform.TEST, 3u)
+            BackendMode.INVALID_CONTRACT_VERSION -> 5u
+            else -> 4u
         }
+        return BackendCapabilities(
+            platform = Platform.TEST,
+            contractVersion = contractVersion,
+            supportsDuplicateScanResults = false,
+            supportsConnectableFlag = false,
+            supportsReadRssi = false,
+            supportsRequiredNotification = false,
+            supportsRequiredIndication = false,
+            reportsActualNotificationMode = false,
+        )
     }
 
     override fun bindEventIngress(ingress: BackendEventIngressHandle) {
@@ -363,6 +375,8 @@ private class CandidateBackend(
             else -> check(this.ingress.compareAndSet(null, ingress))
         }
     }
+
+    override fun initialize(command: InitializeCommand) = Unit
 
     override fun startScan(command: StartScanCommand) {
         startScanThread.set(Thread.currentThread().id)
@@ -384,7 +398,21 @@ private class CandidateBackend(
         }
     }
 
+    override fun stopScan(command: StopScanCommand) = Unit
+
     override fun connect(command: ConnectCommand) = Unit
+
+    override fun disconnect(command: DisconnectCommand) = Unit
+
+    override fun discoverGatt(command: DiscoverGattCommand) = Unit
+
+    override fun readCharacteristic(command: ReadCharacteristicCommand) = Unit
+
+    override fun writeCharacteristic(command: WriteCharacteristicCommand) = Unit
+
+    override fun setNotifications(command: SetNotificationsCommand) = Unit
+
+    override fun readRssi(command: ReadRssiCommand) = Unit
 
     override fun dispose() {
         disposeCount.incrementAndGet()
@@ -409,17 +437,20 @@ private class CandidateBackend(
 
     private fun emitSuccessfulScan(command: StartScanCommand) {
         pushStatuses += push(scanStarted(command))
-        pushStatuses += push(
-            BleEvent(BleEventPayload.CommandCompleted(command.commandId, null)),
-        )
+        pushStatuses += push(BleEvent.CommandCompleted(command.commandId, null))
     }
 }
 
 private fun scanCommand(id: ULong) = StartScanCommand(
     commandId = CommandId(id),
     scanSessionId = ScanSessionId(id + 100uL),
+    options = ScanOptions(
+        serviceUuids = emptyList(),
+        namePrefix = null,
+        companyId = null,
+        allowDuplicates = false,
+    ),
 )
 
-private fun scanStarted(command: StartScanCommand) = BleEvent(
-    BleEventPayload.ScanStarted(command.commandId, command.scanSessionId),
-)
+private fun scanStarted(command: StartScanCommand) =
+    BleEvent.ScanStarted(command.commandId, command.scanSessionId)

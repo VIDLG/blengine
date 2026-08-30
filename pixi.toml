@@ -22,9 +22,6 @@ rust = "1.95.*"
 openjdk = "17.*"
 gradle = "8.11.*"
 
-[feature.windows-jni-host.target.win-64.dependencies]
-clang = "22.*"
-lld = "22.*"
 
 [feature.android.dependencies]
 openjdk = "17.*"
@@ -44,7 +41,7 @@ rust-std-x86_64-apple-darwin = "1.95.*"
 
 [environments]
 default = { features = ["rust"], solve-group = "development" }
-jvm = { features = ["rust", "jvm", "windows-jni-host"], solve-group = "development" }
+jvm = { features = ["rust", "jvm"], solve-group = "development" }
 android = { features = ["rust", "jvm", "android"], solve-group = "development" }
 apple-ci = { features = ["rust", "apple-ci"], solve-group = "development" }
 

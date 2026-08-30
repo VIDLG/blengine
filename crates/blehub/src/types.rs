@@ -5,9 +5,14 @@
 //! are also available from the crate root.
 
 pub use crate::contract::{
-    BackendCapabilities, BleErrorCategory, BleEvent, BleEventError, BleEventPayload, BleHubError,
-    CommandDispatchError, CommandId, CommandKind, ConnectCommand, ConnectionId, ConnectionState,
-    ConnectionStateResult, EventSinkError, PeripheralId, Platform, PlatformErrorDetails,
-    ScanSessionId, ScanStopReason, ScanStopResult, StartScanCommand,
+    AdapterSnapshot, AdapterState, AuthorizationState, BackendCapabilities, BleErrorCategory,
+    BleEvent, BleEventError, BleHubError, BluetoothUuid, CommandDispatchError, CommandId,
+    CommandKind, ConnectCommand, ConnectionId, ConnectionState, ConnectionStateResult,
+    DisconnectCommand, DiscoverGattCommand, GattCharacteristicId, GattDescriptorId, GattServiceId,
+    GattSessionId, InitializeCommand, NotificationAction, NotificationMode,
+    NotificationModeRequest, PeripheralId, Platform, PlatformErrorDetails,
+    ReadCharacteristicCommand, ReadRssiCommand, ScanOptions, ScanSessionId, ScanStopReason,
+    ScanStopResult, SetNotificationsCommand, StartScanCommand, StopScanCommand, SubscriptionId,
+    WriteCharacteristicCommand, WriteType,
 };
-pub use crate::ingress::{BackendEventIngressHandle, EventIngressStatus};
+pub use crate::ingress::{BackendEventIngressHandle, EventIngressStatus, EventSinkError};

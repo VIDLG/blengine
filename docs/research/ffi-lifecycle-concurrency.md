@@ -30,15 +30,6 @@ enum EventIngressPhase {
     Closed,
 }
 
-#[derive(Debug, thiserror::Error)]
-enum EventIngressActivationError {
-    #[error("backend attempted to push an event while binding ingress")]
-    PushAttemptedDuringBind,
-    #[error("event ingress is already active")]
-    AlreadyActive,
-    #[error("event ingress is closed")]
-    Closed,
-}
 
 struct EventIngressInner {
     phase: EventIngressPhase,
@@ -93,7 +84,7 @@ Rust safe code不能自动证明foreign wrapper graph、逻辑竞态、close顺�
 
 ### 3.1 已验证的框架与production对象图机制
 
-`spikes/uniffi-lifecycle/`及其Android/Apple consumer先验证了Stable UniFFI的representative retention、callback、error、race与package机制。随后`spikes/uniffi-production-candidate/`直接依赖production `blehub` crate，并在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机和Android 16 x86_64模拟器上验证：
+已归档的`spikes/archive/uniffi-lifecycle/`及其Android/Apple consumer先验证了Stable UniFFI的representative retention、callback、error、race与package机制。随后`spikes/uniffi-production-candidate/`直接依赖production `blehub` crate，并在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机和Android 16 x86_64模拟器上验证：
 
 - Rust `BleHub`保存foreign `BleBackend`，foreign backend保存唯一长期exported ingress root；
 - native callback通过`BackendEventIngressHandle { Weak<EventIngressState> }`到达Rust-only `BleEventSink`；
@@ -115,7 +106,7 @@ representative Apple fixture的权威证据仍是GitHub Actions run [`3324975130
 本轮关闭的是Phase 0 production-object-graph mechanism gate，仍不能证明：
 
 - production candidate在真实macOS/Xcode下的ARC、XCFramework和SPM artifact-only结果；Darwin runtime recipe与CI step已准备，但本Windows session无法执行；
-- Phase 1完成后的完整`BleEventPayload`、所有data enum与owned payload边界；
+- Phase 1完成后的完整`BleEvent`、所有data enum与owned payload边界；
 - rollback cleanup failure的secondary diagnostic、完整生成式state sequence和所有catalog race；
 - final release/minified package、artifact manifest、绝对性能、close latency与包体阈值；
 - 任何Windows/Android Framework BLE、CoreBluetooth、权限、RF或硬件行为。
@@ -269,7 +260,7 @@ pub fn dispose(&self) -> Result<(), BleHubError> {
 
 ```rust
 impl EventIngressState {
-    fn activate(&self) -> Result<(), EventIngressActivationError> {
+    fn activate(&self) -> Result<(), &'static str> {
         let mut inner = self.inner.lock_recovering_poison();
         match inner.phase {
             EventIngressPhase::Binding {
@@ -280,11 +271,9 @@ impl EventIngressState {
             }
             EventIngressPhase::Binding {
                 push_attempted: true,
-            } => Err(EventIngressActivationError::PushAttemptedDuringBind),
-            EventIngressPhase::Active => {
-                Err(EventIngressActivationError::AlreadyActive)
-            }
-            EventIngressPhase::Closed => Err(EventIngressActivationError::Closed),
+            } => Err("backend attempted to push an event while binding ingress"),
+            EventIngressPhase::Active => Err("event ingress is already active"),
+            EventIngressPhase::Closed => Err("event ingress is closed"),
         }
     }
 
@@ -306,9 +295,7 @@ impl EventIngressState {
         let Some(downstream) = inner.downstream.as_deref() else {
             return EventIngressStatus::Closed;
         };
-        if let Err(error) = event.validate_shape() {
-            return invalid_event(error.to_string());
-        }
+
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             downstream.on_event(event)
         })) {
@@ -345,7 +332,7 @@ impl BackendEventIngressHandle {
 2. state取得唯一ingress mutex；该mutex同时是phase linearization、delivery serialization和drain边界；
 3. `Binding`期间push只记录违约并返回`Closed`，成功bind后的`activate()`因此失败，constructor rollback；
 4. `Closed`或sink已被take时返回`Closed`；
-5. `Active`下校验event wire shape/size；
+5. `Active`下仅校验完整DTO明确规定、且UniFFI类型系统无法表达的wire invariant；当前最小event enum没有额外内容校验；
 6. 在同一mutex guard内同步调用Rust sink，并只在`downstream.on_event`最窄边界contain sink panic；因此sink panic不会poison ingress mutex，内部ingress panic也不会被误标成downstream panic；
 7. typed sink failure或sink panic返回`DownstreamFailed`，只消费当前attempt，后续event仍可尝试交付；
 8. sink-call-only `catch_unwind`把contract-violation sink panic转换为独立诊断加`DownstreamFailed`；catch在mutex guard内完成，因此不会poison ingress mutex，后续push仍可尝试交付。

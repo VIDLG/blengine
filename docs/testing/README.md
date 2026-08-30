@@ -41,8 +41,8 @@ Bridge 只负责 wire/shape、必填 ID、FFI size guard、closed 状态和串�
 Android mechanism/instrumentation recipe 默认使用 `auto` 模式：先采用 `BLEHUB_ANDROID_SERIAL`或`ANDROID_SERIAL`显式指定的ready设备；未指定时优先唯一ready真机；没有ready真机才复用已启动的模拟器，仍没有时才启动项目管理的`medium_phone` AVD。真机与模拟器同时在线时只选择真机，并通过`ANDROID_SERIAL`与Gradle的`android.injected.device.serial`同时固定目标。多台同类ready设备不会随机选择，而是要求显式serial。
 
 - `pixi run just android-test-device`：只报告`auto`将选择的目标；可追加`physical`或`emulator`检查显式模式。
-- `pixi run just ffi-candidate-test-android`、`pixi run just ffi-phase0-test-android`与`pixi run just ffi-spike-test-uniffi-android`：默认`auto`，也可追加`physical`或`emulator`。
-- 历史名称带`-emulator`的recipe保留为兼容入口，但同样使用`auto`，避免沿用旧命令时绕过已连接真机；需要固定模拟器时使用通用recipe并追加`emulator`参数。
+- `pixi run just ffi-candidate-test-android`：默认`auto`，也可追加`physical`或`emulator`。
+- 历史`ffi-phase0-*`与`ffi-spike-*` recipe已随旧fixture归档，不再是可执行入口；需要复核历史证据时先在独立分支显式恢复。
 
 该fallback只适用于不依赖真实RF的FFI、ART、AAR和fake-backend instrumentation。Android BLE HIL必须显式使用`physical`模式并记录真机身份；模拟器通过绝不能替代权限、controller、vendor BLE callback或RF验收。
 
@@ -87,7 +87,7 @@ caller-owned pre-registered IDs/state
 - 到达 completion point 的 accepted command 恰好尝试一次 terminal；同一 `CommandId` 至多一次 terminal attempt。
 - 成功时需要 domain data/state 的 command 按 `domain event -> CommandCompleted(Succeeded)` 尝试；outcome/error 组合使用 Plan 6.16 的正反例 vectors，拒绝不满足其不变量的 event。
 - failure fixture把passive/state event的`BleFailure`与accepted command terminal的`BleOperationError { operation, failure }`分开；terminal operation匹配caller预登记的command，稳定分类从`error.failure.category`读取。command-associated failure若按`failure state -> terminal`尝试交付，两处必须复用值相等的`BleFailure`。
-- scan predicate fixture覆盖`service_uuids`中的空字符串item和其他每个malformed service UUID在accepted前返回`InvalidRequest`且零event，并以空`service_uuids` vector单独验证“无service约束”；另覆盖canonical service UUID any-of、大小写敏感name prefix、manufacturer匹配、三类已指定条件AND、缺少必需字段不匹配和`Some("")`的accepted前拒绝。service filtering始终是contract保证，不存在`supports_service_scan_filter` capability；native pushdown只是optional optimization，backend callback补过滤必须使结果始终符合Plan 6.6，bridge/downstream不代替backend过滤。
+- scan predicate fixture覆盖`service_uuids`中`BluetoothUuid.value`为空字符串或其他malformed文本时在accepted前返回`InvalidRequest`且零event，并以空`service_uuids` vector单独验证“无service约束”；另覆盖canonical service UUID any-of、大小写敏感name prefix、manufacturer匹配、三类已指定条件AND、缺少必需字段不匹配和`Some("")`的accepted前拒绝。service filtering始终是contract保证，不存在`supports_service_scan_filter` capability；native pushdown只是optional optimization，backend callback补过滤必须使结果始终符合Plan 6.6，bridge/downstream不代替backend过滤。
 - GATT fixture断言`GattDiscovered.database`嵌套完整`GattDatabase`，connection/GATT session ID不在variant顶层重复，并保留duplicate UUID instance。
 - cleanup fixture区分Plan的重复调用结果：重复stop是幂等terminal success且不伪造第二个`ScanStopped`；已移除或unknown target的重复disconnect/disable在accepted前返回`InvalidState`且零event、零重复native side effect。具体流程引用Plan [8.3](../../.plan/PLAN.md#83-停止扫描)、[8.4](../../.plan/PLAN.md#84-建立连接)和[8.8](../../.plan/PLAN.md#88-开启-notification)。
 - pending-connect fixture按Plan 8.4区分cancellation evidence：只有平台证据证明本次disconnect导致原connect被取消时才为原command尝试`Cancelled`；独立发生的connect failure仍是`Failed`。不能证明该因果关系时disconnect仍可在logical lifecycle/owned resources结束后成功，原connect继续受原completion evidence与caller deadline约束，晚到结果保留原connect IDs且不得成为当前连接。

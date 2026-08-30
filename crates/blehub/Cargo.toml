@@ -19,3 +19,4 @@ bindgen = ["uniffi/cli"]
 [dependencies]
 thiserror.workspace = true
 uniffi.workspace = true
+uuid.workspace = true

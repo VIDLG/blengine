@@ -8,7 +8,9 @@ use std::{
 
 use blehub::{
     BackendCapabilities, BleBackend, BleEvent, BleEventSink, BleHub, BleHubError,
-    CommandDispatchError, ConnectCommand, EventSinkError, StartScanCommand,
+    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand, EventSinkError,
+    InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
+    StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
 };
 
 static FIXTURE_CREATED: AtomicU64 = AtomicU64::new(0);
@@ -178,7 +180,7 @@ impl BleEventSink for RecordingSink {
                     .push(event);
                 Ok(())
             }
-            value if value == FixtureSinkBehavior::Reject as u8 => Err(EventSinkError::Rejected {
+            value if value == FixtureSinkBehavior::Reject as u8 => Err(EventSinkError {
                 message: "production candidate sink rejected the event".to_owned(),
             }),
             value if value == FixtureSinkBehavior::Panic as u8 => {
@@ -222,12 +224,53 @@ impl ProductionCandidateFixture {
         self.hub.capabilities()
     }
 
+    pub fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError> {
+        self.hub.initialize(command)
+    }
+
     pub fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError> {
         self.hub.start_scan(command)
     }
 
+    pub fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError> {
+        self.hub.stop_scan(command)
+    }
+
     pub fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError> {
         self.hub.connect(command)
+    }
+
+    pub fn disconnect(&self, command: DisconnectCommand) -> Result<(), CommandDispatchError> {
+        self.hub.disconnect(command)
+    }
+
+    pub fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError> {
+        self.hub.discover_gatt(command)
+    }
+
+    pub fn read_characteristic(
+        &self,
+        command: ReadCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.hub.read_characteristic(command)
+    }
+
+    pub fn write_characteristic(
+        &self,
+        command: WriteCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.hub.write_characteristic(command)
+    }
+
+    pub fn set_notifications(
+        &self,
+        command: SetNotificationsCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.hub.set_notifications(command)
+    }
+
+    pub fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
+        self.hub.read_rssi(command)
     }
 
     pub fn start_scan_from_rust_thread(

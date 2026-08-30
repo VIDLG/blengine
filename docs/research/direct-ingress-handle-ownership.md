@@ -335,4 +335,4 @@ production实现和final-candidate consumer必须验证：
 11. downstream panic不穿越FFI边界；
 12. 10,000次重复assembly/dispose无handle、foreign object或sink泄漏。
 
-当前`spikes/uniffi-lifecycle/`是representative mechanism fixture。它为了读取事件和控制阻塞测试，在`Phase0Fixture`中额外保存了一份`Arc<BackendEventIngressHandle>`；这不是production ownership图，不能照抄。production constructor必须move唯一root给backend，仅强持有`Arc<EventIngressState>`。
+已归档的`spikes/archive/uniffi-lifecycle/`是representative mechanism fixture。它为了读取事件和控制阻塞测试，在`Phase0Fixture`中额外保存了一份`Arc<BackendEventIngressHandle>`；这不是production ownership图，不能照抄。production constructor必须move唯一root给backend，仅强持有`Arc<EventIngressState>`。

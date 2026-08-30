@@ -40,12 +40,12 @@ BleHub production routing has no project-authored token allocator, process-local
 
 The following remain historical evidence only:
 
-- `spikes/boltffi-lifecycle/`;
-- `spikes/boltffi-token-ingress/`;
-- `spikes/boltffi-class-handle-callback-param/`;
+- `spikes/archive/boltffi-lifecycle/`;
+- `spikes/archive/boltffi-token-ingress/`;
+- `spikes/archive/boltffi-class-handle-callback-param/`;
 - BoltFFI #869/#872 and token-ACK probes.
 
-They remain useful for regression workloads, performance comparison, and explaining why the migration was selected. They do not define the production gate and must not coexist with the UniFFI ingress in production code.
+They remain useful for explaining the recorded regression workloads, performance comparison, and why the migration was selected. They are frozen under `spikes/archive/`, have no active recipes or CI jobs, do not define the production gate, and must not coexist with the UniFFI ingress in production code.
 
 ## 2. Evidence ledger
 
@@ -55,7 +55,7 @@ They remain useful for regression workloads, performance comparison, and explain
 |---|---|---|
 | `spikes/uniffi-production-candidate/` on Windows Kotlin/JVM and Windows Swift `6.3.3` | The actual production `BleHub -> foreign BleBackend -> BackendEventIngressHandle { Weak<EventIngressState> } -> Rust-only BleEventSink` graph; binding-phase rejection; typed/undeclared callback errors; close drain; root release on cleanup errors; panic containment; Rust/native threads; and 10,000 lifecycle cycles | Windows BLE APIs, macOS ARC/package behavior, the complete future public event wire, or final performance/package thresholds |
 | The same production candidate on Android 16 physical arm64 (`MAG-AN00`) and Android 16 x86_64 AVD | Normal UniFFI checksum initialization, ART callback paths, production rollback/lifecycle cases, both Android ABIs, AAR/POM publication, transitive JNA, and an artifact-only consumer | Android Framework BLE callbacks, permissions, RF, vendor behavior, or release/minified production AAR |
-| `spikes/uniffi-lifecycle/` on desktop and Android hosts | Representative Stable UniFFI retention, direct Rust object parameters, selected races, payload/performance workloads, and packaging mechanisms | The production object graph by itself; it remains the mechanism baseline rather than production evidence |
+| `spikes/archive/uniffi-lifecycle/` on desktop and Android hosts | Representative Stable UniFFI retention, direct Rust object parameters, selected races, payload/performance workloads, and packaging mechanisms | The production object graph by itself; it remains the mechanism baseline rather than production evidence |
 | GitHub Actions run [`33249751300`](https://github.com/VIDLG/blehub/actions/runs/33249751300) | Real macOS Swift runtime, retained direct object, ARC/lifecycle/error cases, XCFramework, clean macOS SPM consumer, and generic iOS simulator/device compile-link for the representative fixture | The final production object graph, CoreBluetooth, signing, installation, BLE hardware, or RF |
 | BoltFFI comparison fixtures | Historical direct-JNI performance and workaround behavior | Approval of token routing or ACK workaround for production |
 
@@ -77,8 +77,8 @@ Stable UniFFI `0.32.0` has a Windows Kotlin/JNA carrier defect for checksum func
 
 ### 2.3 Still required before production ABI freeze
 
-- Run the production candidate on real macOS Swift and through the XCFramework/SPM artifact-only consumer; `ffi-candidate-test-swift-macos` and the `phase0-apple` workflow step are prepared, but have not executed in this Windows session. The current Windows Swift result is supplementary.
-- Expand the candidate from the minimal Phase 0 scan/connect wire to every final `BleEventPayload` variant, `ScanStopResult`, `ConnectionStateResult`, `NotificationState`, optional terminal error, and owned payload boundary vector.
+- Run the production candidate on real macOS Swift and through the future XCFramework/SPM artifact-only consumer before Apple Phase 5. `ffi-candidate-test-swift-macos` remains available through the manual-only Apple workflow, but has not executed in this Windows session. The current Windows Swift result is supplementary.
+- Expand the candidate from the minimal Phase 0 scan/connect wire to every final `BleEvent` variant, `ScanStopResult`, `ConnectionStateResult`, `NotificationState`, optional terminal error, and owned payload boundary vector.
 - Complete remaining deterministic catalog cases, including explicit repeated bind, rollback-cleanup secondary diagnostics, broad state-sequence generation, and payload lifetime after the foreign frame returns.
 - Record final absolute performance, close latency, package size, release/minified Android behavior, artifact manifests, and generator/runtime/ABI metadata checks.
 - Rerun the catalog after the Phase 1 public contract is complete and again before the Phase 4 ABI freeze; the current result is a mechanism/object-graph gate, not an ABI freeze.
@@ -89,7 +89,7 @@ Stable UniFFI `0.32.0` has a Windows Kotlin/JNA carrier defect for checksum func
 |---|---|---|
 | Direct-handle object graph | Inert backend, capabilities, one-time bind, weak ingress handle, Rust sink, Hub lifecycle | Pure Rust, desktop Kotlin/JVM, Android ART, Windows Swift host, macOS Swift CI |
 | Error and panic boundary | Callable errors, event-error data, unexpected foreign errors, sink rejection, poison, panic containment | Rust, Kotlin/JVM, Swift |
-| Event wire | Every `BleEventPayload` variant, `ScanStopResult`, `ConnectionStateResult`, `NotificationState`, and optional terminal error | Rust, Kotlin/JVM, Swift |
+| Event wire | Every `BleEvent` variant, `ScanStopResult`, `ConnectionStateResult`, `NotificationState`, and optional terminal error | Rust, Kotlin/JVM, Swift |
 | Race/stress harness | Named barriers, watchdogs, counters, state sequences, 10,000 lifecycle cycles, payload bursts | Every runtime lane |
 | Packaging consumers | Consume produced artifacts only, without source-tree classpaths or implicit native outputs | Gradle/JVM, Android AAR, XCFramework/SPM |
 | Historical comparison | Same representative command/push workloads through pinned BoltFFI and Stable UniFFI | Android and applicable desktop/Apple runners |
@@ -251,7 +251,7 @@ Required coverage:
 
 This does not claim CoreBluetooth, signing, installation, or BLE/RF behavior.
 
-Current supplementary command: `pixi run just ffi-candidate-test-swift-windows`. Swift `6.3.3` compiled both UniFFI components against one production candidate DLL, retained normal checksum checks, contained the deliberate Rust sink panic, and completed 10,000 ARC lifecycle cycles. `pixi run -e apple-ci just ffi-candidate-test-swift-macos` is wired into `phase0-apple.yml`, but the production candidate has not yet run on macOS/Xcode or through its Apple package consumer.
+Current supplementary command: `pixi run just ffi-candidate-test-swift-windows`. Swift `6.3.3` compiled both UniFFI components against one production candidate DLL, retained normal checksum checks, contained the deliberate Rust sink panic, and completed 10,000 ARC lifecycle cycles. `pixi run -e apple-ci just ffi-candidate-test-swift-macos` is available through the manual-only Apple workflow; production-candidate macOS/Xcode runtime and Apple package-consumer validation remain deferred until before Apple Phase 5.
 
 ## 7. Error, panic, and event-wire gate
 
@@ -262,7 +262,7 @@ Generate and run these exact roles:
 - `CommandCompleted.error: Option<BleEventError>`;
 - `ScanStopResult::Ok | Err`;
 - `ConnectionStateResult::Ok | Err`;
-- `NotificationState` and every `BleEventPayload` variant;
+- `NotificationState` and every `BleEvent` variant;
 - `EventIngressStatus::{Delivered, Closed, InvalidEvent, DownstreamFailed}`;
 - `From<uniffi::UnexpectedUniFFICallbackError>` mappings.
 

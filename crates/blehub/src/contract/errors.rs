@@ -29,7 +29,7 @@ pub struct PlatformErrorDetails {
 pub struct BleEventError {
     pub category: BleErrorCategory,
     pub message: String,
-    pub platform: Option<PlatformErrorDetails>,
+    pub platform_details: Option<PlatformErrorDetails>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
@@ -39,7 +39,7 @@ pub enum BleHubError {
     #[error("backend cleanup failed: {detail}")]
     BackendCleanup {
         detail: String,
-        platform: Option<PlatformErrorDetails>,
+        platform_details: Option<PlatformErrorDetails>,
     },
     #[error("backend resource is busy: {detail}")]
     ResourceBusy { detail: String },
@@ -68,7 +68,7 @@ pub enum CommandDispatchError {
     #[error("backend unavailable for command dispatch: {detail}")]
     BackendUnavailable {
         detail: String,
-        platform: Option<PlatformErrorDetails>,
+        platform_details: Option<PlatformErrorDetails>,
     },
     #[error("unexpected foreign backend exception: {detail}")]
     FfiContract { detail: String },
@@ -80,10 +80,4 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for CommandDispatchError {
             detail: error.reason,
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum EventSinkError {
-    #[error("downstream rejected the event: {message}")]
-    Rejected { message: String },
 }

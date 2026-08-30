@@ -36,7 +36,7 @@ def parse_project() -> str:
     )
     _ = parser.add_argument(
         "--project",
-        default="spikes/boltffi-lifecycle",
+        default="spikes/archive/boltffi-lifecycle",
         help="project directory relative to PIXI_PROJECT_ROOT",
     )
     return cast(str, parser.parse_args().project)

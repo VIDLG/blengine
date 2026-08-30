@@ -13,5 +13,5 @@ publish = false
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-blehub = { path = "../../crates/blehub" }
+blehub = { path = "../../../crates/blehub" }
 boltffi = "=0.30.1"

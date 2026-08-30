@@ -72,7 +72,7 @@ Mapping tests 直接构造 crate-private plain Windows observation DTO，而不�
 |---|---|
 | operation/callback kind 与 WinRT status | 统一 event variant、domain event 与 terminal attempt 的顺序 |
 | HRESULT、status、错误消息 | 先映射`BleFailure { category, message, platform }`；passive state event直接携带它，accepted command terminal再包装为`BleOperationError { operation, failure }`，并按`error.failure.category`检查Plan 6.16不变量；同一command的failure state与terminal复用值相等的failure |
-| `ScanOptions`、WinRT filter positive evidence 与 callback observation | `service_uuids`中的空字符串item和其他malformed UUID在accepted前映射`InvalidRequest`且零event，空`service_uuids` vector则单独验证为无service约束；service filtering没有support capability，WinRT native pushdown可选，pushdown evidence与callback补过滤必须共同满足Plan 6.6 predicate |
+| `ScanOptions`、WinRT filter positive evidence 与 callback observation | `service_uuids`中`BluetoothUuid.value`为空字符串或其他malformed文本时在accepted前映射`InvalidRequest`且零event，空`service_uuids` vector则单独验证为无service约束；service filtering没有support capability，WinRT native pushdown可选，pushdown evidence与callback补过滤必须共同满足Plan 6.6 predicate |
 | caller-owned command/session/connection/GATT/subscription ID | event 原样回显对应 typed ID；晚到 callback 不改挂到当前 session |
 | native object identity/key | 同一 native peripheral 复用 `PeripheralId`；不同对象即使 payload 相似也使用不同 ID |
 | private native GATT handle/key 与枚举结果 | 映射为session-scoped opaque typed ID；`GattDiscovered.database`嵌套connection/GATT session ID和services，不在variant顶层重复，并保留duplicate UUID instance |
@@ -101,7 +101,7 @@ Production 路径由 `WindowsBackend` 直接调用 `windows-rs`。只有真实�
 
 | 领域 | 必须覆盖的场景 |
 |---|---|
-| Adapter | `Ready`、`PoweredOff`、`Unavailable`、`Unauthorized`、恢复、初始化失败 |
+| Adapter | `PoweredOn`、`PoweredOff`、`Unavailable`、`Unknown`、scan/connection authorization、恢复、初始化失败 |
 | Scan lifecycle | start成功/失败；watcher stopped/aborted；stop后晚到advertisement；错误scan ID；重复stop terminal success但不产生第二个`ScanStopped` |
 | Advertisement | Plan 6.6 predicate的pushdown+callback补过滤；重复结果、数据更新；同一native device多次observation复用`PeripheralId`；不同device即使payload相似也使用不同ID |
 | Connection | 成功、失败、主动/被动断开、重复callback；timeout后`Connected`；旧connection callback；已移除/unknown connection的重复disconnect同步`InvalidState`且零event；pending connect disconnect无因果证据时完成logical disconnect但不伪造原connect `Cancelled`，独立connect failure仍为`Failed`，晚到结果保留原IDs |

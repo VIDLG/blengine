@@ -8,7 +8,9 @@ use std::{
 
 use blehub::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleHubError, CommandDispatchError,
-    CommandKind, ConnectCommand, EventIngressStatus, Platform, StartScanCommand,
+    CommandKind, ConnectCommand, DisconnectCommand, DiscoverGattCommand, EventIngressStatus,
+    InitializeCommand, Platform, ReadCharacteristicCommand, ReadRssiCommand,
+    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
 };
 
 use crate::{EventScenario, ScenarioDispatch};
@@ -118,7 +120,15 @@ impl FakeBackend {
 
 impl BleBackend for FakeBackend {
     fn capabilities(&self) -> Result<BackendCapabilities, BleHubError> {
-        Ok(BackendCapabilities::new(Platform::Test))
+        Ok(BackendCapabilities {
+            supports_duplicate_scan_results: true,
+            supports_connectable_flag: true,
+            supports_read_rssi: true,
+            supports_required_notification: true,
+            supports_required_indication: true,
+            reports_actual_notification_mode: true,
+            ..BackendCapabilities::new(Platform::Test)
+        })
     }
 
     fn bind_event_ingress(
@@ -135,12 +145,50 @@ impl BleBackend for FakeBackend {
         Ok(())
     }
 
+    fn initialize(&self, _: InitializeCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::Initialize)
+    }
+
     fn start_scan(&self, _: StartScanCommand) -> Result<(), CommandDispatchError> {
         self.dispatch(CommandKind::StartScan)
     }
 
+    fn stop_scan(&self, _: StopScanCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::StopScan)
+    }
+
     fn connect(&self, _: ConnectCommand) -> Result<(), CommandDispatchError> {
         self.dispatch(CommandKind::Connect)
+    }
+
+    fn disconnect(&self, _: DisconnectCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::Disconnect)
+    }
+
+    fn discover_gatt(&self, _: DiscoverGattCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::DiscoverGatt)
+    }
+
+    fn read_characteristic(
+        &self,
+        _: ReadCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::ReadCharacteristic)
+    }
+
+    fn write_characteristic(
+        &self,
+        _: WriteCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::WriteCharacteristic)
+    }
+
+    fn set_notifications(&self, _: SetNotificationsCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::SetNotifications)
+    }
+
+    fn read_rssi(&self, _: ReadRssiCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(CommandKind::ReadRssi)
     }
 
     fn dispose(&self) -> Result<(), BleHubError> {
@@ -188,35 +236,31 @@ impl FakeBackendHandle {
 #[cfg(test)]
 mod tests {
     use blehub::{
-        BleEvent, BleEventPayload, BleHub, CommandId, ConnectionId, ConnectionState,
-        ConnectionStateResult, PeripheralId, ScanSessionId,
+        BleEvent, BleHub, CommandId, ConnectionId, ConnectionState, ConnectionStateResult,
+        PeripheralId, ScanOptions, ScanSessionId,
     };
 
     use super::*;
     use crate::{ProjectedCommandOutcome, RecordingSink, ReferenceProjection};
 
     fn scan_started(command_id: CommandId, scan_session_id: ScanSessionId) -> BleEvent {
-        BleEvent {
-            payload: BleEventPayload::ScanStarted {
-                command_id,
-                scan_id: scan_session_id,
-            },
+        BleEvent::ScanStarted {
+            command_id,
+            scan_id: scan_session_id,
         }
     }
 
     fn succeeded(command_id: CommandId) -> BleEvent {
-        BleEvent {
-            payload: BleEventPayload::CommandCompleted {
-                command_id,
-                error: None,
-            },
+        BleEvent::CommandCompleted {
+            command_id,
+            error: None,
         }
     }
 
     #[test]
     fn synchronous_events_before_return_are_delivered_and_projected() {
-        let command_id = CommandId::new(7);
-        let scan_session_id = ScanSessionId::new(11);
+        let command_id = CommandId { value: 7 };
+        let scan_session_id = ScanSessionId { value: 11 };
         let events = vec![
             scan_started(command_id, scan_session_id),
             succeeded(command_id),
@@ -233,6 +277,7 @@ mod tests {
         hub.start_scan(StartScanCommand {
             command_id,
             scan_session_id,
+            options: ScanOptions::default(),
         })
         .unwrap();
 
@@ -255,7 +300,7 @@ mod tests {
     fn dispatch_rejection_emits_no_event() {
         let error = CommandDispatchError::BackendUnavailable {
             detail: "scripted rejection".to_owned(),
-            platform: None,
+            platform_details: None,
         };
         let (backend, _) =
             FakeBackend::scripted([EventScenario::reject(CommandKind::Connect, error.clone())]);
@@ -264,9 +309,9 @@ mod tests {
 
         assert_eq!(
             hub.connect(ConnectCommand {
-                command_id: CommandId::new(1),
-                connection_id: ConnectionId::new(2),
-                peripheral_id: PeripheralId::new(3),
+                command_id: CommandId { value: 1 },
+                connection_id: ConnectionId { value: 2 },
+                peripheral_id: PeripheralId { value: 3 },
             }),
             Err(error)
         );
@@ -275,11 +320,11 @@ mod tests {
 
     #[test]
     fn event_emission_before_dispatch_rejection_is_flagged_as_a_contract_violation() {
-        let command_id = CommandId::new(7);
-        let scan_session_id = ScanSessionId::new(11);
+        let command_id = CommandId { value: 7 };
+        let scan_session_id = ScanSessionId { value: 11 };
         let error = CommandDispatchError::BackendUnavailable {
             detail: "rejected after emission".to_owned(),
-            platform: None,
+            platform_details: None,
         };
         let (backend, handle) = FakeBackend::scripted([EventScenario::emit_before_reject(
             CommandKind::StartScan,
@@ -293,6 +338,7 @@ mod tests {
             hub.start_scan(StartScanCommand {
                 command_id,
                 scan_session_id,
+                options: ScanOptions::default(),
             }),
             Err(error)
         );
@@ -314,13 +360,11 @@ mod tests {
         let sink = RecordingSink::new();
         let hub = BleHub::new(Arc::new(backend), Box::new(sink.clone())).unwrap();
         let callback = handle.ingress_for_callback().unwrap();
-        let event = BleEvent {
-            payload: BleEventPayload::ConnectionStateChanged {
-                command_id: None,
-                connection_id: ConnectionId::new(9),
-                result: ConnectionStateResult::Ok {
-                    state: ConnectionState::Disconnected,
-                },
+        let event = BleEvent::ConnectionStateChanged {
+            command_id: None,
+            connection_id: ConnectionId { value: 9 },
+            result: ConnectionStateResult::Ok {
+                state: ConnectionState::Disconnected,
             },
         };
 

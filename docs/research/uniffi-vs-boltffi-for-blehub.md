@@ -4,8 +4,8 @@
 - 日期：2026-08-29
 - 规范性来源：[`.plan/PLAN.md`](../../.plan/PLAN.md)
 - BleHub 当前机制证据：[`phase0-token-ingress-runtime-results.md`](phase0-token-ingress-runtime-results.md)
-- UniFFI 对比 fixture：[`spikes/uniffi-lifecycle/`](../../spikes/uniffi-lifecycle/)
-- Kotlin 错误字段 fixture：[`spikes/uniffi-error-field-collision/`](../../spikes/uniffi-error-field-collision/)
+- 已归档UniFFI对比fixture：[`spikes/archive/uniffi-lifecycle/`](../../spikes/archive/uniffi-lifecycle/)
+- 已归档Kotlin错误字段fixture：[`spikes/archive/uniffi-error-field-collision/`](../../spikes/archive/uniffi-error-field-collision/)
 
 ## 1. 决策问题
 
@@ -112,7 +112,7 @@ UniFFI checkout 的 `git describe` 不能代替 package version。报告按具�
 
 ### 3.4 本次新增运行证据
 
-执行：
+当时执行了以下命令；fixture归档后这些recipe已退役，仅作为证据记录：
 
 ```text
 pixi run just ffi-spike-test-uniffi-kotlin-jvm

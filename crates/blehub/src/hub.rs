@@ -2,7 +2,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEventSink, BleHubError,
-    CommandDispatchError, ConnectCommand, StartScanCommand, ingress::EventIngressState,
+    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
+    InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
+    StartScanCommand, StopScanCommand, WriteCharacteristicCommand, ingress::EventIngressState,
 };
 
 pub struct BleHub {
@@ -37,11 +39,11 @@ impl BleHub {
             let _ = backend.dispose();
             return Err(error);
         }
-        if let Err(error) = ingress.activate() {
+        if let Err(detail) = ingress.activate() {
             ingress.close();
             let _ = backend.dispose();
             return Err(BleHubError::FfiContract {
-                detail: error.to_string(),
+                detail: detail.to_owned(),
             });
         }
 
@@ -67,20 +69,61 @@ impl BleHub {
                 .read()
                 .map_err(|_| CommandDispatchError::BackendUnavailable {
                     detail: "command gate is poisoned".to_owned(),
-                    platform: None,
+                    platform_details: None,
                 })?;
         let backend = backend.as_deref().ok_or(CommandDispatchError::Closed)?;
         dispatch(backend)
     }
 
+    pub fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.initialize(command))
+    }
+
     pub fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError> {
-        command.validate()?;
+        let command = command.validated()?;
         self.with_backend(|backend| backend.start_scan(command))
     }
 
+    pub fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.stop_scan(command))
+    }
+
     pub fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError> {
-        command.validate()?;
         self.with_backend(|backend| backend.connect(command))
+    }
+
+    pub fn disconnect(&self, command: DisconnectCommand) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.disconnect(command))
+    }
+
+    pub fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.discover_gatt(command))
+    }
+
+    pub fn read_characteristic(
+        &self,
+        command: ReadCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.read_characteristic(command))
+    }
+
+    pub fn write_characteristic(
+        &self,
+        command: WriteCharacteristicCommand,
+    ) -> Result<(), CommandDispatchError> {
+        command.validate()?;
+        self.with_backend(|backend| backend.write_characteristic(command))
+    }
+
+    pub fn set_notifications(
+        &self,
+        command: SetNotificationsCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.set_notifications(command))
+    }
+
+    pub fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| backend.read_rssi(command))
     }
 
     pub fn dispose(&self) -> Result<(), BleHubError> {
@@ -115,10 +158,11 @@ mod tests {
     };
 
     use crate::{
-        BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleEventPayload,
-        BleEventSink, BleHubError, CommandDispatchError, CommandId, ConnectCommand, ConnectionId,
-        EventIngressStatus, EventSinkError, PeripheralId, Platform, ScanSessionId,
-        StartScanCommand,
+        BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleEventSink,
+        BleHubError, CommandDispatchError, CommandId, ConnectCommand, DisconnectCommand,
+        DiscoverGattCommand, EventIngressStatus, EventSinkError, InitializeCommand, Platform,
+        ReadCharacteristicCommand, ReadRssiCommand, ScanSessionId, SetNotificationsCommand,
+        StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
     };
 
     use super::BleHub;
@@ -166,6 +210,13 @@ mod tests {
                 state,
             )
         }
+
+        fn reject_dispatch(&self) -> Result<(), CommandDispatchError> {
+            self.state.dispatch_count.fetch_add(1, Ordering::AcqRel);
+            Err(CommandDispatchError::InvalidState {
+                detail: "constructor test backend does not dispatch commands".to_owned(),
+            })
+        }
     }
 
     impl BleBackend for ConstructorBackend {
@@ -187,18 +238,53 @@ mod tests {
             Ok(())
         }
 
+        fn initialize(&self, _: InitializeCommand) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
+        }
+
         fn start_scan(&self, _: StartScanCommand) -> Result<(), CommandDispatchError> {
-            self.state.dispatch_count.fetch_add(1, Ordering::AcqRel);
-            Err(CommandDispatchError::InvalidState {
-                detail: "constructor test backend does not dispatch commands".to_owned(),
-            })
+            self.reject_dispatch()
+        }
+
+        fn stop_scan(&self, _: StopScanCommand) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
         }
 
         fn connect(&self, _: ConnectCommand) -> Result<(), CommandDispatchError> {
-            self.state.dispatch_count.fetch_add(1, Ordering::AcqRel);
-            Err(CommandDispatchError::InvalidState {
-                detail: "constructor test backend does not dispatch commands".to_owned(),
-            })
+            self.reject_dispatch()
+        }
+
+        fn disconnect(&self, _: DisconnectCommand) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
+        }
+
+        fn discover_gatt(&self, _: DiscoverGattCommand) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
+        }
+
+        fn read_characteristic(
+            &self,
+            _: ReadCharacteristicCommand,
+        ) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
+        }
+
+        fn write_characteristic(
+            &self,
+            _: WriteCharacteristicCommand,
+        ) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
+        }
+
+        fn set_notifications(
+            &self,
+            _: SetNotificationsCommand,
+        ) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
+        }
+
+        fn read_rssi(&self, _: ReadRssiCommand) -> Result<(), CommandDispatchError> {
+            self.reject_dispatch()
         }
 
         fn dispose(&self) -> Result<(), BleHubError> {
@@ -249,11 +335,9 @@ mod tests {
     }
 
     fn scan_started() -> BleEvent {
-        BleEvent {
-            payload: BleEventPayload::ScanStarted {
-                command_id: CommandId::new(1),
-                scan_id: ScanSessionId::new(2),
-            },
+        BleEvent::ScanStarted {
+            command_id: CommandId { value: 1 },
+            scan_id: ScanSessionId { value: 2 },
         }
     }
 
@@ -299,8 +383,8 @@ mod tests {
     fn invalid_contract_version_rolls_back_before_binding() {
         let (backend, state) = backend(
             Ok(BackendCapabilities {
-                platform: Platform::Test,
-                contract_version: 4,
+                contract_version: 5,
+                ..BackendCapabilities::new(Platform::Test)
             }),
             Ok(()),
             Ok(()),
@@ -338,35 +422,6 @@ mod tests {
     }
 
     #[test]
-    fn invalid_commands_are_rejected_before_backend_dispatch() {
-        let (backend, state) =
-            backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
-        let (sink, _) = tracking_sink();
-        let hub = BleHub::new(backend, sink).unwrap();
-
-        assert_eq!(
-            hub.start_scan(StartScanCommand {
-                command_id: CommandId::new(0),
-                scan_session_id: ScanSessionId::new(1),
-            }),
-            Err(CommandDispatchError::InvalidRequest {
-                detail: "command_id must be nonzero".to_owned(),
-            })
-        );
-        assert_eq!(
-            hub.connect(ConnectCommand {
-                command_id: CommandId::new(1),
-                connection_id: ConnectionId::new(0),
-                peripheral_id: PeripheralId::new(2),
-            }),
-            Err(CommandDispatchError::InvalidRequest {
-                detail: "connection_id must be nonzero".to_owned(),
-            })
-        );
-        assert_eq!(state.dispatch_count.load(Ordering::Acquire), 0);
-    }
-
-    #[test]
     fn successful_dispose_releases_backend_ingress_root() {
         let (backend, state) =
             backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
@@ -387,7 +442,7 @@ mod tests {
     fn failing_dispose_still_releases_backend_ingress_root() {
         let cleanup_error = BleHubError::BackendCleanup {
             detail: "scripted cleanup failure".to_owned(),
-            platform: None,
+            platform_details: None,
         };
         let (backend, state) = backend(
             Ok(BackendCapabilities::new(Platform::Test)),
