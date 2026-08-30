@@ -7,13 +7,13 @@ Read it before researching, planning, or changing the project.
 
 ## Current Project State
 
-BleHub's architecture plan is approved. The Windows/Android Phase 0 Stable UniFFI mechanism and production-object-graph gate is complete; Phase 1 unified thin-contract implementation is now active, and the public ABI is not frozen.
+BleHub's architecture plan is approved. Phase 0 Stable UniFFI mechanism and Phase 1 unified thin-contract/conformance are complete; Phase 2 Windows-first implementation is active, and the public ABI is not frozen.
 
 - The single reviewed plan is [`.plan/PLAN.md`](.plan/PLAN.md).
 - The plan status is `已批准`.
-- Complete the Phase 1 public contract and shared conformance gate before starting the production Windows backend in Phase 2; do not skip directly to platform BLE implementation.
+- Phase 1 public contract and shared conformance are complete. Phase 2 starts with the project-managed Android development Peripheral fixture, then proceeds to the production Windows backend.
 - Real macOS/iOS production-candidate runtime/package and RF gates are explicitly deferred until before Apple Phase 5 and are not recorded as passed.
-- The current development peripheral is an Android phone running LightBlue. It is suitable for Windows scan/basic GATT smoke, but does not replace the future QEMU/BLESS managed-peripheral soak and fault-injection gates.
+- The current development peripheral is the project-managed Kotlin fixture under `tests/peripherals/android`, running on an Android phone. Its device-side build/deploy/advertising path is verified; Windows RF notification delivery is not yet recorded as passed. LightBlue is only a manual fallback, and neither replaces the future QEMU/BLESS soak and fault-injection gates.
 - Project-authored research belongs under [`docs/research/`](docs/research/).
 - Downloaded platform API evidence belongs under [`docs/platform-api-reference/`](docs/platform-api-reference/).
 

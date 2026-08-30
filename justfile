@@ -8,6 +8,7 @@ ffi_library := if os() == "windows" {
     ".work/cargo-target/debug/libblehub.so"
 }
 
+import "just/peripherals.just"
 import "just/spikes.just"
 import "just/tests.just"
 

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">BleHub Peripheral</string>
+    <string name="fixture_title">BleHub Android Peripheral\n%1$s\n%2$s</string>
+    <string name="status_initializing">Status: initializing</string>
+    <string name="hex_payload_hint">Hex payload</string>
+    <string name="default_hex_payload" translatable="false">DEADBEEF</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="notify">Notify</string>
+    <string name="indicate">Indicate</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="status">Status</string>
+</resources>

@@ -4,13 +4,13 @@
 
 **日期：2026-08-30**
 
-**当前阶段：Phase 0与Phase 1已完成；下一阶段为Phase 2 production Windows backend，public ABI仍未冻结。**
+**当前阶段：Phase 0与Phase 1已完成；Phase 2已启动，先建立Android development Peripheral，再实现production Windows backend；public ABI仍未冻结。**
 
-**硬件状态：当前开发期临时Peripheral使用Android真机LightBlue；2026-08-29已从Windows验证广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe，但LightBlue编辑value会重建/停止advertising且没有形成可靠的主动notification delivery证据。Phase 2开始前后将同一Android真机改用项目管理的Kotlin BLE Peripheral fixture，提供显式notification/indication和ADB控制，作为Windows日常真实RF smoke。QEMU/BLESS authoritative managed HIL继续等待USB蓝牙适配器到货；nRF52840可在后续作为独立硬件参考Peripheral，但尚未采购或记录为通过。真实macOS/iOS production-candidate runtime/package与RF测试按用户决定延后到Apple Phase 5前，不阻塞Phase 1和Windows优先开发。**
+**硬件状态：2026-08-30已在HONOR 90 GT创建、lint/build、通过Android CLI部署并启动项目管理的Kotlin BLE Peripheral fixture；设备端确认共享`blehub-basic-gatt-v1` service注册且进入`ADVERTISING`，显式notification/indication和ADB控制已实现，但Windows真实RF连接与notification delivery尚未执行、不得记为通过。此前LightBlue只保留2026-08-29的广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe基础证据与手工fallback。QEMU/BLESS authoritative managed HIL继续等待USB蓝牙适配器到货；nRF52840可在后续作为独立硬件参考Peripheral，但尚未采购或记录为通过。真实macOS/iOS production-candidate runtime/package与RF测试按用户决定延后到Apple Phase 5前。**
 
 **本次修订：Phase 1统一薄契约、共享conformance、同candidate Rust/Kotlin/Swift reviewed API snapshot gate及desktop Kotlin/JVM、Windows Swift、Android真机ART/AAR consumer runtime/package矩阵已通过；公共contract version固定为5。同时固定测试Peripheral分层和ownership：`tests/peripherals/android`承载近期Android真机开发fixture，QEMU Linux VM + BlueZ/BLESS继续作为确定性故障注入与soak基线，未来`tests/peripherals/nrf52840`可承载独立硬件参考固件；三者共享conformance profile但不互相伪装验证强度。Apple production-candidate runtime/package与真实RF仍按既定决定延后到Phase 5前，production ABI尚未冻结。**
 
-本文件是BleHub唯一规划来源。Phase 0已完成框架选择、production FFI迁移、最小scan/connect contract/bridge和Windows/Android真实runtime gate；Phase 1已完成平台无关公共契约、共享conformance、reviewed API snapshots和完整candidate runtime复核。后续从Phase 2 production Windows backend继续。本文同时作为未来架构文档、API文档和平台接入文档的来源。
+本文件是BleHub唯一规划来源。Phase 0已完成框架选择、production FFI迁移、最小scan/connect contract/bridge和Windows/Android真实runtime gate；Phase 1已完成平台无关公共契约、共享conformance、reviewed API snapshots和完整candidate runtime复核。Phase 2当前先完成项目Android开发Peripheral的设备端与RF验证，再继续production Windows backend。本文同时作为未来架构文档、API文档和平台接入文档的来源。
 
 ---
 
@@ -2166,7 +2166,7 @@ Impactor 评估：
 
 ### 11.5 平台测试环境边界
 
-不存在能够跨Android/iOS/desktop并可信覆盖真实controller、平台BLE stack、权限、后台行为和RF的通用模拟器。跨平台确定性行为由`FakeBackend`与共享conformance覆盖；真实蓝牙验收由各平台真机/真实host通过RF连接使用同一共享profile的项目测试Peripheral完成。Android真机fixture提供近期开发smoke；Linux VM/BLESS提供确定性故障注入和soak；nRF52840等独立硬件参考Peripheral提供跨GATT Server/controller实现的互操作交叉验证。emulator、simulator、RootCanal、Android-x86或设备农场的具体采用与case归[`docs/testing/`](../docs/testing/README.md)阶段性评审，不进入公共架构或替代第15节HIL。
+不存在能够跨Android/iOS/desktop并可信覆盖真实controller、平台BLE stack、权限、后台行为和RF的通用模拟器。跨平台确定性行为由`FakeBackend`与共享conformance覆盖；真实蓝牙验收由各平台真机/真实host通过RF连接使用同一共享profile的项目测试Peripheral完成。仅有一台Windows电脑和一台Android手机时，开发期按DUT轮换Peripheral角色：Windows Central连接Android Kotlin fixture；Android Central可在后续spike通过后连接Windows原生WinRT/BLESS fixture。两个角色不得在同一controller上同时运行，切换前必须停止原角色并执行fixture preflight。Windows WinRT/BLESS只提供快速开发smoke，不替代Linux VM + BlueZ/BLESS的确定性故障注入和soak；nRF52840等独立硬件参考Peripheral继续提供跨GATT Server/controller实现的互操作交叉验证。emulator、simulator、RootCanal、Android-x86或设备农场的具体采用与case归[`docs/testing/`](../docs/testing/README.md)阶段性评审，不进入公共架构或替代第15节HIL。
 
 ---
 
@@ -2265,7 +2265,9 @@ Stable Kotlin/JNA相对direct JNI的已知开销已作为框架选择取舍接�
 
 确定性Managed Peripheral的权威基线是项目管理的 **QEMU Linux Peripheral VM + BlueZ/BLESS + 独占 USB BLE controller**。这是可编程GATT外设环境，不是纯软件BLE模拟：controller、firmware、HCI、BlueZ、Central平台栈、USB passthrough与RF链路都是真实路径。Windows host上的QEMU USB passthrough仍未验证，必须等待实际硬件后完成capture、reset、reboot、recovery与soak spike；不得由配置推定可用。若Windows QEMU不稳定，首选在Linux host上使用QEMU/KVM承载同一Peripheral VM；VMware Workstation可作为经capture、自动化、许可与可复现性评估后的本地Windows fallback，但不是并行维护的默认基线。
 
-`tests/peripherals/android`是近期开发Managed Peripheral：纯Kotlin/Android Framework GATT Server，不含Rust、UniFFI或production Central backend依赖。它从共享JSON profile构造service/characteristic/CCCD，提供前台UI和ADB控制的start/stop、notification、indication、disconnect与status，用于Windows真实RF快速回归。首版不引入Compose、通用provider框架或foreground service；长时间soak确有需要时再评审后台保活。测试Android Central时不得让同一台手机同时承担DUT与Peripheral，必须改用BLESS、nRF52840或第二台手机。
+`tests/peripherals/android`是近期开发Managed Peripheral：纯Kotlin/Android Framework GATT Server，不含Rust、UniFFI或production Central backend依赖。它从共享JSON profile构造service/characteristic/CCCD，提供前台UI和ADB控制的start/stop、notification、indication、disconnect与status，用于Windows真实RF快速回归。首版不引入Compose、通用provider框架或foreground service；长时间soak确有需要时再评审后台保活。测试Android Central时不得让同一台手机同时承担DUT与Peripheral，必须改用Windows WinRT/BLESS、Linux VM/BLESS、nRF52840或第二台手机。
+
+Phase 3 Android backend开始真实RF前增加一个窄的Windows原生BLESS spike：使用BLESS的WinRT backend和Windows `GattServiceProvider`直接运行共享`blehub-basic-gatt-v1` profile，不创建Linux VM。spike必须由Pixi锁定Python、BLESS及Windows附加依赖，验证当前Windows adapter/driver能够创建GATT Server、connectable advertising、Android发现与连接、完整service discovery、read、write with/without response、notification、indication以及stop/start清理恢复。任一关键能力不可靠时不得提升为日常provider，回退到Linux VM/BLESS、nRF52840或第二台手机。即使spike通过，Windows WinRT/BLESS也只作为单电脑单手机条件下的Android开发fixture和独立Windows GATT Server互操作证据，不承担BLESS Linux基线的异常时序、controller隔离、fault injection、telemetry或soak退出条件。
 
 nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项目管理的standalone GATT Peripheral固件，复用同一profile并通过USB串口/控制端点触发数据。它直接满足“非BLESS独立参考外设”类别，并可补充稳定notification、重启和真实controller互操作；但在实现等价的故障脚本、telemetry、恢复控制和soak能力前，不替代BLESS authoritative gate。若把nRF52840另行刷成HCI controller固件并USB passthrough给Linux VM，它才是P-Controller候选；该模式与standalone fixture是两套互斥固件/验证路径，须先验证BlueZ advertising/GATT能力、reset和USB稳定性，不默认采用。
 
@@ -2351,7 +2353,7 @@ nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项�
 - 创建Android Gradle production library；Kotlin实现`BleBackend`并retain唯一`BackendEventIngressHandle`，真实`ScanCallback`/`BluetoothGattCallback`通过`handle.push`上送；实现permission、scan failure、connect、带generation correlation的per-connection串行GATT、read/write、failure-atomic notification/indication、connected RSSI和explicit idempotent dispose。
 - 使用Stable UniFFI生成Kotlin/JNA binding，运行共享conformance，并组装可被独立Rust-application integration consumer使用的debug与release/minified AAR；package recipe断言ABI目录、native entry、contract/generator/runtime manifest、JNA传递依赖、R8/consumer rules和无duplicate library/symbol，并重跑final performance/package-size gate。`tests/consumers/android`使用独立Gradle build和最小产品Rust adapter，只消费同一candidate中staged的BleHub Rust crate与Android AAR，不使用workspace/path、`project(...)`或源码树产物，并实际运行assembly、callback ingress和close。其Kotlin UI只调用consumer自己的产品Rust adapter，不把Rust-only `BleEventSink`扩展成BleHub native consumer API。
 - 非production-ABI gate：Android clean consumer通过后，可在`spikes/tauri-downstream`验证Tauri Windows/Android app中的Rust image、AAR/JNA loading、native backend assembly、Activity/Context、permission、reload/suspend/close、late callback与WebView event throughput；spike不以Tauri mobile JSON command/event代替UniFFI。只有机制获得Go后才创建`examples/tauri-central`的Windows/Android target。
-- 按[共享测试执行指南](../docs/testing/README.md)先完成JVM/Android deterministic、emulator fake-backend与packaging层，再以Android真机DUT通过真实RF连接[项目managed peripheral](../docs/testing/managed-peripheral.md)完成第15节要求的HIL；Peripheral必须是BLESS、nRF52840或第二台Android设备，不能与DUT是同一台手机。模拟器不作为真实BLE验收。
+- 按[共享测试执行指南](../docs/testing/README.md)先完成JVM/Android deterministic、emulator fake-backend与packaging层；随后执行第13节Windows原生WinRT/BLESS开发fixture spike，在当前单Windows电脑+单Android手机条件下为Android Central提供快速真实RF回归。最终仍须让Android真机DUT通过真实RF连接[项目managed peripheral](../docs/testing/managed-peripheral.md)完成第15节要求的HIL；权威Peripheral使用Linux VM/BLESS、nRF52840或第二台Android设备，不能与DUT是同一台手机。Windows WinRT/BLESS smoke不得记为Linux VM/BLESS fault/soak通过，模拟器不作为真实BLE验收。
 
 退出条件：
 

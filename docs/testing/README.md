@@ -125,7 +125,7 @@ caller-owned pre-registered IDs/state
 |---|---|---|
 | Phase 0 | 建立 contract/bridge 闭环、`blehub-testkit`、最小 scan/connect scenario、真实 ingress 注入、跨线程与 lifecycle/FFI 回归 | `core-primary`、`core-portability` |
 | Phase 1 | 补齐 adapter、scan、connection、GATT、notification 的共享 conformance 和 caller-responsibility projection | `core-primary`、`core-portability`，供后续所有 backend 复用 |
-| Phase 2 | Windows private mapping fixture、按真实调用点形成的窄 native adapter、scripted conformance、package 与硬件可用后的 HIL | `windows`、`windows-hil` |
+| Phase 2 | 项目Android开发Peripheral、Windows private mapping fixture、按真实调用点形成的窄native adapter、scripted conformance、package与硬件可用后的HIL | `tests/peripherals/android`、`windows`、`windows-hil` |
 | Phase 3 | Android JNI/Gradle/AAR、emulator fake-backend instrumentation 和真机 RF HIL | `android`、`android-device-hil` |
 | Phase 5 | Swift/XCFramework、simulator fake-backend tests 和 Apple 真机 RF HIL | `apple`、`apple-device-hil` |
 | Phase 6 | guest-native Linux build、D-Bus mapping、scripted/real BlueZ integration 和双 VM RF HIL | `linux-backend`、`linux-hil` |
@@ -151,7 +151,8 @@ caller-owned pre-registered IDs/state
 
 ## 平台测试文档索引
 
-- [LightBlue 手工测试外设](lightblue.md)：与共享 basic GATT scenario 对应的开发期扫描和 GATT smoke fixture。
+- [Android开发外设](android-peripheral.md)：Phase 2物理Android真机上的项目管理GATT Server、Android CLI/ADB控制与notification smoke。
+- [LightBlue手工测试外设](lightblue.md)：Android项目fixture不可用时的共享basic GATT scenario手工fallback；不作为notification delivery gate。
 - [Windows](windows.md)：Phase 2 native mapping fixture、窄 adapter seam、event matrix、HIL 与报告要求。
 - [Managed Peripheral](managed-peripheral.md)：跨平台QEMU/BlueZ/BLESS外设、provider、doctor、scenario与硬件spike。
 - [Linux](linux.md)：Phase 6 guest-native build、D-Bus/BlueZ测试层、adapter选择与双VM HIL。

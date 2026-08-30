@@ -9,15 +9,17 @@ Windows-first 的目标是尽早验证 BLE 事件和状态机，不是把公共 
 | 阶段/条件 | 执行内容 | Lane |
 |---|---|---|
 | Phase 0-1 | 运行平台无关 contract/bridge、`FakeBackend` 和共享 conformance；Windows 不拥有这些语义的私有副本 | `core-primary`；可移植性由 `core-portability` 复核 |
-| Phase 2，当前Android LightBlue外设可用 | private Windows mapping fixtures、按需窄native adapter、scripted conformance、package，以及真实scan/basic GATT开发smoke | `windows`；手工RF smoke不作为release HIL通过 |
+| Phase 2，Android项目外设可用 | private Windows mapping fixtures、按需窄native adapter、scripted conformance、package，以及真实scan/GATT/notification开发smoke | `tests/peripherals/android`、`windows`；开发RF smoke不作为BLESS release HIL通过 |
 | Phase 2，USB adapter与managed peripheral环境可用后 | 自动RF smoke、fault injection、资源清理和至少100次scan/connect soak | `windows-hil` |
 | Release candidate | 执行并保存 Windows HIL 报告 | `windows-hil`，独占 runner |
 
 `windows-hil`的最终计划环境仍是Windows Central + QEMU Linux Peripheral VM + 2 BLE controllers，使用BLESS managed peripheral。HIL不阻塞普通PR，也不承担全部状态组合；确定性组合应在较低测试层覆盖。
 
-### 当前临时物理外设：Android LightBlue
+### 当前物理外设：项目Android Peripheral
 
-在USB controller/QEMU环境到货前，开发期使用Android真机（当前为HONOR 90 GT）上的LightBlue Virtual Peripheral。2026-08-29已从Windows通过项目recipe实际验证fixture `blehub-basic-gatt-v1`：
+在USB controller/QEMU环境到货前，开发期使用Android真机（当前为HONOR 90 GT）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-basic-gatt-v1`，可显式发送notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。LightBlue保留为项目fixture不可用时的手工fallback。
+
+2026-08-29已从Windows通过LightBlue和项目recipe实际验证共享fixture的以下基础路径：
 
 - 扫描到service UUID `FFF00000-0000-4000-8000-000000000000`；
 - 连接和GATT service/characteristic discovery；
@@ -28,13 +30,16 @@ Windows-first 的目标是尽早验证 BLE 事件和状态机，不是把公共 
 运行入口：
 
 ```sh
+pixi run just peripheral-android-start
 pixi run just ble-scan --service-uuid FFF00000-0000-4000-8000-000000000000 --timeout 20 --require-match
-pixi run just ble-fixture-check
+pixi run just ble-fixture-check --notification-timeout 60
+# 等待 notification_subscription=ready 后，在另一终端执行：
+pixi run just peripheral-android-notify deadbeef
 ```
 
-这条路径当前由Bleak直接验证Windows OS/RF/LightBlue fixture，并不经过尚未实现的`WindowsBackend`或BleHub event ingress。进入Phase 2后，同一fixture将用于验证真实backend产生的`ScanStarted`、advertisement、connection、GATT discovery/read/write和subscription state event；在LightBlue中人工更新`FFF2...`后可补notification delivery smoke。
+当前Bleak路径直接验证Windows OS/RF/项目Android fixture，并不经过尚未实现的`WindowsBackend`或BleHub event ingress。进入Windows backend实现后，同一fixture用于验证真实backend产生的`ScanStarted`、advertisement、connection、GATT discovery/read/write、subscription state和notification data event。
 
-LightBlue不能确定性控制duplicate/late/stale callback、平台错误、被动断连、radio状态、时序fault injection和长时间soak，也不能自动触发notification值更新。因此它是开发期真实RF smoke，不替代FakeBackend/shared conformance、Windows mapping/scripted tests或最终QEMU/BLESS HIL。
+项目Android fixture仍不能确定性控制duplicate/late/stale callback、平台错误、radio状态、复杂时序fault injection和长时间恢复soak。因此它是开发期真实RF managed smoke，不替代FakeBackend/shared conformance、Windows mapping/scripted tests或最终QEMU/BLESS HIL。LightBlue只能证明其实际执行的手工基础互操作，编辑value不等于发送notification。
 
 ## Windows backend 测试边界
 

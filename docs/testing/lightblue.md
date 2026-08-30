@@ -2,7 +2,7 @@
 
 本页说明如何用 LightBlue 创建与 [`basic-gatt-peripheral.json`](../../tests/conformance/scenarios/basic-gatt-peripheral.json) 对应的手工测试外设。JSON 场景是测试 UUID 和属性的项目级来源；本页只描述 LightBlue 中的操作映射。
 
-该外设用于开发期扫描和基础GATT smoke test，不替代平台backend conformance、受控managed peripheral或最终自动HIL。2026-08-29已用Windows Central与HONOR 90 GT上的LightBlue实际通过本页`ble-scan`和`ble-fixture-check`：广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe均成功。2026-08-30又在CCCD订阅成功期间分别手工和通过ADB更新`FFF2...`；Windows经RF读取到新值，但没有收到Notify/Indicate callback，因此该LightBlue配置不作为notification delivery gate。当前工具走Bleak，只证明OS/RF/fixture可用，不证明尚未实现的BleHub `WindowsBackend`。
+该外设现在只作为[`tests/peripherals/android`](../../tests/peripherals/android/)项目fixture不可用时的手工fallback，用于开发期扫描和基础GATT smoke test；日常确定notification验证改用[Android开发外设](android-peripheral.md)。它不替代平台backend conformance、受控BLESS managed peripheral或最终自动HIL。2026-08-29已用Windows Central与HONOR 90 GT上的LightBlue实际通过本页`ble-scan`和`ble-fixture-check`：广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe均成功。2026-08-30又在CCCD订阅成功期间分别手工和通过ADB更新`FFF2...`；Windows经RF读取到新值，但没有收到Notify/Indicate callback，因此该LightBlue配置不作为notification delivery gate。当前工具走Bleak，只证明OS/RF/fixture可用，不证明尚未实现的BleHub `WindowsBackend`。
 
 ## 广播配置
 
