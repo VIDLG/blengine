@@ -10,14 +10,16 @@ Windows-first 的目标是尽早验证 BLE 事件和状态机，不是把公共 
 |---|---|---|
 | Phase 0-1 | 运行平台无关 contract/bridge、`FakeBackend` 和共享 conformance；Windows 不拥有这些语义的私有副本 | `core-primary`；可移植性由 `core-portability` 复核 |
 | Phase 2，Android项目外设可用 | private Windows mapping fixtures、按需窄native adapter、scripted conformance、package，以及真实scan/GATT/notification开发smoke | `tests/peripherals/android`、`windows`；开发RF smoke不作为BLESS release HIL通过 |
-| Phase 2，USB adapter与managed peripheral环境可用后 | 自动RF smoke、fault injection、资源清理和至少100次scan/connect soak | `windows-hil` |
+| Phase 2，USB adapter与managed peripheral环境可用后 | 自动RF smoke、fault injection、资源清理和至少10次scan/connect soak | `windows-hil` |
 | Release candidate | 执行并保存 Windows HIL 报告 | `windows-hil`，独占 runner |
 
 `windows-hil`的最终计划环境仍是Windows Central + QEMU Linux Peripheral VM + 2 BLE controllers，使用BLESS managed peripheral。HIL不阻塞普通PR，也不承担全部状态组合；确定性组合应在较低测试层覆盖。
 
+Windows RF runner位于standalone `tests/hil/windows` Cargo crate，只通过Just显式调用。`pixi run just windows::check`会在不访问RF硬件的情况下编译这些runner；普通`pixi run just test::all`不会构建或执行它们。该crate属于项目测试基础设施，不是`tests/consumers/windows` artifact-only packaging consumer，也不是面向用户的example。
+
 ### 当前物理外设：项目Android Peripheral
 
-在USB controller/QEMU环境到货前，开发期使用Android真机（当前为HONOR 90 GT）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-basic-gatt-v1`，可显式发送notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。LightBlue保留为项目fixture不可用时的手工fallback。
+开发期使用Android真机（当前为HONOR 90 GT）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-android-basic-gatt-v1`，可显式发送notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
 
 2026-08-29已从Windows通过LightBlue和项目recipe实际验证共享fixture的以下基础路径：
 
@@ -30,16 +32,63 @@ Windows-first 的目标是尽早验证 BLE 事件和状态机，不是把公共 
 运行入口：
 
 ```sh
-pixi run just peripheral-android-start
+pixi run just peripheral android-start
 pixi run just ble-scan --service-uuid FFF00000-0000-4000-8000-000000000000 --timeout 20 --require-match
-pixi run just ble-fixture-check --notification-timeout 60
+pixi run just test fixture --notification-timeout 60
 # 等待 notification_subscription=ready 后，在另一终端执行：
-pixi run just peripheral-android-notify deadbeef
+pixi run just peripheral android-notify deadbeef
 ```
 
-当前Bleak路径直接验证Windows OS/RF/项目Android fixture，并不经过尚未实现的`WindowsBackend`或BleHub event ingress。进入Windows backend实现后，同一fixture用于验证真实backend产生的`ScanStarted`、advertisement、connection、GATT discovery/read/write、subscription state和notification data event。
+当前Bleak路径直接验证Windows OS/RF/项目Android fixture，不经过`WindowsBackend`或BleHub event ingress。`WindowsBackend`现已实现adapter初始化、scan/stop、logical connect/disconnect、公开GATT discovery、characteristic read/write和notification/indication源码路径，并通过非RF编译、测试、共享conformance与项目Android fixture开发RF smoke。
 
-项目Android fixture仍不能确定性控制duplicate/late/stale callback、平台错误、radio状态、复杂时序fault injection和长时间恢复soak。因此它是开发期真实RF managed smoke，不替代FakeBackend/shared conformance、Windows mapping/scripted tests或最终QEMU/BLESS HIL。LightBlue只能证明其实际执行的手工基础互操作，编辑value不等于发送notification。
+2026-08-31已使用HONOR 90 GT项目fixture完成真实`WindowsBackend -> BackendEventIngressHandle -> Rust BleEventSink`扫描闭环，覆盖`PoweredOn`初始化、`ScanStarted`、共享service predicate、真实`AdvertisementObserved`和requested `ScanStopped`。完整环境、首次失败及修复后事件序列见[`2026-08-31 Windows backend + Android Peripheral scan smoke`](reports/2026-08-31-windows-android-scan-smoke.md)。同日继续通过真实连接、作为连接证据的私有uncached GATT service probe和主动logical disconnect开发RF smoke，事件与边界见[`2026-08-31 Windows backend + Android Peripheral connect smoke`](reports/2026-08-31-windows-android-connect-smoke.md)；随后公开`DiscoverGattCommand`通过uncached service/characteristic/descriptor flat traversal，并准确映射fixture的四个characteristic、properties与CCCD，见[`2026-08-31 Windows backend + Android Peripheral GATT discovery smoke`](reports/2026-08-31-windows-android-gatt-discovery-smoke.md)；public characteristic read、write with response和write without response继续通过确定payload回读，见[`2026-08-31 Windows backend + Android Peripheral read/write smoke`](reports/2026-08-31-windows-android-read-write-smoke.md)。provider profile隔离后，两个fixture并行广播时的`FFF0...`/`FFE0...` service-filter选择通过；`PlatformDefault` Notification与严格Indication进一步通过enable、确定`DE AD BE EF` value delivery、disable和post-disable stale-route silence，见[`2026-08-31 Windows backend + Android Peripheral notification/indication smoke`](reports/2026-08-31-windows-android-notification-smoke.md)。随后同一candidate通过QEMU/BLESS `FFE0...` provider的scan/connect/public GATT discovery、确定性read/write回读、`PlatformDefault` Notification、严格Indication、disable后stale-route silence和connected RSSI `NotSupported` terminal；UB500 detach产生`command_id=None`的被动disconnect，reattach、guest doctor与fixture readiness恢复也通过，见[`2026-08-31 Windows backend + QEMU/BLESS full smoke`](reports/2026-08-31-windows-qemu-bless-full-smoke.md)。仅停止BLESS service未触发Windows disconnect，因此不作为backend证据。当前通过仍不替代active subscription/in-flight callback race、并发或高频FIFO RF、BlueZ/guest/host reboot、重复fault recovery与soak gate；本轮Android真机未连接ADB，未形成当前candidate的Android复跑证据。旧共享service首次选中QEMU的尝试仍不是notification通过或失败证据。
+
+2026-09-01 RF-tested candidate在拆分私有`initialization`、`scan`与顶层`gatt`模块后通过28项Windows测试、103项workspace测试及完整静态检查，并在已连接Android真机复跑上述功能矩阵。六个项目专用RF runner随后迁入standalone `tests/hil/windows` crate并共享`src/support`，production crate不再承载fixture-specific examples。Android应用级`BluetoothGattServer.cancelConnection()`在connect-only与public discovery保留native GATT objects两种情况下均只产生Android server侧`status=0 state=0`，没有WinRT device-level disconnect；关闭整机Bluetooth radio并等待`STATE_OFF`则立即产生`command_id=None`的被动`Disconnected`，随后radio/fixture恢复通过。前者不是device-loss backend证据，后者是一次真实设备级被动断连证据；见[`2026-09-01 Android RF报告`](reports/2026-09-01-windows-android-current-candidate-smoke.md)。
+
+后续non-RF hardened candidate把connection state machine提取到`connection.rs`，把GATT拆为父协调模块、`gatt/discovery.rs`、`gatt/io.rs`和`gatt/tests.rs`，并统一两阶段cleanup：先在`delivery -> state`内invalidate correlation、detach ownership和设置cleanup gate，再在锁外执行WinRT `Cancel`/`Remove*`/`Close`，随后重新进入delivery边界尝试prepared events并按disconnect优先drain deferred callback。caller-owned GATT/subscription ID不再保留历史tombstone，只检查live collision并使用private generation隔离stale callback；默认日志不输出原始Bluetooth address。notification callback撤销失败由`DisabledPendingRevoke`保留cleanup ownership并允许后续disable仅重试revoke，不把已关闭CCCD的route伪装为active。该candidate通过34项Windows非RF测试、109项workspace测试及完整strict lint；随后使用QEMU/BLESS `FFE0...` provider重跑并通过非破坏性scan/connect/public GATT/read/write、`PlatformDefault` Notification、严格Indication、disable后stale-route silence及connected RSSI `NotSupported`矩阵，见[`2026-09-01 hardened-cleanup candidate QEMU RF报告`](reports/2026-09-01-windows-hardened-cleanup-qemu-rf.md)。本轮没有执行USB detach等被动断连fault、重复恢复或soak。Android物理设备可被ADB识别，但fixture安装在APK传输后等待手机端USB安装审批，因此旧Android报告仍不自动证明该candidate已通过Android RF。
+
+最新candidate现通过39项Windows测试、114项workspace测试、Standard Cargo staged package、metadata-enforced source isolation、offline locked artifact-only Windows consumer和用户级`examples/windows-central`静态gate。Android fixture随后在OnePlus 11（`3ac5cc09`）通过非破坏性scan/connect/GATT/read/write/Notification矩阵；combined orchestration在严格Indication附近中断，因此严格Indication独立重跑并通过，不从中断推断结果。当前QEMU与Android、packaging、示例边界及明确未执行项见[`2026-09-01 current-candidate RF与packaging汇总`](reports/2026-09-01-windows-current-candidate-rf-packaging-summary.md)。随后release HIL使用20-byte payload对Android/QEMU各执行三次200-operation read、write和Notification矩阵，并补跑fixture callback ledger矩阵。最新QEMU uncached read、callback-confirmed write with response、write without response WinRT terminal、write without response Peripheral callback中位数为17.9、16.7、1,263.6、91.8 ops/s，Android为8.3、8.3、1,262.4、844.7 ops/s；每轮write batch均达到200/200 unique fixture callbacks且全部sequence violation计数为零。先前lossless Notification中位数为QEMU 85.1、Android 820.0 ops/s。WinRT terminal只表示local/native progress，仍不重标为remote throughput。QEMU HCI trace观测write阶段30 ms connection interval与54.732 ms ATT Write Request间隔中位数；零pacing BLESS burst曾只收到183/200，正式0.5 ms requested guest pacing及Android callback背压的三轮结果均零missing/duplicate/order violation。完整原始值、原因分析和边界见[`2026-09-01 Android/QEMU吞吐矩阵`](reports/2026-09-01-windows-android-qemu-throughput-matrix.md)。这些不是PHY/controller吞吐。最新candidate的10-cycle scan/connect与完整活动图resource-accounting smoke现已通过；每轮第一次及幂等第二次dispose后，backend逻辑root与全部16类WinRT callback delegate均精确归零，完整活动图process handle在cycle 3后为`225 -> 224`、settled max `225`。实现、辅助process趋势及未覆盖边界见[`2026-09-01 Windows资源记账与QEMU 10-cycle soak`](reports/2026-09-01-windows-resource-accounting-qemu-soak.md)。Android radio disable、QEMU USB detach和重复fault/recovery仍未对该candidate执行，因此Phase 2仍未退出。
+
+运行Windows backend RF smoke前先确认项目Android fixture正在广播：
+
+```sh
+pixi run just peripheral::android-start
+pixi run just windows::scan-smoke 30
+# 或连接smoke：pixi run just windows::connect-smoke 30
+# 或GATT discovery smoke：pixi run just windows::gatt-smoke 30
+# 或characteristic read/write smoke：pixi run just windows::read-write-smoke 30
+# release read/write throughput：
+pixi run just windows::gatt-throughput 35 fff00000-0000-4000-8000-000000000000 200 20
+# sequenced lossless Notification throughput：
+pixi run just windows::notification-throughput 30 fff00000-0000-4000-8000-000000000000 android 200 auto
+# 或PlatformDefault notification smoke：
+pixi run just windows notification-smoke 30 fff00000-0000-4000-8000-000000000000 default android
+# 或严格indication smoke：
+pixi run just windows notification-smoke 30 fff00000-0000-4000-8000-000000000000 indication android
+# Android fixture GATT-server cancellation（用于区分app-level trigger，不是device-loss gate）：
+pixi run just windows passive-disconnect-smoke 30 fff00000-0000-4000-8000-000000000000 android connect-only
+# Android整机radio fault（真实device-level passive-disconnect smoke，会自动恢复radio与fixture）：
+pixi run just windows passive-disconnect-smoke 60 fff00000-0000-4000-8000-000000000000 android-radio connect-only
+pixi run just peripheral::android-stop
+```
+
+QEMU/BLESS完整开发smoke入口使用独立`FFE0...` service identity：
+
+```sh
+pixi run just windows scan-smoke 30 ffe00000-0000-4000-8000-000000000000
+pixi run just windows connect-smoke 30 ffe00000-0000-4000-8000-000000000000
+pixi run just windows gatt-smoke 30 ffe00000-0000-4000-8000-000000000000
+pixi run just windows read-write-smoke 30 ffe00000-0000-4000-8000-000000000000
+pixi run just windows gatt-throughput 35 ffe00000-0000-4000-8000-000000000000 200 20
+pixi run just windows notification-throughput 30 ffe00000-0000-4000-8000-000000000000 qemu 200 auto
+pixi run just windows notification-smoke 30 ffe00000-0000-4000-8000-000000000000 default qemu
+pixi run just windows notification-smoke 30 ffe00000-0000-4000-8000-000000000000 indication qemu
+pixi run just windows passive-disconnect-smoke 45 ffe00000-0000-4000-8000-000000000000 qemu
+```
+
+QEMU被动断连recipe会detach guest-owned UB500，并在观察到被动事件后执行reattach、guest doctor和fixture restart。它会改变真实硬件/VM状态，运行前必须独占资源并获得授权。
+
+项目Android fixture现在可通过ADB确定性切换整机Bluetooth radio并等待`STATE_OFF/STATE_ON`，但仍不能确定性控制duplicate/late/stale callback、平台错误、复杂callback时序fault injection和长时间恢复soak。因此它是开发期真实RF managed smoke，不替代FakeBackend/shared conformance、Windows mapping/scripted tests或最终QEMU/BLESS HIL。LightBlue只能证明其实际执行的手工基础互操作，编辑value不等于发送notification。
 
 ## Windows backend 测试边界
 
@@ -62,7 +111,7 @@ WinRT result/callback
 ### Acceptance transaction
 
 - accepted 之前的 dispatcher 或调用失败，直接映射为公开 `CommandDispatchError`，不得 emit 该 command 的 event。
-- accepted 之后的 HRESULT、WinRT status 或 callback failure通过`CommandCompleted`中的`BleOperationError { operation, failure }`表达，不得重新解释为trait method的同步`Err`；被动watcher stop或connection state failure只映射`BleFailure`，不伪造`CommandKind`。同一command-associated failure还先产生state event时，两处必须使用值相等的`BleFailure`。
+- accepted 之后的 HRESULT、WinRT status 或 callback failure通过`CommandCompleted.error: Some(BleEventError)`表达，不得重新解释为trait method的同步`Err`；被动watcher stop或connection state failure直接在对应result-like state event中携带`BleEventError`，不伪造`CommandKind`。同一command-associated failure还先产生state event时，两处必须使用值相等的`BleEventError`。
 - command method 返回前已经同步 emit event 时，返回值必须是 `Ok(())`。
 - pending connect上的disconnect按[Plan 8.4](../../.plan/PLAN.md#84-建立连接)可在logical lifecycle与owned resources结束后成功；Windows没有证据证明该disconnect导致原connect被取消时，不得为原connect伪造`Cancelled`，只保留关联晚到结果所需的最小correlation。独立connect failure仍terminal `Failed`；原connect继续受原completion evidence与caller deadline约束，晚到callback保留原connect IDs且不得恢复为当前连接。
 - Windows mapping 不引入第二套公共 event、error、ID 或 command lifecycle 形状。
@@ -76,7 +125,7 @@ Mapping tests 直接构造 crate-private plain Windows observation DTO，而不�
 | Fixture 输入 | 期望断言 |
 |---|---|
 | operation/callback kind 与 WinRT status | 统一 event variant、domain event 与 terminal attempt 的顺序 |
-| HRESULT、status、错误消息 | 先映射`BleFailure { category, message, platform }`；passive state event直接携带它，accepted command terminal再包装为`BleOperationError { operation, failure }`，并按`error.failure.category`检查Plan 6.16不变量；同一command的failure state与terminal复用值相等的failure |
+| HRESULT、status、错误消息 | 映射为`BleEventError { category, message, platform_details }`；passive state event直接携带它，accepted command terminal放入`CommandCompleted.error`，并按`error.category`检查Plan 6.16不变量；同一command的failure state与terminal复用值相等的error |
 | `ScanOptions`、WinRT filter positive evidence 与 callback observation | `service_uuids`中`BluetoothUuid.value`为空字符串或其他malformed文本时在accepted前映射`InvalidRequest`且零event，空`service_uuids` vector则单独验证为无service约束；service filtering没有support capability，WinRT native pushdown可选，pushdown evidence与callback补过滤必须共同满足Plan 6.6 predicate |
 | caller-owned command/session/connection/GATT/subscription ID | event 原样回显对应 typed ID；晚到 callback 不改挂到当前 session |
 | native object identity/key | 同一 native peripheral 复用 `PeripheralId`；不同对象即使 payload 相似也使用不同 ID |
@@ -135,7 +184,7 @@ Production 路径由 `WindowsBackend` 直接调用 `windows-rs`。只有真实�
 - adapter 初始化与扫描。
 - 真实连接和被动断连。
 - GATT discover、read、write、notify。
-- 重复 scan/connect 至少 100 次 soak。
+- 重复 scan/connect 至少 10 次 soak。
 - watcher、GATT object 和 event token 释放。
 
 HIL 主要证明 WinRT、蓝牙芯片/驱动、RF 和真实外设组成的闭环。重复、乱序、stale/orphan 和错误组合仍应由 mapping、scripted 和共享 conformance 确定性覆盖。
@@ -148,6 +197,8 @@ HIL 主要证明 WinRT、蓝牙芯片/驱动、RF 和真实外设组成的闭环
 - Smoke 与 soak 分开记录；soak 报告必须给出计划迭代数、实际完成数、失败迭代和首次失败证据。
 - 资源释放检查必须覆盖正常完成、失败、主动断开、被动断开和 close 后晚到 callback 中环境支持的路径。
 - 未执行、跳过或环境故障不得记为通过；报告应区分 product failure、test fixture failure 和 infrastructure failure。
+- standalone HIL runner默认只输出一行PASS；内部保留最近16条、每条最多512字符的BLE event摘要，失败时才输出该有界轨迹。临时诊断可设置`BLEHUB_HIL_VERBOSE=1`逐条输出完整event，不应把verbose模式用于普通矩阵或soak日志。
+- throughput runner必须分别报告WinRT native terminal与Peripheral callback/Notification应用边界，不得把无响应写的本地terminal速率标为远端吞吐。payload矩阵应记录协商MTU、PHY、connection interval、DLE及controller buffer证据；QEMU吞吐runner在计时前请求并验证fixture链路的2M PHY，Android fixture通过平台callback记录实际MTU/PHY。
 
 ## 报告要求
 

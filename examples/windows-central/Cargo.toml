@@ -1,0 +1,12 @@
+[package]
+name = "blehub-windows-central-example"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace]
+
+[target.'cfg(windows)'.dependencies]
+blehub = { path = "../../crates/blehub" }
+blehub-windows = { path = "../../crates/blehub-windows" }

@@ -46,7 +46,7 @@ jobs:
 
       - name: Run production-candidate Darwin Swift object-graph gate
         run: |
-          pixi run -e apple-ci just ffi-candidate-test-swift-macos \
+          pixi run -e apple-ci just spike swift-macos \
             2>&1 | tee .work/reports/uniffi-production-candidate-macos-runtime.log
 
       - name: Upload production-candidate evidence

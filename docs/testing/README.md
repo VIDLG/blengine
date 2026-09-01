@@ -1,6 +1,6 @@
 # BleHub 测试执行指南
 
-本目录把[`.plan/PLAN.md`](../../.plan/PLAN.md)中的测试要求组织为可随实施阶段演进的执行指南。当前Plan状态为`已批准`，Windows/Android Phase 0 mechanism gate已完成，Phase 1统一薄契约实现正在进行；本文档不批准或启动Plan中尚未获批的实现工作。
+本目录把[`.plan/PLAN.md`](../../.plan/PLAN.md)中的测试要求组织为可随实施阶段演进的执行指南。当前Plan状态为`已批准`，Phase 0 Stable UniFFI mechanism gate与Phase 1统一薄契约/conformance均已完成，Phase 2 Windows-first实现正在进行；本文档不批准或启动Plan中尚未获批的实现工作。
 
 ## 文档定位与权威边界
 
@@ -9,6 +9,18 @@
 - 本目录可以随目录结构、recipe 名称、runner 和报告格式演进，但不得削弱或改写 Plan 的规范性语义。
 - 若本文档与 Plan 冲突，以 Plan 为准；涉及可观察行为、acceptance、阶段退出条件或公共契约的变更必须回到 Plan 评审，而不是在这里形成第二份架构 Plan。
 - 测试结果只能证明已执行的场景。平台 callback、completion、disconnect、write、shutdown 或 cancellation 的语义不得强于 Plan 和原生平台证据。
+
+## Just command namespaces
+
+领域入口使用稳定的子命令模块，运行 `pixi run just --list --list-submodules` 查看完整列表：
+
+- `pixi run just binding <command>`：生成绑定并维护经评审的API快照。
+- `pixi run just test [command]`：运行workspace测试、共享conformance、真实RF fixture preflight或选择Android instrumentation设备；无子命令时运行完整workspace测试。
+- `pixi run just spike <command>`：运行当前Stable UniFFI production-candidate gate；归档spike不提供活动入口。
+- `pixi run just peripheral <command>`：构建和控制开发/测试Peripheral provider；当前实现Android fixture，以及Windows host上的QEMU Debian/BlueZ/BLESS Linux Peripheral VM生命周期、UB500直通和readiness入口。
+- `pixi run just windows <command>`：运行production Windows backend的静态测试、staged package、artifact-only consumer、用户example静态gate和显式RF/HIL smoke。
+
+`just/`按Rust模块树组织：每个公开namespace使用`<namespace>/mod.just`作为facade，较大的领域再拆为同目录子文件；内部辅助module标记为private。跨领域和通用入口保留在根级，例如`fmt`、`check`、`lint`、`verify`、`docs-*`和`ble-scan`。模块不得调用兄弟模块；需要跨域聚合时只由根级recipe向下依赖。
 
 ## 测试层次
 
@@ -21,6 +33,8 @@
 | 平台 native mapping | 各平台 backend 阶段 | 用 private observation fixture 验证原生结果、callback 与统一 `BleEvent`/error/opaque ID 的映射 | 复制第二套 `BleBackend` contract |
 | Scripted platform integration | 各平台 backend 阶段 | 驱动真实 backend 的窄 native seam 或受控 callback source，验证装配和调用路径 | 充当另一个 fake backend 或替代共享 conformance |
 | HIL | 平台硬件环境可用后 | 验证真实 adapter、无线链路、外设互操作、资源释放和 soak 稳定性 | 穷举状态组合；阻塞普通 PR |
+
+`tests/hil/<platform>`中的runner是显式硬件测试基础设施：它们使用独立manifest/lock，从根Cargo workspace排除，只由对应Just硬件lane编译或运行。普通`pixi run just test::all`不执行这些runner；它们可以为验证当前实现使用workspace path dependency，但不替代`tests/consumers/<platform>`只消费staged artifact的packaging gate，也不属于用户示例。
 
 ### Contract 与 thin bridge 的固定检查
 
@@ -40,8 +54,8 @@ Bridge 只负责 wire/shape、必填 ID、FFI size guard、closed 状态和串�
 
 Android mechanism/instrumentation recipe 默认使用 `auto` 模式：先采用 `BLEHUB_ANDROID_SERIAL`或`ANDROID_SERIAL`显式指定的ready设备；未指定时优先唯一ready真机；没有ready真机才复用已启动的模拟器，仍没有时才启动项目管理的`medium_phone` AVD。真机与模拟器同时在线时只选择真机，并通过`ANDROID_SERIAL`与Gradle的`android.injected.device.serial`同时固定目标。多台同类ready设备不会随机选择，而是要求显式serial。
 
-- `pixi run just android-test-device`：只报告`auto`将选择的目标；可追加`physical`或`emulator`检查显式模式。
-- `pixi run just ffi-candidate-test-android`：默认`auto`，也可追加`physical`或`emulator`。
+- `pixi run just test android-device`：只报告`auto`将选择的目标；可追加`physical`或`emulator`检查显式模式。
+- `pixi run just spike android`：默认`auto`，也可追加`physical`或`emulator`。
 - 历史`ffi-phase0-*`与`ffi-spike-*` recipe已随旧fixture归档，不再是可执行入口；需要复核历史证据时先在独立分支显式恢复。
 
 该fallback只适用于不依赖真实RF的FFI、ART、AAR和fake-backend instrumentation。Android BLE HIL必须显式使用`physical`模式并记录真机身份；模拟器通过绝不能替代权限、controller、vendor BLE callback或RF验收。
@@ -97,7 +111,7 @@ caller-owned pre-registered IDs/state
 
 ### 共享 backend conformance
 
-执行入口：`pixi run just conformance`。该 recipe 只运行 `blehub-testkit` 的平台无关 scenario、contract oracle、ingress fixture 和 caller projection；普通 `pixi run just test` 仍包含它。`pixi run just ble-fixture-check` 则通过 Bleak 和真实 RF 扫描、连接并验证 managed/LightBlue 外设 profile，需要独占本机 BLE adapter 和一个已启动广播的 fixture；它不是共享 backend conformance，也不证明尚未实现的平台 backend。
+执行入口：`pixi run just test conformance`。该 recipe 只运行 `blehub-testkit` 的平台无关 scenario、contract oracle、ingress fixture 和 caller projection；普通 `pixi run just test` 仍包含它。`pixi run just test fixture` 则通过 Bleak 和真实 RF 扫描、连接并验证 managed/LightBlue 外设 profile，需要独占本机 BLE adapter 和一个已启动广播的 fixture；它不是共享 backend conformance，也不证明尚未实现的平台 backend。
 
 共享 fixture 只组织输入、emission 和断言责任；规范预期直接引用 Plan 的[扫描配置 6.6](../../.plan/PLAN.md#66-扫描配置)、[统一 event payload 6.15](../../.plan/PLAN.md#615-unified-event-payload)、[public event 不变量 6.16](../../.plan/PLAN.md#616-public-event)和[backend 可观察契约 7.1](../../.plan/PLAN.md#71-backend-可观察契约规范性)，不在此复制完整矩阵。共享 conformance 至少验证：
 
@@ -125,7 +139,7 @@ caller-owned pre-registered IDs/state
 |---|---|---|
 | Phase 0 | 建立 contract/bridge 闭环、`blehub-testkit`、最小 scan/connect scenario、真实 ingress 注入、跨线程与 lifecycle/FFI 回归 | `core-primary`、`core-portability` |
 | Phase 1 | 补齐 adapter、scan、connection、GATT、notification 的共享 conformance 和 caller-responsibility projection | `core-primary`、`core-portability`，供后续所有 backend 复用 |
-| Phase 2 | 项目Android开发Peripheral、Windows private mapping fixture、按真实调用点形成的窄native adapter、scripted conformance、package与硬件可用后的HIL | `tests/peripherals/android`、`windows`、`windows-hil` |
+| Phase 2 | 项目Android开发Peripheral、Windows private mapping fixture、按真实调用点形成的窄native adapter、scripted conformance、package与硬件可用后的HIL | `tests/peripherals/android`、`tests/hil/windows`、`windows`、`windows-hil` |
 | Phase 3 | Android JNI/Gradle/AAR、emulator fake-backend instrumentation 和真机 RF HIL | `android`、`android-device-hil` |
 | Phase 5 | Swift/XCFramework、simulator fake-backend tests 和 Apple 真机 RF HIL | `apple`、`apple-device-hil` |
 | Phase 6 | guest-native Linux build、D-Bus mapping、scripted/real BlueZ integration 和双 VM RF HIL | `linux-backend`、`linux-hil` |

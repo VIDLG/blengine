@@ -16,7 +16,7 @@ Key interpretation:
 - If QEMU passthrough on Windows is insufficiently stable, QEMU/KVM on a Linux host is the preferred fallback.
 - VMware Workstation may be used as a local Windows HIL fallback after its capture, automation, licensing, and reproducibility constraints are evaluated.
 
-The current Plan records the work as waiting for the USB BLE adapter. Until suitable hardware is available, QEMU USB passthrough, guest BlueZ/BLESS setup, the managed peripheral program, and related HIL are deferred. This does not block hardware-independent contract, FakeBackend, mapping, or narrow native-adapter work.
+On 2026-08-31 the initial Windows-hosted provider bring-up passed with a TP-Link UB500: pinned QEMU and Debian provisioning, WinUSB ownership, XHCI/`usb-host` hotplug, guest BlueZ/BLESS readiness, Windows scan/connect/public GATT discovery, and one stop/detach/rebuild/start/reattach recovery. The same day the production backend also passed deterministic read/write, Notification, strict Indication, disable stale-route silence, capability-false RSSI completion, one UB500-loss passive disconnect, and immediate reattach/doctor/fixture-readiness recovery. BlueZ/guest/host reboot, repeated fault recovery, WHPX-after-reboot, and soak remain unverified. See the [bring-up report](reports/2026-08-31-windows-bless-managed-peripheral-bringup.md) and [full Windows/QEMU smoke report](reports/2026-08-31-windows-qemu-bless-full-smoke.md).
 
 ## Goals and boundaries
 
@@ -82,7 +82,7 @@ Provider choice is test infrastructure, not part of the BleHub product API. The 
 
 | Provider | Intended use | Current guidance |
 |---|---|---|
-| QEMU on Windows | Default Windows-hosted reproducible baseline and preferred recipe if proven | Requires a real USB passthrough spike before adoption. Validate capture, guest enumeration, resets, reboot behavior, repeated attach/detach, advertising, connection, and soak stability. |
+| QEMU on Windows | Active Windows-hosted reproducible baseline | UB500 capture, guest enumeration, advertising, production Windows scan/connect/GATT/read/write/Notification/Indication, one controller-loss passive disconnect, and immediate reattach/readiness recovery passed on 2026-08-31. BlueZ/guest/host reboot, repeated recovery, WHPX, and soak remain gates. |
 | QEMU/KVM on Linux | Preferred fallback when Windows-hosted QEMU passthrough is unstable | Keep the same Linux Peripheral guest, fixtures, and contracts. Do not move BLESS onto the physical host. |
 | VMware Workstation on Windows | Local HIL fallback | USB capture may be practical locally, but CI use depends on licensing, headless automation, and reproducibility validation. |
 | VirtualBox | Optional spike only | USB 2/3 Extension Pack distribution, licensing, and automation require separate evaluation. It is not a default dependency. |
@@ -124,41 +124,118 @@ A failed doctor or readiness handshake is an **environment failure**, not a BleH
 
 ## Managed peripheral project shape
 
-The planned repository-owned shape is:
+Repository ownership is split by responsibility rather than placing guest behavior, host orchestration, and VM lifecycle in one package:
 
 ```text
-tools/test-peripheral/
-├── src/blehub_test_peripheral/
-│   ├── main.py
-│   ├── server.py
-│   ├── protocol.py
-│   ├── scenarios.py
-│   └── telemetry.py
-├── tests/
-├── scenarios/
-│   ├── basic.json
-│   ├── notifications.json
-│   ├── disconnect.json
-│   └── stress.json
-└── README.md
-
-vm/linux-peripheral/
-├── README.md
-├── provision.sh
-├── start.sh
-├── stop.sh
-└── qemu or cloud-init configuration
+tests/peripherals/bless/       # Guest BLESS fixture and profile behavior.
+tools/peripheral_fixture/      # Host-side provider orchestration and diagnostics.
+vm/linux-peripheral/           # Packer template, image locks, and guest provisioning inputs.
 ```
 
-Execution guidance:
+Shared GATT scenarios remain under `tests/conformance/scenarios/`; provider code consumes those project-owned fixtures instead of duplicating UUIDs, manufacturer data, or payload contracts.
 
-- Pin BLESS, Python, QEMU, and other external development tools through Pixi.
-- Keep the peripheral program, scenarios, provisioning, and startup scripts in the repository when implementation is approved.
-- Do not commit a large VM disk image. Build it from a pinned base image or accept an explicitly configured local image path.
-- Make VM configuration and BlueZ/BLESS versions queryable and include them in every test report.
-- Treat peripheral UUIDs, manufacturer data, and payload contracts as project-owned test fixtures.
+### VM command namespace
 
-This document does not authorize implementation while the architecture Plan remains unapproved.
+The implemented interface is:
+
+```sh
+pixi run just peripheral vm-bootstrap
+pixi run just peripheral vm-build
+pixi run just peripheral vm-doctor
+pixi run just peripheral vm-start
+pixi run just peripheral vm-stop
+pixi run just peripheral vm-reset
+pixi run just peripheral vm-status
+pixi run just peripheral vm-logs
+pixi run just peripheral vm-clean
+pixi run just peripheral vm-usb-status
+pixi run just peripheral vm-usb-bind
+pixi run just peripheral vm-usb-attach
+pixi run just peripheral vm-usb-detach
+pixi run just peripheral vm-usb-rollback
+pixi run just peripheral vm-fixture-install
+pixi run just peripheral vm-fixture-sync
+pixi run just peripheral vm-fixture-start
+pixi run just peripheral vm-fixture-stop
+pixi run just peripheral vm-fixture-status
+pixi run just peripheral vm-fixture-update deadbeef
+pixi run just peripheral vm-fixture-burst 0123456789abcdef 200 500
+pixi run just peripheral vm-whpx-status
+pixi run just peripheral vm-whpx-enable
+```
+
+The responsibility split is:
+
+| Layer | Responsibility |
+|---|---|
+| Pixi | Pin Packer, the official `qemu.qmp` Python client, and other host tooling plus the guest BLESS/Python environment; provide the locked 7-Zip extractor. QEMU itself is pinned by tracked URL/hash because no Windows QEMU package is available in the configured Pixi channel. |
+| Just | Expose the thin `peripheral vm-*` user-facing namespace and delegate lifecycle work. It must not contain image, QMP, SSH, USB, retry, or provisioning logic. |
+| Packer | Create and resize the build qcow2, generate the `CIDATA` VFAT for minimal NoCloud SSH bootstrap, boot QEMU, wait for SSH, upload tracked image inputs, run provisioning, and shut down cleanly. The official QEMU plugin is fixed to `1.1.6` and is installed only by `vm-bootstrap`. |
+| Python host orchestration | Download and verify pinned assets, invoke Packer for image builds, create mutable runtime overlays, automatically select WHPX when enabled on Windows and otherwise use TCG, use the official `qemu.qmp` client for runtime QMP sessions, manage SSH/SCP/PID/log lifecycle, select the USB controller, and produce actionable diagnostics. `BLEHUB_VM_ACCEL=tcg|whpx` remains an explicit override. The orchestration retains project-specific QMP command policy but does not implement the wire protocol, a second image builder, or an ISO writer. |
+| Guest provisioning | Install and configure the stable Debian/BlueZ/D-Bus/Pixi/systemd runtime and udev/rfkill permissions from tracked image inputs. Frequently changing BLESS fixture source, environment, and scenarios are deployed separately and are not part of the stable-image target. |
+
+### Fixed image and external fixture deployment
+
+**Implemented and RF-verified on 2026-08-31:** the provisioned Linux image is stable, while the project-owned BLESS environment and fixture source are deployed independently into a running guest. Packer uploads only the pinned Pixi archive, `provision.sh`, and the generic systemd unit; it does not upload `bless_fixture.py`, the fixture manifest/lock, or a scenario. Cloud-Init only creates the build-time SSH entry.
+
+Use three independently fingerprinted layers:
+
+| Layer | Fingerprint inputs | Change action |
+|---|---|---|
+| Provisioned image | Debian/QEMU locks, Packer and minimal NoCloud templates, `provision.sh`, generic systemd runner, Pixi bootstrap, BlueZ/firmware and guest permission configuration | Explicit `vm-build`; rebuild the provisioned qcow2 through Packer |
+| Fixture environment | `tests/peripherals/bless/pixi.toml` and `pixi.lock` | Explicit guest `pixi install --locked`; do not rebuild the image and do not install silently during `vm-start` or tests |
+| Fixture source | `bless_fixture.py` and the selected shared scenario JSON | Copy through the existing SSH control channel, atomically activate, and restart the fixture service |
+
+Prefer an allowlisted SSH/SCP or tar-over-SSH deployment over directly mounting a Windows host directory with QEMU 9p/virtiofs. The fixture contains only small files, while a direct host mount adds Windows path, permission, locking, virtiofsd availability, CI portability, and root-service trust concerns. Deployment must copy to a staging/release directory, verify the expected fingerprint, then atomically update `/opt/blehub/fixture/current`; a failed deployment must leave the previous release usable. The root service must never execute a partially copied tree or an arbitrary writable project-root mount.
+
+Split the current host fingerprint implementation into the conceptual equivalents of:
+
+```text
+image_fingerprint()
+fixture_environment_fingerprint()
+fixture_fingerprint()
+```
+
+`build()` and both provisioned-image markers inspect only `image_fingerprint()`. `vm-start` does not reject a valid provisioned image merely because fixture source or a scenario changed. The guest records the image identity in `/var/lib/blehub/provisioned.json`; immutable environment and release directories carry their own JSON markers, reached through `current-environment` and `current`. `vm-doctor` and `vm-status` report all three active identities.
+
+Add thin Just entry points backed by Python orchestration rather than shell logic:
+
+```text
+pixi run just peripheral vm-fixture-install  # sync manifest/lock and explicitly install
+pixi run just peripheral vm-fixture-sync     # no-network source/scenario deployment
+pixi run just peripheral vm-fixture-start    # sync source, verify environment, restart, await ready
+```
+
+`vm-fixture-start` may automatically perform the no-network source sync. If the fixture environment fingerprint differs, it must fail with an actionable instruction to run `vm-fixture-install`; it must not silently resolve or download guest dependencies. Resetting the runtime overlay must have a documented recovery path through explicit environment install plus source sync.
+
+The implementation uses versioned directories and atomic symlink activation:
+
+```text
+/opt/blehub/fixture/
+├── environments/<environment-fingerprint>/
+├── releases/<fixture-fingerprint>/
+├── current-environment -> environments/<environment-fingerprint>
+└── current -> releases/<fixture-fingerprint>
+```
+
+Environment install completes in a staging directory before `current-environment` changes. Source sync copies only the allowlisted fixture and scenario, validates them with the active environment's Python, and only then changes `current`. A failed install or validation therefore leaves the prior symlink untouched. The systemd service executes the installed Python directly rather than `pixi run`, so service start cannot trigger dependency resolution.
+
+Runtime acceptance on 2026-08-31 established:
+
+- a fresh Packer image passed core doctor and USB/BlueZ doctor while environment and source both reported `missing`;
+- `vm-fixture-start` failed with the explicit `vm-fixture-install` remediation and performed no install;
+- explicit environment install, no-network source sync, atomic activation, service readiness, and repeated cached install/start passed;
+- fixture deployment left `vm-build` cached;
+- doctor/status reported image, environment, and source fingerprints;
+- UB500 attach, BlueZ/BLESS readiness, and Windows scan/connect/public GATT discovery RF smokes did not regress.
+
+A deliberate interrupted-copy/invalid-source injection and runtime-overlay reset remain useful recovery gates; the activation order already prevents an unvalidated staging tree from becoming active.
+
+`vm-bootstrap` is the only command allowed to perform explicit first-time host downloads or installation. `vm-fixture-install` is the explicit guest fixture-environment update command. Ordinary `vm-start`, tests, doctor, and source sync operations must fail with remediation guidance rather than silently changing toolchains, resolving dependencies, or accepting licenses.
+
+Large base images, Packer caches/plugins, overlays, sockets, PID files, and runtime logs belong under ignored `.work/vm/linux-peripheral/`. Tracked metadata under `vm/linux-peripheral/` records immutable asset URLs, versions, cryptographic hashes, and provisioning inputs so an environment can be reproduced and reported without committing disk images.
+
+VM automation can make provisioning and lifecycle repeatable, but it cannot make RF deterministic or guarantee that Windows has released the USB controller from its Bluetooth driver. The hardware spike must still establish host-driver ownership, passthrough, reset, detach/attach, and recovery behavior before these commands become a supported test provider.
 
 ## Control and telemetry contract
 

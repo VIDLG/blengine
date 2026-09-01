@@ -18,7 +18,7 @@ DEFAULT_FIXTURE = (
     / "tests"
     / "conformance"
     / "scenarios"
-    / "basic-gatt-peripheral.json"
+    / "android-basic-gatt-peripheral.json"
 )
 
 PROPERTY_NAMES = {

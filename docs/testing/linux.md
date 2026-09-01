@@ -129,7 +129,7 @@ Linux Central -> Linux BLESS 的自包含 RF HIL 要求两套独立 controller�
 - Peripheral VM 独占 P-Controller；
 - Windows host 通过 SSH 启停两个 guest、下发测试并汇总日志；
 - Peripheral 控制面继续使用项目共享的 CLI/NDJSON contract；
-- 复用同一套 `tools/test-peripheral`、scenario、run ID、BLE fixture 和 telemetry assertion。
+- 复用`tests/peripherals/bless/`中的guest fixture、`tools/peripheral_fixture/`中的host编排、共享scenario、run ID、BLE fixture和telemetry assertion。
 
 该方案资源占用和编排复杂度更高，但 adapter role、BlueZ/D-Bus 实例和日志边界最清楚。
 
@@ -225,7 +225,7 @@ BLESS HIL 不能替代 FakeBackend 对 duplicate、orphan、stale 和任意乱�
 以下 recipe 名称是 Phase 6 的计划接口，当前不得据此假定它们已经存在：
 
 - `just linux-vm-start`：启动通用 Linux Central/development VM；
-- 独立 peripheral recipe/profile：启动 Linux Peripheral VM，避免角色混淆；
+- `just peripheral vm-start`：启动Linux Peripheral VM；该计划入口属于Peripheral provider，不与Linux Central VM混用；
 - `just linux-test`：默认不要求硬件；
 - `just linux-test-hil`：先运行 dual-controller doctor，再执行串行 HIL。
 

@@ -19,6 +19,7 @@ import android.bluetooth.le.BluetoothLeAdvertiser
 import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import java.io.Closeable
 import java.util.UUID
@@ -42,6 +43,27 @@ internal data class PeripheralSnapshot(
     val subscriptions: Map<String, SubscriptionMode>,
     val updateValue: ByteArray,
     val lastEvent: String,
+)
+
+internal data class NotificationBurstCompletion(
+    val count: Int,
+    val payloadBytes: Int,
+    val localElapsedNanos: Long,
+    val error: String?,
+)
+
+internal data class WriteBatchSnapshot(
+    val batchId: ByteArray,
+    val expectedCount: Int,
+    val receivedCount: Int,
+    val uniqueCount: Int,
+    val missingCount: Int,
+    val duplicateCount: Int,
+    val outOfOrderCount: Int,
+    val outOfRangeCount: Int,
+    val foreignBatchCount: Int,
+    val malformedCount: Int,
+    val callbackSpanNanos: Long,
 )
 
 @SuppressLint("MissingPermission")
@@ -68,10 +90,48 @@ internal class BlePeripheralServer(
     private var gattServer: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
     private var advertiseCallback: AdvertiseCallback? = null
+    private var notificationBurst: ActiveNotificationBurst? = null
+    private var writeBatch: ActiveWriteBatch? = null
 
     private val updateProfile = profile.services
         .flatMap(ServiceProfile::characteristics)
         .single { it.role == "updates" }
+
+    private class ActiveNotificationBurst(
+        val generation: Long,
+        val device: BluetoothDevice,
+        val burstId: ByteArray,
+        val count: Int,
+        val payloadBytes: Int,
+        val startedAtNanos: Long,
+        val onComplete: (NotificationBurstCompletion) -> Unit,
+        var nextSequence: Int = 0,
+        var completedCount: Int = 0,
+    )
+
+    private data class NotificationBurstDispatch(
+        val generation: Long,
+        val device: BluetoothDevice,
+        val server: BluetoothGattServer,
+        val characteristic: BluetoothGattCharacteristic,
+        val sequence: Int,
+        val payload: ByteArray,
+    )
+
+    private class ActiveWriteBatch(
+        val batchId: ByteArray,
+        val expectedCount: Int,
+        val seenSequences: MutableSet<Long> = mutableSetOf(),
+        var nextSequence: Long = 0,
+        var receivedCount: Int = 0,
+        var duplicateCount: Int = 0,
+        var outOfOrderCount: Int = 0,
+        var outOfRangeCount: Int = 0,
+        var foreignBatchCount: Int = 0,
+        var malformedCount: Int = 0,
+        var firstCallbackNanos: Long? = null,
+        var lastCallbackNanos: Long? = null,
+    )
 
     private inner class GattCallback(
         private val generation: Long,
@@ -93,15 +153,33 @@ internal class BlePeripheralServer(
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
             val key = device.address
-            synchronized(lock) {
+            val burstCompletion = synchronized(lock) {
                 if (generation != lifecycleGeneration) return
                 if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
                     connectedDevices[key] = device
+                    null
                 } else {
                     connectedDevices.remove(key)
                     subscriptions.remove(key)
                     inFlightUpdates.remove(key)
+                    if (notificationBurst?.device?.address == key) {
+                        finishNotificationBurstLocked(
+                            "notification burst device disconnected: status=$status state=$newState",
+                        )
+                    } else {
+                        null
+                    }
                 }
+            }
+            burstCompletion?.invoke()
+            if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
+                serverFor(generation)?.setPreferredPhy(
+                    device,
+                    BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_LE_2M_MASK,
+                    BluetoothDevice.PHY_OPTION_NO_PREFERRED,
+                )
+                serverFor(generation)?.readPhy(device)
             }
             publish("connection device=$key status=$status state=$newState")
         }
@@ -149,21 +227,25 @@ internal class BlePeripheralServer(
                 offset != 0 -> BluetoothGatt.GATT_INVALID_OFFSET
                 else -> BluetoothGatt.GATT_SUCCESS
             }
-            if (status == BluetoothGatt.GATT_SUCCESS) {
+            val benchmarkWrite = if (status == BluetoothGatt.GATT_SUCCESS) {
                 synchronized(lock) {
                     if (generation != lifecycleGeneration) return
                     values[characteristic.uuid] = value.copyOf()
+                    recordWriteBatchLocked(value)
                 }
-            } else if (!isCurrent(generation)) {
-                return
+            } else {
+                if (!isCurrent(generation)) return
+                false
             }
             if (responseNeeded) {
                 serverFor(generation)?.sendResponse(device, requestId, status, offset, null)
             }
-            publish(
-                "write device=${device.address} characteristic=${characteristic.uuid} " +
-                    "status=$status value=${value.toHex()}",
-            )
+            if (!benchmarkWrite) {
+                publish(
+                    "write device=${device.address} characteristic=${characteristic.uuid} " +
+                        "status=$status value=${value.toHex()}",
+                )
+            }
         }
 
         override fun onDescriptorReadRequest(
@@ -209,7 +291,7 @@ internal class BlePeripheralServer(
                 mode == null -> BluetoothGatt.GATT_FAILURE
                 else -> BluetoothGatt.GATT_SUCCESS
             }
-            if (status == BluetoothGatt.GATT_SUCCESS) {
+            val burstCompletion = if (status == BluetoothGatt.GATT_SUCCESS) {
                 synchronized(lock) {
                     if (generation != lifecycleGeneration) return
                     if (mode == SubscriptionMode.DISABLED) {
@@ -217,11 +299,21 @@ internal class BlePeripheralServer(
                     } else {
                         subscriptions[device.address] = checkNotNull(mode)
                     }
+                    if (!notificationSubscriberMatchesBurstLocked()) {
+                        finishNotificationBurstLocked(
+                            "notification subscribers changed during burst",
+                        )
+                    } else {
+                        null
+                    }
                 }
+            } else {
+                null
             }
             if (responseNeeded) {
                 serverFor(generation)?.sendResponse(device, requestId, status, offset, null)
             }
+            burstCompletion?.invoke()
             publish(
                 "CCCD write device=${device.address} status=$status " +
                     "mode=${mode ?: "invalid"} value=${value.toHex()}",
@@ -240,10 +332,35 @@ internal class BlePeripheralServer(
         }
 
         override fun onNotificationSent(device: BluetoothDevice, status: Int) {
-            val accepted = synchronized(lock) {
-                generation == lifecycleGeneration && inFlightUpdates.remove(device.address)
+            var burstCompletion: (() -> Unit)? = null
+            var dispatchNext = false
+            val ordinaryUpdate = synchronized(lock) {
+                if (generation != lifecycleGeneration || !inFlightUpdates.remove(device.address)) {
+                    return
+                }
+                val burst = notificationBurst
+                if (burst == null || burst.device.address != device.address) {
+                    true
+                } else {
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        burstCompletion = finishNotificationBurstLocked(
+                            "notification burst callback failed at sequence=" +
+                                "${burst.completedCount}: status=$status",
+                        )
+                    } else {
+                        burst.completedCount += 1
+                        if (burst.completedCount == burst.count) {
+                            burstCompletion = finishNotificationBurstLocked(null)
+                        } else {
+                            dispatchNext = true
+                        }
+                    }
+                    false
+                }
             }
-            if (accepted) {
+            burstCompletion?.invoke()
+            if (dispatchNext) dispatchNextNotificationBurst()
+            if (ordinaryUpdate) {
                 publish("notification completion device=${device.address} status=$status")
             }
         }
@@ -251,6 +368,22 @@ internal class BlePeripheralServer(
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
             if (!isCurrent(generation)) return
             publish("MTU changed device=${device.address} mtu=$mtu")
+        }
+
+        override fun onPhyUpdate(device: BluetoothDevice, txPhy: Int, rxPhy: Int, status: Int) {
+            if (!isCurrent(generation)) return
+            publish(
+                "PHY updated device=${device.address} tx=${txPhy.phyName()} " +
+                    "rx=${rxPhy.phyName()} status=$status",
+            )
+        }
+
+        override fun onPhyRead(device: BluetoothDevice, txPhy: Int, rxPhy: Int, status: Int) {
+            if (!isCurrent(generation)) return
+            publish(
+                "PHY read device=${device.address} tx=${txPhy.phyName()} " +
+                    "rx=${rxPhy.phyName()} status=$status",
+            )
         }
     }
 
@@ -308,6 +441,7 @@ internal class BlePeripheralServer(
             subscriptions.clear()
             inFlightUpdates.clear()
             pendingServices.clear()
+            writeBatch = null
         }
 
         try {
@@ -326,7 +460,8 @@ internal class BlePeripheralServer(
     }
 
     fun stop() {
-        val resources = synchronized(lock) {
+        val (resources, burstCompletion) = synchronized(lock) {
+            val completion = finishNotificationBurstLocked("notification burst stopped")
             lifecycleGeneration += 1
             val captured = Triple(advertiser, advertiseCallback, gattServer)
             advertiser = null
@@ -337,19 +472,27 @@ internal class BlePeripheralServer(
             connectedDevices.clear()
             subscriptions.clear()
             inFlightUpdates.clear()
-            captured
+            writeBatch = null
+            captured to completion
         }
         resources.first?.let { selectedAdvertiser ->
             resources.second?.let(selectedAdvertiser::stopAdvertising)
         }
         resources.third?.clearServices()
         resources.third?.close()
+        burstCompletion?.invoke()
         publish("fixture stopped")
     }
 
     fun disconnectAll() {
-        val server = synchronized(lock) { gattServer }
-        val devices = synchronized(lock) { connectedDevices.values.toList() }
+        val (server, devices, burstCompletion) = synchronized(lock) {
+            Triple(
+                gattServer,
+                connectedDevices.values.toList(),
+                finishNotificationBurstLocked("notification burst disconnect requested"),
+            )
+        }
+        burstCompletion?.invoke()
         devices.forEach { server?.cancelConnection(it) }
         publish("disconnect requested for ${devices.size} device(s)")
     }
@@ -357,6 +500,85 @@ internal class BlePeripheralServer(
     fun sendNotification(value: ByteArray) = sendUpdate(value, SubscriptionMode.NOTIFICATION)
 
     fun sendIndication(value: ByteArray) = sendUpdate(value, SubscriptionMode.INDICATION)
+
+    fun sendNotificationBurst(
+        burstId: ByteArray,
+        count: Int,
+        payloadBytes: Int,
+        onComplete: (NotificationBurstCompletion) -> Unit,
+    ) {
+        require(burstId.size == BURST_ID_BYTES) { "burst_id must be exactly 8 bytes" }
+        require(count in MIN_BURST_COUNT..MAX_BURST_COUNT) {
+            "notification burst count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
+        }
+        require(payloadBytes in BURST_HEADER_BYTES..MAX_BURST_PAYLOAD_BYTES) {
+            "notification burst payload must be between $BURST_HEADER_BYTES and " +
+                "$MAX_BURST_PAYLOAD_BYTES bytes"
+        }
+        synchronized(lock) {
+            check(notificationBurst == null) { "a notification burst is already active" }
+            check(inFlightUpdates.isEmpty()) {
+                "a notification or indication is already in flight"
+            }
+            checkNotNull(gattServer) { "GATT server is not running" }
+            checkNotNull(characteristics[updateProfile.uuid]) {
+                "updates characteristic is unavailable"
+            }
+            val targets = connectedDevices
+                .filterKeys { subscriptions[it] == SubscriptionMode.NOTIFICATION }
+                .values
+                .toList()
+            check(targets.size == 1) {
+                "notification burst requires exactly one Notification subscriber; found ${targets.size}"
+            }
+            notificationBurst = ActiveNotificationBurst(
+                generation = lifecycleGeneration,
+                device = targets.single(),
+                burstId = burstId.copyOf(),
+                count = count,
+                payloadBytes = payloadBytes,
+                startedAtNanos = SystemClock.elapsedRealtimeNanos(),
+                onComplete = onComplete,
+            )
+        }
+        dispatchNextNotificationBurst()
+    }
+
+    fun startWriteBatch(batchId: ByteArray, expectedCount: Int) {
+        require(batchId.size == WRITE_BATCH_ID_BYTES) {
+            "write batch ID must be exactly $WRITE_BATCH_ID_BYTES bytes"
+        }
+        require(expectedCount in MIN_BURST_COUNT..MAX_BURST_COUNT) {
+            "write batch count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
+        }
+        synchronized(lock) {
+            checkNotNull(gattServer) { "GATT server is not running" }
+            writeBatch = ActiveWriteBatch(batchId.copyOf(), expectedCount)
+        }
+    }
+
+    fun writeBatchSnapshot(batchId: ByteArray): WriteBatchSnapshot = synchronized(lock) {
+        require(batchId.size == WRITE_BATCH_ID_BYTES) {
+            "write batch ID must be exactly $WRITE_BATCH_ID_BYTES bytes"
+        }
+        val batch = checkNotNull(writeBatch) { "no write batch is active" }
+        check(batch.batchId.contentEquals(batchId)) { "write batch ID does not match" }
+        val first = batch.firstCallbackNanos
+        val last = batch.lastCallbackNanos
+        WriteBatchSnapshot(
+            batchId = batch.batchId.copyOf(),
+            expectedCount = batch.expectedCount,
+            receivedCount = batch.receivedCount,
+            uniqueCount = batch.seenSequences.size,
+            missingCount = batch.expectedCount - batch.seenSequences.size,
+            duplicateCount = batch.duplicateCount,
+            outOfOrderCount = batch.outOfOrderCount,
+            outOfRangeCount = batch.outOfRangeCount,
+            foreignBatchCount = batch.foreignBatchCount,
+            malformedCount = batch.malformedCount,
+            callbackSpanNanos = if (first == null || last == null) 0 else last - first,
+        )
+    }
 
     fun reportStatus() = publish("status requested")
 
@@ -368,6 +590,57 @@ internal class BlePeripheralServer(
     }
 
     override fun close() = stop()
+
+    private fun recordWriteBatchLocked(value: ByteArray): Boolean {
+        if (value.size < WRITE_BATCH_MAGIC.size ||
+            !value.copyOfRange(0, WRITE_BATCH_MAGIC.size).contentEquals(WRITE_BATCH_MAGIC)
+        ) {
+            return false
+        }
+        val batch = writeBatch ?: return true
+        if (value.size !in WRITE_BATCH_HEADER_BYTES..MAX_WRITE_BATCH_PAYLOAD_BYTES) {
+            batch.malformedCount += 1
+            return true
+        }
+        val batchId = value.copyOfRange(
+            WRITE_BATCH_MAGIC.size,
+            WRITE_BATCH_MAGIC.size + WRITE_BATCH_ID_BYTES,
+        )
+        if (!batch.batchId.contentEquals(batchId)) {
+            batch.foreignBatchCount += 1
+            return true
+        }
+
+        val now = SystemClock.elapsedRealtimeNanos()
+        batch.firstCallbackNanos = batch.firstCallbackNanos ?: now
+        batch.lastCallbackNanos = now
+        batch.receivedCount += 1
+        val sequence = value.readLittleEndianLong(WRITE_BATCH_MAGIC.size + WRITE_BATCH_ID_BYTES)
+        if (sequence < 0 || sequence >= batch.expectedCount.toLong()) {
+            batch.outOfRangeCount += 1
+        } else if (!batch.seenSequences.add(sequence)) {
+            batch.duplicateCount += 1
+        } else {
+            if (sequence != batch.nextSequence) batch.outOfOrderCount += 1
+            while (batch.seenSequences.contains(batch.nextSequence)) batch.nextSequence += 1
+        }
+        return true
+    }
+
+    private fun Int.phyName(): String = when (this) {
+        BluetoothDevice.PHY_LE_1M -> "1M"
+        BluetoothDevice.PHY_LE_2M -> "2M"
+        BluetoothDevice.PHY_LE_CODED -> "CODED"
+        else -> "UNKNOWN($this)"
+    }
+
+    private fun ByteArray.readLittleEndianLong(offset: Int): Long {
+        var result = 0L
+        repeat(Long.SIZE_BYTES) { index ->
+            result = result or ((this[offset + index].toLong() and 0xffL) shl (index * 8))
+        }
+        return result
+    }
 
     private fun buildService(serviceProfile: ServiceProfile): BluetoothGattService {
         val type = if (serviceProfile.primary) {
@@ -428,6 +701,9 @@ internal class BlePeripheralServer(
 
     private fun sendUpdate(value: ByteArray, mode: SubscriptionMode) {
         val (server, characteristic, targets) = synchronized(lock) {
+            check(notificationBurst == null) {
+                "a notification burst is active"
+            }
             values[updateProfile.uuid] = value.copyOf()
             val selectedServer = checkNotNull(gattServer) { "GATT server is not running" }
             val selectedCharacteristic = checkNotNull(characteristics[updateProfile.uuid]) {
@@ -486,14 +762,152 @@ internal class BlePeripheralServer(
         }
     }
 
+    private fun dispatchNextNotificationBurst() {
+        var failure: String? = null
+        val dispatch = synchronized(lock) {
+            val burst = notificationBurst ?: return
+            val server = gattServer
+            val characteristic = characteristics[updateProfile.uuid]
+            when {
+                burst.generation != lifecycleGeneration -> {
+                    failure = "notification burst fixture generation changed"
+                    null
+                }
+                server == null -> {
+                    failure = "GATT server is not running"
+                    null
+                }
+                characteristic == null -> {
+                    failure = "updates characteristic is unavailable"
+                    null
+                }
+                !notificationSubscriberMatchesBurstLocked() -> {
+                    failure = "notification burst requires exactly one unchanged Notification subscriber"
+                    null
+                }
+                burst.device.address in inFlightUpdates -> {
+                    failure = "a notification is already in flight for the burst device"
+                    null
+                }
+                burst.nextSequence >= burst.count -> {
+                    failure = "notification burst has no sequence left to dispatch"
+                    null
+                }
+                else -> {
+                    val sequence = burst.nextSequence
+                    val payload = notificationBurstPayload(
+                        burst.burstId,
+                        sequence,
+                        burst.payloadBytes,
+                    )
+                    burst.nextSequence += 1
+                    values[updateProfile.uuid] = payload.copyOf()
+                    inFlightUpdates.add(burst.device.address)
+                    NotificationBurstDispatch(
+                        generation = burst.generation,
+                        device = burst.device,
+                        server = server,
+                        characteristic = characteristic,
+                        sequence = sequence,
+                        payload = payload,
+                    )
+                }
+            }
+        }
+        if (dispatch == null) {
+            failNotificationBurst(checkNotNull(failure))
+            return
+        }
+
+        val rejection = try {
+            val accepted = if (Build.VERSION.SDK_INT >= 33) {
+                dispatch.server.notifyCharacteristicChanged(
+                    dispatch.device,
+                    dispatch.characteristic,
+                    false,
+                    dispatch.payload,
+                ) == BluetoothStatusCodes.SUCCESS
+            } else {
+                dispatch.characteristic.value = dispatch.payload
+                dispatch.server.notifyCharacteristicChanged(
+                    dispatch.device,
+                    dispatch.characteristic,
+                    false,
+                )
+            }
+            if (accepted) null else {
+                "notification burst dispatch rejected at sequence=${dispatch.sequence}"
+            }
+        } catch (error: Exception) {
+            "notification burst dispatch failed at sequence=${dispatch.sequence}: " +
+                (error.message ?: error::class.java.simpleName)
+        }
+        if (rejection != null) {
+            val completion = synchronized(lock) {
+                if (notificationBurst?.generation != dispatch.generation) {
+                    null
+                } else {
+                    inFlightUpdates.remove(dispatch.device.address)
+                    finishNotificationBurstLocked(rejection)
+                }
+            }
+            completion?.invoke()
+        }
+    }
+
+    private fun notificationSubscriberMatchesBurstLocked(): Boolean {
+        val burst = notificationBurst ?: return true
+        val subscriberAddresses = connectedDevices.keys
+            .filter { subscriptions[it] == SubscriptionMode.NOTIFICATION }
+        return subscriberAddresses.size == 1 && subscriberAddresses.single() == burst.device.address
+    }
+
+    private fun failNotificationBurst(message: String) {
+        val completion = synchronized(lock) { finishNotificationBurstLocked(message) }
+        completion?.invoke()
+    }
+
+    private fun finishNotificationBurstLocked(error: String?): (() -> Unit)? {
+        val burst = notificationBurst ?: return null
+        notificationBurst = null
+        inFlightUpdates.remove(burst.device.address)
+        val completion = NotificationBurstCompletion(
+            count = burst.count,
+            payloadBytes = burst.payloadBytes,
+            localElapsedNanos = SystemClock.elapsedRealtimeNanos() - burst.startedAtNanos,
+            error = error,
+        )
+        return { burst.onComplete(completion) }
+    }
+
+    private fun notificationBurstPayload(
+        burstId: ByteArray,
+        sequence: Int,
+        payloadBytes: Int,
+    ): ByteArray {
+        val payload = ByteArray(payloadBytes)
+        BURST_MAGIC.copyInto(payload, destinationOffset = 0)
+        burstId.copyInto(payload, destinationOffset = BURST_MAGIC.size)
+        val sequenceOffset = BURST_MAGIC.size + BURST_ID_BYTES
+        val sequenceValue = sequence.toLong()
+        repeat(Long.SIZE_BYTES) { index ->
+            payload[sequenceOffset + index] = (sequenceValue ushr (index * Byte.SIZE_BITS)).toByte()
+        }
+        for (index in BURST_HEADER_BYTES until payload.size) {
+            payload[index] = (burstId[index % burstId.size].toInt() xor (index * 17)).toByte()
+        }
+        return payload
+    }
+
     private fun findCharacteristic(uuid: UUID): CharacteristicProfile? =
         profile.services.asSequence()
             .flatMap { it.characteristics.asSequence() }
             .firstOrNull { it.uuid == uuid }
 
     private fun fail(generation: Long, message: String) {
-        val resources = synchronized(lock) {
+        val (resources, burstCompletion) = synchronized(lock) {
             if (generation != lifecycleGeneration) return
+            val completion = finishNotificationBurstLocked(message)
             lifecycleGeneration += 1
             val captured = Triple(advertiser, advertiseCallback, gattServer)
             advertiser = null
@@ -504,13 +918,14 @@ internal class BlePeripheralServer(
             connectedDevices.clear()
             subscriptions.clear()
             inFlightUpdates.clear()
-            captured
+            captured to completion
         }
         resources.first?.let { selectedAdvertiser ->
             resources.second?.let(selectedAdvertiser::stopAdvertising)
         }
         resources.third?.clearServices()
         resources.third?.close()
+        burstCompletion?.invoke()
         publish(message)
     }
 
@@ -578,6 +993,16 @@ internal class BlePeripheralServer(
 
     companion object {
         private const val LOG_TAG = "BleHubPeripheral"
+        private const val MIN_BURST_COUNT = 1
+        private const val MAX_BURST_COUNT = 10_000
+        private const val BURST_ID_BYTES = 8
+        private const val BURST_HEADER_BYTES = 20
+        private const val MAX_BURST_PAYLOAD_BYTES = 512
+        private const val WRITE_BATCH_ID_BYTES = 8
+        private const val WRITE_BATCH_HEADER_BYTES = 20
+        private const val MAX_WRITE_BATCH_PAYLOAD_BYTES = 512
+        private val BURST_MAGIC = byteArrayOf('B'.code.toByte(), 'H'.code.toByte(), 'N'.code.toByte(), '1'.code.toByte())
+        private val WRITE_BATCH_MAGIC = byteArrayOf('B'.code.toByte(), 'H'.code.toByte(), 'W'.code.toByte(), '1'.code.toByte())
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val CCCD_DISABLED = byteArrayOf(0x00, 0x00)
         private val CCCD_NOTIFICATION = byteArrayOf(0x01, 0x00)

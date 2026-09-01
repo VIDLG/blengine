@@ -1,0 +1,31 @@
+schema_version = 1
+
+[qemu]
+version = "11.1.0"
+installer_url = "https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe"
+installer_filename = "qemu-w64-setup-20260811.exe"
+installer_sha512 = "5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037fdfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543"
+provenance = "Unofficial Windows binaries published by Stefan Weil for upstream QEMU."
+
+[guest_image]
+distribution = "Debian"
+release = "13 (trixie)"
+build = "20260826-2582"
+architecture = "amd64"
+variant = "generic"
+url = "https://cloud.debian.org/images/cloud/trixie/20260826-2582/debian-13-generic-amd64-20260826-2582.qcow2"
+filename = "debian-13-generic-amd64-20260826-2582.qcow2"
+sha512 = "720d9a2d21167e8aa1bb86a8a816658c7beaeec6975c376e15a0761383a869a466cbf7fe11c287c989020070309889dd81c37cd412290531245e3562334e05f3"
+
+[pixi]
+version = "0.67.2"
+url = "https://github.com/prefix-dev/pixi/releases/download/v0.67.2/pixi-x86_64-unknown-linux-musl.tar.gz"
+filename = "pixi-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "a2e8d1dc18351e71a67cee22c8ff1635636d625c7d2dcf068ca035cda1dd133b"
+
+[usb_controller]
+name = "TP-Link UB500 Adapter"
+vendor_id = "2357"
+product_id = "0604"
+serial = "D4D6DFEB8369"
+windows_instance_id = "USB\\VID_2357&PID_0604\\D4D6DFEB8369"

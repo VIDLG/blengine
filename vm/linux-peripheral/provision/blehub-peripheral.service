@@ -1,0 +1,19 @@
+[Unit]
+Description=BleHub managed BLESS peripheral fixture
+After=bluetooth.service dbus.service
+Requires=bluetooth.service dbus.service
+
+[Service]
+Type=simple
+User=root
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=/usr/bin/bluetoothctl power on
+ExecStart=/opt/blehub/fixture/current-environment/.pixi/envs/default/bin/python /opt/blehub/fixture/current/bless_fixture.py serve --scenario /opt/blehub/fixture/current/basic-gatt-peripheral.json --status-file /run/blehub-peripheral/status.json
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=blehub-peripheral
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

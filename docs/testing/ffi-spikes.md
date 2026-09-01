@@ -73,11 +73,11 @@ The 2026-08-29 production-candidate rerun verified:
 - 10,000 complete production fixture/state/sink/backend cycles return the observable counters to baseline in desktop Kotlin/JVM, Windows Swift, Android physical, and Android emulator lanes;
 - Android packages and consumes `arm64-v8a` and `x86_64` native libraries through a published AAR rather than a source-tree project dependency.
 
-Stable UniFFI `0.32.0` has a Windows Kotlin/JNA carrier defect for checksum functions declared as C `uint16_t`: JNA direct mapping widens the return to Kotlin `Int` without reliably clearing the upper bits. Only `uniffi.windows-kotlin.toml` sets `omit_checksums = true`. The runnable binding is paired with a separately generated checksum-reference binding, and `tools/check_uniffi_windows_checksums.py` compared all 17 exported checksums by their declared low 16 bits plus both `uint32_t` contract-version functions exactly. Android and Swift retain the generated checksum checks and initialized successfully without this workaround. Generated bindings were not patched.
+Stable UniFFI `0.32.0` has a Windows Kotlin/JNA carrier defect for checksum functions declared as C `uint16_t`: JNA direct mapping widens the return to Kotlin `Int` without reliably clearing the upper bits. Only `uniffi.windows-kotlin.toml` sets `omit_checksums = true`. The runnable binding is paired with a separately generated checksum-reference binding, and `tools/check_uniffi_windows_checksums.py` compared all 36 exported checksums by their declared low 16 bits plus both `uint32_t` contract-version functions exactly. Android and Swift retain the generated checksum checks and initialized successfully without this workaround. Generated bindings were not patched.
 
 ### 2.3 Still required before production ABI freeze
 
-- Run the production candidate on real macOS Swift and through the future XCFramework/SPM artifact-only consumer before Apple Phase 5. `ffi-candidate-test-swift-macos` remains available through the manual-only Apple workflow, but has not executed in this Windows session. The current Windows Swift result is supplementary.
+- Run the production candidate on real macOS Swift and through the future XCFramework/SPM artifact-only consumer before Apple Phase 5. `spike swift-macos` remains available through the manual-only Apple workflow, but has not executed in this Windows session. The current Windows Swift result is supplementary.
 - Expand the candidate from the minimal Phase 0 scan/connect wire to every final `BleEvent` variant, `ScanStopResult`, `ConnectionStateResult`, `NotificationState`, optional terminal error, and owned payload boundary vector.
 - Complete remaining deterministic catalog cases, including explicit repeated bind, rollback-cleanup secondary diagnostics, broad state-sequence generation, and payload lifetime after the foreign frame returns.
 - Record final absolute performance, close latency, package size, release/minified Android behavior, artifact manifests, and generator/runtime/ABI metadata checks.
@@ -219,7 +219,7 @@ Required runtime coverage:
 
 Desktop JVM evidence is not Android ART evidence and does not claim BLE behavior.
 
-Current production-candidate command: `pixi run just ffi-candidate-test-kotlin-jvm`. It passed on Windows after independently verifying 17 checksum functions and two contract-version functions. The Windows-only checksum workaround and its scope are recorded in section 2.2.
+Current production-candidate command: `pixi run just spike kotlin-jvm`. It passed on Windows after independently verifying 36 checksum functions and two contract-version functions. The Windows-only checksum workaround and its scope are recorded in section 2.2.
 
 ### 6.2 Android ART/AAR
 
@@ -233,7 +233,7 @@ Prefer a connected physical device; otherwise use the managed emulator for FFI-o
 
 It does not validate `ScanCallback`, `BluetoothGattCallback`, permissions, RF, or vendor BLE behavior until the production Android backend/HIL phases.
 
-Current production-candidate command: `pixi run just ffi-candidate-test-android <physical|emulator>`. Both Android 16 lanes passed: the physical `MAG-AN00` and the `medium_phone` x86_64 AVD each ran nine production-object-graph instrumentation tests plus one published-AAR consumer test. The generated Android bindings retained normal UniFFI checksum validation.
+Current production-candidate command: `pixi run just spike android <physical|emulator>`. Both Android 16 lanes passed: the latest physical `MAG-AN00` gate ran 10 production-object-graph instrumentation tests plus one published-AAR consumer test, and the `medium_phone` x86_64 AVD lane also passed the production candidate. The generated Android bindings retained normal UniFFI checksum validation.
 
 ### 6.3 Swift host and Apple packaging
 
@@ -251,7 +251,7 @@ Required coverage:
 
 This does not claim CoreBluetooth, signing, installation, or BLE/RF behavior.
 
-Current supplementary command: `pixi run just ffi-candidate-test-swift-windows`. Swift `6.3.3` compiled both UniFFI components against one production candidate DLL, retained normal checksum checks, contained the deliberate Rust sink panic, and completed 10,000 ARC lifecycle cycles. `pixi run -e apple-ci just ffi-candidate-test-swift-macos` is available through the manual-only Apple workflow; production-candidate macOS/Xcode runtime and Apple package-consumer validation remain deferred until before Apple Phase 5.
+Current supplementary command: `pixi run just spike swift-windows`. Swift `6.3.3` compiled both UniFFI components against one production candidate DLL, retained normal checksum checks, contained the deliberate Rust sink panic, and completed 10,000 ARC lifecycle cycles. `pixi run -e apple-ci just spike swift-macos` is available through the manual-only Apple workflow; production-candidate macOS/Xcode runtime and Apple package-consumer validation remain deferred until before Apple Phase 5.
 
 ## 7. Error, panic, and event-wire gate
 

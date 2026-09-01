@@ -1,0 +1,5 @@
+[source.crates-io]
+replace-with = "blehub-staged"
+
+[source.blehub-staged]
+directory = "../../../.work/staged/windows/vendor"

@@ -10,7 +10,7 @@ internal data class FixtureProfile(
     val services: List<ServiceProfile>,
 ) {
     companion object {
-        private const val FILE_NAME = "basic-gatt-peripheral.json"
+        private const val FILE_NAME = "android-basic-gatt-peripheral.json"
 
         fun load(context: Context): FixtureProfile {
             val text = context.assets.open(FILE_NAME).bufferedReader().use { it.readText() }

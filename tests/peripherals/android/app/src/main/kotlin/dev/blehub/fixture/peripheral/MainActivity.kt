@@ -175,6 +175,9 @@ class MainActivity : Activity() {
             COMMAND_INDICATE -> runAction({
                 server.sendIndication(requireValue(intent).decodeHex())
             }, controlId)
+            COMMAND_NOTIFICATION_BURST -> runNotificationBurst(intent, controlId)
+            COMMAND_WRITE_BATCH_START -> runWriteBatchStart(intent, controlId)
+            COMMAND_WRITE_BATCH_STATUS -> runWriteBatchStatus(intent, controlId)
             COMMAND_DISCONNECT -> runAction(server::disconnectAll, controlId)
             COMMAND_STATUS -> runAction(server::reportStatus, controlId)
             COMMAND_READY -> runAction(server::requireAdvertising, controlId)
@@ -190,11 +193,132 @@ class MainActivity : Activity() {
     private fun clearControlExtras(intent: Intent?) {
         intent?.removeExtra(EXTRA_COMMAND)
         intent?.removeExtra(EXTRA_VALUE)
+        intent?.removeExtra(EXTRA_BURST_ID)
+        intent?.removeExtra(EXTRA_COUNT)
+        intent?.removeExtra(EXTRA_PAYLOAD_BYTES)
         intent?.removeExtra(EXTRA_CONTROL_ID)
     }
 
     private fun requireValue(intent: Intent?): String =
         requireNotNull(intent?.getStringExtra(EXTRA_VALUE)) { "command requires a hex value" }
+
+    private fun runNotificationBurst(intent: Intent?, controlId: String?) {
+        var count: Int? = null
+        try {
+            count = requireBurstCount(intent)
+            val burstIdText = requireNotNull(intent?.getStringExtra(EXTRA_BURST_ID)) {
+                "notification-burst requires burst_id"
+            }
+            require(BURST_ID_PATTERN.matches(burstIdText)) {
+                "burst_id must be exactly 16 lowercase hexadecimal characters"
+            }
+            val payloadBytes = intent?.getIntExtra(EXTRA_PAYLOAD_BYTES, DEFAULT_BURST_PAYLOAD_BYTES)
+                ?: DEFAULT_BURST_PAYLOAD_BYTES
+            server.sendNotificationBurst(
+                burstIdText.decodeHex(),
+                count,
+                payloadBytes,
+            ) { completion ->
+                completeNotificationBurst(controlId, completion)
+            }
+        } catch (error: Exception) {
+            val message = error.message ?: error::class.java.simpleName
+            appendLog("ERROR: $message")
+            acknowledge(
+                controlId,
+                false,
+                message,
+                "operation=$COMMAND_NOTIFICATION_BURST count=${count ?: "invalid"}",
+            )
+        }
+    }
+
+    private fun requireBurstCount(intent: Intent?): Int {
+        require(intent?.hasExtra(EXTRA_COUNT) == true) {
+            "notification-burst requires count"
+        }
+        val count = intent.getIntExtra(EXTRA_COUNT, 0)
+        require(count in MIN_BURST_COUNT..MAX_BURST_COUNT) {
+            "notification burst count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
+        }
+        return count
+    }
+
+    private fun runWriteBatchStart(intent: Intent?, controlId: String?) {
+        var count: Int? = null
+        try {
+            count = requireBurstCount(intent)
+            val batchId = requireBatchId(intent)
+            server.startWriteBatch(batchId, count)
+            acknowledge(
+                controlId,
+                true,
+                null,
+                "operation=$COMMAND_WRITE_BATCH_START batch_id=${batchId.toHex()} count=$count",
+            )
+        } catch (error: Exception) {
+            val message = error.message ?: error::class.java.simpleName
+            appendLog("ERROR: $message")
+            acknowledge(
+                controlId,
+                false,
+                message,
+                "operation=$COMMAND_WRITE_BATCH_START count=${count ?: "invalid"}",
+            )
+        }
+    }
+
+    private fun runWriteBatchStatus(intent: Intent?, controlId: String?) {
+        try {
+            val snapshot = server.writeBatchSnapshot(requireBatchId(intent))
+            val details = buildString {
+                append("operation=$COMMAND_WRITE_BATCH_STATUS")
+                append(" batch_id=${snapshot.batchId.toHex()}")
+                append(" expected_count=${snapshot.expectedCount}")
+                append(" received_count=${snapshot.receivedCount}")
+                append(" unique_count=${snapshot.uniqueCount}")
+                append(" missing_count=${snapshot.missingCount}")
+                append(" duplicate_count=${snapshot.duplicateCount}")
+                append(" out_of_order_count=${snapshot.outOfOrderCount}")
+                append(" out_of_range_count=${snapshot.outOfRangeCount}")
+                append(" foreign_batch_count=${snapshot.foreignBatchCount}")
+                append(" malformed_count=${snapshot.malformedCount}")
+                append(" callback_span_ns=${snapshot.callbackSpanNanos}")
+            }
+            acknowledge(controlId, true, null, details)
+        } catch (error: Exception) {
+            val message = error.message ?: error::class.java.simpleName
+            appendLog("ERROR: $message")
+            acknowledge(controlId, false, message, "operation=$COMMAND_WRITE_BATCH_STATUS")
+        }
+    }
+
+    private fun requireBatchId(intent: Intent?): ByteArray {
+        val batchIdText = requireNotNull(intent?.getStringExtra(EXTRA_BURST_ID)) {
+            "write batch command requires batch_id"
+        }
+        require(BURST_ID_PATTERN.matches(batchIdText)) {
+            "batch_id must be exactly 16 lowercase hexadecimal characters"
+        }
+        return batchIdText.decodeHex()
+    }
+
+    private fun completeNotificationBurst(
+        controlId: String?,
+        completion: NotificationBurstCompletion,
+    ) {
+        val details =
+            "operation=$COMMAND_NOTIFICATION_BURST count=${completion.count} " +
+                "payload_bytes=${completion.payloadBytes} " +
+                "local_elapsed_ns=${completion.localElapsedNanos}"
+        val error = completion.error
+        if (error == null) {
+            acknowledge(controlId, true, null, details)
+        } else {
+            acknowledge(controlId, false, error, details)
+            runOnUiThread { appendLog("ERROR: $error") }
+        }
+    }
 
     private fun runAction(action: () -> Unit, controlId: String? = null) {
         try {
@@ -207,12 +331,18 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun acknowledge(controlId: String?, succeeded: Boolean, message: String?) {
+    private fun acknowledge(
+        controlId: String?,
+        succeeded: Boolean,
+        message: String?,
+        details: String? = null,
+    ) {
         if (controlId == null) return
+        val detailSuffix = details?.let { " $it" }.orEmpty()
         if (succeeded) {
-            Log.i(LOG_TAG, "control id=$controlId result=ok")
+            Log.i(LOG_TAG, "control id=$controlId result=ok$detailSuffix")
         } else {
-            Log.e(LOG_TAG, "control id=$controlId result=error message=$message")
+            Log.e(LOG_TAG, "control id=$controlId result=error$detailSuffix message=$message")
         }
     }
 
@@ -236,14 +366,24 @@ class MainActivity : Activity() {
         private const val PERMISSION_REQUEST = 1
         private const val EXTRA_COMMAND = "fixture_command"
         private const val EXTRA_VALUE = "value"
+        private const val EXTRA_BURST_ID = "burst_id"
+        private const val EXTRA_COUNT = "count"
+        private const val EXTRA_PAYLOAD_BYTES = "payload_bytes"
         private const val EXTRA_CONTROL_ID = "control_id"
         private const val COMMAND_START = "start"
         private const val COMMAND_STOP = "stop"
         private const val COMMAND_NOTIFY = "notify"
         private const val COMMAND_INDICATE = "indicate"
+        private const val COMMAND_NOTIFICATION_BURST = "notification-burst"
+        private const val COMMAND_WRITE_BATCH_START = "write-batch-start"
+        private const val COMMAND_WRITE_BATCH_STATUS = "write-batch-status"
         private const val COMMAND_DISCONNECT = "disconnect"
         private const val COMMAND_STATUS = "status"
         private const val COMMAND_READY = "ready"
+        private const val MIN_BURST_COUNT = 1
+        private const val MAX_BURST_COUNT = 10_000
+        private const val DEFAULT_BURST_PAYLOAD_BYTES = 20
+        private val BURST_ID_PATTERN = Regex("[0-9a-f]{16}")
         private val REQUIRED_PERMISSIONS = arrayOf(
             Manifest.permission.BLUETOOTH_ADVERTISE,
             Manifest.permission.BLUETOOTH_CONNECT,

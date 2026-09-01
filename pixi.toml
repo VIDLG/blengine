@@ -5,6 +5,7 @@ platforms = ["win-64", "linux-64", "osx-64", "osx-arm64"]
 
 [dependencies]
 python = ">=3.12,<3.14"
+7zip = "26.02.*"
 just = ">=1.38,<2"
 tqdm = ">=4.67,<5"
 ruff = ">=0.16.5,<0.17"
@@ -48,6 +49,10 @@ apple-ci = { features = ["rust", "apple-ci"], solve-group = "development" }
 [activation.env]
 RUSTC_WRAPPER = "sccache"
 CARGO_INCREMENTAL = "0"
+
+[target.win-64.dependencies]
+packer = "1.16.0.*"
+"qemu.qmp" = "0.0.6.*"
 
 [target.win-64.activation.env]
 CARGO_HOME = "%USERPROFILE%\\.cache\\mobile-ffi-toolchain\\cargo-home"

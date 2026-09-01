@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "profile_id": "blehub-basic-gatt-v1",
+  "profile_id": "blehub-android-basic-gatt-v1",
   "advertising": {
-    "local_name": "BleHubTest",
+    "local_name": "BleHubAndroid",
     "require_local_name": false,
     "service_uuids": [
       "fff00000-0000-4000-8000-000000000000"

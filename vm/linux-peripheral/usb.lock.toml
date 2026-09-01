@@ -1,0 +1,15 @@
+schema_version = 1
+
+[zadig]
+version = "2.9"
+libwdi_version = "1.5.1"
+url = "https://github.com/pbatard/libwdi/releases/download/v1.5.1/zadig-2.9.exe"
+filename = "zadig-2.9.exe"
+sha256 = "4ecaa95df3da3621486a043aef8b3050b8bafe7c901402871e816229ef82039b"
+
+[controller]
+name = "TP-Link UB500 Adapter"
+vendor_id = "2357"
+product_id = "0604"
+serial = "D4D6DFEB8369"
+windows_instance_id = "USB\\VID_2357&PID_0604\\D4D6DFEB8369"

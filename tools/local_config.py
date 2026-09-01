@@ -74,6 +74,7 @@ def report() -> None:
     for name, environment_variable in (
         ("swift", "BLEHUB_SWIFT_ROOT"),
         ("android", "BLEHUB_ANDROID_ROOT"),
+        ("qemu", "BLEHUB_QEMU_ROOT"),
     ):
         configured = resolve_toolchain_root(name, environment_variable)
         print(f"{name}_root={configured.path}")

@@ -1,8 +1,8 @@
 # LightBlue 手工测试外设
 
-本页说明如何用 LightBlue 创建与 [`basic-gatt-peripheral.json`](../../tests/conformance/scenarios/basic-gatt-peripheral.json) 对应的手工测试外设。JSON 场景是测试 UUID 和属性的项目级来源；本页只描述 LightBlue 中的操作映射。
+本页说明如何用 LightBlue 创建与 [`android-basic-gatt-peripheral.json`](../../tests/conformance/scenarios/android-basic-gatt-peripheral.json) 对应的手工测试外设。该 JSON 是 Android/手工 fallback 的 UUID 和属性来源；QEMU/BLESS 使用独立的 `qemu-basic-gatt-peripheral.json` 广播身份，避免并行测试串扰。
 
-该外设现在只作为[`tests/peripherals/android`](../../tests/peripherals/android/)项目fixture不可用时的手工fallback，用于开发期扫描和基础GATT smoke test；日常确定notification验证改用[Android开发外设](android-peripheral.md)。它不替代平台backend conformance、受控BLESS managed peripheral或最终自动HIL。2026-08-29已用Windows Central与HONOR 90 GT上的LightBlue实际通过本页`ble-scan`和`ble-fixture-check`：广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe均成功。2026-08-30又在CCCD订阅成功期间分别手工和通过ADB更新`FFF2...`；Windows经RF读取到新值，但没有收到Notify/Indicate callback，因此该LightBlue配置不作为notification delivery gate。当前工具走Bleak，只证明OS/RF/fixture可用，不证明尚未实现的BleHub `WindowsBackend`。
+该外设现在只作为[`tests/peripherals/android`](../../tests/peripherals/android/)项目fixture不可用时的手工fallback，用于开发期扫描和基础GATT smoke test；日常确定notification验证改用[Android开发外设](android-peripheral.md)。它不替代平台backend conformance、受控BLESS managed peripheral或最终自动HIL。2026-08-29已用Windows Central与HONOR 90 GT上的LightBlue实际通过本页`ble-scan`和`test fixture`：广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe均成功。2026-08-30又在CCCD订阅成功期间分别手工和通过ADB更新`FFF2...`；Windows经RF读取到新值，但没有收到Notify/Indicate callback，因此该LightBlue配置不作为notification delivery gate。当前工具走Bleak，只证明OS/RF/fixture可用，不证明尚未实现的BleHub `WindowsBackend`。
 
 ## 广播配置
 
@@ -40,13 +40,13 @@ pixi run just ble-scan --service-uuid FFF00000-0000-4000-8000-000000000000 --tim
 完整验证默认读取项目 fixture，检查广播、连接、GATT 结构、properties、初始读取、两种写入及订阅/取消订阅：
 
 ```sh
-pixi run just ble-fixture-check
+pixi run just test fixture
 ```
 
 只检查广播和 GATT 结构、不执行数据操作：
 
 ```sh
-pixi run just ble-fixture-check --structure-only
+pixi run just test fixture --structure-only
 ```
 
 自动验证可以确认订阅请求成功。当前Android LightBlue实测中，编辑`FFF2...`会更新可读取的GATT value，但不会向已订阅的Windows Central发送Notify/Indicate callback；notification delivery应等待可编程managed peripheral验证，不能把本fixture的无callback记为BleHub失败或通过。
