@@ -86,7 +86,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 name = "blehub"
 version = "0.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3777003edc29020cd1ffc049b2c97b72cc660fbae6f7b66269c761648844e677"
+checksum = "90cdd2263053817b7039097ed8945f7ea960eb9f002b26376b4e50d6f87f583d"
 dependencies = [
  "thiserror",
  "tracing",
@@ -98,7 +98,7 @@ dependencies = [
 name = "blehub-windows"
 version = "0.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84c1ac05729e537853d5aad9ad87d7bf246043ecca8fc61ff3a6a8cd7f22155b"
+checksum = "b4cb5a67247b84cf8553a88416824bf09d5341d86f7b167876fd6d96a8a23fd2"
 dependencies = [
  "blehub",
  "tracing",

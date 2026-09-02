@@ -175,7 +175,16 @@ class MainActivity : Activity() {
             COMMAND_INDICATE -> runAction({
                 server.sendIndication(requireValue(intent).decodeHex())
             }, controlId)
-            COMMAND_NOTIFICATION_BURST -> runNotificationBurst(intent, controlId)
+            COMMAND_NOTIFICATION_BURST -> runBurst(
+                intent,
+                controlId,
+                SubscriptionMode.NOTIFICATION,
+            )
+            COMMAND_INDICATION_BURST -> runBurst(
+                intent,
+                controlId,
+                SubscriptionMode.INDICATION,
+            )
             COMMAND_WRITE_BATCH_START -> runWriteBatchStart(intent, controlId)
             COMMAND_WRITE_BATCH_STATUS -> runWriteBatchStatus(intent, controlId)
             COMMAND_DISCONNECT -> runAction(server::disconnectAll, controlId)
@@ -202,24 +211,40 @@ class MainActivity : Activity() {
     private fun requireValue(intent: Intent?): String =
         requireNotNull(intent?.getStringExtra(EXTRA_VALUE)) { "command requires a hex value" }
 
-    private fun runNotificationBurst(intent: Intent?, controlId: String?) {
+    private fun runBurst(
+        intent: Intent?,
+        controlId: String?,
+        mode: SubscriptionMode,
+    ) {
+        val operation = mode.burstCommand()
         var count: Int? = null
         try {
-            count = requireBurstCount(intent)
+            count = requireBurstCount(intent, operation)
             val burstIdText = requireNotNull(intent?.getStringExtra(EXTRA_BURST_ID)) {
-                "notification-burst requires burst_id"
+                "$operation requires burst_id"
             }
             require(BURST_ID_PATTERN.matches(burstIdText)) {
                 "burst_id must be exactly 16 lowercase hexadecimal characters"
             }
             val payloadBytes = intent?.getIntExtra(EXTRA_PAYLOAD_BYTES, DEFAULT_BURST_PAYLOAD_BYTES)
                 ?: DEFAULT_BURST_PAYLOAD_BYTES
-            server.sendNotificationBurst(
-                burstIdText.decodeHex(),
-                count,
-                payloadBytes,
-            ) { completion ->
+            val onComplete = { completion: NotificationBurstCompletion ->
                 completeNotificationBurst(controlId, completion)
+            }
+            when (mode) {
+                SubscriptionMode.NOTIFICATION -> server.sendNotificationBurst(
+                    burstIdText.decodeHex(),
+                    count,
+                    payloadBytes,
+                    onComplete,
+                )
+                SubscriptionMode.INDICATION -> server.sendIndicationBurst(
+                    burstIdText.decodeHex(),
+                    count,
+                    payloadBytes,
+                    onComplete,
+                )
+                SubscriptionMode.DISABLED -> error("disabled subscriptions cannot send bursts")
             }
         } catch (error: Exception) {
             val message = error.message ?: error::class.java.simpleName
@@ -228,18 +253,19 @@ class MainActivity : Activity() {
                 controlId,
                 false,
                 message,
-                "operation=$COMMAND_NOTIFICATION_BURST count=${count ?: "invalid"}",
+                "operation=$operation count=${count ?: "invalid"} " +
+                    "mode=${mode.name.lowercase()}",
             )
         }
     }
 
-    private fun requireBurstCount(intent: Intent?): Int {
+    private fun requireBurstCount(intent: Intent?, operation: String): Int {
         require(intent?.hasExtra(EXTRA_COUNT) == true) {
-            "notification-burst requires count"
+            "$operation requires count"
         }
         val count = intent.getIntExtra(EXTRA_COUNT, 0)
         require(count in MIN_BURST_COUNT..MAX_BURST_COUNT) {
-            "notification burst count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
+            "$operation count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
         }
         return count
     }
@@ -247,7 +273,7 @@ class MainActivity : Activity() {
     private fun runWriteBatchStart(intent: Intent?, controlId: String?) {
         var count: Int? = null
         try {
-            count = requireBurstCount(intent)
+            count = requireBurstCount(intent, COMMAND_WRITE_BATCH_START)
             val batchId = requireBatchId(intent)
             server.startWriteBatch(batchId, count)
             acknowledge(
@@ -308,9 +334,10 @@ class MainActivity : Activity() {
         completion: NotificationBurstCompletion,
     ) {
         val details =
-            "operation=$COMMAND_NOTIFICATION_BURST count=${completion.count} " +
+            "operation=${completion.mode.burstCommand()} count=${completion.count} " +
                 "payload_bytes=${completion.payloadBytes} " +
-                "local_elapsed_ns=${completion.localElapsedNanos}"
+                "local_elapsed_ns=${completion.localElapsedNanos} " +
+                "mode=${completion.mode.name.lowercase()}"
         val error = completion.error
         if (error == null) {
             acknowledge(controlId, true, null, details)
@@ -318,6 +345,12 @@ class MainActivity : Activity() {
             acknowledge(controlId, false, error, details)
             runOnUiThread { appendLog("ERROR: $error") }
         }
+    }
+
+    private fun SubscriptionMode.burstCommand(): String = when (this) {
+        SubscriptionMode.NOTIFICATION -> COMMAND_NOTIFICATION_BURST
+        SubscriptionMode.INDICATION -> COMMAND_INDICATION_BURST
+        SubscriptionMode.DISABLED -> error("disabled subscriptions do not have a burst command")
     }
 
     private fun runAction(action: () -> Unit, controlId: String? = null) {
@@ -375,6 +408,7 @@ class MainActivity : Activity() {
         private const val COMMAND_NOTIFY = "notify"
         private const val COMMAND_INDICATE = "indicate"
         private const val COMMAND_NOTIFICATION_BURST = "notification-burst"
+        private const val COMMAND_INDICATION_BURST = "indication-burst"
         private const val COMMAND_WRITE_BATCH_START = "write-batch-start"
         private const val COMMAND_WRITE_BATCH_STATUS = "write-batch-status"
         private const val COMMAND_DISCONNECT = "disconnect"

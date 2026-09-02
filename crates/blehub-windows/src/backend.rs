@@ -16,6 +16,8 @@ use blehub::{
 use windows::Devices::{Bluetooth::BluetoothAdapter, Radios::Radio};
 use windows_future::IAsyncOperation;
 
+#[cfg(feature = "hil-callback-gates")]
+use crate::callback_gates::{CallbackGateBarrier, WindowsHilCallback, WindowsHilCallbackGate};
 use crate::{
     connection::{self, ConnectionContext, ConnectionCorrelation},
     error::cleanup_error,
@@ -45,6 +47,8 @@ struct PeripheralKey {
 pub(crate) struct BackendState {
     delivery: Arc<Mutex<()>>,
     resource_ledger: ResourceLedger,
+    #[cfg(feature = "hil-callback-gates")]
+    pub(crate) hil_callback_gates: Arc<CallbackGateBarrier>,
     pub(crate) lifecycle: Lifecycle,
     ingress: Option<Arc<BackendEventIngressHandle>>,
     pub(crate) adapter_operation: Option<IAsyncOperation<BluetoothAdapter>>,
@@ -77,6 +81,8 @@ impl BackendState {
         Self {
             delivery,
             resource_ledger,
+            #[cfg(feature = "hil-callback-gates")]
+            hil_callback_gates: Arc::new(CallbackGateBarrier::new()),
             lifecycle: Lifecycle::Inert,
             ingress: None,
             adapter_operation: None,
@@ -269,6 +275,12 @@ impl WindowsBackend {
         })
     }
 
+    #[cfg(feature = "hil-callback-gates")]
+    #[doc(hidden)]
+    pub fn arm_hil_callback_gate(&self, callback: WindowsHilCallback) -> WindowsHilCallbackGate {
+        hil_callback_gates_for_state(&self.state).arm(callback)
+    }
+
     #[cfg(feature = "resource-accounting")]
     #[doc(hidden)]
     pub fn resource_snapshot(&self) -> crate::WindowsLogicalResourceSnapshot {
@@ -365,6 +377,8 @@ impl BleBackend for WindowsBackend {
     }
 
     fn dispose(&self) -> Result<(), BleHubError> {
+        #[cfg(feature = "hil-callback-gates")]
+        hil_callback_gates_for_state(&self.state).close();
         let _setup_guard = self
             .initialization_setup
             .lock()
@@ -478,6 +492,13 @@ pub(crate) fn lock_delivery(delivery: &Arc<Mutex<()>>) -> MutexGuard<'_, ()> {
 
 pub(crate) fn delivery_for_state(state: &Arc<Mutex<BackendState>>) -> Arc<Mutex<()>> {
     Arc::clone(&lock_state(state).delivery)
+}
+
+#[cfg(feature = "hil-callback-gates")]
+pub(crate) fn hil_callback_gates_for_state(
+    state: &Arc<Mutex<BackendState>>,
+) -> Arc<CallbackGateBarrier> {
+    Arc::clone(&lock_state(state).hil_callback_gates)
 }
 
 pub(crate) fn track_callback(

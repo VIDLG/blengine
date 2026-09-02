@@ -12,15 +12,23 @@ android-install: android-build
 android-start: android-build
     {{android_control}} start
 
+# Reactivate an already installed fixture without rebuilding or reinstalling it.
+android-resume:
+    {{android_control}} resume
+
 android-stop:
     {{android_control}} stop
 
 android-notify value="deadbeef":
     {{android_control}} notify {{value}}
 
-# Send a callback-serialized burst of deterministic 20-byte notifications.
+# Send a callback-serialized burst of deterministic notifications.
 android-notification-burst burst_id count payload_bytes="20":
     {{android_control}} notification-burst {{burst_id}} {{count}} {{payload_bytes}}
+
+# Send a callback-serialized burst of deterministic indications.
+android-indication-burst burst_id count payload_bytes="20":
+    {{android_control}} indication-burst {{burst_id}} {{count}} {{payload_bytes}}
 
 # Reset Android's callback-side sequence ledger for one write benchmark batch.
 android-write-batch-start batch_id count:

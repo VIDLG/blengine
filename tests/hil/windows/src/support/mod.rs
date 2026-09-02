@@ -197,8 +197,8 @@ pub fn parse_cycle_count(default: usize) -> Result<usize, ExampleError> {
         .map(|value| value.parse::<usize>())
         .transpose()?
         .unwrap_or(default);
-    if cycles == 0 {
-        return Err("cycle count must be greater than zero".into());
+    if !(1..=10).contains(&cycles) {
+        return Err("cycle count must be in range 1..=10".into());
     }
     Ok(cycles)
 }

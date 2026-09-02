@@ -21,7 +21,12 @@ PACKAGE = "dev.blehub.fixture.peripheral"
 ACTIVITY_CLASS = f"{PACKAGE}.MainActivity"
 ADB_COMPONENT = f"{PACKAGE}/{ACTIVITY_CLASS}"
 LOG_TAG = "BleHubPeripheral"
-NOTIFICATION_BURST_TIMEOUT_SECONDS = 180.0
+SUBSCRIPTION_BURST_TIMEOUT_FLOOR_SECONDS = 180.0
+SUBSCRIPTION_BURST_OVERHEAD_SECONDS = 20.0
+SUBSCRIPTION_MIN_OPERATIONS_PER_SECOND = {
+    "notification": 50.0,
+    "indication": 25.0,
+}
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,8 @@ def _adb_output(serial: str, environment: dict[str, str], *args: str) -> str:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         raise SystemExit(result.stderr.strip() or result.returncode)
@@ -122,6 +129,33 @@ def start(serial: str, environment: dict[str, str]) -> None:
         ],
         environment,
     )
+    wait_ready(serial, environment)
+
+
+def resume(serial: str, environment: dict[str, str]) -> None:
+    _adb(
+        serial,
+        environment,
+        "shell",
+        "am",
+        "force-stop",
+        PACKAGE,
+        timeout=30.0,
+    )
+    _adb(
+        serial,
+        environment,
+        "shell",
+        "am",
+        "start",
+        "-n",
+        ADB_COMPONENT,
+        timeout=30.0,
+    )
+    wait_ready(serial, environment)
+
+
+def wait_ready(serial: str, environment: dict[str, str]) -> None:
     deadline = time.monotonic() + 5.0
     while True:
         outcome = command(serial, environment, "ready")
@@ -195,6 +229,56 @@ def command(
     )
 
 
+def _subscription_burst_timeout(mode: str, count: int) -> float:
+    delivery_seconds = count / SUBSCRIPTION_MIN_OPERATIONS_PER_SECOND[mode]
+    return max(
+        SUBSCRIPTION_BURST_TIMEOUT_FLOOR_SECONDS,
+        delivery_seconds + SUBSCRIPTION_BURST_OVERHEAD_SECONDS,
+    )
+
+
+def _subscription_burst(
+    serial: str,
+    environment: dict[str, str],
+    mode: str,
+    burst_id: str,
+    count: int,
+    payload_bytes: int,
+) -> str:
+    operation = f"{mode}-burst"
+    outcome = command(
+        serial,
+        environment,
+        operation,
+        burst_id=burst_id,
+        count=count,
+        payload_bytes=payload_bytes,
+        timeout=_subscription_burst_timeout(mode, count),
+    )
+    fields = dict(token.split("=", 1) for token in outcome.split() if "=" in token)
+    if fields.get("operation") != operation:
+        raise SystemExit(f"Android {mode} burst result has no matching operation")
+    if fields.get("mode") not in (None, mode):
+        raise SystemExit(f"Android {mode} burst result has the wrong mode")
+    if fields.get("count") != str(count):
+        raise SystemExit(f"Android {mode} burst result has the wrong count")
+    if fields.get("payload_bytes") != str(payload_bytes):
+        raise SystemExit(f"Android {mode} burst result has the wrong payload size")
+    if fields.get("result") == "ok":
+        elapsed = fields.get("local_elapsed_ns")
+        try:
+            elapsed_nanos = int(elapsed) if elapsed is not None else -1
+        except ValueError as error:
+            raise SystemExit(
+                f"Android {mode} burst result has invalid local_elapsed_ns"
+            ) from error
+        if elapsed_nanos < 0:
+            raise SystemExit(
+                f"Android {mode} burst result has invalid local_elapsed_ns"
+            )
+    return outcome
+
+
 def notification_burst(
     serial: str,
     environment: dict[str, str],
@@ -202,35 +286,31 @@ def notification_burst(
     count: int,
     payload_bytes: int,
 ) -> str:
-    outcome = command(
+    return _subscription_burst(
         serial,
         environment,
-        "notification-burst",
-        burst_id=burst_id,
-        count=count,
-        payload_bytes=payload_bytes,
-        timeout=NOTIFICATION_BURST_TIMEOUT_SECONDS,
+        "notification",
+        burst_id,
+        count,
+        payload_bytes,
     )
-    fields = dict(token.split("=", 1) for token in outcome.split() if "=" in token)
-    if fields.get("operation") != "notification-burst":
-        raise SystemExit("Android notification burst result has no matching operation")
-    if fields.get("count") != str(count):
-        raise SystemExit("Android notification burst result has the wrong count")
-    if fields.get("payload_bytes") != str(payload_bytes):
-        raise SystemExit("Android notification burst result has the wrong payload size")
-    if fields.get("result") == "ok":
-        elapsed = fields.get("local_elapsed_ns")
-        try:
-            elapsed_nanos = int(elapsed) if elapsed is not None else -1
-        except ValueError as error:
-            raise SystemExit(
-                "Android notification burst result has invalid local_elapsed_ns"
-            ) from error
-        if elapsed_nanos < 0:
-            raise SystemExit(
-                "Android notification burst result has invalid local_elapsed_ns"
-            )
-    return outcome
+
+
+def indication_burst(
+    serial: str,
+    environment: dict[str, str],
+    burst_id: str,
+    count: int,
+    payload_bytes: int,
+) -> str:
+    return _subscription_burst(
+        serial,
+        environment,
+        "indication",
+        burst_id,
+        count,
+        payload_bytes,
+    )
 
 
 def write_batch_start(
@@ -337,7 +417,7 @@ def set_bluetooth_radio(
     serial: str, environment: dict[str, str], *, enabled: bool
 ) -> None:
     action = "enable" if enabled else "disable"
-    expected_state = "STATE_ON" if enabled else "STATE_OFF"
+    expected_state = "ON" if enabled else "OFF"
     _adb(
         serial,
         environment,
@@ -347,16 +427,33 @@ def set_bluetooth_radio(
         action,
         timeout=30.0,
     )
-    _adb(
-        serial,
-        environment,
-        "shell",
-        "cmd",
-        "bluetooth_manager",
-        f"wait-for-state:{expected_state}",
-        timeout=30.0,
-    )
-    print(f"android_bluetooth_radio={expected_state}")
+    deadline = time.monotonic() + 30.0
+    observed_state = "unknown"
+    while True:
+        output = _adb_output(
+            serial,
+            environment,
+            "shell",
+            "dumpsys",
+            "bluetooth_manager",
+        )
+        observed_state = next(
+            (
+                line.strip().removeprefix("state:").strip()
+                for line in output.splitlines()
+                if line.strip().startswith("state:")
+            ),
+            "unknown",
+        )
+        if observed_state == expected_state:
+            print(f"android_bluetooth_radio=STATE_{expected_state}")
+            return
+        if time.monotonic() >= deadline:
+            state_details = f"STATE_{expected_state}; observed state={observed_state}"
+            raise SystemExit(
+                f"timed out waiting for Android Bluetooth radio {state_details}"
+            )
+        time.sleep(0.1)
 
 
 def parse_args() -> Args:
@@ -367,6 +464,7 @@ def parse_args() -> Args:
     for name in (
         "install",
         "start",
+        "resume",
         "stop",
         "disconnect",
         "status",
@@ -378,12 +476,13 @@ def parse_args() -> Args:
     for name in ("notify", "indicate"):
         child = subparsers.add_parser(name)
         _ = child.add_argument("value", help="hex payload, for example deadbeef")
-    burst = subparsers.add_parser("notification-burst")
-    _ = burst.add_argument("burst_id", type=burst_id_argument)
-    _ = burst.add_argument("count", type=burst_count_argument)
-    _ = burst.add_argument(
-        "payload_bytes", type=payload_bytes_argument, nargs="?", default=20
-    )
+    for name in ("notification-burst", "indication-burst"):
+        burst = subparsers.add_parser(name)
+        _ = burst.add_argument("burst_id", type=burst_id_argument)
+        _ = burst.add_argument("count", type=burst_count_argument)
+        _ = burst.add_argument(
+            "payload_bytes", type=payload_bytes_argument, nargs="?", default=20
+        )
     write_batch_start_parser = subparsers.add_parser("write-batch-start")
     _ = write_batch_start_parser.add_argument("burst_id", type=burst_id_argument)
     _ = write_batch_start_parser.add_argument("count", type=burst_count_argument)
@@ -407,6 +506,8 @@ def main() -> int:
         install(serial, environment)
     elif args.command == "start":
         start(serial, environment)
+    elif args.command == "resume":
+        resume(serial, environment)
     elif args.command == "log":
         logs(serial, environment)
     elif args.command == "radio-enable":
@@ -415,8 +516,13 @@ def main() -> int:
         set_bluetooth_radio(serial, environment, enabled=False)
     elif args.command in {"notify", "indicate"}:
         outcome = command(serial, environment, args.command, args.value)
-    elif args.command == "notification-burst":
-        outcome = notification_burst(
+    elif args.command in {"notification-burst", "indication-burst"}:
+        burst = (
+            notification_burst
+            if args.command == "notification-burst"
+            else indication_burst
+        )
+        outcome = burst(
             serial,
             environment,
             cast(str, args.burst_id),

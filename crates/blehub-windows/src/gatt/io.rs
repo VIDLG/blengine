@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(feature = "hil-callback-gates")]
+use crate::{backend::hil_callback_gates_for_state, callback_gates::WindowsHilCallback};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SubscriptionCorrelation {
     pub(super) connection: ConnectionCorrelation,
@@ -1184,8 +1187,12 @@ fn install_io_completion_handler(
             let weak_state = std::sync::Arc::downgrade(state);
             let callback_correlation = correlation.clone();
             let callback_resource = track_callback(state, CallbackResource::CharacteristicRead);
+            #[cfg(feature = "hil-callback-gates")]
+            let callback_gates = hil_callback_gates_for_state(state);
             let handler = AsyncOperationCompletedHandler::new(move |operation, status| {
                 let _callback_resource = &callback_resource;
+                #[cfg(feature = "hil-callback-gates")]
+                callback_gates.enter(WindowsHilCallback::CharacteristicRead);
                 if let Some(state) = weak_state.upgrade()
                     && io_operation_is_current(&state, &callback_correlation)
                 {
@@ -1207,8 +1214,12 @@ fn install_io_completion_handler(
             let weak_state = std::sync::Arc::downgrade(state);
             let callback_correlation = correlation.clone();
             let callback_resource = track_callback(state, CallbackResource::CharacteristicWrite);
+            #[cfg(feature = "hil-callback-gates")]
+            let callback_gates = hil_callback_gates_for_state(state);
             let handler = AsyncOperationCompletedHandler::new(move |operation, status| {
                 let _callback_resource = &callback_resource;
+                #[cfg(feature = "hil-callback-gates")]
+                callback_gates.enter(WindowsHilCallback::CharacteristicWrite);
                 if let Some(state) = weak_state.upgrade()
                     && io_operation_is_current(&state, &callback_correlation)
                 {
@@ -1230,8 +1241,12 @@ fn install_io_completion_handler(
             let weak_state = std::sync::Arc::downgrade(state);
             let callback_correlation = correlation.clone();
             let callback_resource = track_callback(state, CallbackResource::CccdWrite);
+            #[cfg(feature = "hil-callback-gates")]
+            let callback_gates = hil_callback_gates_for_state(state);
             let handler = AsyncOperationCompletedHandler::new(move |operation, status| {
                 let _callback_resource = &callback_resource;
+                #[cfg(feature = "hil-callback-gates")]
+                callback_gates.enter(WindowsHilCallback::CccdWrite);
                 if let Some(state) = weak_state.upgrade()
                     && io_operation_is_current(&state, &callback_correlation)
                 {
@@ -1839,6 +1854,9 @@ fn handle_notification_value(
     if !should_deliver {
         return;
     }
+
+    #[cfg(feature = "hil-callback-gates")]
+    hil_callback_gates_for_state(state).enter(WindowsHilCallback::NotificationValue);
 
     let _delivery_guard = lock_delivery(delivery);
     let ingress = {

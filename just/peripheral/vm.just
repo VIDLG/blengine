@@ -54,6 +54,15 @@ vm-usb-attach:
 vm-usb-detach:
     {{vm_control}} usb-detach
 
+
+# Restart BlueZ and prove controller, fixture, and guest readiness recover.
+vm-bluez-restart:
+    {{vm_control}} bluez-restart
+
+# Reboot the running guest and prove SSH, controller, fixture, and doctor recovery.
+vm-guest-reboot:
+    {{vm_control}} guest-reboot
+
 # Resolve and install the locked BLESS fixture environment in the guest.
 vm-fixture-install:
     {{vm_control}} fixture-install

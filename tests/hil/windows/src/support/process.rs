@@ -1,8 +1,9 @@
 use std::{
+    collections::VecDeque,
     io::{self, Read},
     os::windows::io::AsRawHandle,
     process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output, Stdio},
-    sync::mpsc,
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -21,6 +22,8 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CAPTURE_GRACE: Duration = Duration::from_secs(2);
 const REAP_GRACE: Duration = Duration::from_secs(5);
 const TASKKILL_TIMEOUT: Duration = Duration::from_secs(5);
+const CAPTURE_STREAM_LIMIT: usize = 64 * 1024;
+const CAPTURE_HEAD_LIMIT: usize = CAPTURE_STREAM_LIMIT / 2;
 
 pub(super) fn run_fixture_recipe(
     recipe: &str,
@@ -238,15 +241,92 @@ impl OutputStream {
 }
 
 enum CaptureEvent {
-    Chunk(OutputStream, Vec<u8>),
     Closed(OutputStream),
     Failed(OutputStream, String),
 }
 
+#[derive(Default)]
+struct BoundedStreamCapture {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total_bytes: usize,
+}
+
+impl BoundedStreamCapture {
+    fn extend(&mut self, mut bytes: &[u8]) {
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
+
+        let head_remaining = CAPTURE_HEAD_LIMIT.saturating_sub(self.head.len());
+        let head_count = head_remaining.min(bytes.len());
+        self.head.extend_from_slice(&bytes[..head_count]);
+        bytes = &bytes[head_count..];
+
+        let tail_limit = CAPTURE_STREAM_LIMIT - CAPTURE_HEAD_LIMIT;
+        if bytes.len() >= tail_limit {
+            self.tail.clear();
+            self.tail
+                .extend(bytes[bytes.len() - tail_limit..].iter().copied());
+            return;
+        }
+
+        let overflow = self
+            .tail
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(tail_limit);
+        self.tail.drain(..overflow);
+        self.tail.extend(bytes.iter().copied());
+    }
+
+    fn render(&self) -> RenderedStream {
+        if self.total_bytes <= CAPTURE_STREAM_LIMIT {
+            let mut bytes = Vec::with_capacity(self.total_bytes);
+            bytes.extend_from_slice(&self.head);
+            bytes.extend(self.tail.iter().copied());
+            return RenderedStream {
+                bytes,
+                dropped_bytes: 0,
+            };
+        }
+
+        let mut dropped_bytes = self.total_bytes - CAPTURE_STREAM_LIMIT;
+        let (marker, data_limit) = loop {
+            let marker = truncation_marker(dropped_bytes);
+            let data_limit = CAPTURE_STREAM_LIMIT - marker.len();
+            let adjusted_dropped_bytes = self.total_bytes - data_limit;
+            if adjusted_dropped_bytes == dropped_bytes {
+                break (marker, data_limit);
+            }
+            dropped_bytes = adjusted_dropped_bytes;
+        };
+        let head_count = data_limit / 2;
+        let tail_count = data_limit - head_count;
+        let mut bytes = Vec::with_capacity(CAPTURE_STREAM_LIMIT);
+        bytes.extend_from_slice(&self.head[..head_count]);
+        bytes.extend_from_slice(marker.as_bytes());
+        bytes.extend(self.tail.iter().skip(self.tail.len() - tail_count).copied());
+        debug_assert_eq!(bytes.len(), CAPTURE_STREAM_LIMIT);
+
+        RenderedStream {
+            bytes,
+            dropped_bytes,
+        }
+    }
+}
+
+struct RenderedStream {
+    bytes: Vec<u8>,
+    dropped_bytes: usize,
+}
+
+fn truncation_marker(dropped_bytes: usize) -> String {
+    format!("\n...[blehub capture truncated: {dropped_bytes} bytes dropped]...\n")
+}
+
 struct BoundedOutputCapture {
     receiver: mpsc::Receiver<CaptureEvent>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    stdout: Arc<Mutex<BoundedStreamCapture>>,
+    stderr: Arc<Mutex<BoundedStreamCapture>>,
     stdout_closed: bool,
     stderr_closed: bool,
     failures: Vec<String>,
@@ -254,13 +334,25 @@ struct BoundedOutputCapture {
 
 impl BoundedOutputCapture {
     fn new(stdout: ChildStdout, stderr: ChildStderr) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        capture_stream(OutputStream::Stdout, stdout, sender.clone());
-        capture_stream(OutputStream::Stderr, stderr, sender);
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let stdout_capture = Arc::new(Mutex::new(BoundedStreamCapture::default()));
+        let stderr_capture = Arc::new(Mutex::new(BoundedStreamCapture::default()));
+        capture_stream(
+            OutputStream::Stdout,
+            stdout,
+            Arc::clone(&stdout_capture),
+            sender.clone(),
+        );
+        capture_stream(
+            OutputStream::Stderr,
+            stderr,
+            Arc::clone(&stderr_capture),
+            sender,
+        );
         Self {
             receiver,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
+            stdout: stdout_capture,
+            stderr: stderr_capture,
             stdout_closed: false,
             stderr_closed: false,
             failures: Vec::new(),
@@ -289,8 +381,6 @@ impl BoundedOutputCapture {
 
     fn record(&mut self, event: CaptureEvent) {
         match event {
-            CaptureEvent::Chunk(OutputStream::Stdout, bytes) => self.stdout.extend(bytes),
-            CaptureEvent::Chunk(OutputStream::Stderr, bytes) => self.stderr.extend(bytes),
             CaptureEvent::Closed(OutputStream::Stdout) => self.stdout_closed = true,
             CaptureEvent::Closed(OutputStream::Stderr) => self.stderr_closed = true,
             CaptureEvent::Failed(stream, error) => {
@@ -317,9 +407,33 @@ impl BoundedOutputCapture {
             self.failures
                 .push("stderr capture did not close before its bounded deadline".to_owned());
         }
+
+        let stdout = self
+            .stdout
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .render();
+        let stderr = self
+            .stderr
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .render();
+        if stdout.dropped_bytes != 0 {
+            self.failures.push(format!(
+                "stdout capture truncated: {} bytes dropped; captured output contains a truncation marker",
+                stdout.dropped_bytes
+            ));
+        }
+        if stderr.dropped_bytes != 0 {
+            self.failures.push(format!(
+                "stderr capture truncated: {} bytes dropped; captured output contains a truncation marker",
+                stderr.dropped_bytes
+            ));
+        }
+
         CapturedOutput {
-            stdout: self.stdout,
-            stderr: self.stderr,
+            stdout: stdout.bytes,
+            stderr: stderr.bytes,
             failures: self.failures,
         }
     }
@@ -366,7 +480,8 @@ impl CapturedOutput {
 fn capture_stream(
     stream: OutputStream,
     mut reader: impl Read + Send + 'static,
-    sender: mpsc::Sender<CaptureEvent>,
+    capture: Arc<Mutex<BoundedStreamCapture>>,
+    sender: mpsc::SyncSender<CaptureEvent>,
 ) {
     thread::spawn(move || {
         let mut buffer = [0_u8; 8 * 1024];
@@ -376,14 +491,10 @@ fn capture_stream(
                     let _ = sender.send(CaptureEvent::Closed(stream));
                     return;
                 }
-                Ok(count) => {
-                    if sender
-                        .send(CaptureEvent::Chunk(stream, buffer[..count].to_vec()))
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
+                Ok(count) => capture
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(&buffer[..count]),
                 Err(error) => {
                     let _ = sender.send(CaptureEvent::Failed(stream, error.to_string()));
                     return;
@@ -391,4 +502,84 @@ fn capture_stream(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_at_limit_is_complete_and_unmarked() {
+        let input = patterned_bytes(CAPTURE_STREAM_LIMIT);
+        let mut capture = BoundedStreamCapture::default();
+        capture.extend(&input[..17]);
+        capture.extend(&input[17..]);
+
+        let rendered = capture.render();
+
+        assert_eq!(rendered.bytes, input);
+        assert_eq!(rendered.dropped_bytes, 0);
+        assert!(!contains_bytes(
+            &rendered.bytes,
+            b"blehub capture truncated"
+        ));
+    }
+
+    #[test]
+    fn capture_over_limit_keeps_head_and_tail_with_counted_marker() {
+        let input = patterned_bytes(CAPTURE_STREAM_LIMIT + 257);
+        let mut capture = BoundedStreamCapture::default();
+        for chunk in input.chunks(997) {
+            capture.extend(chunk);
+        }
+
+        let rendered = capture.render();
+        let marker = truncation_marker(rendered.dropped_bytes);
+        let marker_start = rendered
+            .bytes
+            .windows(marker.len())
+            .position(|window| window == marker.as_bytes())
+            .expect("truncation marker must be present");
+        let tail_start = marker_start + marker.len();
+
+        assert_eq!(rendered.bytes.len(), CAPTURE_STREAM_LIMIT);
+        assert!(rendered.dropped_bytes > 257);
+        assert_eq!(&rendered.bytes[..marker_start], &input[..marker_start]);
+        assert_eq!(
+            &rendered.bytes[tail_start..],
+            &input[input.len() - (rendered.bytes.len() - tail_start)..]
+        );
+        assert_eq!(
+            rendered.dropped_bytes,
+            input.len() - marker_start - (rendered.bytes.len() - tail_start)
+        );
+        assert!(marker.contains("truncated"));
+        assert!(marker.contains("dropped"));
+    }
+
+    #[test]
+    fn first_byte_over_limit_is_explicitly_truncated() {
+        let input = patterned_bytes(CAPTURE_STREAM_LIMIT + 1);
+        let mut capture = BoundedStreamCapture::default();
+        capture.extend(&input);
+
+        let rendered = capture.render();
+
+        assert_eq!(rendered.bytes.len(), CAPTURE_STREAM_LIMIT);
+        assert!(rendered.dropped_bytes > 1);
+        assert!(contains_bytes(
+            &rendered.bytes,
+            b"...[blehub capture truncated: "
+        ));
+    }
+
+    fn patterned_bytes(len: usize) -> Vec<u8> {
+        (0..len).map(|index| (index % 251) as u8).collect()
+    }
+
+    fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
 }

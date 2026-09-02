@@ -46,6 +46,7 @@ internal data class PeripheralSnapshot(
 )
 
 internal data class NotificationBurstCompletion(
+    val mode: SubscriptionMode,
     val count: Int,
     val payloadBytes: Int,
     val localElapsedNanos: Long,
@@ -100,6 +101,7 @@ internal class BlePeripheralServer(
     private class ActiveNotificationBurst(
         val generation: Long,
         val device: BluetoothDevice,
+        val mode: SubscriptionMode,
         val burstId: ByteArray,
         val count: Int,
         val payloadBytes: Int,
@@ -112,6 +114,7 @@ internal class BlePeripheralServer(
     private data class NotificationBurstDispatch(
         val generation: Long,
         val device: BluetoothDevice,
+        val mode: SubscriptionMode,
         val server: BluetoothGattServer,
         val characteristic: BluetoothGattCharacteristic,
         val sequence: Int,
@@ -164,7 +167,8 @@ internal class BlePeripheralServer(
                     inFlightUpdates.remove(key)
                     if (notificationBurst?.device?.address == key) {
                         finishNotificationBurstLocked(
-                            "notification burst device disconnected: status=$status state=$newState",
+                            "${notificationBurst?.mode?.name?.lowercase()} burst device disconnected: " +
+                                "status=$status state=$newState",
                         )
                     } else {
                         null
@@ -301,7 +305,7 @@ internal class BlePeripheralServer(
                     }
                     if (!notificationSubscriberMatchesBurstLocked()) {
                         finishNotificationBurstLocked(
-                            "notification subscribers changed during burst",
+                            "subscription mode or subscribers changed during burst",
                         )
                     } else {
                         null
@@ -344,7 +348,7 @@ internal class BlePeripheralServer(
                 } else {
                     if (status != BluetoothGatt.GATT_SUCCESS) {
                         burstCompletion = finishNotificationBurstLocked(
-                            "notification burst callback failed at sequence=" +
+                            "${burst.mode.name.lowercase()} burst callback failed at sequence=" +
                                 "${burst.completedCount}: status=$status",
                         )
                     } else {
@@ -461,7 +465,7 @@ internal class BlePeripheralServer(
 
     fun stop() {
         val (resources, burstCompletion) = synchronized(lock) {
-            val completion = finishNotificationBurstLocked("notification burst stopped")
+            val completion = finishNotificationBurstLocked("subscription burst stopped")
             lifecycleGeneration += 1
             val captured = Triple(advertiser, advertiseCallback, gattServer)
             advertiser = null
@@ -489,7 +493,7 @@ internal class BlePeripheralServer(
             Triple(
                 gattServer,
                 connectedDevices.values.toList(),
-                finishNotificationBurstLocked("notification burst disconnect requested"),
+                finishNotificationBurstLocked("subscription burst disconnect requested"),
             )
         }
         burstCompletion?.invoke()
@@ -506,17 +510,46 @@ internal class BlePeripheralServer(
         count: Int,
         payloadBytes: Int,
         onComplete: (NotificationBurstCompletion) -> Unit,
+    ) = sendBurst(
+        SubscriptionMode.NOTIFICATION,
+        burstId,
+        count,
+        payloadBytes,
+        onComplete,
+    )
+
+    fun sendIndicationBurst(
+        burstId: ByteArray,
+        count: Int,
+        payloadBytes: Int,
+        onComplete: (NotificationBurstCompletion) -> Unit,
+    ) = sendBurst(
+        SubscriptionMode.INDICATION,
+        burstId,
+        count,
+        payloadBytes,
+        onComplete,
+    )
+
+    private fun sendBurst(
+        mode: SubscriptionMode,
+        burstId: ByteArray,
+        count: Int,
+        payloadBytes: Int,
+        onComplete: (NotificationBurstCompletion) -> Unit,
     ) {
+        check(mode != SubscriptionMode.DISABLED) { "a burst requires an active subscription mode" }
+        val modeName = mode.name.lowercase()
         require(burstId.size == BURST_ID_BYTES) { "burst_id must be exactly 8 bytes" }
         require(count in MIN_BURST_COUNT..MAX_BURST_COUNT) {
-            "notification burst count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
+            "$modeName burst count must be between $MIN_BURST_COUNT and $MAX_BURST_COUNT"
         }
         require(payloadBytes in BURST_HEADER_BYTES..MAX_BURST_PAYLOAD_BYTES) {
-            "notification burst payload must be between $BURST_HEADER_BYTES and " +
+            "$modeName burst payload must be between $BURST_HEADER_BYTES and " +
                 "$MAX_BURST_PAYLOAD_BYTES bytes"
         }
         synchronized(lock) {
-            check(notificationBurst == null) { "a notification burst is already active" }
+            check(notificationBurst == null) { "a subscription burst is already active" }
             check(inFlightUpdates.isEmpty()) {
                 "a notification or indication is already in flight"
             }
@@ -525,15 +558,16 @@ internal class BlePeripheralServer(
                 "updates characteristic is unavailable"
             }
             val targets = connectedDevices
-                .filterKeys { subscriptions[it] == SubscriptionMode.NOTIFICATION }
+                .filterKeys { subscriptions[it] == mode }
                 .values
                 .toList()
             check(targets.size == 1) {
-                "notification burst requires exactly one Notification subscriber; found ${targets.size}"
+                "$modeName burst requires exactly one $mode subscriber; found ${targets.size}"
             }
             notificationBurst = ActiveNotificationBurst(
                 generation = lifecycleGeneration,
                 device = targets.single(),
+                mode = mode,
                 burstId = burstId.copyOf(),
                 count = count,
                 payloadBytes = payloadBytes,
@@ -702,7 +736,7 @@ internal class BlePeripheralServer(
     private fun sendUpdate(value: ByteArray, mode: SubscriptionMode) {
         val (server, characteristic, targets) = synchronized(lock) {
             check(notificationBurst == null) {
-                "a notification burst is active"
+                "a notification or indication burst is active"
             }
             values[updateProfile.uuid] = value.copyOf()
             val selectedServer = checkNotNull(gattServer) { "GATT server is not running" }
@@ -770,7 +804,7 @@ internal class BlePeripheralServer(
             val characteristic = characteristics[updateProfile.uuid]
             when {
                 burst.generation != lifecycleGeneration -> {
-                    failure = "notification burst fixture generation changed"
+                    failure = "subscription burst fixture generation changed"
                     null
                 }
                 server == null -> {
@@ -782,15 +816,16 @@ internal class BlePeripheralServer(
                     null
                 }
                 !notificationSubscriberMatchesBurstLocked() -> {
-                    failure = "notification burst requires exactly one unchanged Notification subscriber"
+                    failure = "${burst.mode.name.lowercase()} burst requires exactly one unchanged " +
+                        "${burst.mode} subscriber"
                     null
                 }
                 burst.device.address in inFlightUpdates -> {
-                    failure = "a notification is already in flight for the burst device"
+                    failure = "a notification or indication is already in flight for the burst device"
                     null
                 }
                 burst.nextSequence >= burst.count -> {
-                    failure = "notification burst has no sequence left to dispatch"
+                    failure = "subscription burst has no sequence left to dispatch"
                     null
                 }
                 else -> {
@@ -806,6 +841,7 @@ internal class BlePeripheralServer(
                     NotificationBurstDispatch(
                         generation = burst.generation,
                         device = burst.device,
+                        mode = burst.mode,
                         server = server,
                         characteristic = characteristic,
                         sequence = sequence,
@@ -824,7 +860,7 @@ internal class BlePeripheralServer(
                 dispatch.server.notifyCharacteristicChanged(
                     dispatch.device,
                     dispatch.characteristic,
-                    false,
+                    dispatch.mode == SubscriptionMode.INDICATION,
                     dispatch.payload,
                 ) == BluetoothStatusCodes.SUCCESS
             } else {
@@ -832,14 +868,15 @@ internal class BlePeripheralServer(
                 dispatch.server.notifyCharacteristicChanged(
                     dispatch.device,
                     dispatch.characteristic,
-                    false,
+                    dispatch.mode == SubscriptionMode.INDICATION,
                 )
             }
             if (accepted) null else {
-                "notification burst dispatch rejected at sequence=${dispatch.sequence}"
+                "${dispatch.mode.name.lowercase()} burst dispatch rejected at " +
+                    "sequence=${dispatch.sequence}"
             }
         } catch (error: Exception) {
-            "notification burst dispatch failed at sequence=${dispatch.sequence}: " +
+            "${dispatch.mode.name.lowercase()} burst dispatch failed at sequence=${dispatch.sequence}: " +
                 (error.message ?: error::class.java.simpleName)
         }
         if (rejection != null) {
@@ -858,7 +895,7 @@ internal class BlePeripheralServer(
     private fun notificationSubscriberMatchesBurstLocked(): Boolean {
         val burst = notificationBurst ?: return true
         val subscriberAddresses = connectedDevices.keys
-            .filter { subscriptions[it] == SubscriptionMode.NOTIFICATION }
+            .filter { subscriptions[it] == burst.mode }
         return subscriberAddresses.size == 1 && subscriberAddresses.single() == burst.device.address
     }
 
@@ -872,6 +909,7 @@ internal class BlePeripheralServer(
         notificationBurst = null
         inFlightUpdates.remove(burst.device.address)
         val completion = NotificationBurstCompletion(
+            mode = burst.mode,
             count = burst.count,
             payloadBytes = burst.payloadBytes,
             localElapsedNanos = SystemClock.elapsedRealtimeNanos() - burst.startedAtNanos,

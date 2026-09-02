@@ -10,7 +10,7 @@ autobins = false
 
 [dependencies]
 blehub = { path = "../../../crates/blehub" }
-blehub-windows = { path = "../../../crates/blehub-windows", features = ["resource-accounting"] }
+blehub-windows = { path = "../../../crates/blehub-windows", features = ["hil-callback-gates"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [[bin]]
@@ -58,6 +58,12 @@ bench = false
 [[bin]]
 name = "passive-disconnect"
 path = "src/passive_disconnect.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "inflight-fault"
+path = "src/inflight_fault.rs"
 test = false
 bench = false
 

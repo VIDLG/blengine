@@ -23,10 +23,15 @@ read-write-smoke timeout="30" service_uuid="fff00000-0000-4000-8000-000000000000
 gatt-throughput timeout="30" service_uuid="ffe00000-0000-4000-8000-000000000000" operations="200" payload_bytes="20" provider="auto":
     @cargo run --quiet --release --manifest-path tests/hil/windows/Cargo.toml --bin gatt-throughput -- {{ timeout }} {{ service_uuid }} {{ operations }} {{ payload_bytes }} {{ provider }}
 
-# Measure sequenced Peripheral-to-Windows Notification delivery throughput.
-# Args: timeout seconds, provider service UUID, android|qemu, count, auto|guest pacing microseconds, payload bytes (20..512).
-notification-throughput timeout="30" service_uuid="fff00000-0000-4000-8000-000000000000" provider="android" operations="200" pacing_interval_us="auto" payload_bytes="20":
-    @cargo run --quiet --release --manifest-path tests/hil/windows/Cargo.toml --bin notification-throughput -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ operations }} {{ pacing_interval_us }} {{ payload_bytes }}
+# Measure strict sequenced Peripheral-to-Windows Notification/Indication delivery and lifecycle.
+# Args: timeout, service UUID, android|qemu, count, auto|guest pacing us, payload bytes, notification|indication, cycles 1..10.
+notification-throughput timeout="30" service_uuid="fff00000-0000-4000-8000-000000000000" provider="android" operations="200" pacing_interval_us="auto" payload_bytes="20" mode="notification" cycles="1":
+    @cargo run --quiet --release --manifest-path tests/hil/windows/Cargo.toml --bin notification-throughput -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ operations }} {{ pacing_interval_us }} {{ payload_bytes }} {{ mode }} {{ cycles }}
+
+# Run both strict subscription modes as a bounded long-delivery soak.
+subscription-soak timeout service_uuid provider operations="5000" pacing_interval_us="auto" payload_bytes="20" cycles="1":
+    cargo run --quiet --release --manifest-path tests/hil/windows/Cargo.toml --bin notification-throughput -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ operations }} {{ pacing_interval_us }} {{ payload_bytes }} notification {{ cycles }}
+    cargo run --quiet --release --manifest-path tests/hil/windows/Cargo.toml --bin notification-throughput -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ operations }} {{ pacing_interval_us }} {{ payload_bytes }} indication {{ cycles }}
 
 # Validate notification/indication enable, value delivery, disable, and stale-route silence.
 # Args: timeout seconds, service UUID, default|notification|indication, android|qemu.
@@ -47,7 +52,15 @@ scan-connect-soak-gate timeout="30" service_uuid="ffe00000-0000-4000-8000-000000
 resource-lifecycle-smoke timeout="30" service_uuid="ffe00000-0000-4000-8000-000000000000" cycles="10":
     @cargo run --quiet --manifest-path tests/hil/windows/Cargo.toml --bin resource-lifecycle -- {{ timeout }} {{ service_uuid }} {{ cycles }}
 
-# Validate a provider-initiated disconnect through ConnectionStatusChanged.
-# Args: timeout seconds, service UUID, android|android-radio|qemu, connect-only|discover.
-passive-disconnect-smoke timeout="30" service_uuid="fff00000-0000-4000-8000-000000000000" provider="android" connection_anchor="connect-only":
-    @rtk cargo run --quiet --manifest-path tests/hil/windows/Cargo.toml --bin passive-disconnect -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ connection_anchor }}
+# Validate provider-initiated disconnect, pre-dispose native release, and optional repeated recovery.
+# Args: timeout, service UUID, android|android-radio|qemu, connect-only|discover|subscribed, cycles 1..10.
+passive-disconnect-smoke timeout="30" service_uuid="fff00000-0000-4000-8000-000000000000" provider="android" connection_anchor="connect-only" cycles="1":
+    @rtk cargo run --quiet --manifest-path tests/hil/windows/Cargo.toml --bin passive-disconnect -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ connection_anchor }} {{ cycles }}
+
+# Run the destructive repeated active-subscription fault/recovery gate.
+fault-recovery-soak timeout service_uuid provider cycles="3":
+    @rtk cargo run --quiet --manifest-path tests/hil/windows/Cargo.toml --bin passive-disconnect -- {{ timeout }} {{ service_uuid }} {{ provider }} subscribed {{ cycles }}
+
+# Synchronize a real device fault with an entered WinRT GATT/value callback.
+inflight-fault-smoke timeout service_uuid provider target:
+    @rtk cargo run --quiet --manifest-path tests/hil/windows/Cargo.toml --bin inflight-fault -- {{ timeout }} {{ service_uuid }} {{ provider }} {{ target }}

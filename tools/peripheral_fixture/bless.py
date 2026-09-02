@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -478,7 +479,6 @@ def qemu_command(lock: dict[str, Any], image: Path, accelerator: str) -> list[st
         "virtio-net-pci,netdev=net0",
         "-device",
         "qemu-xhci,id=xhci",
-        "-no-reboot",
     ]
     return command
 
@@ -1199,18 +1199,55 @@ def usb_bind() -> None:
     print("zadig_target_driver=WinUSB")
     print("zadig_warning=Do not select the MediaTek adapter or the parent USB hub")
     quoted = str(executable).replace("'", "''")
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-Command",
-            f"Start-Process -FilePath '{quoted}' -Verb RunAs -Wait",
-        ],
-        check=False,
-        timeout=1800,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("Zadig was cancelled or failed")
+    expected_hash = zadig["sha256"].lower()
+    staging_name = f"zadig-{secrets.token_hex(16)}"
+    script = f"""
+$ErrorActionPreference = 'Stop'
+$source = '{quoted}'
+$parent = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+if ([string]::IsNullOrWhiteSpace($parent)) {{ throw "Program Files could not be resolved" }}
+$parentItem = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
+if (-not $parentItem.PSIsContainer) {{ throw "Program Files is not a directory" }}
+if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+    throw "refusing to stage Zadig below a reparse point"
+}}
+$stage = Join-Path $parent 'BleHub-{staging_name}'
+$copy = Join-Path $stage 'zadig.exe'
+$created = $false
+try {{
+    if (Test-Path -LiteralPath $stage) {{ throw "elevated Zadig staging path already exists" }}
+    $stageItem = New-Item -ItemType Directory -Path $stage -ErrorAction Stop
+    $created = $true
+    if (($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+        throw "elevated Zadig staging path is a reparse point"
+    }}
+    & icacls.exe $stage /setowner '*S-1-5-32-544' | Out-Null
+    if ($LASTEXITCODE -ne 0) {{ throw "failed to set elevated Zadig staging owner" }}
+    & icacls.exe $stage /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null
+    if ($LASTEXITCODE -ne 0) {{ throw "failed to protect elevated Zadig staging directory" }}
+    $stageItem = Get-Item -LiteralPath $stage -Force -ErrorAction Stop
+    if (($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
+        throw "protected Zadig staging path became a reparse point"
+    }}
+    $bytes = [IO.File]::ReadAllBytes($source)
+    $stream = [IO.File]::Open($copy, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {{
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }} finally {{
+        $stream.Dispose()
+    }}
+    $actual = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne '{expected_hash}') {{ throw "elevated Zadig copy failed pinned SHA-256 verification" }}
+    $process = Start-Process -FilePath $copy -Wait -PassThru
+    if ($process.ExitCode -ne 0) {{ throw "Zadig failed with exit code $($process.ExitCode)" }}
+}} finally {{
+    if ($created) {{
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }}
+}}
+"""
+    run_elevated_script(script, timeout=1800)
     status_document = windows_usb_status()
     print_usb_status(status_document)
     if status_document["service"].lower() != "winusb":
@@ -1220,26 +1257,69 @@ def usb_bind() -> None:
     print("host_usb_bind=winusb")
 
 
-def run_elevated_script(script: str) -> None:
+def run_elevated_script(script: str, *, timeout: int = 600) -> None:
     ensure_work_directories()
-    script_path = RUN_ROOT / "elevated-operation.ps1"
-    script_path.write_text(script, encoding="utf-8")
-    quoted = str(script_path).replace("'", "''")
+    script_bytes = script.encode("utf-8")
+    script_hash = hashlib.sha256(script_bytes).hexdigest()
+    for _ in range(10):
+        script_path = RUN_ROOT / f"elevated-operation-{secrets.token_hex(16)}.ps1"
+        try:
+            descriptor = os.open(
+                script_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+        except FileExistsError:
+            continue
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(script_bytes)
+        break
+    else:
+        raise RuntimeError("could not create an exclusive elevated-operation script")
+
+    quoted_path = str(script_path).replace("'", "''")
+    bootstrap = f"""
+$ErrorActionPreference = 'Stop'
+$path = '{quoted_path}'
+try {{
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {{
+        $actual = ([BitConverter]::ToString($hasher.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }} finally {{
+        $hasher.Dispose()
+    }}
+    if ($actual -ne '{script_hash}') {{ throw 'elevated-operation script SHA-256 mismatch' }}
+    $source = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    & ([ScriptBlock]::Create($source))
+    exit 0
+}} catch {{
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}} finally {{
+    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+}}
+"""
+    encoded_bootstrap = base64.b64encode(bootstrap.encode("utf-16-le")).decode("ascii")
     command = (
         "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait "
-        "-PassThru "
-        f"-ArgumentList '-NoProfile -ExecutionPolicy Bypass -File \"{quoted}\"'; "
-        "exit $process.ExitCode"
+        "-PassThru -ArgumentList @('-NoProfile','-NonInteractive',"
+        "'-ExecutionPolicy','Bypass','-EncodedCommand',"
+        f"'{encoded_bootstrap}'); exit $process.ExitCode"
     )
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", command],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    finally:
+        script_path.unlink(missing_ok=True)
     if result.returncode != 0:
-        raise RuntimeError(f"elevated operation failed: {result.stderr.strip()}")
+        detail = result.stderr.strip() or result.stdout.strip() or "UAC was cancelled"
+        raise RuntimeError(f"elevated operation failed: {detail}")
 
 
 def usb_rollback() -> None:
@@ -1252,17 +1332,43 @@ def usb_rollback() -> None:
         print_usb_status(status_document)
         return
     driver_inf = status_document["driver_inf"]
-    if not driver_inf.lower().startswith("oem") or not driver_inf.lower().endswith(
-        ".inf"
-    ):
+    if re.fullmatch(r"oem[0-9]+\.inf", driver_inf, flags=re.IGNORECASE) is None:
         raise RuntimeError(
             f"refusing to delete unexpected WinUSB driver INF {driver_inf!r}"
         )
+    controller = load_usb_lock()["controller"]
+    instance_id = controller["windows_instance_id"].replace("'", "''")
+    hardware_prefix = (
+        f"USB\\VID_{controller['vendor_id']}&PID_{controller['product_id']}\\*"
+    )
     script = f"""
 $ErrorActionPreference = 'Stop'
-$process = Start-Process -FilePath 'pnputil.exe' -Wait -PassThru -ArgumentList @('/delete-driver', '{driver_inf}', '/uninstall', '/force')
-if ($process.ExitCode -ne 0) {{ throw "pnputil delete failed with exit code $($process.ExitCode)" }}
-pnputil.exe /scan-devices
+$instance = '{instance_id}'
+$expectedInf = '{driver_inf}'
+$device = Get-PnpDevice -PresentOnly -InstanceId $instance -ErrorAction Stop
+$matching = @(Get-PnpDevice -PresentOnly | Where-Object {{ $_.InstanceId -like '{hardware_prefix}' }})
+if ($matching.Count -ne 1) {{ throw "pinned UB500 VID/PID is no longer unique" }}
+$service = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_Service').Data
+$currentInf = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_DriverInfPath').Data
+if ($service -ine 'WinUSB') {{ throw "pinned UB500 is no longer bound to WinUSB" }}
+if ($currentInf -notmatch '(?i)^oem[0-9]+\\.inf$') {{ throw "elevated INF identity has an invalid form" }}
+if ($currentInf -ine $expectedInf) {{ throw "UB500 INF changed across the elevation boundary" }}
+$allDevices = @(Get-PnpDevice -ErrorAction Stop)
+$shared = @(
+    foreach ($candidate in $allDevices) {{
+        $properties = @(Get-PnpDeviceProperty -InstanceId $candidate.InstanceId -ErrorAction Stop)
+        $driverInfProperties = @($properties | Where-Object {{ $_.KeyName -eq 'DEVPKEY_Device_DriverInfPath' }})
+        if ($driverInfProperties.Count -gt 1) {{ throw "PnP instance has multiple driver INF properties" }}
+        if ($driverInfProperties.Count -eq 1 -and ([string]$driverInfProperties[0].Data) -ieq $currentInf) {{
+            $candidate
+        }}
+    }}
+)
+if ($shared.Count -ne 1 -or $shared[0].InstanceId -ine $instance) {{ throw "refusing to force-delete a shared driver package" }}
+& pnputil.exe /delete-driver $currentInf /uninstall /force
+if ($LASTEXITCODE -ne 0) {{ throw "pnputil delete failed with exit code $LASTEXITCODE" }}
+& pnputil.exe /scan-devices
+if ($LASTEXITCODE -ne 0) {{ throw "pnputil scan failed with exit code $LASTEXITCODE" }}
 """
     run_elevated_script(script)
     deadline = time.monotonic() + 30
@@ -1274,6 +1380,23 @@ pnputil.exe /scan-devices
             return
         time.sleep(2)
     raise RuntimeError("UB500 did not return to the inbox BTHUSB driver")
+
+
+def wait_for_guest_controller(timeout: int = 30) -> None:
+    controller_ready = ssh(
+        f"for attempt in $(seq 1 {timeout}); do "
+        "controller_count=$(timeout 5 bluetoothctl list 2>/dev/null | grep -c '^Controller ' || true); "
+        'test "$controller_count" -eq 1 && exit 0; '
+        "sleep 1; "
+        "done; exit 1",
+        check=False,
+        capture=True,
+        timeout=timeout + 15,
+    )
+    if controller_ready.returncode != 0:
+        raise RuntimeError(
+            f"BlueZ did not enumerate exactly one controller within {timeout} seconds"
+        )
 
 
 def usb_attach() -> None:
@@ -1314,6 +1437,7 @@ def usb_attach() -> None:
             "the UB500 was claimed by QEMU but did not appear in the guest"
         )
     ssh("sudo systemctl start bluetooth.service", timeout=60)
+    wait_for_guest_controller()
     print("qemu_usb_attached=true")
     doctor()
 
@@ -1325,6 +1449,75 @@ def usb_detach() -> None:
         delete_qmp_usb()
     else:
         print("qemu_usb_detached=vm-not-running")
+
+
+def bluez_restart() -> None:
+    if not qmp_available() or qmp_usb_attached() is not True:
+        raise RuntimeError("the running VM must own the UB500 before restarting BlueZ")
+    fixture_stop(check=False)
+    ssh("sudo systemctl restart bluetooth.service", timeout=60)
+    wait_for_guest_controller()
+    fixture_start()
+    doctor()
+    print("bluez_restart_recovery=pass")
+
+
+def guest_reboot() -> None:
+    if not qmp_available() or qmp_usb_attached() is not True:
+        raise RuntimeError("the running VM must own the UB500 before guest reboot")
+    boot_id_before = ssh(
+        "cat /proc/sys/kernel/random/boot_id", capture=True, timeout=10
+    ).stdout.strip()
+    if not boot_id_before:
+        raise RuntimeError("guest boot ID was empty before reboot")
+    ssh("sudo systemctl reboot", check=False, capture=True, timeout=30)
+
+    offline_deadline = time.monotonic() + 60
+    while time.monotonic() < offline_deadline:
+        try:
+            result = ssh("true", check=False, capture=True, timeout=5)
+        except subprocess.TimeoutExpired:
+            break
+        if result.returncode != 0:
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError("guest SSH never became unavailable during reboot")
+
+    online_deadline = time.monotonic() + 240
+    while time.monotonic() < online_deadline:
+        if not qmp_available():
+            raise RuntimeError("QEMU exited instead of retaining the rebooted guest")
+        qmp_status = qmp_execute("query-status")
+        if qmp_status.get("status") == "paused":
+            raise RuntimeError(
+                "QEMU paused during guest reboot; inspect qemu.log for an accelerator failure"
+            )
+        try:
+            result = ssh(
+                "cat /proc/sys/kernel/random/boot_id",
+                check=False,
+                capture=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            result = None
+        if result is not None and result.returncode == 0:
+            boot_id_after = result.stdout.strip()
+            if not boot_id_after:
+                raise RuntimeError("guest boot ID was empty after reboot")
+            if boot_id_after == boot_id_before:
+                raise RuntimeError("guest SSH returned without a changed boot ID")
+            print("guest_ssh=ready")
+            break
+        time.sleep(3)
+    else:
+        raise RuntimeError("guest SSH did not become ready within 240s after reboot")
+
+    wait_for_guest_controller(timeout=60)
+    fixture_start()
+    doctor()
+    print("guest_reboot_recovery=pass")
 
 
 def require_fixture_environment() -> str:
@@ -2040,6 +2233,8 @@ def parse_args() -> argparse.Namespace:
             "usb-rollback",
             "usb-attach",
             "usb-detach",
+            "bluez-restart",
+            "guest-reboot",
             "fixture-install",
             "fixture-sync",
             "fixture-start",
@@ -2125,6 +2320,10 @@ def main() -> int:
             usb_attach()
         elif args.command == "usb-detach":
             usb_detach()
+        elif args.command == "bluez-restart":
+            bluez_restart()
+        elif args.command == "guest-reboot":
+            guest_reboot()
         elif args.command == "fixture-install":
             fixture_install()
         elif args.command == "fixture-sync":

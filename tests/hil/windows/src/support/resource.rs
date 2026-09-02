@@ -122,6 +122,60 @@ pub fn require_connected_resource_graph(
     }
 }
 
+pub fn require_subscribed_resource_graph(
+    backend: &Arc<WindowsBackend>,
+    probe: &WindowsResourceProbe,
+) -> Result<(), ExampleError> {
+    require_connected_resource_graph(backend, probe)?;
+    let callbacks = probe.snapshot();
+    if callbacks.characteristic_value_changed > 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "subscribed resource graph is missing characteristic.ValueChanged delegate: {callbacks:?}"
+        )
+        .into())
+    }
+}
+
+pub fn wait_for_connection_resource_release(
+    backend: &Arc<WindowsBackend>,
+    probe: &WindowsResourceProbe,
+    timeout: Duration,
+) -> Result<(), ExampleError> {
+    let expected_logical = WindowsLogicalResourceSnapshot {
+        ingress_roots: 1,
+        pending_initialization_operations: 0,
+        adapter_roots: 1,
+        radio_roots: 1,
+        radio_event_tokens: 1,
+        scan_roots: 0,
+        connection_roots: 0,
+        owns_adapter_lease: true,
+    };
+    let expected_callbacks = WindowsCallbackResourceSnapshot {
+        radio_state_changed: 1,
+        ..WindowsCallbackResourceSnapshot::default()
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        let logical = backend.resource_snapshot();
+        let callbacks = probe.snapshot();
+        if logical == expected_logical && callbacks == expected_callbacks {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "connection resources did not release within {timeout:?}; expected logical={expected_logical:?}, callbacks={expected_callbacks:?}; actual logical={logical:?}, callbacks={callbacks:?}"
+            )
+            .into());
+        }
+        thread::sleep(
+            RELEASE_POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 pub fn wait_for_resource_release(
     backend: &Arc<WindowsBackend>,
     probe: &WindowsResourceProbe,

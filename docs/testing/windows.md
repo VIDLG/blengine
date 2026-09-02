@@ -19,7 +19,7 @@ Windows RF runner位于standalone `tests/hil/windows` Cargo crate，只通过Jus
 
 ### 当前物理外设：项目Android Peripheral
 
-开发期使用Android真机（当前为HONOR 90 GT）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-android-basic-gatt-v1`，可显式发送notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
+开发期使用Android真机（当前为OnePlus 11，ADB serial `3ac5cc09`）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-android-basic-gatt-v1`，可显式发送notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
 
 2026-08-29已从Windows通过LightBlue和项目recipe实际验证共享fixture的以下基础路径：
 
@@ -47,7 +47,11 @@ pixi run just peripheral android-notify deadbeef
 
 后续non-RF hardened candidate把connection state machine提取到`connection.rs`，把GATT拆为父协调模块、`gatt/discovery.rs`、`gatt/io.rs`和`gatt/tests.rs`，并统一两阶段cleanup：先在`delivery -> state`内invalidate correlation、detach ownership和设置cleanup gate，再在锁外执行WinRT `Cancel`/`Remove*`/`Close`，随后重新进入delivery边界尝试prepared events并按disconnect优先drain deferred callback。caller-owned GATT/subscription ID不再保留历史tombstone，只检查live collision并使用private generation隔离stale callback；默认日志不输出原始Bluetooth address。notification callback撤销失败由`DisabledPendingRevoke`保留cleanup ownership并允许后续disable仅重试revoke，不把已关闭CCCD的route伪装为active。该candidate通过34项Windows非RF测试、109项workspace测试及完整strict lint；随后使用QEMU/BLESS `FFE0...` provider重跑并通过非破坏性scan/connect/public GATT/read/write、`PlatformDefault` Notification、严格Indication、disable后stale-route silence及connected RSSI `NotSupported`矩阵，见[`2026-09-01 hardened-cleanup candidate QEMU RF报告`](reports/2026-09-01-windows-hardened-cleanup-qemu-rf.md)。本轮没有执行USB detach等被动断连fault、重复恢复或soak。Android物理设备可被ADB识别，但fixture安装在APK传输后等待手机端USB安装审批，因此旧Android报告仍不自动证明该candidate已通过Android RF。
 
-最新candidate现通过39项Windows测试、114项workspace测试、Standard Cargo staged package、metadata-enforced source isolation、offline locked artifact-only Windows consumer和用户级`examples/windows-central`静态gate。Android fixture随后在OnePlus 11（`3ac5cc09`）通过非破坏性scan/connect/GATT/read/write/Notification矩阵；combined orchestration在严格Indication附近中断，因此严格Indication独立重跑并通过，不从中断推断结果。当前QEMU与Android、packaging、示例边界及明确未执行项见[`2026-09-01 current-candidate RF与packaging汇总`](reports/2026-09-01-windows-current-candidate-rf-packaging-summary.md)。随后release HIL使用20-byte payload对Android/QEMU各执行三次200-operation read、write和Notification矩阵，并补跑fixture callback ledger矩阵。最新QEMU uncached read、callback-confirmed write with response、write without response WinRT terminal、write without response Peripheral callback中位数为17.9、16.7、1,263.6、91.8 ops/s，Android为8.3、8.3、1,262.4、844.7 ops/s；每轮write batch均达到200/200 unique fixture callbacks且全部sequence violation计数为零。先前lossless Notification中位数为QEMU 85.1、Android 820.0 ops/s。WinRT terminal只表示local/native progress，仍不重标为remote throughput。QEMU HCI trace观测write阶段30 ms connection interval与54.732 ms ATT Write Request间隔中位数；零pacing BLESS burst曾只收到183/200，正式0.5 ms requested guest pacing及Android callback背压的三轮结果均零missing/duplicate/order violation。完整原始值、原因分析和边界见[`2026-09-01 Android/QEMU吞吐矩阵`](reports/2026-09-01-windows-android-qemu-throughput-matrix.md)。这些不是PHY/controller吞吐。最新candidate的10-cycle scan/connect与完整活动图resource-accounting smoke现已通过；每轮第一次及幂等第二次dispose后，backend逻辑root与全部16类WinRT callback delegate均精确归零，完整活动图process handle在cycle 3后为`225 -> 224`、settled max `225`。实现、辅助process趋势及未覆盖边界见[`2026-09-01 Windows资源记账与QEMU 10-cycle soak`](reports/2026-09-01-windows-resource-accounting-qemu-soak.md)。Android radio disable、QEMU USB detach和重复fault/recovery仍未对该candidate执行，因此Phase 2仍未退出。
+最新candidate现通过39项Windows测试、114项workspace测试、Standard Cargo staged package、metadata-enforced source isolation、offline locked artifact-only Windows consumer和用户级`examples/windows-central`静态gate。Android fixture随后在OnePlus 11（`3ac5cc09`）通过非破坏性scan/connect/GATT/read/write/Notification矩阵；combined orchestration在严格Indication附近中断，因此严格Indication独立重跑并通过，不从中断推断结果。当前QEMU与Android、packaging、示例边界及明确未执行项见[`2026-09-01 current-candidate RF与packaging汇总`](reports/2026-09-01-windows-current-candidate-rf-packaging-summary.md)。随后release HIL使用20-byte payload对Android/QEMU各执行三次200-operation read、write和Notification矩阵，并补跑fixture callback ledger矩阵。最新QEMU uncached read、callback-confirmed write with response、write without response WinRT terminal、write without response Peripheral callback中位数为17.9、16.7、1,263.6、91.8 ops/s，Android为8.3、8.3、1,262.4、844.7 ops/s；每轮write batch均达到200/200 unique fixture callbacks且全部sequence violation计数为零。先前lossless Notification中位数为QEMU 85.1、Android 820.0 ops/s。WinRT terminal只表示local/native progress，仍不重标为remote throughput。QEMU HCI trace观测write阶段30 ms connection interval与54.732 ms ATT Write Request间隔中位数；零pacing BLESS burst曾只收到183/200，正式0.5 ms requested guest pacing及Android callback背压的三轮结果均零missing/duplicate/order violation。完整原始值、原因分析和边界见[`2026-09-01 Android/QEMU吞吐矩阵`](reports/2026-09-01-windows-android-qemu-throughput-matrix.md)。这些不是PHY/controller吞吐。最新candidate的10-cycle scan/connect与完整活动图resource-accounting smoke现已通过；每轮第一次及幂等第二次dispose后，backend逻辑root与全部16类WinRT callback delegate均精确归零，完整活动图process handle在cycle 3后为`225 -> 224`、settled max `225`。实现、辅助process趋势及未覆盖边界见[`2026-09-01 Windows资源记账与QEMU 10-cycle soak`](reports/2026-09-01-windows-resource-accounting-qemu-soak.md)。
+
+2026-09-02同一resource-accounting candidate进一步通过OnePlus 11整机Bluetooth radio disable和QEMU guest-owned UB500 detach的`subscribed`被动断连gate。两个provider均在fault前保留公开GATT与活动Notification subscription，收到`command_id=None`的被动`Disconnected`后，在`dispose`前确认connection/GATT/subscription逻辑root及delegate释放，并在`dispose`后确认全部backend root与16类callback delegate精确归零；Android radio/fixture与QEMU USB/BlueZ/fixture均恢复ready。首轮暴露的OnePlus缺少`bluetooth_manager wait-for-state`及QEMU hotplug到BlueZ枚举延迟均按infrastructure failure修复并完整重跑，不伪装为backend失败或通过。详见[`2026-09-02 active-subscription被动断连与恢复报告`](reports/2026-09-02-windows-passive-disconnect-resource-recovery.md)。
+
+后续收口通过双provider各3次active-subscription破坏性fault/recovery、四条同步到已进入read/write/CCCD/value callback的真实fault race，以及Android/QEMU的strict Notification/Indication各1,000包长soak；所有正式burst均零missing/duplicate/out-of-order、actual mode匹配、disable后无stale route并最终资源归零。刷新QEMU image后，BlueZ restart通过；TCG同进程guest reboot在当时controller下完成guest shutdown、SSH/controller/fixture/doctor及Windows scan恢复。controller随后增加Linux boot ID变化硬断言，但该TCG RF路径未重跑；QEMU 11.1.0/WHPX同进程guest reboot在guest shutdown后因`Unexpected VP exit code 4`进入QMP `paused`，但新WHPX进程完整恢复UB500、BlueZ/BLESS、doctor和Windows scan。该WHPX行为归类为fixture infrastructure限制，支持的WHPX恢复是fresh-process restart。提权脚本、Zadig和USB rollback已完成source/static TOCTOU hardening，但改变USB绑定的UAC路径及真实Windows host reboot未执行。详见[`2026-09-02 Phase 2 fault/soak/reboot/hardening报告`](reports/2026-09-02-windows-phase2-fault-soak-reboot-hardening.md)。Phase 2保持active等待显式exit review，不从未执行边界推断通过。
 
 运行Windows backend RF smoke前先确认项目Android fixture正在广播：
 
@@ -69,6 +73,8 @@ pixi run just windows notification-smoke 30 fff00000-0000-4000-8000-000000000000
 pixi run just windows passive-disconnect-smoke 30 fff00000-0000-4000-8000-000000000000 android connect-only
 # Android整机radio fault（真实device-level passive-disconnect smoke，会自动恢复radio与fixture）：
 pixi run just windows passive-disconnect-smoke 60 fff00000-0000-4000-8000-000000000000 android-radio connect-only
+# 保留已启用Notification及完整GATT资源的被动断连/释放gate：
+pixi run just windows passive-disconnect-smoke 60 fff00000-0000-4000-8000-000000000000 android-radio subscribed
 pixi run just peripheral::android-stop
 ```
 
@@ -83,12 +89,34 @@ pixi run just windows gatt-throughput 35 ffe00000-0000-4000-8000-000000000000 20
 pixi run just windows notification-throughput 30 ffe00000-0000-4000-8000-000000000000 qemu 200 auto
 pixi run just windows notification-smoke 30 ffe00000-0000-4000-8000-000000000000 default qemu
 pixi run just windows notification-smoke 30 ffe00000-0000-4000-8000-000000000000 indication qemu
-pixi run just windows passive-disconnect-smoke 45 ffe00000-0000-4000-8000-000000000000 qemu
+pixi run just windows passive-disconnect-smoke 45 ffe00000-0000-4000-8000-000000000000 qemu connect-only
+pixi run just windows passive-disconnect-smoke 45 ffe00000-0000-4000-8000-000000000000 qemu subscribed
 ```
 
-QEMU被动断连recipe会detach guest-owned UB500，并在观察到被动事件后执行reattach、guest doctor和fixture restart。它会改变真实硬件/VM状态，运行前必须独占资源并获得授权。
+QEMU被动断连recipe会detach guest-owned UB500，并在观察到被动事件后执行reattach、guest doctor和fixture restart。`subscribed`锚点会在fault前保留已发现GATT与活动Notification subscription；runner要求被动`Disconnected`后连接/GATT/订阅WinRT delegate和逻辑root在`dispose`前释放，随后要求完整backend资源在`dispose`后归零。它会改变真实硬件/VM状态，运行前必须独占资源并获得授权。
 
-项目Android fixture现在可通过ADB确定性切换整机Bluetooth radio并等待`STATE_OFF/STATE_ON`，但仍不能确定性控制duplicate/late/stale callback、平台错误、复杂callback时序fault injection和长时间恢复soak。因此它是开发期真实RF managed smoke，不替代FakeBackend/shared conformance、Windows mapping/scripted tests或最终QEMU/BLESS HIL。LightBlue只能证明其实际执行的手工基础互操作，编辑value不等于发送notification。
+Phase 2 fault、delivery soak和fixture recovery入口：
+
+```sh
+# 双严格mode长delivery soak；依次运行Notification和Indication：
+pixi run just windows::subscription-soak 60 fff00000-0000-4000-8000-000000000000 android 1000 auto 20 1
+pixi run just windows::subscription-soak 60 ffe00000-0000-4000-8000-000000000000 qemu 1000 500 20 1
+# 破坏性active-subscription fault/recovery，正式默认3轮，可配置1..10：
+pixi run just windows::fault-recovery-soak 60 fff00000-0000-4000-8000-000000000000 android-radio 3
+pixi run just windows::fault-recovery-soak 60 ffe00000-0000-4000-8000-000000000000 qemu 3
+# callback进入后再施加真实fault：
+pixi run just windows::inflight-fault-smoke 60 fff00000-0000-4000-8000-000000000000 android-radio read
+pixi run just windows::inflight-fault-smoke 60 ffe00000-0000-4000-8000-000000000000 qemu write
+pixi run just windows::inflight-fault-smoke 60 fff00000-0000-4000-8000-000000000000 android-radio cccd
+pixi run just windows::inflight-fault-smoke 60 ffe00000-0000-4000-8000-000000000000 qemu notification-value
+# QEMU基础设施恢复：
+pixi run just peripheral::vm-bluez-restart
+pixi run just peripheral::vm-guest-reboot
+```
+
+这些入口会改变真实radio/controller/VM状态，必须使用独占runner并在开始前获得fixture授权。WHPX下不支持同进程guest reboot；若QMP报告`paused`，停止失败进程并按普通`vm-start`、USB attach、fixture start与doctor路径启动新WHPX进程。
+
+项目Android fixture现在可通过ADB确定性切换整机Bluetooth radio并等待`STATE_OFF/STATE_ON`，并已配合Windows-only callback gate完成复杂in-flight fault与三轮恢复；它仍不能替代FakeBackend/shared conformance对全部duplicate/late/stale callback和平台错误组合的确定性覆盖。因此它是开发期真实RF managed smoke，不替代FakeBackend/shared conformance、Windows mapping/scripted tests或最终QEMU/BLESS HIL。LightBlue只能证明其实际执行的手工基础互操作，编辑value不等于发送notification。
 
 ## Windows backend 测试边界
 
