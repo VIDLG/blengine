@@ -61,6 +61,23 @@ docs-check-mermaid:
 toolchain-paths:
     python -m tools.local_config report
 
+# Start the local Mutagen project using .gitignore and blehub.local.toml.
+# Explicit arguments override environment variables and local configuration.
+mutagen-sync-create host="" mutagen_exe="" user="" remote_path="" session_name="":
+    python -m tools.mutagen_sync start --host {{ quote(host) }} --executable {{ quote(mutagen_exe) }} --user {{ quote(user) }} --remote-path {{ quote(remote_path) }} --session-name {{ quote(session_name) }}
+
+# Show the local Mutagen project's sessions and synchronization problems.
+mutagen-sync-status mutagen_exe="" session_name="":
+    python -m tools.mutagen_sync list --executable {{ quote(mutagen_exe) }} --session-name {{ quote(session_name) }}
+
+# Force one synchronization cycle for the local Mutagen project.
+mutagen-sync-flush mutagen_exe="" session_name="":
+    python -m tools.mutagen_sync flush --executable {{ quote(mutagen_exe) }} --session-name {{ quote(session_name) }}
+
+# Terminate the local Mutagen project without deleting synchronized files.
+mutagen-sync-terminate mutagen_exe="" session_name="":
+    python -m tools.mutagen_sync terminate --executable {{ quote(mutagen_exe) }} --session-name {{ quote(session_name) }}
+
 sccache-stats:
     sccache --show-stats
 

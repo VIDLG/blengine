@@ -2,8 +2,17 @@
 # Only machine-local paths belong here; versions and hashes remain in tracked scripts/locks.
 # BLEHUB_SWIFT_ROOT, BLEHUB_ANDROID_ROOT, and BLEHUB_QEMU_ROOT override these values for CI or one-off runs.
 # Without either override, BleHub falls back to ~/.cache/blehub/toolchains/<name>.
+# BLEHUB_MUTAGEN_EXE/HOST/USER/REMOTE_PATH/SESSION_NAME override the
+# corresponding [mutagen] values.
 
 [toolchains]
 swift_root = "D:/dev/swift"
 android_root = "D:/dev/android"
 qemu_root = "D:/dev/qemu"
+
+[mutagen]
+executable = "D:/tools/mutagen/mutagen.exe"
+host = "dev-host.example"
+user = "developer"
+remote_path = "~/projects/blehub"
+session_name = "blehub"
