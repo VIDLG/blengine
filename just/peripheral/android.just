@@ -12,6 +12,11 @@ android-install: android-build
 android-start: android-build
     {{android_control}} start
 
+# Install only when the built APK differs from the copy on the selected device;
+# otherwise reactivate the existing fixture without invoking the package installer.
+android-ensure: android-build
+    {{android_control}} ensure
+
 # Reactivate an already installed fixture without rebuilding or reinstalling it.
 android-resume:
     {{android_control}} resume

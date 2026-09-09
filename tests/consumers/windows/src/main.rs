@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Arc::new(ConsumerBackend::new());
     let hub = BleHub::new(
         backend.clone(),
-        Box::new(RecordingSink {
+        Arc::new(RecordingSink {
             events: Arc::clone(&events),
         }),
     )?;
@@ -194,7 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let windows_backend = Arc::new(WindowsBackend::new()?);
     let windows_hub = BleHub::new(
         windows_backend,
-        Box::new(RecordingSink {
+        Arc::new(RecordingSink {
             events: Arc::new(Mutex::new(Vec::new())),
         }),
     )?;

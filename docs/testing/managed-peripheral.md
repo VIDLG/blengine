@@ -12,11 +12,11 @@ Key interpretation:
 
 - QEMU is the default reproducible VM and provider baseline.
 - This environment is not pure BLE simulation. BLESS supplies programmable GATT server behavior, but the controller, controller firmware, HCI path, BLE radio link, BlueZ, Central platform stack, and USB passthrough path are real.
-- QEMU USB passthrough from a Windows host is not assumed to work reliably from configuration alone. It requires an actual adapter, driver, libusb, QEMU, reset, and recovery spike on the intended machines.
+- QEMU QEMU USB passthrough from a Windows host is not assumed to work reliably from configuration alone. It requires an actual controller, host capture/driver setup, libusb, QEMU, reset, and recovery spike on the intended machines.
 - If QEMU passthrough on Windows is insufficiently stable, QEMU/KVM on a Linux host is the preferred fallback.
 - VMware Workstation may be used as a local Windows HIL fallback after its capture, automation, licensing, and reproducibility constraints are evaluated.
 
-On 2026-08-31 the initial Windows-hosted provider bring-up passed with a TP-Link UB500: pinned QEMU and Debian provisioning, WinUSB ownership, XHCI/`usb-host` hotplug, guest BlueZ/BLESS readiness, Windows scan/connect/public GATT discovery, and one stop/detach/rebuild/start/reattach recovery. The same day the production backend also passed deterministic read/write, Notification, strict Indication, disable stale-route silence, capability-false RSSI completion, one UB500-loss passive disconnect, and immediate reattach/doctor/fixture-readiness recovery. BlueZ/guest/host reboot, repeated fault recovery, WHPX-after-reboot, and soak remain unverified. See the [bring-up report](reports/2026-08-31-windows-bless-managed-peripheral-bringup.md) and [full Windows/QEMU smoke report](reports/2026-08-31-windows-qemu-bless-full-smoke.md).
+Historical Windows-hosted bring-up reports record the original controller-specific QEMU/BLESS evidence; those reports remain unchanged as historical evidence. The maintained control plane is now provider-neutral and does not track a particular USB vendor, driver binding, or serial number. The next hardware-specific gate is nRF52840 Dongle HCI integration.
 
 ## Goals and boundaries
 
@@ -28,7 +28,9 @@ The environment provides a repeatable, programmable peripheral for end-to-end Ce
 - classify infrastructure failures separately from BleHub regressions;
 - support recovery between scenarios without claiming deterministic RF timing.
 
-The managed peripheral always runs inside a Linux VM. Do not run a separate BLESS harness directly on the Windows, Android, or Apple DUT, or directly on a physical Linux host. The host OS or host machine carrying the VM may change, but the Linux Peripheral guest shape remains consistent.
+The authoritative managed BLESS peripheral runs inside a Linux VM. Do not run a separate BLESS harness directly on a Central DUT. The host OS or host machine carrying the VM may change, but the Linux Peripheral guest shape remains consistent. Standalone nRF hardware is a separate reference Peripheral, not a replacement for the programmable BLESS control plane.
+
+The maintained Apple Central RF path uses the project Android Peripheral immediately and a standalone nRF52840 DK when available. It does not maintain native macOS BLESS or Mac QEMU + BLESS as an Apple provider. The Linux VM remains the Windows-hosted QEMU + BlueZ + BLESS control plane; its generic USB passthrough is retained for a future nRF52840 Dongle HCI firmware configuration.
 
 ## Topology
 
@@ -63,16 +65,16 @@ The control channel may arrange scenarios and collect ground truth. It must not 
 
 ## Hardware requirements
 
-Use two independent Bluetooth controllers:
+Use two independent Bluetooth roles/controllers:
 
 - **C-Controller:** owned by the Central DUT. Windows may use an internal Bluetooth controller or an external USB controller. Android, Apple, and future Linux DUTs use their own suitable Central controller.
-- **P-Controller:** a USB BLE controller owned exclusively by the Linux Peripheral VM.
+- **P-Controller:** a USB BLE controller owned exclusively by the Linux Peripheral VM, or a standalone hardware Peripheral controller for cross-stack reference tests.
 
 The following constraints apply:
 
 - One controller cannot be used by host and guest simultaneously.
 - The P-Controller must support Bluetooth LE, advertising, and peripheral role. A dongle that only supports scanning or Central role is insufficient.
-- The VM should attach the P-Controller through XHCI and `usb-host`, selecting it by physical port or VID/PID as appropriate for the provider recipe.
+- The VM should attach a VM-owned P-Controller through XHCI and `usb-host`, selecting it from ignored machine configuration or explicit environment values as appropriate for the provider recipe.
 - Test reports must identify both controllers and record relevant firmware, driver, host, guest, BlueZ, BLESS, and provider versions.
 - RF conditions and controller behavior remain physical variables. Do not assert completely deterministic RF timing or fixed RSSI.
 
@@ -82,14 +84,14 @@ Provider choice is test infrastructure, not part of the BleHub product API. The 
 
 | Provider | Intended use | Current guidance |
 |---|---|---|
-| QEMU on Windows | Active Windows-hosted reproducible baseline | UB500 capture, guest enumeration, advertising, production Windows scan/connect/GATT/read/write/Notification/Indication, one controller-loss passive disconnect, and immediate reattach/readiness recovery passed on 2026-08-31. BlueZ/guest/host reboot, repeated recovery, WHPX, and soak remain gates. |
+| QEMU on Windows | Active Windows-hosted reproducible baseline | Guest enumeration, advertising, production Windows scan/connect/GATT/read/write/Notification/Indication, controller-loss passive disconnect, and recovery are covered by the existing historical evidence. The controller is now machine-configured; nRF52840 Dongle HCI integration is the next hardware-specific gate. |
 | QEMU/KVM on Linux | Preferred fallback when Windows-hosted QEMU passthrough is unstable | Keep the same Linux Peripheral guest, fixtures, and contracts. Do not move BLESS onto the physical host. |
 | VMware Workstation on Windows | Local HIL fallback | USB capture may be practical locally, but CI use depends on licensing, headless automation, and reproducibility validation. |
 | VirtualBox | Optional spike only | USB 2/3 Extension Pack distribution, licensing, and automation require separate evaluation. It is not a default dependency. |
 | Hyper-V | Not suitable as the baseline | General local USB Bluetooth-controller passthrough needed by this topology is not assumed available. RDP device redirection is not an HCI-controller substitute. |
 | WSL2 with `usbipd-win` | Experimental option | Must prove BlueZ, systemd, kernel, USB reset, and peripheral advertising behavior. It is not the fixed Peripheral VM baseline. |
 
-Maintain only one provider recipe once a provider has passed the spike. Avoid simultaneously maintaining QEMU, VMware, and VirtualBox automation before there is a demonstrated need.
+Maintain one provider recipe per purpose: Linux VM + BLESS for programmable fault/soak control, Android for immediate mobile RF development, and standalone nRF hardware for cross-stack reference tests. Avoid simultaneously maintaining additional VM products before there is a demonstrated need.
 
 ### Windows QEMU passthrough spike
 
@@ -149,10 +151,8 @@ pixi run just peripheral vm-status
 pixi run just peripheral vm-logs
 pixi run just peripheral vm-clean
 pixi run just peripheral vm-usb-status
-pixi run just peripheral vm-usb-bind
 pixi run just peripheral vm-usb-attach
 pixi run just peripheral vm-usb-detach
-pixi run just peripheral vm-usb-rollback
 pixi run just peripheral vm-fixture-install
 pixi run just peripheral vm-fixture-sync
 pixi run just peripheral vm-fixture-start
@@ -227,7 +227,7 @@ Runtime acceptance on 2026-08-31 established:
 - explicit environment install, no-network source sync, atomic activation, service readiness, and repeated cached install/start passed;
 - fixture deployment left `vm-build` cached;
 - doctor/status reported image, environment, and source fingerprints;
-- UB500 attach, BlueZ/BLESS readiness, and Windows scan/connect/public GATT discovery RF smokes did not regress.
+- Generic USB controller attach, BlueZ/BLESS readiness, and Windows scan/connect/public GATT discovery RF smokes remain covered by the existing provider workflow; the next device-specific gate is nRF52840 Dongle HCI integration.
 
 A deliberate interrupted-copy/invalid-source injection and runtime-overlay reset remain useful recovery gates; the activation order already prevents an unvalidated staging tree from becoming active.
 

@@ -9,4 +9,4 @@ publish = false
 
 [target.'cfg(windows)'.dependencies]
 blehub = { path = "../../crates/blehub" }
-blehub-windows = { path = "../../crates/blehub-windows" }
+blehub-windows = { path = "../../platforms/windows" }

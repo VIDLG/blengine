@@ -35,6 +35,14 @@ pub enum AuthorizationState {
 
 pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
 
+pub struct BackendAssembly;
+
+impl BackendAssembly {
+    pub fn new(downstream: Arc<dyn BleEventSink>) -> Self;
+    pub fn ticket(&self) -> u64;
+    pub fn finish(mut self) -> Result<Arc<BleHub>, BleHubError>;
+}
+
 pub struct BackendCapabilities {
     pub platform: Platform,
     pub contract_version: u32,
@@ -116,7 +124,7 @@ pub trait BleEventSink: Send + Sync {
 pub struct BleHub;
 
 impl BleHub {
-    pub fn new(backend: Arc<dyn BleBackend>, downstream: Box<dyn BleEventSink>,) -> Result<Self, BleHubError>;
+    pub fn new(backend: Arc<dyn BleBackend>, downstream: Arc<dyn BleEventSink>,) -> Result<Arc<Self>, BleHubError>;
     pub fn capabilities(&self) -> BackendCapabilities;
     pub fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
     pub fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
@@ -220,8 +228,9 @@ pub enum EventIngressStatus {
     DownstreamFailed {message: String},
 }
 
-pub struct EventSinkError {
-    pub message: String,
+pub enum EventSinkError {
+    Rejected {detail: String},
+    UnexpectedCallback {detail: String},
 }
 
 pub struct GattCharacteristic {

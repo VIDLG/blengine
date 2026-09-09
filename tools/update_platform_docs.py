@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Update focused official BLE platform API documentation snapshots."""
 
 from __future__ import annotations

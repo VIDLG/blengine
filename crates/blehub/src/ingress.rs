@@ -1,6 +1,6 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Mutex, Weak},
+    sync::{Arc, Mutex, Weak},
 };
 
 use crate::BleEvent;
@@ -13,12 +13,29 @@ pub enum EventIngressStatus {
     DownstreamFailed { message: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("downstream rejected the event: {message}")]
-pub struct EventSinkError {
-    pub message: String,
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum EventSinkError {
+    #[error("downstream rejected the event: {detail}")]
+    Rejected { detail: String },
+    #[error("unexpected foreign event sink exception: {detail}")]
+    UnexpectedCallback { detail: String },
 }
 
+impl From<uniffi::UnexpectedUniFFICallbackError> for EventSinkError {
+    fn from(error: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::UnexpectedCallback {
+            detail: error.reason,
+        }
+    }
+}
+
+/// Synchronous event handoff into caller-owned execution.
+///
+/// Implementations must return promptly after accepting or rejecting the event,
+/// must not block on BLE/backend progress, and must not synchronously call a
+/// command or `dispose` on the same [`crate::BleHub`]. Such work must be queued
+/// onto caller-owned execution and performed after `on_event` returns.
+#[uniffi::export(foreign)]
 pub trait BleEventSink: Send + Sync {
     fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError>;
 }
@@ -32,7 +49,7 @@ enum EventIngressPhase {
 
 struct EventIngressInner {
     phase: EventIngressPhase,
-    downstream: Option<Box<dyn BleEventSink>>,
+    downstream: Option<Arc<dyn BleEventSink>>,
 }
 
 pub(crate) struct EventIngressState {
@@ -40,7 +57,7 @@ pub(crate) struct EventIngressState {
 }
 
 impl EventIngressState {
-    pub(crate) fn new(downstream: Box<dyn BleEventSink>) -> Self {
+    pub(crate) fn new(downstream: Arc<dyn BleEventSink>) -> Self {
         Self {
             inner: Mutex::new(EventIngressInner {
                 phase: EventIngressPhase::Binding {
@@ -62,7 +79,7 @@ impl EventIngressState {
                     target: "blehub::ingress",
                     diagnostic = "ingress_mutex_poisoned",
                     operation = "activate",
-                    detail = %error,
+                    error_class = "mutex_poisoned",
                     "recovered poisoned event ingress mutex"
                 );
                 error.into_inner()
@@ -108,7 +125,7 @@ impl EventIngressState {
                     target: "blehub::ingress",
                     diagnostic = "ingress_mutex_poisoned",
                     operation = "push",
-                    detail = %message,
+                    error_class = "mutex_poisoned",
                     "failed to acquire event ingress mutex"
                 );
                 return EventIngressStatus::DownstreamFailed { message };
@@ -133,7 +150,7 @@ impl EventIngressState {
             tracing::warn!(
                 target: "blehub::ingress",
                 diagnostic = "invalid_event",
-                detail = %message,
+                error_class = "wire_validation",
                 "rejected backend event with an invalid wire invariant"
             );
             return EventIngressStatus::InvalidEvent { message };
@@ -147,10 +164,17 @@ impl EventIngressState {
             Ok(Ok(())) => EventIngressStatus::Delivered,
             Ok(Err(error)) => {
                 let message = error.to_string();
+                let diagnostic = match &error {
+                    EventSinkError::UnexpectedCallback { .. } => "downstream_unexpected_callback",
+                    EventSinkError::Rejected { .. } => "downstream_rejected",
+                };
                 tracing::warn!(
                     target: "blehub::ingress",
-                    diagnostic = "downstream_rejected",
-                    detail = %message,
+                    diagnostic,
+                    error_class = match error {
+                        EventSinkError::UnexpectedCallback { .. } => "unexpected_callback",
+                        EventSinkError::Rejected { .. } => "rejected",
+                    },
                     "downstream rejected an event delivery attempt"
                 );
                 EventIngressStatus::DownstreamFailed { message }
@@ -177,7 +201,7 @@ impl EventIngressState {
                     target: "blehub::ingress",
                     diagnostic = "ingress_mutex_poisoned",
                     operation = "close",
-                    detail = %error,
+                    error_class = "mutex_poisoned",
                     "recovered poisoned event ingress mutex"
                 );
                 error.into_inner()
@@ -261,7 +285,7 @@ mod tests {
         }
     }
 
-    fn active_state(sink: Box<dyn BleEventSink>) -> Arc<EventIngressState> {
+    fn active_state(sink: Arc<dyn BleEventSink>) -> Arc<EventIngressState> {
         let state = Arc::new(EventIngressState::new(sink));
         state.activate().unwrap();
         state
@@ -276,7 +300,7 @@ mod tests {
 
     #[test]
     fn push_during_binding_is_closed_and_prevents_activation() {
-        let state = Arc::new(EventIngressState::new(Box::new(AcceptingSink)));
+        let state = Arc::new(EventIngressState::new(Arc::new(AcceptingSink)));
         let handle = BackendEventIngressHandle::new(Arc::downgrade(&state));
 
         assert_eq!(handle.push(scan_started()), EventIngressStatus::Closed);
@@ -285,7 +309,7 @@ mod tests {
 
     #[test]
     fn activation_reports_non_binding_phase() {
-        let state = Arc::new(EventIngressState::new(Box::new(AcceptingSink)));
+        let state = Arc::new(EventIngressState::new(Arc::new(AcceptingSink)));
 
         state.activate().unwrap();
         assert!(state.activate().is_err());
@@ -296,7 +320,7 @@ mod tests {
 
     #[test]
     fn handle_weak_reference_does_not_retain_ingress_state() {
-        let state = Arc::new(EventIngressState::new(Box::new(AcceptingSink)));
+        let state = Arc::new(EventIngressState::new(Arc::new(AcceptingSink)));
         let handle = BackendEventIngressHandle::new(Arc::downgrade(&state));
 
         assert_eq!(Arc::strong_count(&state), 1);
@@ -307,7 +331,7 @@ mod tests {
 
     #[test]
     fn downstream_panic_is_contained_without_poisoning_ingress() {
-        let state = active_state(Box::new(PanicOnceSink {
+        let state = active_state(Arc::new(PanicOnceSink {
             panicked: AtomicBool::new(false),
         }));
         let handle = BackendEventIngressHandle::new(Arc::downgrade(&state));
@@ -326,7 +350,7 @@ mod tests {
     fn close_waits_for_in_flight_delivery() {
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
-        let state = active_state(Box::new(BlockingSink {
+        let state = active_state(Arc::new(BlockingSink {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
         }));
@@ -354,7 +378,7 @@ mod tests {
     #[test]
     fn ten_thousand_direct_handle_lifecycles_return_to_closed() {
         for _ in 0..10_000 {
-            let state = active_state(Box::new(AcceptingSink));
+            let state = active_state(Arc::new(AcceptingSink));
             let handle = BackendEventIngressHandle::new(Arc::downgrade(&state));
             assert_eq!(handle.push(scan_started()), EventIngressStatus::Delivered);
             drop(state);

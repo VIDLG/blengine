@@ -4,15 +4,23 @@
 
 **日期：2026-08-30**
 
-**当前阶段：Phase 0、Phase 1与Phase 2已完成；public ABI仍未冻结。当前active implementation lane按执行host选择：macOS（包括通过Mutagen同步到Mac mini的checkout）优先推进Phase 5中的macOS-first Apple thread；Windows优先推进Phase 3 Android backend，随后进入Phase 4 Windows + Android v0.1。**
+**当前阶段：Phase 0、Phase 1与Phase 2已完成；public ABI仍未冻结。经用户批准，后续基线顺序调整为Phase 3统一Apple backend（macOS先行、随后iOS）、Phase 4 Android backend、Phase 5 Windows + Apple + Android v0.1/production ABI freeze；当前active implementation lane为Phase 3 Apple。**
 
-**硬件状态：2026-08-30已在HONOR 90 GT创建、lint/build、通过Android CLI部署并启动项目管理的Kotlin BLE Peripheral fixture；设备端确认`blehub-android-basic-gatt-v1` service注册且进入`ADVERTISING`，显式notification/indication和ADB控制已实现。2026-08-31 production `WindowsBackend`已通过真实RF初始化、扫描/filter/advertisement/stop、连接、私有uncached GATT service probe、公开uncached GATT service/characteristic/descriptor discovery与统一database mapping，以及主动logical disconnect开发smoke。同期项目管理的QEMU Debian 13 + BlueZ 5.82 + BLESS 0.3.0 Linux Peripheral VM已使用WinUSB独占TP-Link UB500完成固定镜像provision、USB hotplug、guest doctor、profile advertising/readiness、Windows scan/connect/GATT discovery，以及一次fixture stop、USB detach、VM rebuild/start、reattach恢复；随后稳定镜像、独立fixture环境、独立source/scenario三层部署已落地并重新通过空fixture doctor、显式环境安装、无网络source sync、readiness及Windows scan/connect/GATT discovery RF smoke；WHPX已请求启用但仍需重启后验证，本轮使用TCG。公开characteristic read、write with response和write without response已通过项目Android fixture真实RF及确定payload回读。一次notification smoke因Android与QEMU同时广播同一旧service UUID而选中QEMU，未形成notification通过或失败证据；随后Android与QEMU fixture已拆分为语义对齐但profile ID、local name和advertised/root service UUID不同的JSON，分别使用`FFF0...`与`FFE0...`。在两个fixture并行广播时，provider-specific service filter已分别命中Android与QEMU；production `WindowsBackend`随后通过Android fixture完成`PlatformDefault` Notification与严格Indication的enable、确定payload delivery、disable和post-disable stale-route silence真实RF smoke，见[notification/indication报告](../docs/testing/reports/2026-08-31-windows-android-notification-smoke.md)。production `WindowsBackend`随后也通过QEMU/BLESS的scan/connect/public GATT discovery、read/write确定性回读、`PlatformDefault` Notification、严格Indication、disable后stale-route silence，以及connected RSSI accepted后`NotSupported` terminal。一次仅停止BLESS service的被动断连触发实验未产生Windows disconnect event，不构成backend通过或失败证据；改用guest-owned UB500 detach后收到`command_id=None`的被动`Disconnected`，随后的USB reattach、guest doctor、fixture restart和新run readiness通过，见[QEMU/BLESS完整smoke报告](../docs/testing/reports/2026-08-31-windows-qemu-bless-full-smoke.md)。Android真机在2026-08-31该轮复测时未连接ADB，因此没有把旧Android证据冒充为当时candidate复跑。2026-09-01当前hardened candidate完成private initialization/scan/GATT模块重构并通过28项Windows测试、103项workspace测试及完整静态检查后，已连接Android真机复跑scan/connect/GATT/read/write/Notification/Indication；app级`BluetoothGattServer.cancelConnection()`不是有效device-loss trigger，而整机radio `STATE_OFF`立即产生`command_id=None`被动`Disconnected`，radio与fixture恢复通过，见[当前candidate Android报告](../docs/testing/reports/2026-09-01-windows-android-current-candidate-smoke.md)。BlueZ daemon/guest/host reboot恢复、重复USB fault和WHPX重启后验证仍未记录为通过；10-cycle soak与正常dispose资源记账在后续candidate通过。此前LightBlue只保留2026-08-29的基础手工fallback证据；nRF52840尚未采购或记录为通过。真实macOS/iOS production-candidate runtime/package与RF测试尚未执行；macOS host可按host-selected lane先启动macOS production工作，但不得把同步源码或macOS证据推断为iOS通过。随后Windows backend完成两阶段detached native cleanup、connection/GATT物理模块拆分、caller-ID历史tombstone移除和HIL runner hardening，34项Windows非RF测试通过；该后续candidate已重跑并通过QEMU/BLESS非破坏性scan/connect/public GATT/read/write/`PlatformDefault` Notification/严格Indication矩阵，见[当前hardened candidate QEMU报告](../docs/testing/reports/2026-09-01-windows-hardened-cleanup-qemu-rf.md)。Android复跑因手机端USB安装审批阻塞而未执行，旧Android报告不得自动重标为该candidate通过；被动断连fault、重复恢复和soak也未重跑。**
+**硬件状态：2026-08-30已在HONOR 90 GT创建、lint/build、通过Android CLI部署并启动项目管理的Kotlin BLE Peripheral fixture；设备端确认`blehub-android-basic-gatt-v1` service注册且进入`ADVERTISING`，显式notification/indication和ADB控制已实现。2026-08-31 production `WindowsBackend`已通过真实RF初始化、扫描/filter/advertisement/stop、连接、私有uncached GATT service probe、公开uncached GATT service/characteristic/descriptor discovery与统一database mapping，以及主动logical disconnect开发smoke。同期项目管理的QEMU Debian 13 + BlueZ 5.82 + BLESS 0.3.0 Linux Peripheral VM已使用WinUSB独占TP-Link UB500完成固定镜像provision、USB hotplug、guest doctor、profile advertising/readiness、Windows scan/connect/GATT discovery，以及一次fixture stop、USB detach、VM rebuild/start、reattach恢复；随后稳定镜像、独立fixture环境、独立source/scenario三层部署已落地并重新通过空fixture doctor、显式环境安装、无网络source sync、readiness及Windows scan/connect/GATT discovery RF smoke；WHPX已请求启用但仍需重启后验证，本轮使用TCG。公开characteristic read、write with response和write without response已通过项目Android fixture真实RF及确定payload回读。一次notification smoke因Android与QEMU同时广播同一旧service UUID而选中QEMU，未形成notification通过或失败证据；随后Android与QEMU fixture已拆分为语义对齐但profile ID、local name和advertised/root service UUID不同的JSON，分别使用`FFF0...`与`FFE0...`。在两个fixture并行广播时，provider-specific service filter已分别命中Android与QEMU；production `WindowsBackend`随后通过Android fixture完成`PlatformDefault` Notification与严格Indication的enable、确定payload delivery、disable和post-disable stale-route silence真实RF smoke，见[notification/indication报告](../docs/testing/reports/2026-08-31-windows-android-notification-smoke.md)。production `WindowsBackend`随后也通过QEMU/BLESS的scan/connect/public GATT discovery、read/write确定性回读、`PlatformDefault` Notification、严格Indication、disable后stale-route silence，以及connected RSSI accepted后`NotSupported` terminal。一次仅停止BLESS service的被动断连触发实验未产生Windows disconnect event，不构成backend通过或失败证据；改用guest-owned UB500 detach后收到`command_id=None`的被动`Disconnected`，随后的USB reattach、guest doctor、fixture restart和新run readiness通过，见[QEMU/BLESS完整smoke报告](../docs/testing/reports/2026-08-31-windows-qemu-bless-full-smoke.md)。Android真机在2026-08-31该轮复测时未连接ADB，因此没有把旧Android证据冒充为当时candidate复跑。2026-09-01当前hardened candidate完成private initialization/scan/GATT模块重构并通过28项Windows测试、103项workspace测试及完整静态检查后，已连接Android真机复跑scan/connect/GATT/read/write/Notification/Indication；app级`BluetoothGattServer.cancelConnection()`不是有效device-loss trigger，而整机radio `STATE_OFF`立即产生`command_id=None`被动`Disconnected`，radio与fixture恢复通过，见[当前candidate Android报告](../docs/testing/reports/2026-09-01-windows-android-current-candidate-smoke.md)。BlueZ daemon/guest/host reboot恢复、重复USB fault和WHPX重启后验证仍未记录为通过；10-cycle soak与正常dispose资源记账在后续candidate通过。此前LightBlue只保留2026-08-29的基础手工fallback证据；nRF52840尚未采购或记录为通过。截至该阶段节点，真实macOS/iOS production-candidate runtime/package与RF测试尚未执行；后续macOS gate见本文件较新的Apple与单production-image更新，macOS host可按host-selected lane先启动macOS production工作，但不得把同步源码或macOS证据推断为iOS通过。随后Windows backend完成两阶段detached native cleanup、connection/GATT物理模块拆分、caller-ID历史tombstone移除和HIL runner hardening，34项Windows非RF测试通过；该后续candidate已重跑并通过QEMU/BLESS非破坏性scan/connect/public GATT/read/write/`PlatformDefault` Notification/严格Indication矩阵，见[当前hardened candidate QEMU报告](../docs/testing/reports/2026-09-01-windows-hardened-cleanup-qemu-rf.md)。Android复跑因手机端USB安装审批阻塞而未执行，旧Android报告不得自动重标为该candidate通过；被动断连fault、重复恢复和soak也未重跑。**
 
-**本次修订：Phase 1统一薄契约、共享conformance、同candidate Rust/Kotlin/Swift reviewed API snapshot gate及desktop Kotlin/JVM、Windows Swift、Android真机ART/AAR consumer runtime/package矩阵已通过；公共contract version固定为5。同时固定测试Peripheral分层和ownership：`tests/peripherals/android`承载近期Android真机开发fixture，QEMU Linux VM + BlueZ/BLESS继续作为确定性故障注入与soak基线，未来`tests/peripherals/nrf52840`可承载独立硬件参考固件；provider profile共享角色、属性和初始值语义，但每个可并行运行的provider必须使用独立profile ID、local name和advertised/root service UUID，不能依靠RSSI或发现顺序区分。Tauri集成形态已批准为薄Rust plugin加Kotlin bootstrap host：Rust `BleHub`始终保留并拥有统一command/event路径，Kotlin Tauri plugin只创建普通`AndroidBleBackend`、完成权限/lifecycle glue并通过一次性UniFFI assembly入口交给Rust；Android最终包只允许一个承载BleHub symbols的Tauri Rust image。Apple production-candidate runtime/package与真实RF仍未记录为通过；macOS host可优先推进macOS-first Apple thread，但production ABI尚未冻结，冻结后必须对适用Apple gate重跑。**
+**本次修订：Phase 1统一薄契约、共享conformance、同candidate Rust/Kotlin/Swift reviewed API snapshot gate及历史desktop Kotlin/JVM、历史Windows Swift、Android真机ART/AAR consumer runtime/package矩阵已通过；公共contract version固定为5。Windows Swift结果仅作为已执行的历史机制证据保留，不再是维护中的runtime lane或未来gate。同时固定测试Peripheral分层和ownership：`tests/peripherals/android`承载近期Android真机开发fixture，QEMU Linux VM + BlueZ/BLESS继续作为确定性故障注入与soak基线，未来`tests/peripherals/nrf52840`可承载独立硬件参考固件；provider profile共享角色、属性和初始值语义，但每个可并行运行的provider必须使用独立profile ID、local name和advertised/root service UUID，不能依靠RSSI或发现顺序区分。生产FFI架构现已批准为单一native image：`crates/blehub`定义并导出production `BleHub` object、foreign `BleBackend`、foreign `BleEventSink`、direct ingress及全部command/event/error DTO，极薄的`crates/blehub-uniffi`只拥有最终`staticlib/cdylib`、bindgen入口和production package staging；`tests/ffi/runtime`中的Swift/Android Kotlin直接实现测试backend与sink并调用production `BleHub` API，Apple HIL同样只消费production package且使用direct Swift sink，不再存在test-only Rust FFI image。Tauri集成形态已批准为跨平台薄Rust plugin加按平台拆分的bootstrap host：Rust `BleHub`始终保留并拥有统一command/event路径，macOS/ iOS使用Swift/CoreBluetooth、Android `@TauriPlugin`只创建普通`AndroidBleBackend`并完成权限/lifecycle glue、Windows直接接入Rust backend；Android host通过一次性UniFFI assembly入口交给Rust，最终包只允许一个承载BleHub symbols的Tauri Rust image。当前未冻结Apple production candidate已在真实macOS通过Swift runtime与三slice XCFramework/SPM隔离consumer gate；production Swift/CoreBluetooth初始化、扫描、连接lifecycle、aggregate GATT discovery、characteristic read/write、Notification/Indication、架构加固与RSSI切片已通过71项macOS确定性mapping/lifecycle/state-machine测试及unsigned generic iOS simulator/device构建；GATT实现包含精确native peripheral/attribute object与connection generation关联、depth-first service/characteristic/descriptor遍历、duplicate UUID instance保留、all-or-error database发布、service invalidation后的pending-discovery quarantine、共享per-connection I/O/subscription FIFO、两种write语义、read/value arbitration、native unsubscribe-before-rediscovery与有界fail-closed late-callback/value-route barrier，bundled macOS app也已通过真实CoreBluetooth初始化装配、delegate ingress与事件顺序gate。该app首次终端直跑报告adapter `Unavailable`且authorization `NotDetermined`；改为由LaunchServices启动可见Cocoa app并运行主event loop后，系统Bluetooth授权弹窗与TCC登记完成，后续真实runtime报告`PoweredOn + Authorized`。项目OnePlus 11 Android fixture随后已通过真实macOS CoreBluetooth provider-filtered scan/start/advertisement/stop/post-stop-silence、connect/`Connecting`/`Connected`、aggregate GATT service/characteristic/descriptor discovery与profile database/CCCD验证、initial characteristic read、write-with-response及精确回读、write-without-response local submission及延迟精确回读、I/O exactly-once事件顺序、logical-disconnect/post-disconnect-silence RF gate；no-response terminal仍仅表示CoreBluetooth本地提交，后续回读是独立的fixture应用证据；iPhone签名、安装、启动与production CoreBluetooth初始化runtime已于2026-09-04在真实iPhone 14上通过；iPhone到项目Android Peripheral的真实RF已于2026-09-08通过扫描、连接、aggregate GATT discovery、characteristic read/write、logical disconnect与post-disconnect silence。详见[iPhone production runtime报告](../docs/testing/reports/2026-09-04-apple-ios-production-runtime.md)与[iPhone Android RF通过报告](../docs/testing/reports/2026-09-08-apple-ios-android-rf-pass.md)。macOS host可优先推进macOS-first Apple thread，但production ABI尚未冻结，冻结后必须对适用Apple gate重跑。**
 
 **2026-09-01 Phase 2更新：最新candidate通过39项Windows测试、114项workspace测试、QEMU/BLESS完整非破坏性矩阵，以及OnePlus 11 Android fixture的scan/connect/GATT/read/write/Notification和独立重跑的严格Indication矩阵。Standard Cargo staged archives、Cargo metadata source-isolation、offline locked Windows artifact-only consumer和`examples/windows-central`静态gate通过，见[当前candidate RF与packaging汇总](../docs/testing/reports/2026-09-01-windows-current-candidate-rf-packaging-summary.md)。随后使用release HIL、20-byte payload对Android与QEMU各执行三次200-operation read/write/Notification正式矩阵，并补跑fixture callback ledger矩阵：QEMU read、callback-confirmed write-with-response、write-without-response WinRT terminal、write-without-response Peripheral callback和lossless Notification中位数分别为17.9、16.7、1,263.6、91.8、85.1 ops/s，Android分别为8.3、8.3、1,262.4、844.7、820.0 ops/s；每个写批次均达到200/200 unique fixture callbacks且missing/duplicate/out-of-order/out-of-range/foreign/malformed为零。WinRT no-response terminal仍只表示local/native progress，不得重标为remote throughput。QEMU HCI trace确认write阶段connection interval为30 ms、20-byte ATT Write Request间隔中位数54.732 ms，说明response低速主要来自真实ATT往返与连接调度而非Rust dispatch。QEMU零pacing Notification曾只到达183/200，正式结果使用最快连续稳定的0.5 ms requested guest pacing并以burst ID/sequence证明零missing/duplicate/order violation；Android按`onNotificationSent` callback自然背压。完整原始值、边界和限制见[Android/QEMU吞吐矩阵](../docs/testing/reports/2026-09-01-windows-android-qemu-throughput-matrix.md)。callback/native-handle leak accounting和10-cycle soak随后已完成；重复fault/recovery和最新candidate破坏性passive-disconnect在当时仍未完成。**
 
 **2026-09-02 Phase 2更新：后续candidate通过Android/QEMU各三次破坏性fault/recovery、四个同步到已进入WinRT read/write/CCCD/value callback的fault race，以及双provider、双严格mode各1,000包的长delivery soak；所有正式delivery均为零missing/duplicate/out-of-order，disable后无stale route，最终资源精确归零。QEMU provisioned image已刷新；BlueZ restart通过，TCG guest reboot在当时controller下完成guest shutdown与SSH/controller/fixture/doctor/Windows scan恢复。后续controller增加Linux boot ID变化硬断言但未重跑TCG RF。QEMU 11.1.0/WHPX同进程guest reboot在guest shutdown后因`Unexpected VP exit code 4`进入QMP `paused`，但新WHPX进程可完整恢复UB500、BlueZ/BLESS、doctor与Windows scan，因此将同进程WHPX reboot记为fixture infrastructure限制，支持路径为fresh-process restart，不记作`WindowsBackend`失败或通过。Windows提权脚本、Zadig与USB rollback已完成TOCTOU/identity hardening并通过静态检查；因会改变当前USB绑定，UAC路径未执行。真实Windows host reboot也未执行。统一证据见[Phase 2 fault/soak/reboot/hardening报告](../docs/testing/reports/2026-09-02-windows-phase2-fault-soak-reboot-hardening.md)。Phase 2功能、packaging、managed-fixture、资源与破坏性HIL证据已覆盖退出条件；2026-09-02显式exit review结论为PASS，见[Phase 2退出审查](../docs/testing/reports/2026-09-02-windows-phase2-exit-review.md)，Phase 2正式完成。未执行边界仍不得推断为通过。**
+
+**2026-09-02 Apple lane bring-up：macOS 26.2 Apple Silicon Mac mini已完成Pixi/Xcode/Swift环境、production-candidate macOS Swift runtime以及iOS device、iOS simulator、macOS三slice XCFramework/SPM隔离consumer gate；见[Apple production-candidate bring-up报告](../docs/testing/reports/2026-09-02-apple-production-candidate-bringup.md)。首个production Swift/CoreBluetooth切片已建立single-owner lifecycle、serial queue confinement、初始化state/authorization mapping与ingress delivery；后续扫描与连接切片增加单active scan、local start/stop completion、advertisement/predicate mapping、backend-private `PeripheralId`复用、单peripheral connection lifecycle、generation/correlation、connect/failure/passive-disconnect mapping、logical disconnect与callback-first route teardown。当前初始化、扫描、连接、aggregate GATT discovery、characteristic read/write、Notification/Indication、架构加固与RSSI共71项macOS确定性测试及unsigned generic iOS simulator/device构建通过；GATT确定性切片固定exact native-object/generation correlation、depth-first aggregate traversal、duplicate UUID instance保留、all-or-error发布、service invalidation quarantine、共享per-connection I/O/subscription FIFO、CoreBluetooth read/write/value/state callback routing、no-response local-submission语义、native unsubscribe-before-rediscovery与bounded fail-closed late-callback/value-route barrier，bundled macOS app也通过真实CoreBluetooth初始化事件顺序；首次终端直跑返回authorization `NotDetermined`，后续LaunchServices可见app取得系统授权并通过一轮`PoweredOn + Authorized` gate；source-tree probe为ad-hoc签名，重建/重签可能需再次授权，当前agent `codesign`也未能使用可见Apple Development identity（`errSecInternalComponent`），因此不构成development-signing通过；见[Apple初始化切片报告](../docs/testing/reports/2026-09-02-apple-initialization-slice.md)与[Apple扫描及macOS runtime报告](../docs/testing/reports/2026-09-02-apple-scan-slice-macos-runtime.md)。随后OnePlus 11 Android fixture（`3ac5cc09`）在内置`BCM_4388C2` controller上通过provider-specific service filter、scan start、advertisement、stop、post-stop silence、connect/`Connecting`/`Connected`、logical disconnect与post-disconnect silence真实RF gate（最新连接轮次RSSI `-54`、connectable）；此前一次`IOConsoleLocked=Yes`运行在初始化事件前超时且未进入RF，通过轮次使用已解锁图形会话和有界`caffeinate` assertion，见[Apple Android scan RF与连接切片报告](../docs/testing/reports/2026-09-02-apple-android-scan-rf-connection-slice.md)。TP-Link UB500（USB `2357:0604`）已在Mac USB树中active枚举，但未注册为`IOBluetoothHCIController`；当前CoreBluetooth仍只使用内置PCIe controller。BLESS `0.3.0` fixture仍依赖Linux/BlueZ，现已增加独立于Windows amd64输入的Debian arm64/HVF macOS guest与`linux-aarch64` fixture lock；arm64 image provision、HVF boot、fixture environment install及source/profile sync通过。QEMU 11.1.1/libusb可独占UB500并让guest以`btusb`枚举两个interface，但Realtek HCI初始化`0xfc61`在amd64/TCG+xHCI、arm64/HVF+xHCI及临时arm64/HVF+OHCI检查中均超时，BlueZ controller为零，故BLESS未进入广播、Apple scan RF未执行；这是macOS fixture infrastructure限制，不是Apple backend失败，见[macOS BLESS/QEMU报告](../docs/testing/reports/2026-09-02-apple-bless-qemu-macos-bringup.md)。Apple日常RF开发优先复用项目Android Peripheral；权威BLESS fault/soak继续使用已验证的Windows Linux Peripheral VM路径或独立Linux host，直到macOS passthrough边界关闭。Xcode当前可见一台已连接iPhone 14（iOS 26.2）且本机存在有效Apple Development signing identity；这只关闭设备/签名前置可见性，不表示iPhone安装/运行或任一iPhone RF gate已通过；随后macOS aggregate GATT discovery与characteristic read/write已对Android fixture通过真实RF：I/O轮次初始值为`00`，with-response写入`10 20 30`后精确回读，无响应写入`AB CD`在本地提交终端后经500 ms caller观察窗口精确回读，并通过命令6至10的exactly-once/domain-before-terminal ledger及断开后静默；该回读不把no-response终端重标为远端确认。见[Apple Android GATT discovery RF报告](../docs/testing/reports/2026-09-03-apple-android-gatt-discovery-rf.md)与[Apple characteristic I/O报告](../docs/testing/reports/2026-09-03-apple-gatt-io-slice.md)。**
+
+**（已被2026-09-04修订取代，仅保留历史背景）2026-09-03 Apple Peripheral拓扑修订：检查官方BLESS `0.3.0` wheel后确认上游在Darwin原生选择CoreBluetooth server backend；此前“BLESS依赖Linux/BlueZ”只适用于项目既有managed QEMU fixture，不适用于BLESS上游全部backend。Apple路线保留Apple Silicon arm64/HVF QEMU + UB500完整本机控制路径，并与已验证的Windows-hosted Linux/BlueZ/BLESS fault/soak路径保持相同fixture command/readiness/profile语义；Mac mini原生BLESS另行使用系统选择的内置controller和独立`blehub-macos-bless-basic-gatt-v1`/`FFD0...` profile，作为iPhone Central的第二Peripheral，Android继续作为macOS/iPhone共享开发Peripheral。物理冷插拔复检后，macOS QEMU仍在Realtek `0xfc61`处超时，因此设计保留但当前不得标为RF-ready。`apple-bless` Pixi环境、native process controller和三provider profile isolation非RF校验已通过；尚未宣称native macOS BLESS advertising或iPhone RF通过，见[Apple native macOS BLESS设计报告](../docs/testing/reports/2026-09-03-apple-native-macos-bless-design.md)。**
+
+**2026-09-03 单production-image ABI迁移更新：`crates/blehub`现定义并导出production `BleHub`、foreign `BleBackend`、foreign `BleEventSink`与direct ingress，`crates/blehub-uniffi`拥有唯一final native image与production package；`tests/ffi/harness`已删除，`tests/ffi/runtime`中的Swift/Kotlin直接实现backend与sink，Apple HIL消费production package、使用direct Swift sink，并仅与macOS runtime probe共享pure-Swift helper。当前未冻结candidate已在macOS通过`pixi run -e apple-ci just ffi apple-package`的三slice与symbol检查、`just ffi swift-macos`的direct production runtime（完整event catalog及concurrency/error/lifecycle cases）、Android Kotlin production ABI runtime仍按Android ART gate执行、`just apple test`的71项确定性测试、`just apple build-ios`的unsigned generic simulator/device构建，以及workspace Cargo tests与lint。`just apple runtime-macos`完成production-package初始化路径，但该次terminal ad-hoc结果为adapter `Unavailable`、authorization `NotDetermined`，不是`PoweredOn + Authorized`或RF通过。iPhone HIL工程生成与unsigned generic iOS build通过，但login keychain未向非交互`codesign`开放，doctor仍阻塞，未通过签名、安装、设备runtime或RF。Android production AAR assembly/publish与macOS NDK native slices在移除Windows-only linker假设后通过；真机ART因手机锁屏时两次APK安装均以`ShellCommandUnresponsiveException`超时而未运行。本次迁移没有RF运行，不构成Windows backend/artifact consumer同candidate重跑、Android ART或iPhone通过；见[单production-image ABI迁移报告](../docs/testing/reports/2026-09-03-single-image-production-abi-migration.md)。public ABI仍未冻结，Phase 5必须以最终Windows + Apple + Android同candidate完整重跑全部适用gate；Apple Swift只要求在项目真实Mac mini上执行macOS/iOS runtime、package、backend与HIL gate，不包含Windows Swift补充host。**
+
+**2026-09-04 Peripheral路线最终修订：退休macOS原生BLESS与Mac QEMU + BLESS作为维护路线。** macOS/iOS Apple Central当前使用项目Android Peripheral完成开发RF，nRF52840 DK到货后使用其standalone Peripheral作为Mac/iPhone参考外设；不再维护`apple-bless`环境、macOS BLESS进程控制器或`macos-bless-*` profile/recipe。Windows侧保留QEMU Linux + BlueZ + BLESS控制面；其USB passthrough改为读取机器本地`[peripheral_usb]`或`BLEHUB_PERIPHERAL_USB_*`配置，不再跟踪UB500、Zadig、WinUSB绑定/回滚或任何设备专用VID/PID/serial。nRF52840 Dongle到货后先按实际USB identity和固件模式建立配置与profile：HCI firmware用于Windows QEMU，standalone Peripheral firmware用于Windows直接RF，两者互斥；nRF52840 DK直接作为Mac/iPhone的standalone Peripheral。历史UB500与macOS BLESS报告保留为历史证据，不代表当前维护架构或通过结果。
 
 本文件是BleHub唯一规划来源。Phase 0已完成框架选择、production FFI迁移、最小scan/connect contract/bridge和Windows/Android真实runtime gate；Phase 1已完成平台无关公共契约、共享conformance、reviewed API snapshots和完整candidate runtime复核；Phase 2已完成项目Android开发Peripheral、managed QEMU/BLESS fixture与production Windows backend的退出审查。后续实现优先级按执行host选择，但阶段完成、ABI冻结和各平台证据保持独立。本文同时作为未来架构文档、API文档和平台接入文档的来源。
 
@@ -27,15 +35,16 @@ BleHub 是一个以 Rust 为核心、支持 Windows、Android、iOS、macOS 和 
 基线依赖与发布顺序：
 
 1. **Windows**：第一开发平台、参考实现和主要测试宿主；Phase 2已完成。
-2. **Android**：验证 Stable UniFFI 跨语言 backend 抽象，与 Windows 一起组成 v0.1并在Phase 4冻结该production ABI。
-3. **macOS/iOS**：复用统一契约接入 Swift CoreBluetooth；macOS先行，iOS保持独立验证。
-4. **Linux**：复用稳定契约接入 BlueZ D-Bus。
+2. **macOS/iOS**：Phase 3使用同一个Swift/CoreBluetooth backend与SwiftPM product；macOS先行，iOS保持独立验证。
+3. **Android**：Phase 4验证Stable UniFFI跨语言backend抽象。
+4. **Windows + Apple + Android v0.1**：Phase 5统一审计、打包并冻结production ABI。
+5. **Linux**：Phase 6复用稳定契约接入BlueZ D-Bus。
 
-active implementation lane按实际执行host选择：
+当前implementation order：
 
-- 在macOS上，包括从Windows主checkout通过Mutagen同步到Mac mini的工作副本，优先推进Phase 5的macOS-first Apple thread。Phase 4冻结前只能消费当前未冻结candidate；冻结后必须对适用的Apple generation、runtime、package、lifecycle和RF gate重跑。
-- 在Windows上，优先推进Phase 3 Android backend，再完成Phase 4 Windows + Android v0.1。
-- host选择只决定开发优先级，不改变数值阶段的退出状态，不冻结ABI，也不转移平台证据；macOS不证明iOS，Windows不证明Android，源码同步不证明任一平台build/runtime/RF通过。
+- 在真实Mac mini的独立Git clone上完成Phase 3 Apple；Windows与Mac共享同一GitHub远端和提交历史，两端均在`main`开发，不维护按宿主拆分的分支，不再通过Mutagen同步两个工作树。`platforms/apple`统一支持macOS/iOS，但macOS不证明iOS。
+- Phase 3退出后再进入Phase 4 Android backend；Android Peripheral fixture可继续服务Apple RF测试，但不代表Android Central backend完成。
+- Phase 5前所有平台只消费当前未冻结candidate；冻结前必须以同一最终candidate重跑受影响的generation、runtime、package、lifecycle与RF gate。源码同步不证明任一平台build/runtime/RF通过。
 
 ### 1.1 v0.1 必须支持
 
@@ -56,8 +65,10 @@ active implementation lane按实际执行host选择：
 
 ### 1.2 设计时预留，但不阻塞 v0.1
 
-- 以 Tauri Rust core 作为真实 downstream 的跨平台 Central reference app；已批准的接入形态是repository-owned、`publish = false`的薄Tauri Rust plugin加Kotlin bootstrap host：Rust plugin持有`BleHub`、command adapter、caller-owned event channel/projection，Android host只创建普通`AndroidBleBackend`并完成权限/lifecycle/backend assembly；首个showcase target为Windows/Android，但只在assembly spike获得Go后实施，spike未完成或结果为No-Go均不替代clean consumer，也不阻塞production ABI
-- 按已经验证的真实产品需求增加Kotlin/Swift native application consumer facade；它必须是现有Rust-first `BleHub`之外的独立薄适配层，不替换Rust API、不把当前`BleEventSink`直接升级为foreign trait，也不迫使BleHub core拥有queue/runtime
+- 先完成跨平台Tauri Rust plugin的核心接入，作为真实downstream的Central reference app；插件canonical归属为`integrations/tauri-plugin-blehub`，是repository-owned、`publish = false`的薄适配层，直接依赖并持有`crates/blehub`导出的`BleHub`，不定义第二套backend或command/event contract。各平台只提供assembly/provider：macOS先接入Swift/CoreBluetooth backend，Android由Kotlin host完成权限/lifecycle/backend assembly，Windows直接接入Rust backend，iOS随后单独验证。macOS只是实现与RF验证顺序，不改变插件的跨平台目标，也不把Tauri加入BleHub core
+- Tauri落地顺序固定为：Rust plugin deterministic/fake-backend assembly → macOS Apple backend + 项目Android Peripheral（P-Android）真实闭环 → P-Android压力、故障恢复和长时soak → Windows provider → Android Central backend完成后的Android host → iOS application lifecycle与签名/RF。macOS plugin闭环通过后，P-Android的压力/故障测试必须从Tauri app入口执行并保留独立报告；这项downstream gate不替代各平台backend HIL，也不阻塞production ABI冻结
+- 宿主框架适配层统一归入`integrations/`：`integrations/tauri-plugin-blehub`承载Tauri Rust/native glue，未来`integrations/flutter-blehub`按Flutter federated plugin拆分Dart API、platform interface和各平台assembly；`examples/`只放消费这些integration的示例应用，`platforms/`只放BLE backend。任何integration都不得复制BleHub contract、建立第二套逐operation JSON协议或拥有第二个production native image
+- 按真实产品需求增加Kotlin/Swift convenience adapter（例如`Flow`或`AsyncStream`）；production `BleHub`与foreign `BleEventSink`已经是native application的统一入口，adapter只能包装同一API且由调用方拥有queue/runtime，不能建立第二套command/event contract
 - Android MTU request / MTU changed
 - Android PHY 和 connection priority
 - service changed 与 GATT cache invalidation
@@ -82,7 +93,7 @@ active implementation lane按实际执行host选择：
 - 通用异步 `ShutdownCommand`；四个平台都没有统一的整体 BLE shutdown completion，v0.1 只提供本地幂等 `dispose/close`
 - 等所有平台完整后才发布第一个版本
 - 用 Tauri mobile plugin 的 JSON command/event bridge 替代统一 `BleBackend`、UniFFI foreign trait object 或 backend event ingress
-- 在 v0.1 发布通用 `tauri-plugin-blehub`；首版只在spike/reference app内部保留repository-owned、`publish = false`的薄适配plugin，是否提取到`integrations/`并作为通用插件发布须按多个真实项目的复用需求另行评审
+- 在 v0.1 发布通用 `tauri-plugin-blehub`或`flutter_blehub`；首版integration固定放在`integrations/`内并保持repository-owned、`publish = false`，由`examples/`和独立consumer验证。是否对外发布须在多个真实项目、跨平台复用、版本兼容、artifact loading和生命周期证据通过后另行评审
 
 ---
 
@@ -92,10 +103,11 @@ active implementation lane按实际执行host选择：
 |---|---|
 | 核心语言 | Rust 2024 edition |
 | FFI | Stable UniFFI `0.32.0` proc-macro interface；Rust crates、bindgen与language runtime必须精确锁定并随contract lockstep；相邻源码checkout只用于审计，不参与production构建/生成 |
-| backend | Rust 定义 `BleBackend: Send + Sync` trait object |
+| public API owner | `crates/blehub`定义并UniFFI导出production `BleHub` object、foreign `BleBackend`、foreign `BleEventSink`、direct ingress、commands/events/errors；Rust consumer仍可直接使用同一定义 |
+| backend | Rust 定义并以Stable UniFFI foreign trait导出`BleBackend: Send + Sync`；Windows/Linux可直接以Rust实现，Apple/Android以Swift/Kotlin实现 |
 | backend 方法 | 普通同步 `fn`，不使用 `async fn` |
 | 调用模型 | fire-and-forget：同步 `Result` 表示即时校验/投递是否成功；`Ok` 后的平台 operation 结果通过事件完成 |
-| 事件上行 | 平台 callback 经 backend 映射为统一 `BleEvent`；backend retain Rust exported `BackendEventIngressHandle` 并调用 `handle.push(event)`，handle只持`Weak<EventIngressState>`，upgrade后进入bridge，再调用Rust downstream `BleEventSink` trait object；无token、无process-local registry、无free push function |
+| 事件上行 | 平台 callback 经backend映射为统一`BleEvent`；backend retain Rust exported `BackendEventIngressHandle`并调用`handle.push(event)`，handle只持`Weak<EventIngressState>`，upgrade后进入bridge，再调用由Rust/Swift/Kotlin application提供的foreign `BleEventSink` trait object；无token、无process-local registry、无free push function |
 | 事件落点 | 下游 `BleEventSink` 自行投递到 channel、Handler、actor、UI loop 或自选 runtime |
 | 执行模型 | BleHub core 无 mailbox、无 pump、无 executor、无线程、无自有事件循环 |
 | 状态归属 | 调用方拥有业务/command/session 状态；backend 拥有 native handle 状态；BleHub 不维护 canonical BLE state |
@@ -104,7 +116,7 @@ active implementation lane按实际执行host选择：
 | Apple | Swift + CoreBluetooth + Stable UniFFI foreign trait |
 | Linux | Rust + `dbus-rs` + BlueZ D-Bus |
 | Consumer validation | 每个平台使用独立、只消费 staged/release artifact 的 clean consumer；不允许源码路径、Gradle project dependency 或未打包本地产物掩盖 packaging 问题 |
-| 跨平台展示 | Tauri 2 reference app；薄Rust plugin直接依赖并持有`BleHub`，Web frontend只通过Rust adapter发command、收projection/event；Android `@TauriPlugin` host只做Kotlin backend bootstrap、权限与lifecycle，不能承载逐BLE-operation协议；Tauri不进入BleHub core或backend contract |
+| 跨平台展示 | Tauri 2 reference app与未来Flutter federated plugin；integration直接依赖并持有`BleHub`，frontend/Dart只通过adapter发command、收projection/event；平台assembly只负责创建对应native backend、权限与lifecycle（macOS先行，Android使用`@TauriPlugin`，Windows直接使用Rust backend，iOS单独验证），不能承载逐BLE-operation协议；宿主框架integration不进入BleHub core或backend contract |
 | Rust 依赖 | Cargo |
 | 外部工具 | Pixi |
 | 项目 recipes | 根 Justfile；Just 由 Pixi 提供 |
@@ -137,13 +149,13 @@ BleHub 不依赖或照搬 SimpleBLE 的统一 C++ object model、blocking `scan_
 - **Thin Bridge**：Rust 中无 executor、无线程、无领域状态机的同步桥；只持有 backend、`EventIngressState`、command/close synchronization gate 和最小 lifecycle state。
 - **Backend**：实现 `BleBackend` 的平台适配对象，负责把同步 command 投递给 WinRT、Android BLE、CoreBluetooth 或 BlueZ。
 - **Ingress Phase**：`EventIngressState` mutex内部的`Binding | Active | Closed`单向lifecycle phase；它不是event tag。`Binding`拒绝并记录过早push，`Active`允许串行delivery，`Closed`拒绝close后callback。
-- **Command/Close Gate**：保护 backend ownership 的读写同步边界；command 取得 shared/read guard，close 取得 exclusive/write guard，防止 backend method 执行期间释放 backend。
+- **Command/Close Gate**：保护 backend ownership 的读写同步边界；command在同步backend method期间持有shared/read guard，close取得exclusive/write guard并从slot取走backend，随后立即释放guard，再排空ingress并清理局部强持有的backend。这样既防止dispatch中途释放backend，也不把Hub ownership锁跨越callback drain/native cleanup。
 - **Event Tag**：`BleEvent` tagged union 中标识 payload variant 的判别值；结构校验检查 tag 与 payload 是否匹配，与 Hub 是否 closed 无关。
 - **Command Dispatch / 命令投递**：public method 的短同步阶段。backend 在自己的串行执行边界内原子完成“登记 correlation、取得 cleanup ownership、提交到执行路径”时，command 线性化为 accepted。`Ok(())` 只确认该事实；它不表示 native API、OS/BLE operation 或外设业务已成功。
 - **Dispatch Rejection / 投递拒绝**：accepted 线性化点之前的同步 `Err(CommandDispatchError)`；backend 此时不得创建 callback source、保留 correlation/cleanup ownership或 emit event，因此该 `CommandId` 后续严格无事件。
 - **Operation Completion / 操作完成**：accepted command 后由平台 callback/async result、D-Bus reply或明确定义的 backend-local completion point提供证据。到达该点后，backend 对需要公开状态/数据结果的 operation 先尝试一次 domain event（若有），再必须且至多一次尝试发送 terminal `CommandCompleted`；这不是 sink delivery guarantee。`CommandCompleted { error: None }`的强度按command/platform逐项定义，绝不统一解释为“外设已处理”。
 - **Backend Event Ingress**：backend 把最终 `BleEvent` 送回 Rust 的受控入口。v0.1 是 backend retain 的 UniFFI exported `BackendEventIngressHandle`；handle只持`Weak<EventIngressState>`并暴露`push(event)`。它不是 downstream sink trait object，也不需要opaque token、全局registry或free push function。
-- **Downstream Event Sink**：Rust application 实现并传给 BleHub 的 `BleEventSink: Send + Sync` trait object；它不是 UniFFI foreign trait object。Rust bridge 完成最小结构校验后同步调用 `on_event(BleEvent) -> Result<(), EventSinkError>`。
+- **Downstream Event Sink**：application以Rust直接实现或通过generated Swift/Kotlin protocol实现并传给BleHub的foreign `BleEventSink: Send + Sync` trait object。Rust bridge完成最小结构校验后同步调用`on_event(BleEvent) -> Result<(), EventSinkError>`；foreign sink callback是production ABI的一部分。
 - **Event Dispatch**：`BleEventSink` 的实现只负责按调用方策略接纳事件，例如放入 Rust channel、actor 或自选 runtime，并立即返回。`Ok(())` 表示 sink 已按自己的策略接纳事件，`Err(EventSinkError)` 表示未接纳。
 - **Caller State**：command terminal、active scan/connection/GATT/subscription、timeout/retry 和业务状态均由调用方维护。
 - **Backend State**：native adapter/device/GATT object、callback token、pending correlation 和 opaque public handle 映射由每个平台 backend 私有维护；只有 backend 的 command implementation 与 platform callback handler 访问，BleHub 不查询、不复制也不对外暴露这些状态。
@@ -173,7 +185,7 @@ BLE 与测试硬件术语：
 
 | 依赖/能力 | v0.1 决策 |
 |---|---|
-| `uniffi` | 必需并精确锁定`0.32.0`；公共DTO、foreign trait、Rust object handle和Kotlin/Swift binding；只使用stable Kotlin/JNA backend，不以experimental JNI作为v0.1基础 |
+| `uniffi` | 必需并精确锁定`0.32.0`；production `BleHub` object、公共DTO/error、foreign backend/sink trait、Rust ingress object handle和Kotlin/Swift binding；只使用stable Android Kotlin/JNA binding，不以experimental JNI作为v0.1基础 |
 | `uuid` | 建议复用；Rust 内部解析、校验和规范化 BLE UUID；FFI wire 首版仍使用 canonical string |
 | `windows` (`windows-rs`) | Windows backend 必需，不能泄漏到公共 DTO |
 | `dbus` (`dbus-rs`) | Linux Phase 6 backend 使用，不进入 Windows/Android 首批依赖图 |
@@ -238,25 +250,27 @@ pixi run just docs-update
 | 端点 | 创建或实现方 | 持有并调用方 | 作用 |
 |---|---|---|---|
 | `BackendEventIngressHandle` UniFFI object | BleHub/Rust 创建，内部只持 `Weak<EventIngressState>` | platform backend retain并调用 | backend 调用 `handle.push(event)` 时进入对应Rust ingress state |
-| `BleEventSink` Rust trait object | Rust application 实现并传给 BleHub | Rust bridge | bridge 把已校验的 `BleEvent` 交给调用方自己的队列或运行时 |
+| `BleEventSink` foreign trait object | Rust、Swift或Kotlin application实现并传给production `BleHub` | Rust bridge | bridge把已校验的`BleEvent`交给调用方自己的队列或运行时 |
 
 `BackendEventIngressHandle`不是downstream trait object，也不直接持有应用sink。backend只能调用handle公开的`push`；handle先upgrade私有`Weak<EventIngressState>`，再由state执行close gate、结构校验和delivery serialization。BleHub production contract和project-authored routing code不形成`Hub -> backend -> handle -> state -> sink`强引用环，也不引入raw pointer、整数化`Arc`、token allocator、process-local `token -> Weak` registry或free push function；UniFFI generated opaque object handle和foreign callback handle map是framework-managed实现细节，必须纳入lifecycle counter。
 
 ```mermaid
 flowchart TB
-    App[Rust application]
+    App[Application in Rust Swift or Kotlin]
+    ProductionApi[Production generated binding or direct Rust API]
     Assemble[BleHub new assembly]
-    Hub[BleHub synchronous facade]
-    BackendApi[BleBackend trait object]
+    Hub[Exported BleHub synchronous facade]
+    BackendApi[Foreign BleBackend trait object]
     BackendImpl[Inert platform backend]
     NativeApi[Native BLE API]
     Handle[BackendEventIngressHandle]
     State[Arc EventIngressState]
-    Downstream[Rust BleEventSink trait object]
+    Downstream[Foreign BleEventSink trait object]
     CallerQueue[Caller-owned queue actor UI loop or runtime]
 
-    App -->|create inert backend| BackendImpl
-    App -->|provide backend and sink| Assemble
+    App --> ProductionApi
+    ProductionApi -->|create inert backend| BackendImpl
+    ProductionApi -->|provide backend and sink| Assemble
     Assemble -->|create and own| State
     State -->|own| Downstream
     Assemble -->|create with Weak state| Handle
@@ -264,7 +278,7 @@ flowchart TB
     BackendApi -->|UniFFI proxy or direct Rust call| BackendImpl
     BackendImpl -->|retain after successful bind| Handle
     Assemble -->|return after successful bind| Hub
-    App -->|command with caller-owned IDs| Hub
+    ProductionApi -->|command with caller-owned IDs| Hub
     Hub -->|forward command| BackendApi
     BackendImpl -->|call| NativeApi
     NativeApi -->|platform callback| BackendImpl
@@ -276,7 +290,7 @@ flowchart TB
 ```
 
 Windows/Linux的`BackendApi`与`BackendImpl`通常是同一个Rust object；Android/Apple则由Stable UniFFI foreign-trait proxy把command调用转到Kotlin/Swift `BackendImpl`。OS callback只进入backend implementation/delegate handler，再调用retained `BackendEventIngressHandle::push`；它不回调`BleBackend` command trait或其vtable。
-Windows/Linux的`BleBackend`通常是Rust object；Android/Apple则是Kotlin/Swift object经UniFFI foreign trait进入Rust。BleHub downstream固定为Rust application实现的普通Rust trait object：Android/Apple event在`handle.push(event)`时发生一次native→Rust FFI crossing；`Weak` upgrade后`EventIngressState::push -> BleEventSink::on_event`都是Rust内部调用。
+Windows/Linux的`BleBackend`通常是Rust object；Android/Apple则是Kotlin/Swift object经UniFFI foreign trait进入Rust。`BleEventSink`同样是production foreign trait：Rust application可直接实现，Kotlin/Swift application可实现generated protocol。Android/Apple event在`handle.push(event)`时先native→Rust进入ingress；若sink也是foreign object，`EventIngressState::push -> BleEventSink::on_event`再通过generated callback返回调用方语言。这个明确的第二次FFI crossing必须纳入runtime、异常、线程和性能gate。
 
 ### 4.1 命令下行
 
@@ -294,15 +308,15 @@ Windows/Linux的`BleBackend`通常是Rust object；Android/Apple则是Kotlin/Swi
 
 装配时：
 
-1. Rust application 实现 `BleEventSink: Send + Sync`。
+1. application以Rust直接实现或以generated Swift/Kotlin protocol实现`BleEventSink: Send + Sync`。
 2. platform factory 在 Kotlin/Swift/Rust 本地构造不含 ingress、尚未启动 BLE 工作且不会产生 callback 的 inert backend。
-3. application调用`BleHub::new(backend, event_sink)`；constructor创建并强持有`Arc<EventIngressState>`，把Rust sink保存到state，再创建只含`Weak<EventIngressState>`的`Arc<BackendEventIngressHandle>`。
+3. application通过direct Rust API或production generated binding调用`BleHub::new(backend, event_sink)`；constructor创建并强持有`Arc<EventIngressState>`，把sink trait object保存到state，再创建只含`Weak<EventIngressState>`的`Arc<BackendEventIngressHandle>`。
 4. constructor调用一次`backend.bind_event_ingress(handle)`。backend必须保持inert且bind期间不得调用`handle.push`；`Err`必须表示未retain handle，`Ok`必须表示已retain唯一handle。
 5. bind成功后constructor直接返回完整Hub；没有registration、process-global write或第二个可失败的routing步骤。
 6. bind失败时constructor先关闭并排空state，再best-effort `dispose` backend，释放local handle/backend ownership并返回`BleHubError`。application拿不到半初始化Hub。
 7. close先把state切到`Closed`并排空，再dispose并释放backend；dispose中或之后的迟到callback要么看到closed phase，要么在Hub/state释放后因`Weak` upgrade失败而返回`Closed`。
 
-Stable UniFFI `0.32.0`的representative direct-object fixture已经在Android ART/AAR与Apple Swift/XCFramework/SPM验证框架机制；production candidate进一步在Windows Kotlin/JVM、Windows Swift、Android 16 arm64真机与x86_64模拟器验证最终`Weak<EventIngressState> -> Rust BleEventSink`对象图、binding phase、constructor rollback、backend dispose主动释放root handle、close drain、Rust downstream panic containment和10,000次lifecycle。真实macOS production candidate与最终Apple package、完整event wire和性能/package gate仍未完成。BoltFFI #869/#872和token-ACK只作为历史比较证据，不进入production contract。
+Stable UniFFI `0.32.0`的representative direct-object fixture及早期candidate运行已验证foreign backend、direct ingress、binding phase、constructor rollback、root release、close drain与基础lifecycle机制，但旧的Rust-only sink/test-artifact对象图不证明本次修订后的exported `BleHub` + foreign `BleEventSink` production ABI。`tests/ffi/runtime`必须只装载`crates/blehub-uniffi`生成的production image，由Swift/Kotlin直接实现测试backend与sink并重跑完整event catalog、异常、线程、close和10,000次lifecycle。当前历史macOS与三slice package证据仍只适用于其测试candidate；CoreBluetooth、iPhone签名安装/运行、真实RF、性能和冻结ABI后的最终production-package rerun仍须按适用边界完成。BoltFFI #869/#872和token-ACK只作为历史比较证据，不进入production contract。
 
 平台 callback 到达时：
 
@@ -310,28 +324,31 @@ Stable UniFFI `0.32.0`的representative direct-object fixture已经在Android AR
 2. backend调用retained `BackendEventIngressHandle::push(event)`。
 3. handle upgrade其`Weak<EventIngressState>`；upgrade失败返回`Closed`，成功后通过state的ingress mutex原子检查phase并串行化同一hub的delivery attempt，再校验唯一variant/body、ID/wire value和size guard。它不做ID映射、stale/duplicate判断或状态归约。
 4. state在当前callback线程同步调用`BleEventSink::on_event(event)`。
-5. downstream sink只按调用方策略把事件接纳到Rust channel、actor或runtime，然后尽快返回typed `Result`。
+5. downstream sink只按调用方策略把事件接纳到Rust channel、Kotlin Handler/Executor、Swift DispatchQueue/actor或其他runtime，然后尽快返回typed `Result`。
 
-`Delivered`只表示`on_event`返回`Ok(())`，不表示downstream业务已处理。`InvalidEvent`/`DownstreamFailed`消费当前attempt：backend记录诊断但不得解析message、重试同一event或把它当BLE failure；它仍提交terminal/correlation cleanup并继续后续event，只有`Closed`才停止push。`BleEventSink` contract要求实现不得panic，所有预期失败走typed `Result`。Kotlin/Swift exception边界在foreign backend method与exported ingress wrapper，`downstream.on_event`本身不跨FFI。
+`Delivered`只表示`on_event`返回`Ok(())`，不表示downstream业务已处理。`InvalidEvent`/`DownstreamFailed`消费当前attempt：backend记录诊断但不得解析message、重试同一event或把它当BLE failure；它仍提交terminal/correlation cleanup并继续后续event，只有`Closed`才停止push。`BleEventSink` contract要求实现不得panic/throw未声明异常，所有预期失败走typed `Result`。Kotlin/Swift exception边界同时覆盖foreign backend method、exported ingress wrapper和foreign sink callback；runtime必须验证这些边界不穿越ABI或伪装成`Delivered`。
 
 ### 4.3 并发、同步 callback 与 close
 
-BleHub每实例只需要两个互不嵌套的lifecycle/delivery同步边界。Direct handle只做一次`Weak` upgrade，不存在process-local registry、全局锁或RCU write：
+完整竞态清单见[`docs/research/concurrency-case-matrix.md`](../docs/research/concurrency-case-matrix.md)。每实例的三个同步职责必须分开，不能再以“两个锁”或backend slot为空代表完整关闭。Direct ingress handle只做一次`Weak` upgrade；运行期event routing没有process-local registry或全局锁，短生命周期assembly registry是12.1所述的独立装配例外。
 
 | 机制 | 保护什么 | 不保护什么 |
 |---|---|---|
-| command/close gate | backend ownership；command使用shared guard，close使用exclusive guard | 不保存command table，不参与event ingress |
-| `EventIngressState.inner` mutex | `Binding | Active | Closed` phase、bind期间push违约标记、`Option<Box<dyn BleEventSink>>` ownership、串行`validation -> on_event`、close排空in-flight delivery | 不等待downstream业务处理，不保护BLE protocol state，不拥有downstream queue |
+| command/close gate：backend `RwLock` | backend ownership；command在dispatch期间持read guard；唯一closer用write guard等待已进入command并取走slot后立即释放 | 不保存command table，不参与ingress；不跨drain/native cleanup |
+| lifecycle `Mutex + Condvar` | `Open -> Closing -> Closed(result)`；领取唯一cleanup ownership、并发dispose共同等待、缓存最终结果 | 不参与command dispatch、event delivery或BLE state；等待时释放mutex，不跨drain/cleanup |
+| `EventIngressState.inner` mutex | `Binding | Active | Closed`、bind-push违约标记、sink ownership、串行`validation -> on_event`与close drain | 不等待downstream业务处理，不保护BLE protocol state，不拥有queue |
 
-state初始为`Binding`。backend bind期间的任何`push`只记录违约并返回`Closed`，不进入sink；bind返回`Ok`后只有未发生该违约时才能原子切换为`Active`，否则constructor close/drain、dispose backend并返回`FfiContract`。close在持有exclusive command/close gate后取得ingress mutex；该锁会等待已经进入的`on_event`返回，然后close把phase改为`Closed`、`take()`并释放downstream sink，再dispose并释放backend。后续`push`要么upgrade到state后观察`Closed`，要么在Hub/state释放后upgrade失败，因此不会在close排空后开始新的delivery。
+Ingress初始为`Binding`；bind期间任何`push`返回`Closed`并记录违约，只有bind成功且没有过早push才能activate。Hub lifecycle的`Closing`表示已有closer领取清理职责，不是command拒绝的线性化点：closer先释放lifecycle mutex，再取得command write guard、等待已进入的command并取走backend。slot变为`None`之后，通过wire validation的新command返回`Closed`；slot为空只证明停止dispatch，不证明drain/cleanup已完成。
+
+唯一closer释放command guard后执行ingress close/drain、释放sink、backend dispose与backend ownership drop，最后发布`Closed(result)`并`notify_all`。其他dispose调用在`Closing`上经Condvar循环等待完整清理，之后都返回同一缓存结果，包括cleanup error；不得因看到`None`提前返回成功。
 
 由此得到以下约束：
 
-- backend 可以在 command method 返回前同步 `push`；ingress 不获取 command/close gate，因此不会因这条路径自锁。
-- event 可能先于公共 method 的 `Ok(())` 到达 downstream。request/event 必须自带完整关联 ID；backend 一旦为该 command 发出任何事件，就不得再返回 `Err`。
-- downstream `on_event`在`EventIngressState.inner` mutex的delivery临界区内被调用，所以只能快速dispatch，不能同步重入同一个`BleHub`；后续命令必须在downstream自己的执行位置发出。
-- close先阻止新command，在ingress mutex下把phase切换为`Closed`、排空已经进入的callback并释放downstream sink，再dispose/release backend；`close()`返回后没有活跃或可新开始的downstream callback。晚到callback因closed phase或weak upgrade failure返回`Closed`。
-- BleHub 没有 protocol state lock、线程、mailbox、pump 或 executor。callback 从哪个线程进入，`on_event` 就在哪个线程被同步调用；业务线程由 downstream 决定。
+- backend可以在command返回前同步`push`；ingress不获取command/close gate，因此这条路径不会自锁。
+- event可能早于dispatch `Ok(())`到达；caller必须先登记IDs，backend一旦发出该command的event就不得再返回`Err`。
+- `on_event`在ingress delivery临界区内执行，只能快速交接，禁止同步重入同一Hub的command/dispose；后续工作由downstream自己的执行位置发出。
+- 每个dispose调用返回时，已进入的sink调用和唯一backend cleanup都已结束，没有活跃或可新开始的downstream callback。晚到callback因closed phase或weak upgrade failure返回`Closed`；downstream自己的已接纳queue不由core排空。
+- BleHub没有protocol state lock、线程、mailbox、pump或executor。Condvar只是同步lifecycle等待，不是运行时；callback在哪个线程进入，sink就在哪个线程同步执行。
 
 详细 ownership graph、linearization point、竞态矩阵、备选方案与 Phase 0 验证方法见 [`docs/research/ffi-lifecycle-concurrency.md`](../docs/research/ffi-lifecycle-concurrency.md)。该调研记录证据与推荐，不替代本 Plan 的已审决策。
 
@@ -350,17 +367,24 @@ pub struct BleHub {
     // Constructor 从 inert backend 读取并校验一次，之后不再跨 FFI 查询。
     capabilities: BackendCapabilities,
     ingress: Arc<EventIngressState>,
+    lifecycle: (Mutex<LifecycleState>, Condvar),
+}
+
+enum LifecycleState {
+    Open,
+    Closing,
+    Closed(Option<BleHubError>),
 }
 ```
 
-`BleHub`不再另设一份closed flag：command path在backend slot中观察`None`，event path在`EventIngressState.inner` mutex下观察`Binding | Active | Closed` phase。字段声明顺序不承担lifecycle协议；显式`dispose/close`和Rust `Drop` fallback必须走8.12的同一幂等关闭逻辑。
+三个状态各司其职：backend slot中的`None`只关闭command dispatch；ingress phase关闭event delivery；lifecycle `Closed(None | Some(error))`证明drain/cleanup完成并保存结果，不是可与slot互换的closed flag。字段声明顺序不承担lifecycle协议；显式`dispose/close`和Rust `Drop` fallback必须走8.12的同一关闭算法。
 
 **拥有：**
 
 - 一个`Arc<dyn BleBackend>`；Rust backend与UniFFI foreign backend使用同一ownership shape；
 - constructor从backend读取并校验后缓存的一份`BackendCapabilities`静态metadata；
-- 强引用`Arc<EventIngressState>`；state以单个mutex原子保护ingress phase、bind-push违约标记和`Option<Box<dyn BleEventSink>>`；
-- command/close gate和backend ownership。
+- 强引用`Arc<EventIngressState>`；state以单个mutex原子保护ingress phase、bind-push违约标记和`Option<Arc<dyn BleEventSink>>`；
+- command/close gate和backend ownership，以及固定大小的lifecycle状态/Condvar与最终cleanup结果。
 
 **负责：**
 
@@ -385,7 +409,7 @@ pub struct BleHub {
 
 **不得：**直接调用 downstream `BleEventSink`、让 native object 跨公共边界、把平台状态复制成 BleHub canonical registry，或依赖 BleHub 修正 backend 发出的跨事件语义。
 
-Rust实现的backend不得panic；BleHub不对backend trait call使用项目级`catch_unwind`，也不把Rust panic降级成`BleHubError`/`CommandDispatchError` fallback。Kotlin/Swift声明内及未声明exception由Stable UniFFI callback error channel转换为对应typed `Result`；Rust panic若到达exported UniFFI scaffolding只能按framework的ABI containment处理，仍是阻塞gate的实现bug，不具有可恢复语义。该决策不影响`BackendEventIngressHandle::push`对Rust downstream sink panic的专用containment，因为后者必须同步向foreign backend返回`EventIngressStatus`并保护ABI。
+Rust实现的backend或sink不得panic；BleHub不对backend trait call使用项目级`catch_unwind`，也不把Rust panic降级成`BleHubError`/`CommandDispatchError` fallback。Kotlin/Swift声明内及未声明exception由Stable UniFFI callback error channel转换为对应typed `Result`或明确的FFI contract failure；Rust panic若到达exported UniFFI scaffolding只能按framework的ABI containment处理，仍是阻塞gate的实现bug，不具有可恢复语义。`BackendEventIngressHandle::push`对Rust sink implementation的panic保留最窄containment；foreign sink exception则必须由generated callback boundary转换且不得伪装成`Delivered`。
 
 accepted transaction不整体上提到BleHub：correlation登记、cleanup ownership、native handle lookup和平台执行位置提交必须在同一个backend串行边界内完成，否则core与backend会各保存一份pending状态，却仍无法原子覆盖native queue/callback注册。accepted线性化点前任一步失败时，backend必须撤销已经建立的callback source、correlation、queue entry和cleanup owner，再返回`Err`；不得留下稍后emit的路径。accepted后任何native失败都只走event。BleHub只统一无状态validation、close gate和trait转发；所有command通过同一个crate-private `with_backend`持有command-gate read guard直到trait call返回，避免重复poison/closed映射并保证dispose的write guard不能在dispatch中途移除backend。accepted/rejected、terminal attempt和cleanup不变量由公共contract与共享conformance tests固定。Rust backend可以复用crate-private dispatch helper，Kotlin/Swift backend也可以各自封装同构helper，但helper不得成为第二套public状态机或改变线性化点。
 
@@ -422,7 +446,7 @@ enum EventIngressPhase {
 
 struct EventIngressInner {
     phase: EventIngressPhase,
-    downstream: Option<Box<dyn BleEventSink>>,
+    downstream: Option<Arc<dyn BleEventSink>>,
 }
 
 struct EventIngressState {
@@ -533,7 +557,7 @@ impl BackendEventIngressHandle {
 ownership 链：
 
 ```text
-downstream creates Box<dyn BleEventSink>
+application provides Arc<dyn BleEventSink> directly or through a foreign proxy
 -> BleHub owns Arc<EventIngressState>
 -> EventIngressState owns downstream sink
 -> BleHub owns Arc<dyn BleBackend>
@@ -541,12 +565,12 @@ downstream creates Box<dyn BleEventSink>
 -> BackendEventIngressHandle owns only Weak<EventIngressState>
 ```
 
-`Mutex<EventIngressInner>`有四个明确用途：在bind完成前阻止sink delivery并记录过早push、串行化同一hub的`on_event`、让close等待in-flight delivery返回、让close通过`take()`确定性释放downstream。它不是额外trait abstraction。`BleEvent`直接使用UniFFI data enum，variant/body合法性由类型系统和generated lifting保证；ingress只在完整DTO落地后校验契约明确规定、类型系统无法表达的wire invariant，不设置任意diagnostic字符串长度上限。`downstream.on_event(event)`是普通Rust trait调用，所有可预期失败由typed `Result`表达；它不得panic。项目代码唯一的显式panic guard只包围这次sink调用：sink panic仍是contract violation，先通过out-of-band structured trace与普通sink rejection区分，再向foreign backend返回`DownstreamFailed`，同时不poison ingress mutex；不得扩大guard去吞掉或误标内部ingress bug。UniFFI generated scaffolding只作其他意外panic不跨ABI的defense-in-depth。
+`Mutex<EventIngressInner>`有四个明确用途：在bind完成前阻止sink delivery并记录过早push、串行化同一hub的`on_event`、让close等待in-flight delivery返回、让close通过`take()`确定性释放downstream。它不是额外trait abstraction。`BleEvent`直接使用UniFFI data enum，variant/body合法性由类型系统和generated lifting保证；ingress只在完整DTO落地后校验契约明确规定、类型系统无法表达的wire invariant，不设置任意diagnostic字符串长度上限。`downstream.on_event(event)`通过统一trait object调用：Rust sink是直接调用，Swift/Kotlin sink是generated foreign callback。所有可预期失败由typed `Result`表达；实现不得panic或throw未声明异常。项目代码的显式panic guard只包围Rust sink调用；foreign sink exception由UniFFI callback boundary转换。两条路径都必须向backend返回`DownstreamFailed`且不得poison ingress mutex或伪装成`Delivered`。
 
 - `Delivered`：同步 `downstream.on_event` 返回 `Ok(())`；表示 sink 已按自己的策略接纳，不表示 downstream 业务已处理事件。
 - `Closed`：weak upgrade失败、state仍处于`Binding`、phase已变为`Closed`或downstream已被close取走；bind期间push会额外记录违约并阻止constructor activation，迟到handle安全no-op。
 - `InvalidEvent { message }`：完整DTO中契约明确规定、但类型系统无法表达的wire invariant非法时使用，属于backend contract violation；当前attempt被消费，message不能用于stale/duplicate判断。不得用无平台依据的任意字符串或collection长度上限制造invalid event。
-- `DownstreamFailed { message }`：downstream返回`Err(EventSinkError)`、ingress mutex poison/failure，或最外层FFI trampoline containment了downstream panic；当前attempt被消费且不重试，backend照常清理correlation并继续后续event。message只供structured diagnostic，不是稳定机器协议。panic仍是downstream contract violation，不是`EventSinkError`；out-of-band trace必须把它与普通sink rejection区分。Stable UniFFI scaffolding与最外层Rust实现必须共同保证panic不越过ABI；Phase 0以真实生成binding/runtime验证。`close`必须恢复poisoned ingress mutex、等待已接纳的delivery返回、切换`Closed`、`take()`并释放sink，然后继续其余cleanup。
+- `DownstreamFailed { message }`：downstream返回`Err(EventSinkError)`、ingress mutex poison/failure，或最外层FFI trampoline containment了downstream panic；当前attempt被消费且不重试，backend照常清理correlation并继续后续event。message保留给调用方诊断，不是稳定机器协议，也不应原样写入默认日志。panic仍是downstream contract violation，不是普通sink rejection；out-of-band trace以固定分类区分两者。Stable UniFFI scaffolding与最外层Rust实现必须共同保证panic不越过ABI；Phase 0以真实生成binding/runtime验证。`close`必须恢复poisoned ingress mutex、等待已接纳的delivery返回、切换`Closed`、`take()`并释放sink，然后继续其余cleanup。
 - `BackendEventIngressHandle`是同进程可信backend使用的capability object，不是native object ID、认证credential或不受信任plugin sandbox。它只暴露`push`，不暴露state或downstream。
 - `EventIngressState`不实现自定义`Drop`：in-flight `push`持有upgrade所得临时强`Arc`，所以state只能在这些调用返回后析构；strong count归零后所有晚到handle都无法upgrade，字段析构也会自动释放sink。逻辑关闭与`ingress close -> backend dispose`顺序仍由`BleHub::dispose`显式执行，并由`BleHub::Drop`调用同一路径兜底，不能推迟到state析构。
 - handle只持`Weak<EventIngressState>`；backend或迟到native callback持有handle不会延长Hub/downstream生命周期，也不会形成强引用环。Hub存在但closed时返回`Closed`；Hub/state已释放时`Weak` upgrade失败并返回`Closed`。
@@ -562,6 +586,7 @@ BleHub 仅保留：
 - constructor校验后缓存的`BackendCapabilities`静态metadata。
 - `Arc<EventIngressState>` ownership；state内部以单个mutex持有phase、bind-push违约标记和可在close时取走的downstream sink。
 - command/close synchronization gate，防止本地`close()`与正在下发的同步backend method发生资源释放竞争；它不序列化所有BLE command，也不保存command数据。
+- lifecycle `Mutex + Condvar`与`Open -> Closing -> Closed(result)`，让并发dispose共同等待唯一drain/cleanup并返回缓存结果；不持该mutex执行foreign cleanup。
 
 backend retain的`BackendEventIngressHandle`只持有`Weak<EventIngressState>`；因此backend或晚到callback不会延长Hub/downstream生命周期。state的ingress mutex同时负责binding activation、串行delivery与close drain，不再增加closed atomic、bridge trait、另一把delivery lock或process-global registry。
 
@@ -581,84 +606,91 @@ BleHub 明确不保留：
 ### 5.5 Downstream event sink
 
 ```rust
-#[derive(Debug, thiserror::Error)]
-#[error("downstream rejected the event: {message}")]
-pub struct EventSinkError {
-    pub message: String,
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+#[error("downstream rejected the event: {detail}")]
+pub enum EventSinkError {
+    Rejected { detail: String },
 }
 
+#[uniffi::export(foreign)]
 pub trait BleEventSink: Send + Sync {
     fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError>;
 }
 ```
 
-- sink trait object由Rust application实现并传给`BleHub::new`；它保留`Send + Sync`，因为callback虽由state的ingress mutex串行，但调用线程可能来自WinRT/JVM/Swift/BlueZ callback context。
-- `BleEventSink`是普通Rust trait，不使用`#[uniffi::export]`；Kotlin/Swift backend只能调用exported `BackendEventIngressHandle`，不能实现或持有downstream sink。v0.1不提供native application consumer API或native sink adapter；若当前下游项目需要向Kotlin/Swift暴露事件，由该项目在BleHub之外自行使用UniFFI或其他FFI包装其Rust application/sink。未来repository-owned native consumer facade必须按5.6单独评审，不能静默改变本trait。
+- sink trait object由Rust application直接实现，或由Swift/Kotlin application实现generated foreign protocol，并传给production `BleHub::new`；它保留`Send + Sync`，因为callback虽由state的ingress mutex串行，但调用线程可能来自WinRT/JVM/Swift/BlueZ callback context。
+- `BleEventSink`与`BleBackend`同属`crates/blehub`的canonical production UniFFI surface。backend不能直接持有或调用sink；它只能调用exported `BackendEventIngressHandle`，由Rust state执行validation、close gate和串行delivery后调用sink。
 - BleHub 不保存 public event queue，不提供 pump/stream，也不决定 backpressure policy。
 - `on_event`可从平台callback thread进入Rust后被同步调用；`EventIngressState.inner` mutex保证同一hub的event callback串行；下游可在自己的queue中编号。
 - sink 实现必须快速 dispatch 并返回，不执行长业务逻辑，不同步重入 BleHub，并且不得 panic；所有可预期失败必须返回 `Err(EventSinkError)`。
 - `Ok(())`表示sink已按自身queue/drop/coalesce策略接纳该delivery attempt；`Err(EventSinkError)`表示未接纳。BleHub返回`DownstreamFailed { message }`；当前attempt不重试，backend继续后续event并照常清理terminal/correlation，只有`Closed`停止push。
-- `EventSinkError.message` 和 ingress status message 都只是简短 UTF-8 diagnostic，不是稳定错误码，不得包含 secret，也不得由 backend 解析成控制流；结构化分类由 `EventIngressStatus` variant 提供。
-- Tauri reference app 是该 contract 的一个真实 downstream：Tauri Rust core 实现 sink，`on_event` 只可靠接纳到 caller-owned channel 并立即返回；后续 Rust task/actor 负责 command tracker、stale/duplicate/orphan projection、序列化和 `AppHandle::emit`，不得在平台 callback thread 内直接执行 WebView/UI 业务或同步重入 `BleHub`。
-- Tauri frontend `invoke` 的返回值只映射 command 的同步 dispatch acknowledgement；实际 BLE 成功、失败、数据和平台主动变化继续通过 `BleEvent` 异步到达。Android/iOS Tauri native glue 只负责 package 引用、backend assembly、权限配置和 app lifecycle，不得为每个 BLE operation 建立第二套 `run_mobile_plugin` JSON command/event 协议。
+- `EventSinkError.detail`和ingress status message都只是简短UTF-8 diagnostic，不是稳定错误码，不得包含secret，也不得由backend解析成控制流；结构化分类由`EventIngressStatus` variant提供。
+- Tauri是该contract的一个downstream：Rust plugin实现sink，`on_event`只以bounded `try_send`交接或拒绝；plugin-owned task负责typed projection与`AppHandle::emit`，reference frontend拥有command tracker、IDs、timeout与domain/terminal等待。不得在平台callback stack做WebView/UI业务或同步重入Hub；bounded transport不承诺可靠送达。
+- Tauri frontend `invoke` 的返回值只映射 command 的同步 dispatch acknowledgement；实际 BLE 成功、失败、数据和平台主动变化继续通过 `BleEvent` 异步到达。macOS/iOS/Android Tauri native glue 只负责 package 引用、backend assembly、权限配置和 app lifecycle，不得为每个 BLE operation 建立第二套 `run_mobile_plugin` JSON command/event 协议。
 
 #### 5.5.1 Tauri 薄适配器装配
 
+本次用户授权的理想重构固定以下职责；这些是源码/架构决策，不新增历史通过记录。依赖职责图如下，实线表示依赖/构建消费，虚线表示trait实现或装配职责，**不是反向Cargo依赖**：
+
 ```mermaid
 flowchart TB
-    Web[Tauri Web frontend]
-    Adapter[Thin Tauri Rust plugin]
-    Hub[Rust BleHub]
-    Proxy[UniFFI BleBackend proxy]
-    Host[Kotlin Tauri bootstrap host]
-    Backend[AndroidBleBackend]
-    Native[Android Bluetooth Framework]
-    Sink[Rust BleEventSink]
-    Actor[Caller-owned Rust actor]
+    Example[examples/tauri-central: app and frontend policy]
+    Plugin[integrations/tauri-plugin-blehub: assembly IPC events projection]
+    Core[crates/blehub: canonical Hub traits ingress DTOs assembly]
+    Shell[crates/blehub-uniffi: thin image shell bindgen staging]
+    Package[Same-candidate generated Swift or Kotlin package]
+    Apple[platforms/apple: Swift AppleBleBackend]
+    Windows[platforms/windows: Rust WindowsBackend]
+    Native[CoreBluetooth or WinRT]
 
-    Web -->|invoke| Adapter
-    Adapter --> Hub
-    Hub --> Proxy
-    Host -->|create and provide once| Backend
-    Proxy --> Backend
-    Backend --> Native
-    Native -->|callback| Backend
-    Backend -->|ingress push| Hub
-    Hub --> Sink
-    Sink --> Actor
-    Actor -->|Tauri event| Web
+    Example --> Plugin
+    Plugin --> Core
+    Plugin -->|Windows native provider| Windows
+    Plugin -->|macOS assembly launcher| Apple
+    Windows --> Core
+    Shell -->|single API definition owner| Core
+    Shell -->|generate and stage| Package
+    Apple --> Package
+    Windows --> Native
+    Apple --> Native
+    Apple -.->|implements generated BleBackend| Core
+    Plugin -.->|implements BleEventSink and owns Hub| Core
 ```
 
-- reference app内部使用repository-owned、`publish = false`的薄Tauri Rust plugin；它直接依赖并持有`BleHub`，统一实现Web command adapter、Rust sink、caller-owned channel/projection和Tauri event emission。Windows直接装配Rust `WindowsBackend`；Android通过同一plugin的mobile host装配Kotlin backend。
-- Android `@TauriPlugin` class是宿主而不是第二套BLE backend contract。它以composition创建只持有`applicationContext`及backend-private native state的普通`AndroidBleBackend`；Activity-dependent permission/lifecycle能力留在host或可更新的窄provider中，不让长期backend持有stale Activity。除内部bootstrap、permission和必要lifecycle glue外，host不暴露scan/connect/GATT/read/write/notification等逐operation `@Command`。
-- Rust adapter先登记有界、一次性assembly ticket，再通过内部`run_mobile_plugin` bootstrap command请求host创建backend；host调用adapter随最终Rust image导出的UniFFI `provide_android_backend(ticket, backend)`，只把`Arc<dyn BleBackend>`非阻塞交给等待方并立即返回。该Kotlin到Rust调用栈内不得执行`BleHub::new`或同步回调backend；mobile command返回后Rust移除ticket，再调用`BleHub::new(backend, sink)`，避免Kotlin -> Rust -> Kotlin嵌套装配重入。timeout、重复ticket、late provide和任一步失败必须移除slot并确定性dispose尚未被Hub接管的backend。
-- Android最终包只允许一个包含BleHub/UniFFI symbols的Rust native image：Tauri最终`libapp.so`静态包含`blehub`与薄adapter；Tauri消费的Android backend Gradle variant只提供Kotlin backend、同candidate generated binding、JNA依赖和manifest/consumer rules，不携带第二份`libblehub.so`。普通native Android consumer仍使用包含自身native library的production AAR/variant；具体Gradle module/variant命名在Phase 3 packaging实现时固定。
-- Tauri使用的generated Kotlin binding必须指向最终Tauri Rust library basename并在首次UniFFI初始化前完成配置；优先生成期固定`cdylib_name`，runtime `uniffi.component.<component>.libraryOverride`只可作为受测装配机制，不得依赖不确定class-init顺序。package gate必须解包APK/AAB并拒绝重复BleHub native entry/symbol owner，不能用Gradle `pickFirst`或静默exclude掩盖双image。
-- WebView reload只重建listener/projection订阅，不自动重建或dispose process-owned Hub/backend；Activity recreation不得使Rust继续持有旧host/Activity。app close仍由Rust显式调用`BleHub::dispose`，沿既定close/drain -> Kotlin backend dispose/release ingress顺序清理。
+`blehub-uniffi`只拥有production native-image shell、bindgen和staging，不反向依赖plugin或平台backend，也不定义第二份API。Swift实现generated trait和调用`attach_backend`是同一ABI上的运行期关系，不构成`core -> Apple -> core` crate cycle。Rust-hosted Tauri最终进程必须只有一个BleHub/UniFFI symbol owner；链接production static artifact不允许同时再加载含重复symbols的动态image。单image gate需对实际最终artifact验证，不能由这张依赖图推断通过。
 
-### 5.6 Consumer 拓扑与未来 facade
+- plugin package正式名与`links`均为`tauri-plugin-blehub`，Tauri namespace为`blehub`，保持repository-owned、`publish = false`。`lib.rs`负责装配/生命周期，`commands.rs`负责typed dispatch，`events.rs`负责bounded handoff/task，`projection.rs`负责JSON映射。plugin的`build.rs`使用官方`tauri_plugin::Builder`生成command permissions，默认权限位于`plugins/blehub/permissions/default.toml`；example build只调用`tauri_build::build()`。native构建选择读取`CARGO_CFG_TARGET_OS`，不能把build host当target。
+- `init()`默认启用`native`：macOS由plugin创建assembly guard、调用窄Swift launcher构造production `AppleBleBackend`，经generated `attach_backend`调用canonical constructor，再`finish()`领取Rust Hub；Windows直接构造Rust `WindowsBackend`。Windows接线已存在但本轮未验证，不得称为Windows Tauri运行或RF通过。未支持target或未启用native provider时明确返回setup error，不自动降级fake。
+- `with_backend(backend)`供确定性测试或可选provider注入，使用与`init()`相同的IPC和权限。example只有显式`--no-default-features --features demo`才选自有demo backend；production依赖不得来自`tests/`，testkit仅可作为dev-dependency。公开面只有`capabilities`、正式BLE commands和`close`；不保留`backend_mode`、`CallbackDriver`、probe或fake-only IPC。
+- `invoke`成功仅表示dispatch accepted，domain/terminal仍由`blehub://event`交付。JSON投影保留typed error的category/message/platform details、snake_case state、advertisement附加数据及GATT descriptors/实例；所有`u64` IDs在请求和事件中都使用十进制字符串，不能经JavaScript `Number`舍入。该序列化策略只属于integration，不改变core DTO、UniFFI ABI或contract version。`detail`只供显示，不能解析为控制流；close的integration error分类为`close_failed`，不从其文字猜测native category。
+- sink使用`futures_channel::mpsc::channel(128)`，另有唯一sender的一个reserved slot；这是event-count边界，不是byte-budget或terminal专用可靠槽。`try_send`溢出关闭source并唤醒task；task最佳努力emit transport error的`backend_error`投影并触发Hub cleanup，不重试、不静默丢terminal后继续成功流程，也不把transport fault回灌core或伪称BLE故障。
+- plugin拥有并停止event task。close先quiesce emission（等待已进入的`emit`返回、禁止后续emit），丢弃缓冲、abort task，再在不持emission锁时执行Hub drain/cleanup；async `close`还await所取走task的销毁。真实`RunEvent::Exit`和`on_drop`负责fallback，不能在可取消的`ExitRequested`或单窗口关闭时提前退役。Rust Tauri listeners禁止从同步`emit`调用栈teardown该plugin，须异步交接，否则会重入emission gate。
+- 每个Tauri app只允许安装一次；重复安装、移除后重装均拒绝。close/remove后的重启需要新app和新Hub，不清除managed-state标记来复用旧闭合Hub。WebView listener/projection重建不代表新Hub，caller仍负责避免同一Hub生命周期内ID冲突。
+- example flow先登记fresh command/session IDs和waiter，再invoke；同时等待成功terminal与该步骤所需domain事件。initialize进入后续流程还必须观察`powered_on`且scan/connection authorization均为`authorized | not_required`。扫描按实际发出的single-provider filter与session匹配，discovery验证真实profile；no-response terminal只表示本地提交，delayed readback是单独command及独立fixture应用证据。
+- Android/iOS Tauri mobile assembly仍是后续设计，不是已支持provider。mobile host只负责backend构造、权限与lifecycle，不能增加逐BLE-operation JSON协议。共享`BackendAssembly`/generated `attach_backend`见12.1；在实际mobile调用栈上独立验证重入、取消、ARC/JVM释放与签名/package，不恢复旧的第二个`provide_android_backend`入口。Android长期backend只持application context，Activity能力留在宿主；最终Tauri image与generated Kotlin binding必须一致且拒绝第二份BleHub native library，不能用`pickFirst`掩盖双image。
 
-UniFFI导出是Rust API之上的附加语言边界，不会替换或削弱原有Rust调用方式。一个method或object增加`#[uniffi::export]`后，Rust consumer仍直接调用普通Rust API，不经generated Kotlin/Swift binding。是否导出consumer facade与是否保留Rust API是两个独立决策。
+Tauri是可选downstream验证面，**不阻塞Phase 5公共ABI冻结**。其Windows、mobile、RF、fault/soak和最终artifact验证未完成时延后对应showcase，不把源码接线或历史candidate的通过继承为当前通过。执行边界见[`tauri-plugin-spike.md`](../docs/research/tauri-plugin-spike.md)与[integration README](../integrations/tauri-plugin-blehub/README.md)。
 
-BleHub区分以下consumer拓扑：
+### 5.6 Consumer 拓扑与可选 convenience adapter
+
+UniFFI导出是同一canonical Rust API的production语言边界，不会替换或削弱Rust直接调用方式。`crates/blehub`定义exported `BleHub`、foreign backend/sink与全部DTO/error；`crates/blehub-uniffi`只把这些定义组装成唯一production native image并生成package。
 
 | Consumer拓扑 | v0.1路径 | 事件最终交付 | BleHub core是否增加queue/runtime |
 |---|---|---|---|
-| Rust application | 直接构造并持有`BleHub`，实现Rust `BleEventSink` | sink投递到caller-owned channel/actor/UI runtime | 否 |
+| Rust application | 直接构造并持有`BleHub`，实现`BleEventSink` | sink投递到caller-owned channel/actor/UI runtime | 否 |
 | Tauri/Web UI等Rust-hosted application | 产品Rust adapter持有`BleHub`并实现sink | adapter在自己的runtime中投影并转发 | 否 |
-| Kotlin/Swift native-only application | v0.1不提供通用入口；有真实需求后增加独立consumer facade | 由单独评审的native event adapter交给调用方执行位置 | 否 |
+| Kotlin/Swift native application | 从production package取得generated API，直接实现`BleBackend`与`BleEventSink`并构造production `BleHub` | foreign sink交给Handler、DispatchQueue、actor或应用runtime | 否 |
+| `crates/bleng` async facade | `bleng` actor持有`BleHub`，把同步command dispatch与foreign sink事件投影为上层async API | actor mailbox、caller-owned async waiter/stream | 否；async runtime只属于`bleng` |
 
-未来native consumer facade遵守以下规则：
+`bleng`是位于`crates/bleng`的可选上层async actor facade，不改变`blehub` canonical contract。它可以拥有actor mailbox、operation waiter、timeout/cancellation、retry、业务状态和缓存，并将`BleHub`的同步accepted/rejected结果与后续事件组合成上层`async/await`语义；`bleng`不得在`blehub`中复制第二套BLE contract、platform state或FFI object graph。
 
-1. 保留现有Rust `BleHub`与Rust-only `BleEventSink`作为基础API；不得要求Rust consumer通过generated binding，也不得为共享代码制造两套BLE语义。
-2. facade是围绕同一inner hub/contract的附加适配层，命令继续返回同步dispatch acknowledgement，最终结果继续使用同一`BleEvent`；不得另造平台专属command/event模型。
-3. 不直接给当前`BleEventSink`增加`#[uniffi::export(foreign)]`。native callback、native executor adapter或其他交付方式必须作为独立边界设计，避免把backend ingress与application egress混成一个trait。
-4. 设计前必须固定callback线程、是否允许同步重入、异常/失败映射、对象retain/release、close drain、晚到callback、backpressure以及事件是否发生第二次FFI crossing；这些语义必须有lifecycle/concurrency测试和artifact-only clean consumer证据。
-5. facade不得为了跨语言易用性在BleHub core中新增mailbox、public event queue、worker、timer或executor。若某种native API需要buffer、dispatch queue、Kotlin `Flow`/`Channel`或Swift `AsyncStream`，由consumer adapter或最终调用方拥有并明确容量与drop/backpressure策略。
-6. facade及generated binding采用独立、可版本化的public surface和API snapshot。它可以与core contract同包发布，但其稳定性、语言命名和package gate不得反向阻塞不使用它的Rust consumer；任何共享DTO变更仍遵守统一contract/ABI审计。
-7. 每种正式支持的consumer拓扑都必须有独立、只消费staged/release artifact的clean consumer。示例应用或in-repository源码直连不能替代package验证。
+所有consumer拓扑遵守以下规则：
 
-因此，当前Phase 2继续以Rust application拥有`BleHub`和sink、Kotlin/Swift只实现platform backend为基线。native-only consumer是未来按需求启动的产品能力，不是当前Windows backend的前置条件。
+1. Rust与foreign consumer使用同一个`BleHub` command/event语义，不建立native-only facade或第二套DTO。
+2. foreign sink callback线程、异常映射、retain/release、close drain、晚到callback、backpressure和第二次FFI crossing必须由`tests/ffi/runtime`及artifact-only consumer验证。
+3. `BleEventSink`只负责快速交接；Kotlin `Flow`/`Channel`、Swift `AsyncStream`或`bleng` actor等convenience adapter由调用方/package helper拥有，不能把mailbox、queue、worker、timer或executor放入BleHub core。
+4. `bleng`的async operation必须由`command_id`与terminal/domain event建立一次性完成关系，并自行处理timeout、取消、晚到/重复event和passive disconnect；不得把`BleHub`同步返回的dispatch accepted误当作BLE operation成功。
+5. 每种正式支持的package都必须有独立、只消费staged/release artifact的clean consumer；示例应用或in-repository源码直连不能替代package验证。
 
 ---
 
@@ -835,14 +867,16 @@ pub trait BleBackend: Send + Sync {
 
 ### 6.3 Hub 装配接口
 
-v0.1 不提供通用 `BleHubConfig`。唯一公开构造入口接收 inert backend 与 Rust downstream sink，并在内部完成一次性绑定：
+v0.1不提供通用`BleHubConfig`。唯一production构造入口由`crates/blehub`定义并导出，接收inert foreign backend与foreign downstream sink，在内部完成一次性绑定；Rust consumer直接调用同一定义，Swift/Kotlin consumer通过`crates/blehub-uniffi`生成的production binding调用：
 
 ```rust
+#[uniffi::export]
 impl BleHub {
+    #[uniffi::constructor]
     pub fn new(
         backend: Arc<dyn BleBackend>,
-        event_sink: Box<dyn BleEventSink>,
-    ) -> Result<BleHub, BleHubError>;
+        event_sink: Arc<dyn BleEventSink>,
+    ) -> Result<Arc<BleHub>, BleHubError>;
 
     pub fn capabilities(&self) -> BackendCapabilities;
 
@@ -862,7 +896,7 @@ impl BleHub {
 
 每个公开command方法采用固定顺序：先调用具体DTO的`command.validate()?`，再通过私有`with_backend`取得command-gate读锁并在backend调用返回前持续持有，最后调用同名typed `BleBackend` method。`with_backend`只统一closed/poisoned gate处理和dispose互斥，不做命令分类、排队、重试或状态投影。这样公共API保持可发现和强类型，同时避免每个delegation重复锁与closed检查。
 
-平台 backend crate/package 负责提供构造 inert backend 的 factory，并在构造阶段接收只有该平台需要的依赖，例如 Android `Context`/`Handler`、Apple dispatch queue policy 或 Windows adapter selector；factory 在 trait object 交给 `BleHub::new` 前完成同 physical adapter 的 active-owner 仲裁并以 `BleHubError::ResourceBusy`拒绝冲突。具体factory函数签名在对应平台Phase按真实构建系统确定，不进入统一`BleBackend` trait，也不引入第二套backend abstraction。Android AAR与未来Apple package在v0.1提供的是供Rust application integration使用的backend产物，不是BleHub native application consumer API；clean consumer 或 Tauri showcase 若有 Kotlin/Swift/Web UI，必须由各自产品 Rust adapter 暴露所需方法和 event projection，native UI/glue 不直接持有 downstream sink。未来若按5.6增加repository-owned native consumer facade，它作为独立适配层和package surface交付，不改变platform backend factory或Rust `BleHub::new`的ownership。
+平台 backend crate/package负责提供构造inert backend的factory，并在构造阶段接收只有该平台需要的依赖，例如Android `Context`/`Handler`、Apple dispatch queue policy或Windows adapter selector；factory在trait object交给`BleHub::new`前完成同physical adapter的active-owner仲裁并以`BleHubError::ResourceBusy`拒绝冲突。具体factory函数签名在对应平台Phase按真实构建系统确定，不进入统一`BleBackend` trait，也不引入第二套backend abstraction。Android/Apple production package同时提供同一candidate的generated `BleHub`/backend/sink/DTO API与平台backend；native application可直接实现sink并持有Hub，Rust-hosted/Tauri consumer仍可直接使用Rust API。两种路径共享同一production image与contract。
 
 概念上的 constructor 实现如下；准确 error conversion、foreign ownership transfer 与 best-effort cleanup 次序必须由 Phase 0 固定：
 
@@ -870,8 +904,8 @@ impl BleHub {
 impl BleHub {
     pub fn new(
         backend: Arc<dyn BleBackend>,
-        downstream: Box<dyn BleEventSink>,
-    ) -> Result<Self, BleHubError> {
+        downstream: Arc<dyn BleEventSink>,
+    ) -> Result<Arc<Self>, BleHubError> {
         let capabilities = match backend
             .capabilities()
             .and_then(BackendCapabilities::validated)
@@ -893,11 +927,18 @@ impl BleHub {
             return Err(error);
         }
 
-        Ok(Self {
+        if let Err(detail) = ingress.activate() {
+            ingress.close();
+            let _ = backend.dispose();
+            return Err(BleHubError::FfiContract { detail: detail.to_owned() });
+        }
+
+        Ok(Arc::new(Self {
             backend: RwLock::new(Some(backend)),
             capabilities,
             ingress,
-        })
+            lifecycle: (Mutex::new(LifecycleState::Open), Condvar::new()),
+        }))
     }
 }
 ```
@@ -907,7 +948,7 @@ impl BleHub {
 原则：
 
 - 平台执行上下文、权限宿主和平台专属配置在创建 native backend 时提供，不塞入通用 Hub config。
-- `BleBackend`/`BleEventSink` trait 自身已经声明 `Send + Sync`，所以 `Box<dyn Trait>` 自动保留这些约束，无需在每个使用点重复 `+ Send + Sync`。
+- `BleBackend`/`BleEventSink` trait自身声明`Send + Sync`；Rust与generated foreign proxy使用同一trait object ownership，无需在每个使用点重复`+ Send + Sync`。
 - event queue、容量、drop/coalesce 和 backpressure 由下游 sink 配置。
 - timeout scheduler 由下游拥有；BleHub 不维护 clock/timer。
 - BleHub没有recent command retention、public ID allocator、BLE domain registry或process-local ingress registry。direct handle对象图每Hub固定O(1)，不需要用户配置。
@@ -1029,6 +1070,8 @@ pub struct AdvertisementObservation {
 
 `AdvertisementObservation`是**platform-normalized observation**，不是原始RF packet，也不是某个peripheral的canonical/latest state。一个observation中的字段可能来自平台对advertisement与scan response的合并视图，不保证来自同一个物理packet；空vector或`None`只表示该次mapped observation没有相应证据，不表示该peripheral永久不存在该字段。平台API可能合并或覆盖重复manufacturer/service-data AD structure，v0.1保留平台能提供的mapped entries但不承诺恢复原始结构边界。v0.1不导出platform timestamp、scan-response标记、Android data completeness、PHY/SID、TX power或raw advertisement bytes；这些信息损失不得由backend伪造。逐字段平台来源与压缩边界见[`platform-abstraction-and-compatibility.md`](../docs/research/platform-abstraction-and-compatibility.md)。
 
+Apple的`advertisedServices`只映射实际`CBAdvertisementDataServiceUUIDsKey`和`CBAdvertisementDataOverflowServiceUUIDsKey`字段；原生service-filter匹配证据只在backend内部参与predicate，不能把请求中的UUID追加到公开observation。HIL选择必须关联实际发出的scan command与同一session：仅single-provider filter能在字段隐藏时证明该provider匹配，多filter只证明OR、不能判定是哪一个；不得伪造advertisement字段或将此选择策略写成新的RF通过证据。
+
 ### 6.8 Scan session
 
 public contract不定义`ScanPhase`或`ScanSession` record：`ScanStarted`/`ScanStopped` event variant已经表达backend观察到的事实，caller再按自己的intent、deadline和late-event policy投影`Starting/Scanning/Stopping/Stopped/Failed`等本地phase。这样不会把某一种application状态机误冻结成BleHub ABI。`ScanStopReason`与nested `Result` shape在6.15第一次完整定义。
@@ -1137,7 +1180,7 @@ public contract不定义`CommandRecord`、`CommandTarget`或`ProjectedCommandPha
 | `Option<BleEventError>` | accepted command terminal；`None`成功，`Some(error)`失败 | `CommandCompleted.error` data |
 | `ScanStopResult` / `ConnectionStateResult` | scan/connection event中的正常data/state或失败data互斥 | UniFFI data enum；不是callable error channel |
 | `BleEventError` | accepted command failure、passive domain failure或unscoped backend fault的统一稳定event详情 | 只作为`BleEvent`直接或间接嵌套data |
-| `EventSinkError` | Rust downstream 拒绝一次 event delivery attempt | Rust-only `BleEventSink::on_event` result |
+| `EventSinkError` | Rust/Swift/Kotlin downstream拒绝一次event delivery attempt | foreign `BleEventSink::on_event` callable error |
 | `PlatformErrorDetails` | 对同步public error或`BleEventError`补充native code/name/message | 嵌套diagnostic DTO，不独立控制流程 |
 
 ```rust
@@ -1223,7 +1266,7 @@ pub struct BleEventError {
 
 边界规则：
 
-- Rust error类型`BleHubError`、`CommandDispatchError`、`BleEventError`和Rust-only `EventSinkError`实现`std::error::Error`；callable error另外派生`uniffi::Error`，event error只派生`uniffi::Record`。`PlatformErrorDetails`只是嵌入同步public error或`BleEventError`的FFI-safe diagnostic DTO，不独立参与`Result`控制流。
+- Rust error类型`BleHubError`、`CommandDispatchError`、`BleEventError`和`EventSinkError`实现`std::error::Error`；callable error另外派生`uniffi::Error`，event error只派生`uniffi::Record`。`PlatformErrorDetails`只是嵌入同步public error或`BleEventError`的FFI-safe diagnostic DTO，不独立参与`Result`控制流。
 - `thiserror::Error`只负责Rust `Display/Error/source`，UniFFI derive定义FFI role。Stable UniFFI `0.32.0` fixture已实际生成并运行同时派生`thiserror::Error + uniffi::Error`的fielded callable error，因此不再需要BoltFFI时期的`derive_more`/handwritten error workaround；event-data `BleEventError`则组合`thiserror::Error + uniffi::Record`。callable return/callback return的`Result<T, E>`使用error channel，其中`E`必须是UniFFI error；Stable UniFFI不把nested Rust `Result<T, E>`作为普通data field导出，因此event中的成功/失败互斥值使用显式`ScanStopResult`/`ConnectionStateResult` data enum。`BleEventError`不能派生`uniffi::Error`后再被误当成callable error channel。
 - `BleHubError`只用于constructor capabilities/bind assembly、platform factory的physical-adapter resource arbitration、config、dispose和FFI lifecycle这类同步失败；同一physical adapter已有active owner时返回`ResourceBusy`，不把资源竞争伪装成BLE command结果。backend dispose/cleanup失败使用`BackendCleanup`；即使返回该错误，Hub也已关闭且必须继续完成其余best-effort cleanup。
 - `CommandDispatchError`只用于accepted线性化点前的提交拒绝：Hub已关闭、request无法通过基础wire/shape校验、backend lifecycle为`InvalidState`，或dispatcher无法原子接管该command。它不表达扫描、连接、GATT等operation的最终结果。各variant不重复携带`CommandKind`：被调用的方法与caller在调用前登记的command record是operation的唯一权威；detached diagnostic需要operation时由调用侧structured tracing补充。
@@ -1231,9 +1274,9 @@ pub struct BleEventError {
 - command method返回`Result<(), CommandDispatchError>`。`Ok(())`是“已投递/已接受”的acknowledgement，不是operation completion；completion通常由backend在native callback/async result/D-Bus reply中产生，没有native callback时才使用逐项定义的backend-local completion point。即使completion同步发生在method返回前，它仍走event ingress。不能删除该同步边界并让所有调用固定返回成功：closed/invalid wire/未进入backend/FFI invocation failure没有合法completion可发，也会让caller无法区分“从未接管”与“已接管但callback缺失”。
 - `BleEventError`是唯一event failure DTO，承载稳定category/message和可选`platform_details`诊断，只直接或间接嵌套于`BleEvent`。单独的`Option<BleEventError>`、result-like data enum与`NotificationState`通过互斥case表达terminal/result/state，不再使用discriminator + `Option<error>`或额外operation-error包装。
 - `BackendError { error }`只报告无法归入具体command、scan、connection或其他domain状态变化的被动backend fault。能用具体domain event表达时必须优先使用具体event；它不是日志通道。downstream rejection和invalid ingress event分别通过`EventIngressStatus::DownstreamFailed`与`InvalidEvent`返回，绝不能递归生成`BackendError`。
-- `EventSinkError`是Rust-only downstream sink对单次delivery attempt的拒绝struct，不导出到UniFFI，不表达BLE operation结果，也不规定queue/backpressure策略。其message通过`DownstreamFailed { message }`供backend诊断，但不是稳定机器协议。
+- `EventSinkError`是foreign downstream sink对单次delivery attempt的声明式拒绝error，作为`BleEventSink::on_event` callable error导出；它不表达BLE operation结果，也不规定queue/backpressure策略。其detail通过`DownstreamFailed { message }`供backend诊断，但不是稳定机器协议。
 - 同一调用只能走一个边界：立即`Err(CommandDispatchError)`后不得有该ID的event；一旦backend emit任一该ID的event，就必须返回`Ok(())`，后续terminal使用`CommandCompleted.error`。
-- Stable UniFFI `0.32.0`代表性fixture已经验证fielded callable error、declared/undeclared foreign callback error和`UnexpectedUniFFICallbackError`转换。完整`BleEvent`与本节result-like data enum仍须作为final ABI candidate重新生成并运行desktop Kotlin/JVM、Android ART/AAR、Windows Swift与macOS Swift/package consumer，不能沿用简化fixture证据。以后升级任一macro、runtime或bindgen同样必须重跑兼容性检查。
+- Stable UniFFI `0.32.0`代表性fixture已经验证fielded callable error、declared/undeclared foreign callback error和`UnexpectedUniFFICallbackError`转换。完整`BleEvent`与本节result-like data enum仍须作为final ABI candidate重新生成，并运行Android ART/AAR以及项目真实Mac mini上的macOS/iOS Swift runtime、package、consumer与HIL适用gate，不能沿用简化fixture证据。历史Windows Swift不属于未来gate。以后升级任一macro、runtime或bindgen同样必须重跑兼容性检查。
 - UniFFI foreign callback若抛出声明类型之外的Kotlin/Swift exception，`BleHubError`和`CommandDispatchError`必须实现`From<uniffi::UnexpectedUniFFICallbackError>`并稳定映射到`FfiContract`，不能让exception穿越FFI、panic或随意映射成某个BLE domain error。Android与Apple runtime gate已证明该机制；完整candidate仍必须重跑。
 - 顶层`uniffi::Error` variant的自由文本字段统一命名为`detail`；event data中的`BleEventError.message`和`PlatformErrorDetails.message`保留`message`。本地collision fixture已证明Stable UniFFI Kotlin对error字段名`message`/`cause`同样存在生成冲突，因此不得放宽。字段都只用于诊断，不是稳定机器分支协议。`CommandDispatchError::Closed`不增加自由文本；所有dispatch variant都由正在调用的方法与caller command record确定operation。`FfiContract.detail`只记录foreign exception，不复制operation。
 - 平台错误映射必须保留原始code/name，同时给出稳定category，方便业务决策与诊断；native exception不得直接穿过Rust FFI栈。
@@ -1847,13 +1890,16 @@ sequenceDiagram
 
     App->>App: locally settle or abandon pending command projections
     App->>Hub: dispose()
-    Hub->>Hub: acquire exclusive command/close gate
+    Hub->>Hub: claim Open to Closing or wait for cached Closed result
+    Hub->>Hub: release lifecycle mutex and acquire exclusive command gate
+    Hub->>Hub: take backend slot and release command gate
     Hub->>State: acquire ingress mutex and drain in-flight on_event
     Hub->>State: set phase Closed and release downstream sink
     Hub->>Backend: dispose owned native resources
     Backend-->>Hub: cleanup result or BleHubError
     Hub->>Hub: release backend and retained handle ownership
-    Hub-->>App: lifecycle result and hub remains closed either way
+    Hub->>Hub: publish Closed with cleanup result and notify all waiters
+    Hub-->>App: every disposer observes the same completed cleanup result
 ```
 
 概念实现只保留`dispose()`这一份Hub关闭算法；`Drop`直接调用它：
@@ -1861,38 +1907,59 @@ sequenceDiagram
 ```rust
 impl BleHub {
     pub fn dispose(&self) -> Result<(), BleHubError> {
-        // Acquire the exclusive gate and recover a poisoned guard if needed;
-        // after this linearization point, never return before best-effort cleanup.
-        let mut backend_slot = self.backend.write_recovering_poison();
-        let Some(backend) = backend_slot.take() else {
-            return Ok(());
-        };
+        let (state, completed) = &self.lifecycle;
+        let mut lifecycle = state.lock_recovering_poison();
+        loop {
+            match &*lifecycle {
+                LifecycleState::Open => {
+                    *lifecycle = LifecycleState::Closing;
+                    break;
+                }
+                LifecycleState::Closing => {
+                    lifecycle = completed.wait_recovering_poison(lifecycle);
+                }
+                LifecycleState::Closed(error) => {
+                    return error.clone().map_or(Ok(()), Err);
+                }
+            }
+        }
+        drop(lifecycle);
 
+        let backend = {
+            let mut slot = self.backend.write_recovering_poison();
+            slot.take().expect("open lifecycle must own the backend")
+        };
+        // Neither lifecycle nor command guard crosses drain or foreign cleanup.
         self.ingress.close();
-        let backend_result = backend.dispose();
+        let result = backend.dispose();
+        if result.is_err() {
+            trace_fixed_cleanup_failure();
+        }
         drop(backend);
-        backend_result
+
+        let mut lifecycle = state.lock_recovering_poison();
+        *lifecycle = LifecycleState::Closed(result.clone().err());
+        completed.notify_all();
+        result
     }
 }
 
 impl Drop for BleHub {
     fn drop(&mut self) {
-        if let Err(error) = self.dispose() {
-            trace_dispose_failure(error);
-        }
+        let _ = self.dispose();
     }
 }
 ```
 
-`write_recovering_poison`和`trace_dispose_failure`只是意图占位：实现必须在取得close线性化点后继续释放所有可安全释放的ownership，不能因lock poison或backend dispose `Err`提前`?`返回。显式`dispose`把第一个/聚合cleanup error返回caller；`Drop`没有错误返回通道，只能记录。constructor rollback时Hub尚未构造完成，因此直接best-effort调用同一个`backend.dispose()`并保留原assembly error，随后正常drop trait object。
+上面的`*_recovering_poison`与`trace_fixed_cleanup_failure`是概念占位，实际实现见[`hub.rs`](../crates/blehub/src/hub.rs)。`Closing`领取唯一cleanup职责，slot取走才关闭command admission，`Closed(result)`才证明drain/cleanup结束；三个时点不能混同。不能因lock poison或backend dispose `Err`提前`?`跳过安全释放或结果发布。显式dispose与并发/重复调用均返回同一缓存结果；`Drop`委托同一路径，不另做cleanup或重复打印foreign文本。constructor rollback时Hub尚未构造完成，直接best-effort调用backend dispose并保留原assembly error。
 
 生命周期不变量：
 
 - `dispose/close` 是本地 lifecycle operation，不是 BLE command：不创建 `CommandId`、不产生 domain event 或 `CommandCompleted`。
 - caller在调用前把pending command projection标记为`AbandonedByDispose`；BleHub不替它批量生成`Cancelled`。dispose取得exclusive command/close gate是本地关闭线性化点，此后撤销尚未到达completion point的backend terminal义务，backend只做correlation/native resource cleanup。
-- Hub先阻止新command，再取得ingress mutex；该锁等待已经进入的`on_event`返回，随后Hub把phase切换为`Closed`并`take()`/释放sink，再要求backend best-effort stop scan、取消/断开本backend连接、撤销native callback registration并释放native handles及retained ingress handle。close只drain正在执行的sink调用，不drain downstream自己的queue；dispose前已被接纳的event仍可能在业务层晚于dispose处理。close期间和之后的callback因closed phase或`Weak` upgrade失败返回`Closed`。
-- backend `dispose` 的同步 `Err(BleHubError)` 只报告清理异常；Hub 仍进入 closed 状态并释放可安全释放的 ownership，不能继续发令。
-- `dispose/close`幂等；重复调用返回`Ok(())`。Rust`Drop`直接调用public`dispose()`并只能structured-log其cleanup error，不再增加private同义wrapper或第二份清理顺序。`BleHub`本身保持Rust-owned，不存在需要Kotlin/Swift关闭的generated Hub wrapper；产品/Tauri若另行导出application wrapper，其lifecycle在BleHub contract之外。
+- Hub用exclusive gate等待已进入command返回并原子取走backend slot，随后立即释放gate；新command可继续取得read guard，但因slot为`None`只能返回`Closed`。Hub再取得ingress mutex；该锁等待已经进入的`on_event`返回，随后Hub把phase切换为`Closed`并`take()`/释放sink，再要求局部强持有的backend best-effort stop scan、取消/断开本backend连接、撤销native callback registration并释放native handles及retained ingress handle。command/close ownership锁不跨越ingress drain或native cleanup，从而消除跨边界AB/BA锁序风险。close只drain正在执行的sink调用，不drain downstream自己的queue；dispose前已被接纳的event仍可能在业务层晚于dispose处理。close期间和之后的callback因closed phase或`Weak` upgrade失败返回`Closed`。
+- backend `dispose`的同步`Err(BleHubError)`只报告清理异常；Hub仍释放可安全释放的ownership、发布`Closed(Some(error))`并唤醒全部waiter，不能继续发令。backend slot为`None`但lifecycle仍为`Closing`时，任何并发dispose都不得提前返回。
+- `dispose/close`幂等指cleanup只执行一次，**不是重复调用一律成功**。并发调用在`Closing`上共同等待drain/cleanup，后续调用返回缓存的`Closed(None | Some(error))`结果。Rust `Drop`直接调用public dispose；Swift/Kotlin consumer仍须显式dispose production Hub并按generated wrapper规则释放ownership。Tauri application wrapper的task/emission关闭属于integration职责，不取代Hub close。
 - close 成功表示 BleHub/backend 持有的逻辑 lifecycle 和 native ownership 已结束，不保证 Windows/Apple 的系统物理链路立即断开，也不关闭 BlueZ daemon 或系统 Bluetooth radio。
 - 每个平台`BleBackend::dispose`本身必须幂等。它在返回前（包括cleanup error路径）必须按顺序：标记backend closed；detach/invalidate native callbacks与correlation；原子取走并显式释放root retained ingress wrapper/strong reference；继续其余best-effort native cleanup；永久禁止恢复ingress。即使application另持有一个backend `Arc`，root ingress也必须已经释放。已排队/在途closure可短暂保留自己的handle并安全收到`Closed`。Rust backend的`Drop`或Swift backend的`deinit`可调用同一个`dispose`兜底；Kotlin不能依赖GC/finalizer。Phase 0必须验证Kotlin destroy/Cleaner与Swift ARC的generated handle release、double-release防护，以及caller保留额外backend owner时的root-handle释放。
 
@@ -1927,7 +1994,7 @@ Rust bridge不检查 command 是否 pending、哪个 scan/connection 是 current
 
 v0.1 不定义 public `Diagnostic` event。invalid event shape/wire value、late callback after close、sink rejection 和 backend contract violation 都不属于 BLE domain state，也没有可移植的 application handling 语义；它们通过 backend/bridge 的 structured tracing、test assertion 和 HIL telemetry 记录。这样也避免 ingress 或 sink 已失败时递归尝试通过同一 event stream 报告失败。
 
-诊断必须携带可关联的 operation/command/session context（若可用），但默认日志需要限长并按 12.4 redact。contract violation 在 debug/test 中应容易暴露；release 中不能因单个坏 callback 破坏进程安全。未来若出现明确、可操作且跨平台的 consumer use case，再作为 ABI 变更单独评审 public diagnostic DTO，而不是先冻结通用 message event。
+诊断可携带operation/command/session context，但core/assembly的foreign failure默认日志只使用固定`diagnostic`/`error_class`和受控context，不格式化任意foreign error、sink detail或panic payload。公开typed error/ingress result仍保留契约字段与原错误信息；日志脱敏不等于删减公开error或把它改成固定通用错误。contract violation在debug/test中应容易暴露，release不能因单个坏callback破坏进程安全。未来public diagnostic DTO需独立ABI评审。
 
 ### 9.3 背压
 
@@ -1946,22 +2013,21 @@ BleHub 没有 queue，因此不实现 backpressure。直接调用链是 `backend
 - Kotlin/Swift backend method 在 command 被接受/投递前抛出的 exception/error 转换为同步 `Err(CommandDispatchError)`，不得为该 `CommandId` emit event。
 - command已被接受后，平台调用或callback completion中发生的exception/error转换为event `CommandCompleted { error: Some(error) }`；若此前已经发出domain event，也必须保持method返回`Ok(())`。
 - backend callback数据转换失败时：若对应accepted command，产生terminal `CommandCompleted { error: Some(error) }`；若是passive callback且能映射到具体domain failure，在对应domain event的显式result-like data enum中发送`Failed { error }`；无法归入具体domain但仍能安全构造诊断时发送`BackendError { error }`。无法安全构造wire-valid event时只记录out-of-band structured diagnostic，不发送伪造payload。
-- downstream返回`Err(EventSinkError)`或mutex poison映射为`DownstreamFailed { message }`。当前attempt被消费且不得重试；backend继续后续event并正常清理correlation，只有`Closed`才停止push。Rust sink panic是contract violation；`EventIngressState::push`必须只在`downstream.on_event(event)`这个最窄边界使用`catch_unwind`，先记录可区分于普通sink rejection的out-of-band violation trace，再返回固定、限长的`DownstreamFailed`。catch发生在ingress mutex guard内部，panic不得向外展开并poison ingress mutex，后续event仍可尝试交付；不得用包围整个exported `BackendEventIngressHandle::push`的catch把内部ingress bug误标为downstream panic。UniFFI generated scaffolding只作其他意外panic不跨ABI的defense-in-depth；runtime与subprocess tests必须证明sink panic不越过ABI、不伪装成`Delivered`且后续push仍可用。
+- downstream返回`Err(EventSinkError)`、foreign sink抛出未声明exception或mutex poison均映射为`DownstreamFailed { message }`。当前attempt被消费且不得重试；backend继续后续event并正常清理correlation，只有`Closed`才停止push。Rust sink panic与foreign sink未声明exception都是contract violation：Rust路径只在`downstream.on_event(event)`最窄边界使用`catch_unwind`，foreign路径依赖generated callback containment。默认trace只记录固定分类，区分普通rejection、unexpected callback与panic，不打印任意foreign文本或panic payload；公开typed error和ingress message保留其契约数据，Rust panic则使用固定containment message。不得把日志脱敏混同为公开错误替换，不得poison ingress mutex、越过ABI或伪装成`Delivered`。
 
 ---
 
 ## 10. 仓库、文件与模块组织
 
-本节描述 Review 通过并明确批准实施后拟采用的目录与职责边界。当前仓库中的规划文档、研究、官方 API snapshot、测试指南、工具或 spike 不表示 Rust workspace、公共 API、FFI binding 或平台 backend 已获实施批准；实际目录只在对应 Phase 启动时创建，并可在不改变本 Plan 架构职责的前提下按构建与发布需要收敛。
+本节是当前已批准并正在实施的仓库 ownership map。目录位置表达依赖方向和发布责任，而不是按编程语言机械分组；尚未启动的 Phase 只保留规划位置，不创建空壳。任何 production 模块和长期测试都不得依赖 `spikes/`，规范性结构变化必须先更新本 Plan。
 
 ### 10.1 计划目录
 
 ```text
 blehub/
 ├── AGENTS.md
-├── Cargo.toml                          # 批准实施后创建的 Rust workspace
-├── Cargo.lock                          # 锁定 Rust/UniFFI 依赖
-├── uniffi.toml                         # Kotlin/Swift binding配置与命名
+├── Cargo.toml                          # Rust workspace 与统一版本/dependency
+├── Cargo.lock                          # 锁定 production Rust/UniFFI 依赖
 ├── pixi.toml
 ├── pixi.lock
 ├── justfile
@@ -1983,47 +2049,18 @@ blehub/
 │   │       │   └── capabilities.rs    # typed backend capabilities
 │   │       ├── backend.rs              # BleBackend contract
 │   │       ├── hub.rs                  # BleHub 装配、dispatch 与 close-once
-│   │       └── ingress/
-│   │           ├── mod.rs              # status与审定re-export
-│   │           ├── state.rs            # close/downstream串行投递
-│   │           └── handle.rs           # UniFFI direct handle；只持Weak state
+│   │       └── ingress.rs              # status、串行sink投递、close与Weak direct handle
 │   │
-│   ├── blehub-testkit/                 # production crate 不依赖
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── fake_backend.rs         # 真实 BleBackend contract 的 fake
-│   │       ├── scenario.rs             # EventScenario 驱动与断言
-│   │       ├── recording_sink.rs       # 可观察 Rust downstream sink
-│   │       └── projection.rs           # 非规范性的 reference projection
-│   │
-│   ├── blehub-windows/                 # Rust + windows-rs production backend
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── lib.rs
-│   │       ├── backend.rs              # shared state、BleBackend、process lease与dispose
-│   │       ├── connection.rs           # connect/probe/status callback与child-before-parent cleanup
-│   │       ├── initialization.rs       # adapter/radio初始化与callback drain
-│   │       ├── scan.rs                 # watcher/session/filter/stop ownership
-│   │       ├── gatt.rs                 # connection-scoped GATT state、lookup与invalidation orchestration
-│   │       ├── gatt/
-│   │       │   ├── discovery.rs        # all-or-error uncached discovery traversal
-│   │       │   ├── io.rs               # FIFO read/write/CCCD与notification lifecycle
-│   │       │   └── tests.rs            # private GATT state-machine tests
-│   │       ├── mapping.rs              # private native observation -> BleEvent
-│   │       └── error.rs                # private WinRT/error mapping helper
-│   │
-│   └── blehub-linux/                   # Phase 6：Rust + dbus-rs/BlueZ
-│       ├── Cargo.toml
-│       └── src/
-│           ├── lib.rs
-│           ├── backend.rs              # LinuxBackend 直接实现 BleBackend
-│           ├── scan.rs
-│           ├── connection.rs
-│           ├── gatt.rs
-│           └── mapping.rs
+│   └── blehub-uniffi/                  # production Stable UniFFI artifact assembly
+│       ├── Cargo.toml                  # final staticlib/cdylib/rlib owner
+│       ├── src/lib.rs                  # 只重导出 canonical blehub component
+│       ├── src/uniffi_bindgen.rs       # 锁定版本的 bindgen CLI 入口
+│       └── generated/                  # no active output; package staging is under .work/staged
 │
 ├── platforms/
+│   ├── windows/                        # Rust + windows-rs production backend
+│   │   ├── Cargo.toml
+│   │   └── src/                        # initialization/scan/connection/GATT/mapping/error
 │   ├── android/
 │   │   ├── settings.gradle.kts
 │   │   ├── build.gradle.kts
@@ -2040,16 +2077,17 @@ blehub/
 │   │           ├── test/               # JVM/fake-binding tests
 │   │           └── androidTest/         # emulator/device integration tests
 │   │
-│   └── apple/
-│       ├── Package.swift               # production Swift Package
-│       ├── Sources/BleHubApple/
-│       │   ├── AppleBleBackend.swift
-│       │   ├── CentralManagerDelegate.swift
-│       │   ├── GattSession.swift
-│       │   └── AppleEventMapper.swift
-│       └── Tests/BleHubAppleTests/
+│   ├── apple/
+│   │   ├── Package.swift               # shared macOS+iOS production Swift Package
+│   │   ├── Sources/BleHubApple/        # Swift + CoreBluetooth backend
+│   │   └── Tests/BleHubAppleTests/     # deterministic private state/mapping tests
+│   └── linux/                          # Phase 6：Rust + dbus-rs/BlueZ backend
 │
 ├── tests/
+│   ├── support/
+│   │   └── blehub-testkit/             # Rust-only reusable fake/scenario/sink/projection
+│   ├── ffi/
+│   │   └── runtime/                    # Swift/Kotlin/Android直接验证production ABI；无Rust test image
 │   ├── conformance/
 │   │   ├── scenarios/                  # 跨 backend 与测试Peripheral共享的行为/profile输入
 │   │   └── fixtures/                   # wire/mapping fixture，不复制 contract
@@ -2061,17 +2099,32 @@ blehub/
 │   │   │   └── app/src/                # UI、GATT server、CCCD、ADB control与tests
 │   │   ├── bless/                      # Phase 2：BLESS server/scenario glue；VM配置不在此
 │   │   ├── nrf52840/                   # 可选后续硬件参考Peripheral固件；技术栈另行评审
-│   ├── hil/                            # 显式运行的真实RF/HIL runner；不进入普通workspace测试
+│   ├── hil/                            # 显式运行的真实OS/device/RF；不进入普通workspace测试
+│   │   ├── apple/                      # production-package macOS/iPhone probes
 │   │   └── windows/                    # standalone Cargo smoke/fault/soak runner crate
-│   └── consumers/                      # 独立 artifact-only clean consumers
+│   └── consumers/                      # 独立 production artifact-only clean consumers
 │       ├── windows/                    # 独立 Cargo console consumer
-│       ├── android/                    # 独立 Gradle app + 最小产品 Rust adapter
+│       ├── android/                    # 独立Gradle app，直接消费production AAR
 │       ├── apple/
-│       │   ├── ios/                    # 独立 iOS package consumer
-│       │   │   └── rust/               # iOS 最小产品 Rust adapter/build graph
-│       │   └── macos/                  # 独立 macOS package consumer
-│       │       └── rust/               # macOS 最小产品 Rust adapter/build graph
+│       │   ├── ios/                    # 独立iOS production-package consumer
+│       │   └── macos/                  # 独立macOS production-package consumer
 │       └── linux/                      # Phase 6：独立 Cargo console consumer
+│
+├── integrations/                       # 宿主框架适配层；不拥有第二套BLE contract
+│   ├── tauri-plugin-blehub/             # repository-owned publish=false；后续可评审对外发布
+│   │   ├── Cargo.toml
+│   │   ├── build.rs
+│   │   ├── src/                         # Rust commands、sink、projection、lifecycle
+│   │   └── assembly/                    # backend composition；不复制BLE operation协议
+│   │       ├── macos/                   # Swift/CoreBluetooth assembly
+│   │       ├── android/                 # Kotlin @TauriPlugin assembly
+│   │       └── ios/                     # Swift @TauriPlugin assembly
+│   └── flutter-blehub/                  # 未来Flutter federated integration；通过spike后再创建实现
+│       ├── flutter_blehub/              # Dart public adapter
+│       ├── flutter_blehub_platform_interface/
+│       ├── flutter_blehub_apple/
+│       ├── flutter_blehub_android/
+│       └── flutter_blehub_windows/
 │
 ├── examples/
 │   ├── windows-central/                # Phase 2 Rust-first caller-owned channel/deadline示例
@@ -2082,20 +2135,16 @@ blehub/
 │       └── src-tauri/
 │           ├── Cargo.toml
 │           ├── capabilities/
-│           ├── plugins/blehub/         # repository-owned publish=false薄adapter；Go后才从spike提升
-│           │   ├── Cargo.toml
-│           │   ├── build.rs
-│           │   ├── src/                # Rust commands、sink、projection、one-shot assembly
-│           │   └── android/            # Kotlin bootstrap host；不复制BLE operation协议
-│           ├── src/                    # product wiring
+│           ├── src/                    # product wiring；消费integrations/tauri-plugin-blehub
 │           └── gen/
 │               ├── android/            # Tauri CLI 管理的 app/bootstrap project
 │               └── apple/              # Tauri CLI 管理的 app/bootstrap project
 │
 ├── just/                               # Rust式recipe module tree；mod.just为namespace facade
 │   ├── binding/mod.just
-│   ├── peripheral/                     # Android与QEMU/BLESS provider子模块
-│   ├── spike/mod.just
+│   ├── peripheral/                     # Android、native macOS与QEMU/BLESS provider子模块
+│   ├── ffi/mod.just
+│   ├── apple/mod.just                  # 真实Mac mini上的Apple package/backend/HIL入口
 │   ├── test/mod.just
 │   └── windows/                        # backend、consumer、example与HIL子模块
 │
@@ -2104,9 +2153,11 @@ blehub/
 ├── tools/
 │   ├── local_config.py                   # env/local TOML/fallback 路径解析
 │   ├── update_platform_docs.py           # 官方 API snapshot 更新
-│   ├── swift_toolchain.py                # Windows Swift host lane bootstrap/doctor
-│   ├── android_toolchain.py              # Phase 3：显式 bootstrap/doctor
+│   ├── swift_toolchain.py                # 真实Mac mini上selected Xcode/Swift的verify/report
+│   ├── android_toolchain.py              # Phase 4：显式 bootstrap/doctor
 │   ├── check_mermaid.mjs                 # authored Markdown Mermaid 校验
+│   ├── test_uniffi_runtime_swift_macos.py # 真实Mac mini上的Swift production-ABI runtime
+│   ├── apple/                             # Apple package/backend/macOS+iPhone HIL编排
 │   └── peripheral_fixture/               # host-side受控外设编排，不实现GATT profile
 │       ├── android.py                    # ADB install/start/notify/indicate/status
 │       └── bless.py                      # Phase 2：BLESS VM/provider编排
@@ -2125,34 +2176,77 @@ blehub/
 
 这是一张 **ownership map**，不是必须一次性创建的文件清单。上述内部文件名与拆分均为暂定：对应 Phase 只创建已有真实职责和调用点的模块，不创建空壳、预留 interface 或单实现 factory；可以合并过小模块，但不得改变本节职责边界或公共 contract。平台 helper 默认保持 crate/package private；尤其不得预先引入第二套 `WindowsPlatform`/platform-backend trait，只有实际 native 调用点证明有必要时，才增加最窄的 crate-private adapter。
 
-初期不机械拆分 `blehub-core` 与 `blehub-ffi`：公共 contract 与 generated ABI 需要 lockstep 演进。`blehub-testkit` 从 Phase 0 起独立，防止 fake、property-test、fixture 和 reference projection 进入 production dependency。平台 production package、项目源码RF/HIL runner、artifact-only clean consumer 与 product-shaped showcase分开管理：`tests/hil/<platform>`承载显式运行的smoke/fault/soak基础设施，`tests/consumers/<platform>`承载只消费staged artifact的packaging gate，`examples/`只承载fixture-independent、面向真实下游的产品形态展示；跨平台展示当前只计划保留`examples/tauri-central/`。
+`blehub`与`blehub-uniffi` lockstep演进但职责不同：前者是唯一canonical definition owner，定义并导出production `BleHub` object、foreign `BleBackend`、foreign `BleEventSink`、direct ingress及全部command/event/error，同时保持普通Rust `rlib`可直接消费；后者故意保持极薄，只拥有唯一production `staticlib/cdylib`最终链接、锁定bindgen入口和production language-package staging，不定义第二套API或测试component。Swift/Kotlin FFI runtime与Apple HIL都消费这个production image/package并在语言侧实现测试backend/sink；仓库不存在第二个test-only UniFFI native image。
+
+规范性依赖方向如下；箭头表示“依赖或消费”，不得反向：
+
+```mermaid
+flowchart TB
+    Core[crates/blehub: canonical contract, Hub, ingress]
+    ProductionImage[crates/blehub-uniffi: only production native image]
+    Testkit[tests/support/blehub-testkit: Rust test support]
+
+    Windows[platforms/windows: WinRT backend]
+    Apple[platforms/apple: shared Swift CoreBluetooth backend]
+    Android[platforms/android: Phase 4 Kotlin backend]
+    Linux[platforms/linux: Phase 6 BlueZ backend]
+
+    FfiRuntime[tests/ffi/runtime: foreign-language runtime gates]
+    Hil[tests/hil: production-package OS device RF]
+    Consumers[tests/consumers: production artifact-only]
+    Peripherals[tests/peripherals: Central test providers]
+    Spikes[spikes/archive: historical evidence only]
+
+    Core --> ProductionImage
+    Core --> Windows
+    Core --> Linux
+    Core --> Testkit
+
+    ProductionImage --> Apple
+    ProductionImage --> Android
+    ProductionImage --> FfiRuntime
+    ProductionImage --> Hil
+    Windows --> Hil
+    Apple --> Hil
+    Android --> Hil
+    Linux --> Hil
+    Peripherals --> Hil
+
+    ProductionImage --> Consumers
+    Windows --> Consumers
+    Android --> Consumers
+    Linux --> Consumers
+```
+
+所有production、FFI runtime与Apple HIL graph都只允许`crates/blehub-uniffi`拥有BleHub UniFFI symbols。测试行为由Swift/Kotlin侧的test backend/sink和Rust-only `blehub-testkit`提供，不通过feature、额外component或第二个native image注入；package检查必须拒绝重复BleHub native entry/symbol owner。
 
 ### 10.2 Production、平台与测试模块边界
 
-- `crates/blehub` 只拥有统一公共契约、`BleBackend`、FFI/event ingress、薄 facade 和本地 lifecycle；不得拥有平台 API、业务状态、runtime、timer、queue、worker 或测试 fake。
-- `crates/blehub-windows` 与 Phase 6 的 `crates/blehub-linux` 是 Rust production backend，只依赖各自平台 API，并直接实现统一 `BleBackend`；平台 native 类型不得泄漏到公共 DTO。
-- `platforms/android` 与 `platforms/apple` 分别拥有 Kotlin/Swift production backend、generated binding 消费集成和平台 package；Gradle、SwiftPM/Xcode 的构建图不进入 Rust core。Android packaging必须从同一candidate产出普通native consumer所需的完整AAR/variant，以及Tauri Rust image consumer所需的不携带BleHub native library的Kotlin/backend variant；二者复用同一`AndroidBleBackend`与contract，不复制实现。
-- `blehub-testkit`、`tests/conformance` 和平台 private mapping fixture 共同复用一套可观察 contract，不得复制第二套 command、event、error 或 backend lifecycle。
-- `tests/hil/<platform>`承载项目源码RF/HIL runner，可为测试当前实现使用workspace/path source，但必须作为独立build graph从根workspace排除，并只由Just的显式硬件lane调用；普通workspace测试不得执行或因非目标平台而编译这些runner。涉及radio、USB passthrough或其他破坏性故障注入的case必须独占资源并保存可追踪报告。HIL runner不替代`tests/consumers/<platform>`的artifact-only packaging gate，也不作为用户示例发布。
+- `crates/blehub`只拥有统一公共契约、exported production `BleHub` object、foreign `BleBackend`/`BleEventSink`、FFI/event ingress、薄facade和本地lifecycle；不得拥有平台API、业务状态、runtime、timer、queue、worker或测试fake。全部UniFFI annotations/scaffolding与canonical定义共置，避免复制第二套wire contract。
+- `crates/blehub-uniffi`不定义第二套API；它只重导出`blehub`并拥有唯一production `staticlib/cdylib`、锁定bindgen入口与production package staging。artifact必须断言只含canonical `blehub` component，不含fixture、testkit或test-only export。
+- `platforms/{windows,apple,android,linux}` 统一承载 production backend，与实现语言无关。Windows/Linux Rust backend直接依赖`blehub`；Apple/Android backend消费由同一 production image生成的Swift/Kotlin binding。平台 native 类型不得泄漏到公共DTO，平台 package不得依赖`tests/`或`spikes/`。
+- `tests/support/blehub-testkit`、`tests/conformance` 和平台 private mapping fixture 共同复用一套可观察 contract，不得复制第二套 command、event、error 或 backend lifecycle。`blehub-testkit`可作为workspace member接受常规检查，但任何production crate/package不得依赖它。
+- `tests/ffi/runtime`不拥有Rust crate或native image。Swift/Kotlin runtime代码直接消费`crates/blehub-uniffi`的production binding/artifact，在语言侧实现可控test `BleBackend`与`BleEventSink`，并通过exported production `BleHub`验证foreign traits、binding、异常、线程、ARC/JNA、close/dispose、event wire和artifact装载。它直接验证production ABI，但仍不宣称CoreBluetooth/Android BLE或RF。
+- `tests/hil/<platform>`承载显式真实OS/device/RF runner。Apple HIL只消费staged production XCFramework/Swift package，直接使用production `AppleBleBackend`与Swift `BleEventSink`实现并调用exported `BleHub`；不得源码替换、测试image或第二个BleHub symbol owner。HIL必须作为独立build graph并只由Just显式硬件lane调用；普通workspace测试不得执行。涉及radio、USB passthrough或破坏性故障注入的case必须独占资源并保存可追踪报告。HIL不替代artifact-only consumer，也不作为用户示例发布。
 - `tests/peripherals`只实现Central验证所需的GATT Server测试行为，不进入BleHub发布物，也不依赖production Android Central backend或UniFFI generated binding。Android、BLESS和可选nRF52840 provider的JSON profile必须在`tests/conformance/scenarios/`中共享schema、角色、properties和初始值语义，不能在实现代码中手写漂移；每个可能并行广播的provider必须拥有独立profile ID、local name和advertised/root service UUID，Central smoke必须按目标provider的service UUID过滤，不能依赖RSSI、发现顺序或人工猜测。provider特有控制能力可以扩展，但不能改变共享场景语义。
 - `tests/consumers/<platform>` 是发布与 packaging gate，不是共享实现：每个 consumer 有独立 manifest/lock/build graph，只消费 recipe staged 的 crate/AAR/XCFramework/Swift Package 等产物，不得引用 `crates/`、`platforms/` 或 `generated/` 源码路径，不得使用 Gradle `project(...)` 依赖，也不得依赖 workspace feature unification。嵌套 Cargo consumer 必须从根 workspace 排除或声明独立 workspace。
-- `examples/tauri-central` 是真实 downstream showcase，不是 clean consumer，也不替代任何平台 consumer gate。它可以为仓库内开发使用 workspace/path dependency，但 release smoke 必须能切换到同一批 staged candidate；其`src-tauri/plugins/blehub`是repository-owned、`publish = false`的薄adapter，Rust侧拥有Hub、runtime/channel/projection，Android Kotlin host只做backend bootstrap、权限和lifecycle，Tauri Web/native层不改变BleHub contract。
-- 每个 Tauri 平台 target 在提升为 example 前，须按对应 Phase 在 `spikes/tauri-downstream` 验证该平台 package、native symbol/loading、backend assembly、app suspend/reload/close 和高频 event 路径；Windows/Android 与 Apple target 分别按 Phase 3、Phase 5 推进，Linux target 到 Phase 6。Android spike固定验证一次性ticket handoff、Kotlin-only backend variant、最终Tauri Rust image的UniFFI symbol retention、单一BleHub native image、Activity/WebView recreation和late provide/dispose。获得Go后只把已验证的薄adapter提升到reference app；只有多个真实项目证明integration glue值得复用时，才单独评审提取并发布`integrations/tauri-plugin-blehub`，只有该插件成为发布物后才增加`tests/consumers/tauri`，二者都不预先创建。
+- `examples/tauri-central` 是真实 downstream showcase，不是 clean consumer，也不替代任何平台 consumer gate。它可以为仓库内开发使用 workspace/path dependency，但 release smoke 必须能切换到同一批 staged candidate；它只消费`integrations/tauri-plugin-blehub`，不拥有plugin canonical源码或重复的backend assembly。应用侧只保留窗口、权限声明、配置和生命周期 wiring；通用/平台 assembly归plugin。未来`examples/flutter-central`同样只消费`integrations/flutter-blehub`。
+- 每个宿主框架 integration 在进入reference app前，须按对应 Phase 在 `spikes/tauri-downstream` 或等价的reference-app gate验证 package、native symbol/loading、backend assembly、app suspend/reload/close 和高频 event 路径；macOS作为Phase 3首个Tauri target，可在deterministic assembly通过后进入`examples/tauri-central`并保留独立报告，Windows/Android按Phase 4推进，Flutter在完成独立spike后再进入实现，Linux target到Phase 6。Android验证固定覆盖一次性ticket handoff、Kotlin-only backend variant、最终Tauri Rust image的UniFFI symbol retention、单一BleHub native image、Activity/WebView recreation和late provide/dispose。integration只有在多个真实项目证明复用价值、跨平台版本兼容和artifact loading稳定后才评审对外发布；发布后再增加对应的artifact-only consumer。
 - `tests/peripherals`、`tools/peripheral_fixture`与`vm/linux-peripheral`是测试基础设施，不是BleHub Peripheral产品能力：前者拥有外设实现，host工具只做ADB/SSH/provider编排，VM目录只拥有guest provisioning与USB passthrough。`vm/linux-central`和`blehub-linux`到Phase 6才启动。
-- `spikes/` 保存可复现的能力探针，不作为 production API 或长期兼容层。Durable 结论写入 `docs/research/`，规范性变化仍须回到本 Plan 评审。
+- `spikes/` 只保存尚未提升的最小能力探针与 `spikes/archive/` 历史证据；一旦机制进入 `crates/`、`platforms/`、`integrations/`、`tests/ffi` 或长期HIL，active spike必须归档。Production、长期测试、examples与工具不得反向依赖spike路径。Durable结论写入`docs/research/`，规范性变化仍须回到本Plan评审。
 - `docs/research/` 保存证据与建议，`docs/testing/` 保存会随 runner、fixture、provider 和报告格式演进的执行指南，`docs/platform-api-reference/` 保存生成的官方证据；三者都不形成第二份 Plan。
 
 ### 10.3 依赖与工具 ownership
 
-- Cargo管理Rust dependency、feature、workspace build graph和`Cargo.lock`；Stable UniFFI crate、bindgen及language runtime compatibility随lockstep ABI固定。`uniffi.toml`只保存binding配置，不替代lock与artifact manifest。
+- Cargo管理Rust dependency、feature、workspace build graph和`Cargo.lock`；`blehub`、`blehub-uniffi`和UniFFI runtime/bindgen版本lockstep。Production lock属于根workspace，standalone HIL/consumer可保留自己的lock。所有language binding配置和生成入口由`blehub-uniffi`的production artifact/package职责统一拥有；`tests/ffi/runtime`只消费其输出，不拥有另一套component或native-image配置；维护中的语言runtime为Swift与Android Kotlin，desktop Kotlin/JVM仅保留历史证据。
 - Pixi管理Rust、Just、Python、JDK、LLVM、Node.js、RTK、sccache、Packer和BLESS等外部开发工具与可复现环境；Windows QEMU portable binary及guest image仍由入库URL/hash显式固定；`pixi.lock`入库，不要求全局安装Just、Python、Ruff、RTK、sccache或Node.js。Just的Cargo/Gradle test recipe使用RTK压缩成功日志并保留失败详情与原始exit code；RTK只优化工具输出，不改变测试选择或通过条件。普通Rust编译和明确支持的C/C++ glue使用Pixi-managed sccache，并关闭Cargo incremental，避免`target` incremental与sccache双份缓存；sccache只减少重复编译，不减少最终库/包必需产物，Swift/Kotlin编译不走sccache。UniFFI scaffolding由锁定的proc macro随普通Cargo build生成；Kotlin/Swift source/header/modulemap由锁定bindgen从同一candidate library生成，不保留BoltFFI metadata专用target或绕过sccache的特殊路径。
 - 根 npm manifest/lock 只管理 Mermaid 文档校验依赖；`examples/tauri-central` 使用自己的 `package.json`/`package-lock.json` 锁定 showcase frontend，不能污染根工具依赖。Node.js 和 `node_modules` 不进入 BleHub core/backend runtime 或发布物；Tauri 只打包构建后的 frontend assets。
 - Tauri CLI/Rust crate 与 frontend dependency 在 example 自己的 Cargo/npm lock 中固定，并由 Pixi + Just recipe 调用；Tauri 不是 BleHub core、platform backend 或 clean consumer 的依赖。
-- 本机工具链根目录按 `BLEHUB_<TOOL>_ROOT` 环境变量、ignored `blehub.local.toml` 的 `[toolchains].<tool>_root`、`~/.cache/blehub/toolchains/<tool>` fallback 顺序解析；CI使用环境变量，开发者可从入库的 `blehub.local.example.toml` 复制本地配置。local TOML只保存机器本地路径和endpoint，不保存版本、URL、hash或license状态；这些可复现输入继续固定在入库脚本与lock中。`pixi run just toolchain-paths`报告最终值及来源。
-- Mutagen是可选的开发源码传输层，不进入BleHub build/runtime/package，也不由普通recipe静默下载。用户提供的executable、host、user、remote path与session name按显式Just参数、`BLEHUB_MUTAGEN_*`、ignored `blehub.local.toml`、非敏感内建默认值的顺序解析，其中host无内建默认值。Just调用官方project orchestration；项目脚本读取入库`.gitignore`并生成ignored `.work/mutagen/mutagen.yml`，额外排除`NUL`和VCS metadata，因为Mutagen本身不会自动读取`.gitignore`。同步模式固定为`two-way-safe`，不得用自动winner语义掩盖冲突。
-- Windows主checkout保留Git ownership；当前Mac mini同步副本故意排除`.git`、`.pixi`、`.work`、`blehub.local.toml`和build/cache/generated output。远端macOS只提供Apple开发执行host；提交与push仍在Windows主checkout完成。Mutagen同步成功只证明文件传输，不构成macOS/iOS build、runtime、package或RF证据。
-- Gradle Wrapper 管理 Android build graph，由 Just 调用；版本、distribution hash、集中仓库、dependency verification/lock 和国内镜像策略在 Phase 3 固定。Android SDK/NDK bootstrap脚本使用上述`android_root`，显式检查所需版本并按用户主动调用安装；普通 build/test 不静默安装 SDK/NDK 或接受 license。
-- Windows Swift host lane由入库脚本固定版本、官方package和hash，并使用上述`swift_root`执行显式bootstrap/doctor；SwiftPM/Xcode管理Apple build/package graph，并只在受支持的macOS runner完成最终Apple构建。
+- 除Apple Swift/Xcode外，本机可配置工具链根目录先按 `BLEHUB_<TOOL>_ROOT` 环境变量、ignored `blehub.local.toml` 的 `[toolchains].<tool>_root` 解析。Android 随后采用机器级共享 SDK 约定：读取一致的 `ANDROID_HOME`/`ANDROID_SDK_ROOT`，否则使用 macOS `~/Library/Android/sdk`、Windows `%LOCALAPPDATA%/Android/Sdk` 或 Linux `~/Android/Sdk`，让 Android Studio 与其他项目复用已固定版本的 SDK/NDK 包；其他项目管理工具仍 fallback 到 `~/.cache/blehub/toolchains/<tool>`。Apple Swift只来自项目真实Mac mini上由`xcode-select`选中的Xcode，不设`BLEHUB_SWIFT_ROOT`或`[toolchains].swift_root`，也不提供项目管理的Swift bootstrap。未来非Apple CI可使用环境变量，开发者可从入库的 `blehub.local.example.toml` 复制本地配置。local TOML只保存机器本地路径和endpoint，不保存版本、URL、hash或license状态；这些可复现输入继续固定在入库脚本与lock中。`pixi run just toolchain-paths`报告适用工具的最终值及来源。
+- 经用户批准，开发协作改为Windows与真实Mac mini各自拥有独立Git clone和`.git`，共享同一GitHub远端与提交历史，两端均使用`main`，不维护`windows`/`macos`宿主分支。两端均可在用户明确授权后commit/push。开始工作前在干净工作树上`git pull --ff-only`；若两端各有提交导致分叉，应fetch、审查并merge `origin/main`，解决冲突并验证后再push，不得force-push覆盖另一端。迁移先从Windows发布当前共同基线，再备份Mac旧目录并从同一历史clone；Mac空仓库不能单独root commit后使用unrelated-histories强行拼接。操作指南见[`docs/git-workflow.md`](../docs/git-workflow.md)。
+- 本次迁移已终止BleHub Mutagen项目并停止daemon；不得对这两个独立Git工作树重新开启实时同步，也不得复制`.git`。现有Mutagen脚本与recipe仅保留为用户显式请求的临时非Git副本工具，不是维护中的协作流程；继续采用`two-way-safe`、VCS忽略与ignored本机endpoint配置，不进入build/runtime/package或普通recipe安装。`.pixi`、`.work`、`blehub.local.toml`和build/cache/generated output仍由各机独立管理。Git push/merge与历史Mutagen传输均不构成macOS/iOS build、runtime、package或RF证据，必须针对明确candidate分别执行各平台gate。
+- Gradle Wrapper 管理 Android build graph，由 Just 调用；版本、distribution hash、集中仓库、dependency verification/lock和国内镜像策略在Phase 4固定。Android SDK/NDK bootstrap脚本使用上述`android_root`，显式检查所需版本并按用户主动调用安装；普通 build/test 不静默安装 SDK/NDK 或接受 license。
+- 不维护Windows desktop Swift lane、Windows-managed Swift toolchain/root/bootstrap或GitHub-hosted macOS workflow。`tools/swift_toolchain.py`只在项目真实Mac mini上验证由`xcode-select`选中的Xcode/Swift；SwiftPM/Xcode管理Apple build/package graph，全部Apple Swift runtime、package、backend与HIL gate通过本机Pixi + Just入口执行。
 - 目标 OS 提供 WinRT、Android Bluetooth Framework、CoreBluetooth、BlueZ/D-Bus 等 BLE service/runtime；项目 `doctor` recipe 只检查环境。
 
 ### 10.4 Recipe 与执行文档边界
@@ -2165,8 +2259,8 @@ pixi run -e android just <android-recipe>
 ```
 
 - 当前规划/文档阶段保留`docs-update`、`docs-install`、`docs-check-mermaid`、`fmt`、`lint`等recipe；`docs-install`通过lockfile显式安装文档检查依赖，普通`docs-check-mermaid`不得隐式安装、访问网络或改动依赖树。
-- 根Justfile只保留`fmt`、`check`、`lint`、`verify`、`docs-*`、通用toolchain doctor/bootstrap等跨域入口；binding生成/API snapshot、测试、active spike与Peripheral provider分别使用`binding`、`test`、`spike`、`peripheral`子命令模块。模块不得依赖兄弟模块，跨域聚合只由根recipe向下依赖；复杂下载、hash、原子安装、环境检查和报告逻辑放在项目脚本或平台build system中。
-- Android production backend/package recipe只在Phase 3创建；`tests/peripherals/android`的build/install/start/stop/notify/indicate/status recipe可在Phase 2 Windows RF开发开始前创建，两者使用不同Gradle工程和命名，测试fixture不得被production AAR依赖。Apple package recipe只在Phase 5创建；Linux Central build/test/VM recipe只在Phase 6创建。
+- 根Justfile只保留`fmt`、`check`、`lint`、`verify`、`docs-*`、通用toolchain doctor/bootstrap等跨域入口；正式binding/package、FFI runtime、平台测试、active spike与Peripheral provider分别使用`binding`/平台、`ffi`、`test`、`spike`、`peripheral`子命令模块。模块不得偷偷安装工具或请求凭证；跨域聚合由根recipe或明确的platform facade完成，复杂下载、hash、原子安装、环境检查和报告逻辑放在项目脚本或平台build system中。
+- Android production backend/package recipe只在Phase 4创建；`tests/peripherals/android`的build/install/start/stop/notify/indicate/status recipe可在Phase 2 Windows RF开发开始前创建，两者使用不同Gradle工程和命名，测试fixture不得被production AAR依赖。Apple package recipe在Phase 3创建；Linux Central build/test/VM recipe只在Phase 6创建。
 - 无硬件测试、共享conformance、Android development peripheral、BLESS managed peripheral、可选nRF52840 reference peripheral与HIL recipe在相应模块和Phase中按需创建。具体测试层、CI lane、runner、provider command、case和报告路径归[`docs/testing/README.md`](../docs/testing/README.md)演进，不在Plan固定详细矩阵。
 
 ---
@@ -2182,6 +2276,7 @@ pixi run -e android just <android-recipe>
 - connect的uncached GATT probe确认真实可用并进入`Connected`后，v0.1 Windows backend best-effort请求`BluetoothLEPreferredConnectionParameters::ThroughputOptimized()`；API/driver不支持、status拒绝或查询失败只做限长debug tracing，不把已成功连接改写为失败。该默认策略以更高功耗换取更低延迟，实测显著提升response-based吞吐；未来若公共contract需要balanced/power/throughput选择，必须作为新的显式版本决策，而不是平台私有参数泄漏。
 - GATT discovery/read 使用明确的 uncached 语义，所有 `IAsyncOperation` 完成后还必须检查 `GattCommunicationStatus`/result status。
 - backend保留后续operation所需的WinRT service/characteristic/descriptor/session对象和event token；disconnect/GATT replacement/dispose先在`delivery -> state`边界内invalidate correlation、detach native ownership并设置connection/GATT cleanup gate，释放锁后revoke callback、取消operation、释放child GATT对象并关闭parent device/session，最后重新进入delivery边界尝试prepared events并drain deferred disconnect/services-changed。WinRT `Cancel`、`Remove*`与`Close`不得在delivery锁内调用。mapping tests区分logical disconnect、native disconnect confirmation与不可证明的physical link teardown，并验证`RSSI == -127`等synthetic observation是否应过滤，不能直接照搬第三方策略。
+- GATT I/O driver必须在backend state锁内领取唯一ownership，并结合`io_driver_running`与queue状态判断，不能只凭queue为空启动第二个driver；completion与退役同样在锁内交接。disconnect callback即使已在外部检查cleanup gate，也必须在最终state临界区重新检查并延迟处理，避免check-to-use窗口穿过cleanup。
 - notification enable 先注册 `ValueChanged` handler 再写 CCCD；disable 成功后撤销 token。
 - Windows 没有 connected one-shot RSSI，`supports_read_rssi=false`；advertisement RSSI 只进入 observation。
 - `BluetoothLEDevice.Close`/`GattSession.Close` 只关闭本 backend 的逻辑 ownership，不能承诺系统物理链路断开。
@@ -2194,7 +2289,7 @@ pixi run -e android just <android-recipe>
 
 ### 11.2 Android / Kotlin
 
-进入production backend前，必须按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)关闭Stable UniFFI Kotlin/JNA lane的foreign trait长期持有、caller/callback thread attach、direct-handle bind/push、exception、close、晚到callback和对象释放blocker。representative fixture已通过；完整ABI candidate仍按12.5重跑。该执行清单不在Plan重复；规范性对象图、Rust-only downstream与production blocker不变。
+进入production backend前，必须按[`docs/testing/ffi-runtime.md`](../docs/testing/ffi-runtime.md)关闭Stable UniFFI Android Kotlin/JNA lane的foreign trait长期持有、caller/callback thread attach、direct-handle bind/push、exception、close、晚到callback和对象释放blocker。representative fixture已通过；完整ABI candidate仍按12.5重跑。该执行清单不在Plan重复；规范性对象图、foreign downstream与production blocker不变。
 
 真实 backend：
 
@@ -2205,16 +2300,16 @@ pixi run -e android just <android-recipe>
 - characteristic/descriptor write 优先使用返回 `BluetoothStatusCodes` 的新 API；旧 Android 版本使用 Boolean overload adapter，但统一成“immediate acceptance + callback completion”内部模型。
 - `ScanCallback.onScanFailed`必须终结仍pending的start或产生被动`ScanStopped`，不能只更新local `scanning` bool；adapter/peripheral/GATT wrapper使用显式dispose与scoped opaque allocation，不使用address hash、raw pointer或process-lifetime native cache作为public handle。
 - notification enable/disable 按 7.1 的 local routing + CCCD 两阶段组合，显式区分 notification/indication。
-- Android 12+ `BLUETOOTH_SCAN`与旧版本location/scan要求映射到`scan_authorization`，`BLUETOOTH_CONNECT`映射到`connection_authorization`；准确minSdk与API 33 compatibility wrapper在Phase 3固定。
+- Android 12+ `BLUETOOTH_SCAN`与旧版本location/scan要求映射到`scan_authorization`，`BLUETOOTH_CONNECT`映射到`connection_authorization`；准确minSdk与API 33 compatibility wrapper在Phase 4固定。
 - `BluetoothGattCallback` 只做 native object lookup、最小 correlation、DTO 转换和事件 push，不运行上层业务。
 - dispose先解除scanner/GATT callback owner并invalidate pending correlation，再调用`BluetoothGatt.close()`、停止scanner callback并释放Handler/执行scope；所有路径幂等，Android没有close completion event。
 - 复用 Windows 已固定的 command/event/conformance 语义。
 
-Android执行层、emulator定位、真机HIL和报告方式由[`docs/testing/README.md`](../docs/testing/README.md)及Phase 3创建的Android测试文档维护。Plan只固定：emulator不能作为真实BLE/RF验收；第15节要求的两档API真机必须通过真实RF连接同一managed peripheral，BLE数据面不得由ADB或控制面伪造。
+Android执行层、emulator定位、真机HIL和报告方式由[`docs/testing/README.md`](../docs/testing/README.md)及Phase 4创建的Android测试文档维护。Plan只固定：emulator不能作为真实BLE/RF验收；第15节要求的两档API真机必须通过真实RF连接同一managed peripheral，BLE数据面不得由ADB或控制面伪造。
 
 ### 11.3 iOS/macOS / Swift
 
-进入CoreBluetooth production backend前，必须按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)关闭Stable UniFFI Swift lane的generated protocol、foreign object长期持有、direct-handle bind/push、serial queue、ARC、exception、close与晚到callback blocker。representative Apple runtime/XCFramework/SPM gate已通过；完整ABI candidate仍须重跑。该执行清单不在Plan重复。
+进入CoreBluetooth production backend前，必须按[`docs/testing/ffi-runtime.md`](../docs/testing/ffi-runtime.md)关闭Stable UniFFI Swift lane的generated protocol、foreign object长期持有、direct-handle bind/push、serial queue、ARC、exception、close与晚到callback blocker。representative Apple runtime/XCFramework/SPM gate已通过；完整ABI candidate仍须重跑。该执行清单不在Plan重复。
 
 真实 backend：
 
@@ -2225,11 +2320,11 @@ Android执行层、emulator定位、真机HIL和报告方式由[`docs/testing/RE
 - 使用 CoreBluetooth peripheral identity，不假设 MAC；service/characteristic/descriptor以native instance-backed opaque ID表示，不用UUID-keyed operation dictionary合并duplicate instance。
 - CoreBluetooth的`didUpdateValueFor`同时承载explicit read与notification，native callback本身不提供source discriminator；因此同一characteristic的read与enable/active/disable-in-flight subscription按7.1在accepted前互斥并返回`InvalidState`，不得把pending read或“下一条value”当作分类heuristic。disable后的late delegate value必须保持旧correlation；若无法证明后续read可安全分类，可在该`GattSessionId`剩余生命周期内保守拒绝该characteristic的read。
 - authorization、state restoration 和 background mode 分阶段支持。
-- CoreBluetooth 无整体 shutdown；dispose在同一serial queue/lifecycle gate上先detach delegate/event delivery并invalidate correlation，再组合stop/cancel和child-to-parent ARC reference release，不生成command event。从delegate queue或callback中重入command的case必须进入mapping/runtime tests。
+- CoreBluetooth 无整体 shutdown；dispose在同一serial queue/lifecycle gate上先detach delegate/event delivery并invalidate correlation，再组合stop/cancel和child-to-parent ARC reference release，不生成command event。mapping/runtime tests必须覆盖delegate queue上的callback-first teardown、command/dispose并发和late callback；这里不要求也不允许`BleEventSink::on_event`同步重入同一个`BleHub`，后续command必须由downstream交接到caller-owned queue/actor后发出。
 - 输出 XCFramework + Swift Package。
-- Apple 构建只在 macOS runner 完成。
+- Apple Swift runtime、package、backend与HIL只在项目真实Mac mini上通过本机Pixi + Just完成；不要求或维护GitHub-hosted macOS runner。
 
-Apple执行层、simulator定位、签名和设备HIL由[`docs/testing/README.md`](../docs/testing/README.md)及Phase 5创建的Apple测试文档维护。Plan只固定：simulator不能作为真实CoreBluetooth/RF验收；iPhone/iPad/真实Mac复用同一managed peripheral，最终build/sign使用macOS/Xcode官方工具链。
+Apple执行层、simulator定位、签名和设备HIL由[`docs/testing/README.md`](../docs/testing/README.md)及Phase 3创建的Apple测试文档维护。Plan只固定：simulator不能作为真实CoreBluetooth/RF验收；iPhone/iPad/真实Mac复用同一managed peripheral，最终build/sign使用macOS/Xcode官方工具链。
 
 Impactor 评估：
 
@@ -2237,8 +2332,8 @@ Impactor 评估：
 - 它不能替代 macOS/Xcode 编译 Swift、生成 XCFramework、运行 iOS Simulator，也不能模拟 CoreBluetooth/BLE RF。
 - 它仍需要 Apple ID、certificate/provisioning profile、设备 trust/pairing；免费账户通常还有短周期签名和应用数量限制。
 - 当前仓库主要定位是终端用户侧载应用，并含 GUI 与 signing 组件；尚不把其 CLI/API 稳定性视为 BleHub 自动化测试契约。
-- v0.1 不把 Impactor 加入 Pixi 或 CI 必需依赖。Apple 阶段可以做独立 spike：若能够稳定、非交互地安装 macOS CI 产出的已签名 IPA，可作为 Windows/Linux 控制机到 iOS 真机的可选部署器；失败则回到 Xcode/devicectl 官方链路。
-- 使用 Impactor 时必须单独评估 Apple 凭据存储、网络访问、证书生命周期、设备 pairing 文件和 CI secret 风险，不能把个人 Apple ID 明文放入仓库或 recipe。
+- v0.1 不把 Impactor 加入 Pixi 或必需工具。Apple 阶段可以做独立 spike：若能够稳定、非交互地安装项目真实Mac mini通过本机Pixi + Just产出的已签名 IPA，可作为 Windows/Linux 控制机到 iOS 真机的可选部署器；失败则回到 Xcode/devicectl 官方链路。
+- 使用 Impactor 时必须单独评估 Apple 凭据存储、网络访问、证书生命周期、设备 pairing 文件和自动化secret风险，不能把个人 Apple ID 明文放入仓库或 recipe。
 
 ### 11.4 Linux / `dbus-rs`
 
@@ -2260,7 +2355,9 @@ Impactor 评估：
 
 ### 11.5 平台测试环境边界
 
-不存在能够跨Android/iOS/desktop并可信覆盖真实controller、平台BLE stack、权限、后台行为和RF的通用模拟器。跨平台确定性行为由`FakeBackend`与共享conformance覆盖；真实蓝牙验收由各平台真机/真实host通过RF连接使用同一共享profile的项目测试Peripheral完成。仅有一台Windows电脑和一台Android手机时，开发期按DUT轮换Peripheral角色：Windows Central连接Android Kotlin fixture；Android Central可在后续spike通过后连接Windows原生WinRT/BLESS fixture。两个角色不得在同一controller上同时运行，切换前必须停止原角色并执行fixture preflight。Windows WinRT/BLESS只提供快速开发smoke，不替代Linux VM + BlueZ/BLESS的确定性故障注入和soak；nRF52840等独立硬件参考Peripheral继续提供跨GATT Server/controller实现的互操作交叉验证。emulator、simulator、RootCanal、Android-x86或设备农场的具体采用与case归[`docs/testing/`](../docs/testing/README.md)阶段性评审，不进入公共架构或替代第15节HIL。
+**当前维护边界（2026-09-04）：** Apple Central 的维护 RF provider 为项目 Android Peripheral 与待到货的 standalone nRF52840 DK；macOS 不维护 native BLESS 或 QEMU + BLESS。QEMU Linux + BlueZ + BLESS 仅保留 Windows 控制面，USB controller 从忽略的 `[peripheral_usb]`/`BLEHUB_PERIPHERAL_USB_*` 配置读取。nRF52840 Dongle 到货后再根据实际身份和固件模式接入：HCI firmware 供 QEMU，standalone Peripheral firmware 供 Windows 直接 RF，二者互斥。
+
+不存在能够跨Android/iOS/desktop并可信覆盖真实controller、平台BLE stack、权限、后台行为和RF的通用模拟器。跨平台确定性行为由`FakeBackend`与共享conformance覆盖；真实蓝牙验收由各平台真机/真实host通过RF连接使用同一共享profile的项目测试Peripheral完成。仅有一台Windows电脑和一台Android手机时，开发期按DUT轮换Peripheral角色：Windows Central连接Android Kotlin fixture；Android Central可在后续spike通过后连接Windows原生WinRT/BLESS fixture。Apple Central在Mac mini/iPhone上开发时优先连接项目Android Kotlin fixture；Mac mini的CoreBluetooth使用系统管理的内置controller，不能选择仅在USB层枚举、未注册为系统HCI controller的UB500。当前项目BLESS fixture依赖Linux/BlueZ，macOS不能因有外置USB dongle而直接运行同一BLESS provider；要保留BLESS/UB500确定性能力仍须让Linux Peripheral VM独占controller，或另行评审独立Linux Peripheral host。两个角色不得在同一controller上同时运行，切换前必须停止原角色并执行fixture preflight。Windows WinRT/BLESS只提供快速开发smoke，不替代Linux VM + BlueZ/BLESS的确定性故障注入和soak；nRF52840等独立硬件参考Peripheral继续提供跨GATT Server/controller实现的互操作交叉验证。emulator、simulator、RootCanal、Android-x86或设备农场的具体采用与case归[`docs/testing/`](../docs/testing/README.md)阶段性评审，不进入公共架构或替代第15节HIL。
 
 ---
 
@@ -2268,11 +2365,21 @@ Impactor 评估：
 
 ### 12.1 装配
 
-不变的架构contract是单入口装配：backend先以inert状态构造，application调用`BleHub::new(backend, rust_sink)`；constructor先执行一次typed capabilities query并缓存结果，再执行一次性direct-ingress bind，只在完整可用后返回Hub。UniFFI只负责foreign backend、exported ingress object和DTO/error如何跨FFI，不改变Rust application API、Rust-only downstream、Weak ownership、close drain或command/event语义。
+不变的架构contract是由canonical `BleHub::new(backend, sink)`完成单入口装配：backend先以inert状态构造，普通Rust或production generated-binding consumer可直接调用该constructor。需要由Rust host最终持有Hub、但backend只能在Swift/Kotlin侧构造时，Rust先创建`BackendAssembly` RAII guard，把短生命周期ticket交给host launcher；foreign host通过production generated binding调用唯一exported `attach_backend(ticket, backend)`，内部仍只调用同一个`BleHub::new`，随后Rust以`assembly.finish()`领取`Arc<BleHub>`。constructor先执行一次typed capabilities query并缓存结果，再执行一次性direct-ingress bind，只在完整可用后返回Hub。`BleHub`、foreign backend/sink、exported ingress、装配guard和DTO/error的canonical定义全部位于`crates/blehub`；`crates/blehub-uniffi`只组装唯一production native image、运行bindgen并stage package，不改变Weak ownership、close drain或command/event语义。
 
 **v0.1实施方案（Stable UniFFI `0.32.0`）：**
 
 ```text
+direct consumer
+  -> BleHub::new(backend, sink)
+
+Rust-owned host + foreign-constructed backend
+  -> let assembly = BackendAssembly::new(sink)
+  -> foreign launcher(assembly.ticket())
+  -> generated attach_backend(ticket, backend)
+  -> canonical BleHub::new(backend, sink)
+  -> let hub = assembly.finish()
+
 BleHub::new
   -> backend.capabilities() -> validate and cache static metadata
   -> create Arc<EventIngressState>
@@ -2287,31 +2394,31 @@ native callback
   -> EventIngressState::push(event)
 ```
 
-BleHub project-authored routing没有全局registry、token allocator、registration guard、free push function、raw pointer或整数化`Arc`。UniFFI generated opaque object handle与foreign callback handle map仍是framework-managed实现细节并纳入lifecycle gate。backend通过Stable UniFFI generated wrapper retain exported Rust object；handle只持`Weak`，所以`Hub -> backend -> handle -> state`不形成强引用环。bind `Err`按contract不得retain handle，但rollback必须安全处理retain-before-error违约；bind `Ok`必须retain唯一handle且仍保持inert。state在bind完成前保持`Binding`，任何过早push只返回`Closed`并使activation失败；只有成功bind且零push attempt才切到`Active`。close顺序是phase `Closed`/drain -> backend dispose/release -> backend ownership drop；closed phase或weak upgrade failure统一返回`Closed`。
+BleHub project-authored运行期event routing没有全局registry、token allocator、free push function、raw pointer或整数化`Arc`。UniFFI generated opaque object handle与foreign callback handle map仍是framework-managed实现细节并纳入lifecycle gate。backend通过Stable UniFFI generated wrapper retain exported Rust object；handle只持`Weak`，所以`Hub -> backend -> handle -> state`不形成强引用环。bind `Err`按contract不得retain handle，但rollback必须安全处理retain-before-error违约；bind `Ok`必须retain唯一handle且仍保持inert。state在bind完成前保持`Binding`，任何过早push只返回`Closed`并使activation失败；只有成功bind且零push attempt才切到`Active`。close顺序是phase `Closed`/drain -> backend dispose/release -> backend ownership drop；closed phase或weak upgrade failure统一返回`Closed`。
 
-上述无registry/token约束针对BleHub core、backend contract和运行期event ingress。批准的Tauri Android薄adapter可以在core之外使用有界、一次性assembly ticket registry，仅用于把Tauri创建的Kotlin `AndroidBleBackend`交给等待中的Rust adapter；ticket不是event ingress capability、command ID或长期backend lookup key。slot必须在成功take、timeout、mobile bootstrap failure、app close和late provide路径中确定性移除，不能在`BleHub::new`成功后继续参与command/event路由，也不能进入BleHub public ABI。
+唯一project-authored整数ticket例外是`crates/blehub`内的短生命周期assembly registry。`BackendAssembly`是Rust-only RAII guard，ticket只允许foreign binding把一个backend交回canonical constructor；它不是event ingress capability、command ID、BLE identity或长期backend lookup key，也不进入Swift/Kotlin公共类型面。guard未成功`finish()`就drop时必须确定性取消：`Pending`先在锁内移除entry、锁外释放sink，`Attaching`标记`Cancelled`并由完成装配的一侧在registry mutex外dispose，`Attached`但未领取的Hub同样在锁外dispose；异常entry和finish失败路径也必须先取出、解锁，再析构entry/foreign ownership。析构可能执行foreign代码，不能只把显式dispose移出锁。成功`finish()`才把Hub ownership转移给Rust caller。重复、未知和迟到attach必须拒绝。该低频one-shot状态机继续使用`AtomicU64 + Mutex<HashMap>`和显式`Drop`：通用scope-guard、arena或generational-key crate不能替代状态转换、取消竞态和锁外cleanup，引入它们只会增加依赖与错误映射层。
 
-representative UniFFI direct-object mechanism fixture已经在Windows Swift host、Android ART/AAR和真实macOS Swift/XCFramework/SPM运行；权威Apple证据为GitHub Actions run `33249751300`。依赖production `blehub` crate的candidate又在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机与x86_64模拟器实际覆盖`Weak<EventIngressState> -> Rust BleEventSink`、capabilities/version、binding phase、constructor rollback、retain-before-error、backend root release、close drain、panic containment和10,000次lifecycle，并由Android published-AAR consumer加载。真实macOS production candidate、最终Apple package、完整event wire和性能/package gate仍未完成。完整结论、Windows JNA checksum carrier约束与Android JNA性能取舍见[`docs/research/ffi-lifecycle-concurrency.md`](../docs/research/ffi-lifecycle-concurrency.md)和[`docs/research/uniffi-vs-boltffi-for-blehub.md`](../docs/research/uniffi-vs-boltffi-for-blehub.md)。
+representative UniFFI direct-object mechanism fixture已经在Windows Swift host、Android ART/AAR和真实macOS Swift/XCFramework/SPM运行；GitHub Actions run `33249751300`仅保留为已发生的历史Apple机制证据，对应hosted workflow已删除且不再维护，当前Apple证据与gate以项目真实Mac mini上的本机Pixi + Just执行为准。早期candidate又在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机与x86_64模拟器覆盖capabilities/version、binding phase、constructor rollback、retain-before-error、backend root release、close drain、panic containment和10,000次lifecycle，并由Android published artifact consumer加载。由于这些运行使用修订前对象图，它们不证明exported production Hub与foreign sink。2026-09-03单production-image迁移后的当前未冻结candidate已在macOS以direct Swift backend/sink重跑production event catalog、concurrency/error/lifecycle runtime，并通过Apple三slice package/symbol、71项Apple确定性测试、generic iOS build、iPhone HIL工程生成/unsigned generic build、Android AAR assembly/publish与macOS NDK native-slice build。Android ART因锁屏手机上的两次APK安装超时而未运行；iPhone production签名、安装、启动与CoreBluetooth initialization已在2026-09-04后续运行通过；本次迁移报告本身未运行RF；后续iPhone RF已由2026-09-08独立报告通过。Windows Swift未重跑，且该历史lane现已退出维护，不属于未来gate。CoreBluetooth设备边界、独立artifact-only consumer、性能及冻结ABI最终重跑仍须按适用平台独立完成。完整结论、Windows JNA checksum carrier约束与Android JNA性能取舍见[`docs/research/ffi-lifecycle-concurrency.md`](../docs/research/ffi-lifecycle-concurrency.md)和[`docs/research/uniffi-vs-boltffi-for-blehub.md`](../docs/research/uniffi-vs-boltffi-for-blehub.md)。
 
 BoltFFI token、#869 direct-handle probe、#872 unchecked-exception与token-ACK fixture保留在`spikes/`和research中作为迁移历史、benchmark与rollback evidence，不再定义production contract，也不得与UniFFI入口并存。迁移实施必须一次性协调Rust annotations、generated Kotlin/Swift bindings、Android AAR、Apple package、consumer与contract version，防止event重复上送或新旧产物混装。
 
-logical `dispose()`与UniFFI wrapper/native handle release是两层lifecycle，必须各自幂等并按顺序验证。Kotlin不能依赖GC/finalizer，Swift不能只依赖ARC时机；领域command/event协议不受装配实现变化影响。
+logical `dispose()`与UniFFI wrapper/native handle release是两层lifecycle，必须各自幂等并按顺序验证。Kotlin不能依赖GC/finalizer，Swift不能只依赖ARC时机；领域command/event协议不受装配实现变化影响。`BleHub::dispose()`保持同步完成语义：它可以等待并发cleanup完成，并在backend cleanup返回后报告结果，不改成与普通BLE command相同的fire-and-forget。`crates/bleng`对外可以提供async `close()`，但必须通过caller-owned blocking executor、专用线程或等价隔离方式调用`dispose()`，并在close完成后才报告上层关闭成功；不得把异步runtime放入`blehub` core。
 
 ### 12.2 所有权
 
 - `BleHub`强持有backend trait object、constructor-cached`BackendCapabilities`和唯一的`Arc<EventIngressState>` owner。
-- `EventIngressState`强持有downstream `BleEventSink`，并与phase和bind-push违约标记一起由ingress mutex保护，直到close在该mutex下切换`Closed`并将sink `take()`。
+- `EventIngressState`强持有downstream `Arc<dyn BleEventSink>`；它可以是Rust implementation或generated Swift/Kotlin foreign proxy，并与phase和bind-push违约标记一起由ingress mutex保护，直到close在该mutex下切换`Closed`并将sink `take()`。
 - backend retain `Arc<BackendEventIngressHandle>`；handle只持有`Weak<EventIngressState>`，不反向延长Hub/downstream生命周期。handle是同进程可信backend的capability object，不是认证、sandbox或不受信任plugin隔离边界；BleHub v0.1只接受同进程可信backend。
-- Rust application强持有Rust-owned `BleHub`，直到自行把pending command projection标记为`AbandonedByDispose`，再显式调用本地`dispose/close`。UniFFI不导出`BleHub`本身；它只生成foreign backend callback-interface handle和exported ingress-object wrapper。Kotlin/Swift backend分别以确定性destroy/release或ARC强引用管理其root ingress wrapper。
+- Application强持有production `BleHub`：Rust直接持有`Arc<BleHub>`，Swift/Kotlin持有generated object wrapper。调用方先按自己的policy处理pending command projection，再显式调用`dispose/close`；wrapper deinit/Cleaner只作fallback。UniFFI同时生成foreign backend/sink callback-interface handle、exported Hub与ingress wrapper；Kotlin/Swift必须确定性释放Hub/backend/sink/root-ingress ownership，不能只依赖GC/ARC时机。
 - 一个backend对象只能绑定一个Hub。v0.1不承诺同一进程中多个backend安全共享同一physical adapter；platform backend factory必须串行化/拒绝冲突生命周期，默认第二个active owner返回`BleHubError::ResourceBusy { detail }`。若未来支持共享，process-scoped coordinator、scan/connection/notification仲裁和dispose引用计数必须在core之外单独评审。OS其他进程造成的共享及BlueZ设备级`Disconnect()`副作用无法由Hub隔离，需平台文档明确提示。
-- `dispose/close`通过exclusive command/close gate阻止新发令，在ingress mutex下排空callback、切换phase为`Closed`并释放sink，然后调用backend local dispose并释放backend/retained-handle ownership；不等待或生成command completion。
+- `dispose/close`通过exclusive command/close gate阻止新发令，在ingress mutex下排空callback、切换phase为`Closed`并释放sink，然后调用backend local dispose并释放backend/retained-handle ownership；它不等待或生成BLE command completion，但`BleHub::dispose()`本身同步等待必要的并发cleanup/backend cleanup完成后返回，`bleng::close()`以async形式隔离并等待该完成语义。
 - 由于 sink 禁止同步重入同一个 BleHub，close 等待 delivery mutex 不会形成合法路径上的自锁。
 - close后platform callback仍可能短暂到达；closed phase或weak upgrade failure必须使其返回`Closed`，不访问已释放sink。
 
 ### 12.3 线程安全
 
-- Rust-owned `BleHub`、foreign `BleBackend` trait object、exported `BackendEventIngressHandle`与Rust `BleEventSink` trait object均以可跨线程使用为目标；Rust API声明`Send + Sync`。UniFFI只负责foreign backend callback interface、ingress object和公共DTO/error的Kotlin/Swift生成与生命周期；Rust Hub/sink的线程安全由Rust类型系统和contract tests验证。
-- exported ingress method使用 `&self + interior mutability`；`BleHub`无需为了native backend装配而导出。
+- Exported `BleHub`、foreign `BleBackend`/`BleEventSink` trait object与`BackendEventIngressHandle`均以可跨线程使用为目标；Rust API声明`Send + Sync`，generated Kotlin/Swift wrappers与callback interfaces必须通过runtime验证实际线程行为。
+- Exported Hub与ingress method使用`&self + interior mutability`；导出`BleHub`只提供production language entry，不改变core无runtime/queue的职责。
 - 不采用 `single_threaded` 逃避线程安全，除非平台强约束且有验证。
 - backend trait implementation 在调用方进入 BleHub command 的线程被同步调用；BleHub 不指定或创建调用线程。
 - `BackendEventIngressHandle::push(event)`可以从WinRT callback、JVM callback、DispatchQueue和D-Bus callback context调用；handle在同一线程upgrade `Weak`并进入per-Hub state。
@@ -2325,30 +2432,30 @@ logical `dispose()`与UniFFI wrapper/native handle release是两层lifecycle，�
 - bytes使用`Vec<u8>`/native byte array。一次`WriteCharacteristicCommand`对应一次native characteristic write；BleHub/backend不做隐式应用层分片、重组或long-write业务协议。超过公共wire hard limit在accepted前返回`InvalidRequest`；wire合法但超过当前connection/platform有效write limit，在accepted后terminal `Gatt/Protocol` failure。
 - native callback中的borrowed buffer、`NSData`、JNA/JNI byte array、WinRT buffer或D-Bus message view必须在其native frame/lifetime结束前复制或移动为owned payload，再跨线程、排队或调用Rust ingress；禁止以original length描述已截断的fixed buffer。payload ownership、边界长度与callback返回后的可读性必须有跨语言runtime test。
 - ATT attribute上限、negotiated MTU和with/without-response有效write length是不同概念。v0.1不提供MTU command；实现阶段必须按operation固定bytes/string/collection/GATT-tree hard guard常量和boundary tests，避免超大FFI allocation，但这些guard不能被描述成negotiated MTU。
-- native pointer、WinRT object、Android object/address policy、CoreBluetooth object和BlueZ object path留在backend private map；公共边界只传typed opaque ID。公开error和默认structured tracing必须限制长度并redact raw device address、object path和完整advertisement/GATT payload；原始业务bytes只交付给显式downstream，不默认写日志。
+- native pointer、WinRT object、Android object/address policy、CoreBluetooth object和BlueZ object path留在backend private map；公共边界只传typed opaque ID。默认structured tracing不得记录raw device address、object path、完整advertisement/GATT payload或任意foreign错误文本；使用固定分类和受控context。公开typed error仍保留契约要求的detail/message/platform details，不以默认日志策略截断或替换；错误生产方不得填入secret，原始业务bytes只交付显式downstream。
 - v0.1采用lockstep packaging：Rust core、Stable UniFFI generated bindings、Kotlin/Swift backend和public DTO/closed enum必须来自同一contract/ABI major。trait method、DTO字段或closed-enum variant变化均提升ABI major并整体重新生成，禁止新旧产物混装。若未来需要backend独立升级，必须在构造foreign trait object之前增加factory-level version handshake；仅在`BackendCapabilities`增加version字段不能保护trait ABI。
 - 每个平台package recipe必须断言artifact中的expected native library/architecture或ABI目录、contract ABI major、generator/runtime revision和manifest，拒绝missing/duplicate native entry与重复symbol/library；解包检查之后仍必须由artifact-only clean consumer实际运行backend assembly、一次callback ingress和显式close，不能以文件存在代替可消费性。
 - Tauri Android assembly必须把`blehub`与薄Rust adapter链接进最终Tauri Rust image，并让Kotlin/JNA binding解析到该同一image；Tauri消费的backend artifact不得再携带另一份BleHub native library。验证必须同时检查APK/AAB native entries、实际UniFFI symbol owner、checksum/contract初始化、backend handoff和callback ingress；`pickFirst`、静默exclude或仅“应用可启动”均不能证明单image正确。
 
-### 12.5 需要 spike 验证
+### 12.5 FFI runtime 与最终 artifact 验证
 
-Stable UniFFI `0.32.0` representative direct-object mechanism已通过desktop Kotlin/JVM、Windows Swift host、Android ART/AAR与macOS Swift/XCFramework/SPM gate。production candidate又在Windows Kotlin/JVM、Windows Swift、Android ART真机/模拟器和published AAR consumer通过最终BleHub weak-ingress对象图的适用Phase 0 gate。Windows Kotlin/JNA因C `uint16_t` checksum carrier高位未可靠清零，仅该配置使用`omit_checksums = true`，并以未省略checksum的参考binding独立验证全部17个低16位checksum和两个精确contract version；Android与Swift保留normal generated checksum checks。当前结果不冻结完整production ABI，也不替代真实macOS production candidate、最终public DTO/event payload、performance与package验证。
+Stable UniFFI `0.32.0` representative direct-object mechanism与早期candidate已通过历史desktop Kotlin/JVM、历史Windows Swift host、Android ART/AAR与macOS Swift/XCFramework/SPM机制gate；这些历史运行不自动证明本次修订后的exported Hub/foreign sink ABI。Windows Swift lane与旧GitHub-hosted macOS workflow均已退出维护，不定义未来gate。维护中的`tests/ffi/runtime`只消费`crates/blehub-uniffi`生成的production image/package，由Swift/Android Kotlin直接实现test backend与sink并exercise production `BleHub` API；`tests/ffi/harness`已删除，不存在test-only Rust component或第二个native image。2026-09-03当前未冻结candidate已在macOS通过direct Swift event/concurrency/error/lifecycle runtime、Apple三slice package/symbol检查、Android AAR assembly/publish与macOS NDK native-slice build；Windows Kotlin/JVM checksum workaround与desktop runtime仅保留历史证据，Android与Swift保留normal generated checksum checks。Android ART因APK安装两次超时而未运行；独立artifact-only consumer、iPhone签名安装/运行、真实RF、performance及冻结candidate最终重跑仍按适用边界重新取证。Apple相关重跑全部在项目真实Mac mini上通过本机Pixi + Just执行。完整边界见[单production-image ABI迁移报告](../docs/testing/reports/2026-09-03-single-image-production-abi-migration.md)。
 
-v0.1在Phase 4 production ABI freeze前必须以desktop Kotlin/JVM、Android ART/AAR与macOS Swift **isolated FFI packaging spike consumer** 对**完整ABI candidate**重新证明：
+v0.1在Phase 5 production ABI freeze前必须以Android ART/AAR与macOS Swift `tests/ffi/runtime`直接装载的**唯一production image/package**，并以每个平台独立的**production artifact-only consumer**对**完整ABI candidate**重新证明：
 
 - capabilities成功、typed/undeclared failure、invalid `contract_version`/metadata，以及只查询一次并在bind前校验；
 - inert backend的一次性bind、bind期间零push、成功retain唯一handle、typed/undeclared bind failure、repeated bind，以及“先retain再返回error”的对抗路径；
 - rollback先close/drain再best-effort dispose，cleanup failure不覆盖原assembly error；
-- handle只持`Weak<EventIngressState>`，native callback完整到达Rust-only downstream，并以state/sink/handle/wrapper计数证明没有隐藏强环；
+- handle只持`Weak<EventIngressState>`，native callback完整到达Swift/Kotlin direct foreign sink或Rust sink，并以Hub/state/sink/backend/handle/wrapper计数证明没有隐藏强环；
 - backend `dispose()`在所有返回路径主动释放root ingress，即使caller另持有backend `Arc`；queued/in-flight closure只可暂存自己的handle并在close后收到`Closed`；
 - command/close、push/close、root-release/queued-callback race，close drain、late callback与10,000次重复lifecycle；
-- sink rejection、mutex poison恢复和Rust downstream panic containment；panic必须产生独立out-of-band violation trace并向foreign backend返回`DownstreamFailed`；
+- foreign sink declared rejection、未声明exception、mutex poison恢复和Rust sink panic containment；violation必须产生独立out-of-band trace并向backend返回`DownstreamFailed`；
 - callable error、`Option<BleEventError>`、`ScanStopResult`、`ConnectionStateResult`、`NotificationState`和完整`BleEvent`的generated API/runtime round-trip；
 - foreign callback frame结束后的payload ownership、绝对throughput、payload/tail/close latency、package size和artifact-only packaging。
 
-Stable Kotlin/JNA相对direct JNI的已知开销已作为框架选择取舍接受，但final candidate仍须防止绝对性能退化到不适合BLE workload。这些consumer位于对应`spikes/`树，只验证FFI mechanism/package isolation，不替代Phase 2–6的`tests/consumers/<platform>` release consumer。
+Android Stable Kotlin/JNA 相对 direct JNI 的已知开销已作为框架选择取舍接受，但final candidate仍须防止绝对性能退化到不适合BLE workload。`tests/ffi/runtime`直接验证production ABI/runtime；它不替代Phase 2–6的`tests/consumers/<platform>`独立release-package isolation，也不替代真实BLE/HIL。
 
-任一crash、UAF、double free、永久死锁、stale-event误投、handle/reference泄漏，未声明native exception或Rust panic穿越ABI/伪装为成功，invalid contract metadata被接受，bind failure暴露半成品Hub，backend dispose后仍拥有root ingress，close后仍接纳callback，cleanup/final-free执行多次，完整data enum/error无法无歧义生成，或isolated FFI packaging spike consumer无法仅从产物构建运行，均阻塞production ABI。完整case、计数器、性能门槛、language lane与historical BoltFFI comparison见[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)。
+任一crash、UAF、double free、永久死锁、stale-event误投、handle/reference泄漏，未声明native exception或Rust panic穿越ABI/伪装为成功，invalid contract metadata被接受，bind failure暴露半成品Hub，backend dispose后仍拥有root ingress，close后仍接纳callback，cleanup/final-free执行多次，完整data enum/error无法无歧义生成，或production-image FFI runtime/production artifact-only consumer无法从声明的production产物构建运行，均阻塞production ABI。完整case、计数器、性能门槛、language lane与historical BoltFFI comparison见[`docs/testing/ffi-runtime.md`](../docs/testing/ffi-runtime.md)。
 
 ---
 
@@ -2364,19 +2471,20 @@ Stable Kotlin/JNA相对direct JNI的已知开销已作为框架选择取舍接�
 
 Linux Peripheral VM采用稳定provisioned image、可重置runtime overlay和独立fixture部署三层：Packer QEMU builder负责build qcow2、启动/SSH/file+shell provisioner和干净关机；Packer原生生成的`CIDATA` VFAT与cloud-init NoCloud只负责创建build-time SSH入口，Debian/BlueZ/D-Bus/Pixi/systemd/权限等低频系统provision由跟踪的Packer输入与guest脚本完成。构建路径不得另行维护自制ISO writer或第二套VM lifecycle，也不得继续把频繁变化的BLESS Python源码、共享scenario或fixture lock作为镜像重建条件。runtime QMP wire/session由Pixi精确锁定的官方`qemu.qmp`库承担，项目Python只保留USB命令、重试和诊断策略。fixture源码与scenario通过既有SSH/SCP控制通道白名单同步、校验并原子激活；fixture Pixi manifest/lock变化通过显式guest environment install处理，普通`vm-start`、测试和source sync不得静默解析或下载依赖。该三层实现已于2026-08-31通过新镜像空fixture doctor、环境/source独立部署、UB500 attach、BLESS readiness及Windows scan/connect/GATT discovery RF复验。具体fingerprint、命令、失败回滚和验收要求见[`docs/testing/managed-peripheral.md`](../docs/testing/managed-peripheral.md)。
 
-`tests/peripherals/android`是近期开发Managed Peripheral：纯Kotlin/Android Framework GATT Server，不含Rust、UniFFI或production Central backend依赖。它从`android-basic-gatt-peripheral.json`构造service/characteristic/CCCD，使用Android专属`FFF0...` advertised/root service，提供前台UI和ADB控制的start/stop、notification、indication、disconnect与status，用于Windows真实RF快速回归。QEMU/BLESS从语义对齐的`qemu-basic-gatt-peripheral.json`加载`FFE0...` advertised/root service；两者可并行广播而不会命中同一service filter。首版不引入Compose、通用provider框架或foreground service；长时间soak确有需要时再评审后台保活。测试Android Central时不得让同一台手机同时承担DUT与Peripheral，必须改用Windows WinRT/BLESS、Linux VM/BLESS、nRF52840或第二台手机。
+`tests/peripherals/android`是近期开发Managed Peripheral：纯Kotlin/Android Framework GATT Server，不含Rust、UniFFI或production Central backend依赖。它从`android-basic-gatt-peripheral.json`构造service/characteristic/CCCD，使用Android专属`FFF0...` advertised/root service，提供前台UI和ADB控制的start/stop、notification、indication、disconnect与status，用于Windows与Apple真实RF快速回归。QEMU/BlueZ BLESS从语义对齐的`qemu-basic-gatt-peripheral.json`加载`FFE0...` advertised/root service；native macOS/CoreBluetooth BLESS从`macos-bless-basic-gatt-peripheral.json`加载`FFD0...` advertised/root service，主要作为iPhone Central的第二Peripheral。三个provider可并行广播而不会命中同一service filter。首版不引入Compose、通用provider框架或foreground service；长时间soak确有需要时再评审后台保活。测试Android Central时不得让同一台手机同时承担DUT与Peripheral，必须改用Windows WinRT/BLESS、Linux VM/BLESS、nRF52840或第二台手机。
 
-Phase 3 Android backend开始真实RF前增加一个窄的Windows原生BLESS spike：使用BLESS的WinRT backend和Windows `GattServiceProvider`运行语义对齐但拥有独立广播service UUID的provider-specific profile，不创建Linux VM。spike必须由Pixi锁定Python、BLESS及Windows附加依赖，验证当前Windows adapter/driver能够创建GATT Server、connectable advertising、Android发现与连接、完整service discovery、read、write with/without response、notification、indication以及stop/start清理恢复。任一关键能力不可靠时不得提升为日常provider，回退到Linux VM/BLESS、nRF52840或第二台手机。即使spike通过，Windows WinRT/BLESS也只作为单电脑单手机条件下的Android开发fixture和独立Windows GATT Server互操作证据，不承担BLESS Linux基线的异常时序、controller隔离、fault injection、telemetry或soak退出条件。
+Phase 4 Android backend开始真实RF前增加一个窄的Windows原生BLESS spike：使用BLESS的WinRT backend和Windows `GattServiceProvider`运行语义对齐但拥有独立广播service UUID的provider-specific profile，不创建Linux VM。spike必须由Pixi锁定Python、BLESS及Windows附加依赖，验证当前Windows adapter/driver能够创建GATT Server、connectable advertising、Android发现与连接、完整service discovery、read、write with/without response、notification、indication以及stop/start清理恢复。任一关键能力不可靠时不得提升为日常provider，回退到Linux VM/BLESS、nRF52840或第二台手机。即使spike通过，Windows WinRT/BLESS也只作为单电脑单手机条件下的Android开发fixture和独立Windows GATT Server互操作证据，不承担BLESS Linux基线的异常时序、controller隔离、fault injection、telemetry或soak退出条件。
 
 nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项目管理的standalone GATT Peripheral固件，复用同一profile并通过USB串口/控制端点触发数据。它直接满足“非BLESS独立参考外设”类别，并可补充稳定notification、重启和真实controller互操作；但在实现等价的故障脚本、telemetry、恢复控制和soak能力前，不替代BLESS authoritative gate。若把nRF52840另行刷成HCI controller固件并USB passthrough给Linux VM，它才是P-Controller候选；该模式与standalone fixture是两套互斥固件/验证路径，须先验证BlueZ advertising/GATT能力、reset和USB稳定性，不默认采用。
 
 执行细节索引：
 
 - [共享测试层与 CI 责任](../docs/testing/README.md)
+- [测试分层职责、Apple 调用路径与证据边界](../docs/research/testing-layer-responsibilities.md)
 - [Windows mapping、scripted integration 与 HIL](../docs/testing/windows.md)
 - [Managed Peripheral、provider 与硬件 spike](../docs/testing/managed-peripheral.md)
 - [Linux Phase 6 开发、双 VM 与 HIL](../docs/testing/linux.md)
-- [FFI direct-handle 与历史框架对比 spike catalog](../docs/testing/ffi-spikes.md)
+- [FFI direct-handle 与历史框架对比 spike catalog](../docs/testing/ffi-runtime.md)
 
 ---
 
@@ -2389,15 +2497,15 @@ nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项�
 工作：
 
 - 在现有Pixi/Just/官方文档更新工具与Cargo workspace基础上锁定Stable UniFFI `0.32.0`和binding配置；先迁移当前BoltFFI annotations/build，再继续扩展contract。
-- 建立最小`BleBackend`、只持`Weak<EventIngressState>`的exported `BackendEventIngressHandle`、Rust downstream `BleEventSink`与`BleHub`闭环；删除production token、registry、registration guard和free push function，不保留双入口。
+- 建立最小foreign `BleBackend`/`BleEventSink`、只持`Weak<EventIngressState>`的exported `BackendEventIngressHandle`与exported production `BleHub`闭环；canonical定义位于`crates/blehub`，唯一final native image/bindgen/package owner为`crates/blehub-uniffi`；删除production token、registry、registration guard、free push function和test-only image，不保留双入口。
 - 建立独立 `blehub-testkit` crate，提供 FakeBackend、EventScenario builder、recording sink 和 reference projection；最小 scan/connect scenario 必须经真实 ingress/bridge 注入。
-- 已按[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)完成BoltFFI/UniFFI representative comparison；Stable UniFFI representative fixture在Android ART/AAR与macOS Swift/XCFramework/SPM通过机制gate。最终BleHub对象图candidate已在desktop Kotlin/JVM、Windows Swift、Android真机与模拟器重跑`Weak<EventIngressState> -> Rust BleEventSink`、capabilities、binding phase、rollback、root-handle release、close drain和Rust panic containment。Apple production candidate recipe/CI step已准备但延后执行；历史BoltFFI probe只作rollback/benchmark evidence。
+- 已按[`docs/testing/ffi-runtime.md`](../docs/testing/ffi-runtime.md)完成BoltFFI/UniFFI representative comparison；早期Stable UniFFI fixture与candidate在Android ART/AAR、desktop Kotlin/JVM、Windows Swift及macOS Swift/XCFramework/SPM验证了direct handle、capabilities、binding phase、rollback、root release、close drain和基础lifecycle。修订后的长期gate改为Swift/Android Kotlin直接实现backend/sink并通过唯一production image调用exported `BleHub`；旧Rust-only sink/test-artifact结果只作迁移证据。2026-09-03当前candidate已重跑macOS Swift与Apple package适用gate，Android package build也通过，但Android ART、独立final consumers及Phase 5完整candidate仍须按各自边界执行；desktop Kotlin/JVM与Windows Swift仅保留历史证据，不再重跑。历史BoltFFI probe只作rollback/benchmark evidence。
 - 建立 Windows-first doctor、fmt、check、clippy、test recipes，并按[共享测试执行指南](../docs/testing/README.md)建立 contract/bridge 与 portability lane。
 
 退出条件：
 
 - Windows 上一条命令运行全部 contract/bridge 检查，最小扫描和连接 scenario 可执行；conformance 证明 immediate `Err` 后零 event、event 后只能 `Ok`、accepted command 的最终成功/失败只走 event。
-- Phase 0 minimal callable error、event-data error和scan/connect event enum在Rust、desktop Kotlin/JVM、Android ART/AAR和Windows Swift完成generation/runtime验证；完整`Option<BleEventError>`、`ScanStopResult`、`ConnectionStateResult`、`NotificationState`、`BackendError`与统一event字段集属于Phase 1 ABI candidate。Apple runtime/package未在Phase 0执行，production ABI尚未冻结。
+- Phase 0 minimal callable error、event-data error和scan/connect event enum在Rust、desktop Kotlin/JVM、Android ART/AAR和Windows Swift完成generation/runtime验证；完整`Option<BleEventError>`、`ScanStopResult`、`ConnectionStateResult`、`NotificationState`、`BackendError`与统一event字段集属于Phase 1 ABI candidate。Apple runtime/package未在Phase 0执行，production ABI尚未冻结。历史desktop Kotlin/JVM不再是维护中的语言runtime lane。
 - production direct-handle assembly/push路径已在desktop Kotlin/JVM、Android ART/AAR consumer和Windows Swift生成运行；`BackendCapabilities.contract_version`、capabilities、bind、retain-before-error、failure-atomic command/assembly rollback、close、跨线程callback、late handle与push/close race符合Phase 0适用case。Apple production candidate和完整artifact manifest/package gate未在Phase 0执行，不记为已通过。
 - backend `dispose()`在typed/undeclared cleanup failure与caller额外保留backend `Arc`时仍主动释放root ingress；queued/in-flight closure只暂存自己的handle并在close后得到`Closed`。
 - 10,000次lifecycle后backend、ingress handle、state、sink和wrapper计数回到baseline，close排空in-flight downstream callback且晚到event安全返回`Closed`。
@@ -2405,7 +2513,7 @@ nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项�
 
 ### Phase 1：平台无关薄契约与 FFI bridge
 
-**状态：完成。** `pixi run just verify`固定长期platform-independent contract/conformance与reviewed Rust/Kotlin/Swift API snapshot gate；同一production candidate已通过desktop Kotlin/JVM、Windows Swift和Android真机ART/AAR clean consumer runtime/package矩阵。Apple runtime/package按既定决定延后，不记为已通过且不阻塞Phase 1。
+**状态：完成。** `pixi run just verify`固定长期platform-independent contract/conformance与reviewed Rust/Kotlin/Swift API snapshot gate；既有candidate的desktop Kotlin/JVM、Windows Swift和Android真机ART/AAR结果保留为已执行的历史机制证据。本次单production-image/exported-Hub/foreign-sink修订发生在ABI冻结前，不把旧test-artifact结果继承为新ABI通过；2026-09-03当前candidate已按12.5完成macOS Swift与Apple package适用重跑并通过Android package build，尚未完成Android ART、全部独立consumer或Phase 5最终candidate重跑；Windows Swift仅保留历史证据，不再是待完成项。
 
 工作：
 
@@ -2455,28 +2563,53 @@ nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项�
 
 2026-09-02 exit review逐项确认以上四项均满足，结论为**PASS**。WHPX同进程guest reboot作为已接受的QEMU 11.1.0/WHPX基础设施限制，支持路径为fresh-process restart；保留的未执行边界不被改写为通过。Phase 2完成不冻结public ABI。
 
-### Phase 3：Android backend（Windows host active lane）
+### Phase 3：统一 Apple backend，macOS先行随后iOS
 
-在Windows执行host上，Phase 2退出后优先推进本阶段。macOS host可同时优先推进Phase 5的macOS-first thread；这不自动完成或跳过本阶段。
+**Peripheral 选择（2026-09-04）：** macOS 与 iOS 的 Apple Central RF 先使用 Android Peripheral，随后使用 standalone nRF52840 DK；native macOS BLESS、`apple-bless` 环境和 Mac QEMU + BLESS 不属于维护路线。Windows 的 QEMU/Linux/BlueZ/BLESS 控制面继续保留，不与 Apple backend 绑定。
+
+Phase 2退出后优先推进本阶段。`platforms/apple`以一个SwiftPM library product和同一套Swift/CoreBluetooth Central实现同时支持macOS与iOS；macOS负责先行开发和快速RF回归，iOS必须通过独立签名、安装、application lifecycle与真实RF gate，不能由macOS结果推断。全部Apple Swift runtime、package、backend与HIL gate在项目真实Mac mini上通过本机Pixi + Just执行；不维护Windows Swift补充lane或GitHub-hosted macOS workflow。
+
+工作：
+
+- Apple backend消费当前未冻结core candidate；若修改trait、DTO、error或closed enum，必须回到统一Plan与受影响平台共同审计，不能形成Apple私有contract。Phase 5冻结后，对受最终contract或artifact影响的真实macOS/iOS Stable UniFFI、ARC、queue、exception、XCFramework/SPM packaging与CoreBluetooth/RF gate重跑。
+- representative direct-handle Apple gate已通过，但不替代production candidate，也不替代CoreBluetooth、签名、设备安装或BLE/RF gate。Mutagen只传输源码，不改变这些证据要求。2026-09-02修订前candidate已通过真实macOS Swift完整event/lifecycle runtime，以及iOS device、iOS simulator、macOS slices的XCFramework/SPM隔离consumer gate；这些结果保留为历史机制/package证据，不单独证明本次exported Hub/foreign sink/single-image ABI；修订后的当前candidate随后已通过direct Swift production runtime与三slice package/symbol gate，Android Kotlin runtime仍待设备 ART gate，见[bring-up报告](../docs/testing/reports/2026-09-02-apple-production-candidate-bringup.md)与[单production-image ABI迁移报告](../docs/testing/reports/2026-09-03-single-image-production-abi-migration.md)。随后初始化、扫描、连接lifecycle、aggregate GATT discovery、characteristic read/write、Notification/Indication、架构加固与RSSI切片通过71项确定性测试、generic iOS builds和bundled macOS真实初始化装配/事件顺序；GATT状态机使用精确native peripheral/attribute object与connection generation关联，按service→characteristic→descriptor深度优先遍历，保留duplicate UUID instance，仅在完整成功后发布database，并在pending discovery被service invalidation取消后隔离该连接代际直到退役。read/write/notification共用per-connection FIFO，rediscovery以显式ready/unsubscribe/unsafe结果保证旧native subscription全部退役后才开始并在超过1,024条active route时触发全局fail-closed，read与write-with-response由exact native object/kind callback完成，write-without-response服从CoreBluetooth backpressure且terminal只表示local submission；`didUpdateValueFor`按exact subscription route优先于read callback进行仲裁，enable/disable等待CoreBluetooth state callback并按domain-before-terminal发布。CoreBluetooth双notify+indicate属性的`PlatformDefault`与`RequireNotification`报告Notification，严格`RequireIndication`返回terminal `NotSupported`而不替换；rediscovery先串行native unsubscribe全部active subscription，任一隐式disable失败则退役旧GATT/I/O/subscription并进入`cancellingAfterBackendFailure` fail-closed取消。断连、adapter不可用与service invalidation先退役I/O/subscription再清除GATT route，未解析late-callback/value-route barrier强持有native route并在有界容量耗尽时fail closed；aggregate discovery以128 services、1,024 total characteristics、2,048 total descriptors作为private FFI/allocation hard guard，在写入pending draft前检查，超限以`Gatt` terminal失败且不替换已提交database，这些数值不是ATT/MTU或CoreBluetooth协议上限。Notification/Indication确定性报告见[Apple Notification/Indication切片](../docs/testing/reports/2026-09-03-apple-notification-indication-slice.md)，backend-owned queue、bounded GATT FIFO/safety fault、scan pre-filter retention、CoreBluetooth错误映射、RSSI双平台delegate correlation及Hub dispose锁序见[Apple架构加固与RSSI切片](../docs/testing/reports/2026-09-03-apple-architecture-hardening-rssi-slice.md)；真实macOS `PlatformDefault` Notification RF已通过OnePlus 11 Android fixture，覆盖exact `DE AD BE EF` value、enable/disable domain-before-terminal、fixture-side post-disable拒绝、两秒host stale-value silence、logical disconnect与post-disconnect silence；iPhone严格Indication、RSSI与被动radio-loss recovery仍未执行；macOS到项目Android Peripheral的Notification、严格Indication、RSSI与被动断连/恢复已于2026-09-08逐项通过，详见[macOS Android RF完成报告](../docs/testing/reports/2026-09-08-apple-macos-android-rf-completion.md)。iPhone RF已于2026-09-08在真实iPhone 14与项目Android Peripheral之间通过扫描、连接、aggregate GATT discovery、characteristic read/write、logical disconnect与post-disconnect silence，详见[iPhone Android RF通过报告](../docs/testing/reports/2026-09-08-apple-ios-android-rf-pass.md)。后续LaunchServices可见app取得macOS Bluetooth授权并通过`PoweredOn + Authorized` gate，OnePlus 11 Android fixture又通过真实macOS CoreBluetooth provider-filtered scan/start/advertisement/stop/post-stop-silence、connect、aggregate GATT discovery/profile database/CCCD验证及logical-disconnect RF gate；见[扫描及macOS runtime报告](../docs/testing/reports/2026-09-02-apple-scan-slice-macos-runtime.md)、[Android scan RF/连接切片报告](../docs/testing/reports/2026-09-02-apple-android-scan-rf-connection-slice.md)、[Apple GATT discovery确定性报告](../docs/testing/reports/2026-09-03-apple-gatt-discovery-slice.md)、[Apple Android GATT discovery RF报告](../docs/testing/reports/2026-09-03-apple-android-gatt-discovery-rf.md)与[Apple characteristic I/O确定性报告](../docs/testing/reports/2026-09-03-apple-gatt-io-slice.md)。
+- iPhone HIL使用tracked XcodeGen YAML生成工程，只消费staged production XCFramework/Swift package，以production `AppleBleBackend`和direct Swift `BleEventSink`构造exported `BleHub`，并仅与macOS runtime probe共享pure-Swift helper；它只通过macOS/Xcode官方`xcodebuild`与`xcrun devicectl --json-output`完成development signing、安装、启动和run-ID关联结果拉取，项目Python只做BleHub证据编排，不实现或引入第三方iOS设备协议栈。当前工程生成与unsigned generic iOS build已通过。XcodeGen 2.46.0通过显式recipe安装为系统共享Homebrew工具，普通build/test只验证版本，不静默安装或更新。当前iPhone 14、Developer Mode、唯一非Personal Team、Swift/SPM编译、automatic provisioning、development signing、安装、启动和production CoreBluetooth initialization runtime均已通过；iPhone到项目Android Peripheral的真实RF也已通过扫描、连接、aggregate GATT discovery、characteristic read/write、logical disconnect与post-disconnect silence。结果见[iPhone production runtime报告](../docs/testing/reports/2026-09-04-apple-ios-production-runtime.md)与[iPhone Android RF通过报告](../docs/testing/reports/2026-09-08-apple-ios-android-rf-pass.md)。钥匙串解锁与Apple signing-tool key-partition授权仅允许用户显式运行human-only recipe并在本机输入密码，不得成为普通测试依赖或接收密码参数。测试层职责与真实`BleHub`/Stable UniFFI/Swift/CoreBluetooth调用路径见[测试分层职责](../docs/research/testing-layer-responsibilities.md)。
+- 实现CoreBluetooth backend，保持统一contract与caller-owned execution model；delegate/ARC state固定在backend-owned serial queue，GATT使用native instance-backed opaque ID，read与notification严格分离，并验证callback-first teardown、command/dispose并发和late callback。downstream sink只做快速事件交接，禁止在`on_event`栈内同步重入同一Hub。
+- Apple production transport直接使用系统CoreBluetooth与Swift标准库/Dispatch；优先复用Apple平台能力和SwiftPM，而不是重建Bluetooth transport。高层BLE wrapper只有在不拥有runtime、timer、retry、canonical device/GATT state、operation queue或async/reactive public model，并可保留BleHub exact native-object/generation correlation与event ordering时才可进入production。当前评估不采用`IOS-BLE-Library`、`AsyncCoreBluetooth`、`RxBluetoothKit`或`Bluejay`作为production transport；它们分别引入Combine/async、AsyncStream/observable、RxSwift或自有FIFO/timeout/reconnect/state模型。Nordic `IOS-CoreBluetooth-Mock` `1.0.6`固定源码审计已完成：其独立`CBM...` wrapper/delegate类型要求广泛CB/CBM adaptation，mock扫描回调不服从调用者manager queue，native retrieve可替换wrapper identity，且no-response flow-control模型不可靠；现有controller fakes已覆盖BleHub的关键identity/generation/duplicate/invalidation/late-callback不变量。因此不把它加入当前production或test target，仅保留固定源码作为本地参考；不得为接入mock而把production backend改造成第二套抽象框架。见[Swift BLE生态评估](../docs/research/swift-ble-ecosystem-assessment.md)。
+- 按[共享测试执行指南](../docs/testing/README.md)先通过Swift/shared conformance、mapping、scripted与simulator fake-backend层，再使用真实iPhone/iPad/Mac和[同一managed peripheral](../docs/testing/managed-peripheral.md)完成HIL；日常macOS/iOS RF开发优先使用项目Android Peripheral。Linux/BlueZ BLESS + UB500只有在独占P-Controller且完成HCI/BlueZ/advertising readiness时才属于可运行provider，Mac USB枚举或guest `lsusb`/`btusb`本身不构成BLESS或RF证据。当前macOS QEMU/libusb路径在UB500 Realtek `0xfc61`初始化超时；Apple Silicon arm64/HVF完整本机控制路径仍保留并与Windows命令语义对齐，但在exactly-one BlueZ controller和BLESS readiness通过前不属于RF-ready provider。另设native macOS BLESS/CoreBluetooth provider，使用系统选择的内置controller与`FFD0...` profile，主要供iPhone Central交叉验证；它不使用UB500、不替代Linux controller fault/soak，也不作为同一Mac Central的独立RF provider。simulator不作为真实CoreBluetooth/RF验收。
+- 输出XCFramework + Swift Package；package recipe断言slice/architecture、native entry、contract/generator/runtime manifest和无duplicate library/symbol。`tests/consumers/apple/ios`与`tests/consumers/apple/macos`各自拥有独立manifest、lock和build graph，只消费同一批staged production package，以direct Swift sink实际运行exported Hub assembly、callback ingress和close。
+- Tauri plugin先作为Phase 3的跨平台downstream实现推进，但macOS是第一落地目标：在`integrations/tauri-plugin-blehub`中完成Rust plugin与`assembly/macos` Swift/CoreBluetooth assembly、permission/lifecycle、command projection和event bridge，由`examples/tauri-central`消费并接入已通过生产macOS RF矩阵的项目Android Peripheral（P-Android）。插件本身只依赖`crates/blehub`，Apple backend仍通过Stable UniFFI进入；app不得复制assembly或用Tauri JSON mobile bridge/第二套operation协议替代统一contract。macOS plugin闭环通过后，必须从Tauri app入口执行P-Android压力/故障恢复/长时soak，至少覆盖重复scan/connect/dispose、Notification/Indication delivery、主动/被动断连、radio fault后recovery、reload/suspend/close与late callback silence，并单独记录通过或基础设施阻塞。
+- 非Apple artifact release gate：Apple clean consumers通过后可扩展已验证的Tauri plugin到Windows、Android和iOS target；Windows使用Rust backend，Android在Phase 4 Android backend与Kotlin host完成后接入，iOS仍需独立application lifecycle、签名、安装和真实RF证据。Tauri不发布通用plugin，也不把Windows上可编译的纯Swift误当作CoreBluetooth/Apple packaging证据。
+
+退出条件：
+
+- 同一`BleHubApple` Swift product与源码实现同时构建macOS和iOS；平台差异仅限availability、entitlement/permission、application lifecycle、background/restoration与构建签名边界，不复制command/correlation/GATT状态机。
+- CoreBluetooth backend不修改核心领域语义即可通过Apple shared conformance、mapping、scripted、simulator与要求的macOS/iOS真实设备HIL验证。
+- `tests/consumers/apple/ios`与`tests/consumers/apple/macos`分别只使用同一批staged Rust/Apple candidate构建运行；任一consumer失败都阻塞对应Apple artifact进入Phase 5。
+- Stable UniFFI Swift lifecycle、ARC、queue、exception、close与packaging blocker全部关闭；Tauri plugin的macOS assembly与P-Android压力/故障报告作为downstream验证交付物，但不替代Apple backend gate，也不阻塞Apple production ABI退出。
+
+### Phase 4：Android backend
+
+Phase 3 Apple退出后推进本阶段。项目Android Peripheral可继续作为Apple Central开发fixture，但它不等于Android Central backend完成。
 
 工作：
 
 - 在Phase 0 Stable UniFFI证据基础上完成Android Runtime、Handler/Looper、JNA native library装载和callback thread生命周期验证；未声明exception伪装成功仍是production blocker。
 - 建立显式 `android-bootstrap <sdk-root>` 与 `android-doctor`，固定并验证 Android SDK/NDK、Rust targets、Gradle Wrapper/AGP/Kotlin、国内镜像、checksum、dependency verification/lock 和 license 流程；普通 build/test 不静默下载安装。
 - 创建Android Gradle production library；Kotlin实现`BleBackend`并retain唯一`BackendEventIngressHandle`，真实`ScanCallback`/`BluetoothGattCallback`通过`handle.push`上送；实现permission、scan failure、connect、带generation correlation的per-connection串行GATT、read/write、failure-atomic notification/indication、connected RSSI和explicit idempotent dispose。
-- 使用Stable UniFFI生成Kotlin/JNA binding，运行共享conformance，并组装可被独立Rust-application integration consumer使用的debug与release/minified AAR；package recipe断言ABI目录、native entry、contract/generator/runtime manifest、JNA传递依赖、R8/consumer rules和无duplicate library/symbol，并重跑final performance/package-size gate。`tests/consumers/android`使用独立Gradle build和最小产品Rust adapter，只消费同一candidate中staged的BleHub Rust crate与Android AAR，不使用workspace/path、`project(...)`或源码树产物，并实际运行assembly、callback ingress和close。其Kotlin UI只调用consumer自己的产品Rust adapter，不把Rust-only `BleEventSink`扩展成BleHub native consumer API。
-- 非production-ABI gate：Android clean consumer通过后，在`spikes/tauri-downstream`按5.5.1批准形态验证Tauri Windows/Android薄adapter。Rust plugin直接依赖并持有`BleHub`；Android `@TauriPlugin` host以composition创建普通`AndroidBleBackend`，通过有界一次性ticket和同一最终Rust image导出的UniFFI assembly函数交给Rust，mobile command返回后才执行`BleHub::new`。spike必须覆盖Kotlin-only backend artifact、最终Rust image的symbol retention/JNA loading、APK/AAB单一BleHub native image、ticket success/timeout/duplicate/late provide、Activity/Context、permission、reload/suspend/close、late callback与WebView event throughput；不得用逐BLE-operation Tauri mobile JSON command/event替代统一contract，也不得用`pickFirst`或静默exclude掩盖双image。机制获得Go后才把`publish = false`薄adapter提升到`examples/tauri-central`的Windows/Android target。
+- 使用Stable UniFFI生成Kotlin/JNA production binding，运行共享conformance，并组装debug与release/minified AAR；AAR暴露exported `BleHub`、foreign backend/sink及同一canonical DTO/error。package recipe断言ABI目录、native entry、contract/generator/runtime manifest、JNA传递依赖、R8/consumer rules和无duplicate library/symbol，并重跑final performance/package-size gate。`tests/ffi/runtime`以直接Kotlin test backend/sink验证production ABI；`tests/consumers/android`使用独立Gradle build，只消费staged production AAR，不使用workspace/path、`project(...)`或源码树产物，并实际运行assembly、callback ingress和close。
+- 非production-ABI gate：Android backend与clean consumer通过后，把已在macOS验证的`integrations/tauri-plugin-blehub`扩展到Android target，并按5.5.1批准形态验证Windows/Android薄adapter。Rust plugin直接依赖并持有`BleHub`；Android `@TauriPlugin` host以composition创建普通`AndroidBleBackend`，通过有界一次性ticket和同一最终Rust image导出的UniFFI assembly函数交给Rust，mobile command返回后才执行`BleHub::new`。spike必须覆盖Kotlin-only backend artifact、最终Rust image的symbol retention/JNA loading、APK/AAB单一BleHub native image、ticket success/timeout/duplicate/late provide、Activity/Context、permission、reload/suspend/close、late callback与WebView event throughput；不得用逐BLE-operation Tauri mobile JSON command/event替代统一contract，也不得用`pickFirst`或静默exclude掩盖双image。验证通过后由`examples/tauri-central`消费同一integration的Android target。
 - 按[共享测试执行指南](../docs/testing/README.md)先完成JVM/Android deterministic、emulator fake-backend与packaging层；随后执行第13节Windows原生WinRT/BLESS开发fixture spike，在当前单Windows电脑+单Android手机条件下为Android Central提供快速真实RF回归。最终仍须让Android真机DUT通过真实RF连接[项目managed peripheral](../docs/testing/managed-peripheral.md)完成第15节要求的HIL；权威Peripheral使用Linux VM/BLESS、nRF52840或第二台Android设备，不能与DUT是同一台手机。Windows WinRT/BLESS smoke不得记为Linux VM/BLESS fault/soak通过，模拟器不作为真实BLE验收。
 
 退出条件：
 
 - Android 不修改核心领域语义即可完成 v0.1 闭环。
 - JVM/ART thread、lifetime、exception 和 close 验证通过。
-- AAR 与同一 candidate 的 BleHub Rust crate 可被 `tests/consumers/android` 的独立 Rust-application integration consumer 引用；consumer 不依赖源码树或未打包本地产物。
+- `tests/consumers/android`可仅从staged production AAR构建并以direct Kotlin sink运行exported Hub、backend assembly、callback ingress和close；consumer不依赖源码树、Rust adapter或未打包本地产物。
 - 第15节要求的Android真机HIL已执行并保存可追踪证据。
-- Windows+Android完整ABI candidate已具备Phase 4审计条件，但在Phase 4退出前不冻结production ABI。
+- Windows+Apple+Android完整ABI candidate已具备Phase 5审计条件，但在Phase 5退出前不冻结production ABI。
 
-### Phase 4：Windows + Android v0.1
+### Phase 5：Windows + Apple + Android v0.1
 
 工作：
 
@@ -2485,39 +2618,22 @@ nRF52840默认对应 **Hardware Reference Peripheral** 方案：设备运行项�
 - 执行长扫描、高频 notification 和反复重连 stress。
 - 审计 panic、native exception、队列溢出和内存所有权。
 - 验证并执行12.4的lockstep semver/ABI策略和完整consumer packaging，不允许core/generated backend混装。
-- 生成Windows crate和Android AAR release candidate；以同一批 candidate 重跑两个 artifact-only clean consumers；在退出条件全部通过前不发布、不冻结production ABI。
-- 非 production-ABI gate：若 Tauri spike 已获得 Go，则以同一批 candidate 构建 Windows/Android reference app；若 spike 未完成或为 No-Go，则记录证据并延后 showcase，不改变或阻塞公共 ABI。
-- Phase 4冻结只由本阶段Windows/Android退出条件决定。此前在macOS host上开展的Apple工作继续视为基于未冻结candidate的前置实现；冻结后必须对受最终contract/artifact影响的Apple gate重跑，不能把早期通过直接继承到冻结candidate。
+- 生成Windows crate、Android AAR和Apple XCFramework/Swift Package release candidate；以同一批candidate重跑三个平台的artifact-only clean consumers；在退出条件全部通过前不发布、不冻结production ABI。
+- 可选downstream gate（不是Phase 5退出条件）：以同一批candidate构建并验证`integrations/tauri-plugin-blehub`及reference app。macOS Apple backend + P-Android闭环、压力/故障/soak以及Windows/mobile集成分别记录；源码接线不等于验证。某个平台未运行、未完成或No-Go只延后对应Tauri showcase，**不阻塞Phase 5公共ABI冻结**，也不能替代production backend/runtime/package gate。
+- Phase 5冻结由Windows、Apple与Android共同退出条件决定。Phase 3 Apple工作基于未冻结candidate，冻结前必须对受最终contract/artifact影响的Apple gate重跑，不能把早期通过直接继承到冻结candidate。
 
 退出条件：
 
-- 第15节全部Windows/Android验收项通过；硬件skip、infrastructure failure或未执行项不得记为通过。
-- 对完整Windows/Android ABI candidate重跑12.5与[`docs/testing/ffi-spikes.md`](../docs/testing/ffi-spikes.md)全部当前适用case；Kotlin/JVM、Windows Swift补充host、Android ART/AAR、isolated FFI spike-consumer和两个platform release clean-consumer evidence齐全，零未关闭Windows/Android production blocker。真实macOS production candidate/package不阻塞本阶段，必须在Phase 5开始实现CoreBluetooth前补跑。
-- Windows crate与Android AAR分别由 `tests/consumers/windows` 和 `tests/consumers/android` 验证；它们不依赖源码树，core、generated binding、backend package的ABI major、generator/runtime revision和artifact manifest lockstep一致，混装被确定性拒绝。
+- 第15节全部Windows/Apple/Android验收项通过；硬件skip、infrastructure failure或未执行项不得记为通过。
+- 对完整Windows/Apple/Android ABI candidate重跑12.5与[`docs/testing/ffi-runtime.md`](../docs/testing/ffi-runtime.md)全部当前适用case；Android ART/AAR以及项目真实Mac mini上的macOS/iOS Swift直接production-ABI runtime、package、backend/HIL适用gate和三个platform release clean-consumer evidence齐全，零未关闭production blocker；不要求Windows Swift补充host。
+- Windows crate、Apple XCFramework/Swift Package与Android AAR分别由`tests/consumers/windows`、`tests/consumers/apple/{macos,ios}`和`tests/consumers/android`验证；它们不依赖源码树，core、generated binding、backend package的ABI major、generator/runtime revision和artifact manifest lockstep一致，混装被确定性拒绝。
 - panic/native exception containment、failure-atomic assembly、close drain、10,000次lifecycle、长扫描、高频notification、反复重连和第15节HIL/stress报告均可追踪。
-- 仅在以上条件全部满足后冻结Windows+Android v0.1 production ABI、发布candidate并进入release流程。
+- 仅在以上条件全部满足后冻结Windows+Apple+Android v0.1 production ABI、发布candidate并进入release流程。
 
-### Phase 5：macOS-first Apple backend，随后iOS
-
-在macOS执行host上，包括Mutagen同步到Mac mini的工作副本，本阶段的macOS thread是优先active lane，可在Phase 3/4完成前开始。该并行顺序不表示Phase 3/4完成，也不冻结public ABI；iOS仍是独立平台工作，不能由macOS结果推断。
-
-- Phase 4冻结前，Apple backend消费当前未冻结core candidate并优先完成macOS CoreBluetooth、Stable UniFFI Swift lifecycle和package开发；若修改trait、DTO、error或closed enum，必须回到统一Plan与受影响平台共同审计，不能形成Apple私有contract。
-- Phase 4冻结后，Apple backend消费已冻结core contract与同一Stable UniFFI major；对冻结candidate重跑此前适用的真实macOS Stable UniFFI Swift lifecycle、ARC、queue、exception、XCFramework/SPM packaging及CoreBluetooth/RF gate。若冻结后仍需为Apple修改contract，必须重新打开ABI audit、提升contract/ABI version并重跑受影响的Windows/Android/Apple candidate gate。
-- representative direct-handle Apple gate已通过，但不替代production candidate，也不替代CoreBluetooth、签名、设备安装或BLE/RF gate。Mutagen只传输源码，不改变这些证据要求。
-- 实现CoreBluetooth backend，保持统一contract与caller-owned execution model；delegate/ARC state固定在serial queue，GATT使用native instance-backed opaque ID，read与notification严格分离，并验证callback-first teardown、delegate queue重入和late callback。
-- 按[共享测试执行指南](../docs/testing/README.md)先通过 Swift/shared conformance、mapping、scripted 与 simulator fake-backend 层，再使用真实 iPhone/iPad/Mac 和[同一 managed peripheral](../docs/testing/managed-peripheral.md)完成 HIL；simulator 不作为真实 CoreBluetooth/RF 验收。
-- 输出XCFramework + Swift Package；package recipe断言slice/architecture、native entry、contract/generator/runtime manifest和无duplicate library/symbol。`tests/consumers/apple/ios`与`tests/consumers/apple/macos`各自拥有独立产品Rust adapter、manifest、lock和build graph，并仅从同一批staged Rust/Apple artifacts实际运行assembly、callback ingress和close。
-- 非Apple artifact release gate：Apple clean consumers通过后可扩展`spikes/tauri-downstream`的macOS/iOS assembly与lifecycle证据；Go时为`examples/tauri-central`增加Apple target，仍使用Swift/CoreBluetooth backend + Stable UniFFI，不发布通用Tauri plugin，也不把Windows上可编译的纯Swift误当作CoreBluetooth/Apple packaging证据。
-
-退出条件：
-
-- CoreBluetooth backend 不修改核心领域语义即可通过 Apple shared conformance、mapping、scripted、simulator 与要求的真实设备/HIL 验证。
-- `tests/consumers/apple/ios` 与 `tests/consumers/apple/macos` 分别只使用同一批 staged Rust/Apple candidate 构建运行；任一 consumer 失败都阻塞对应 Apple artifact 发布。
-- Stable UniFFI Swift lifecycle、ARC、queue、exception、close与packaging blocker全部关闭；Tauri spike/showcase状态不阻塞Apple artifact release。
 
 ### Phase 6：Linux
 
-Phase 6 是完整 Linux backend 的产品化阶段。Windows host在Phase 2后优先进入Android，macOS host可优先进入macOS-first Apple thread；两条active lane都不提前启动Linux Central产品化。Phase 6前只保留普通hosted Linux pure-core portability tests，以及已经用于Windows/Android HIL的Linux Peripheral VM，不提前实现Linux Central backend、development VM或Central recipe。
+Phase 6是完整Linux backend的产品化阶段。它在Phase 3 Apple、Phase 4 Android与Phase 5三平台v0.1之后启动。Phase 6前只保留普通hosted Linux pure-core portability tests，以及已经用于Windows/Apple/Android HIL的Linux Peripheral VM，不提前实现Linux Central backend、development VM或Central recipe。
 
 工作：
 
@@ -2534,17 +2650,16 @@ Phase 6 是完整 Linux backend 的产品化阶段。Windows host在Phase 2后�
 - 多 adapter 环境不会因 enumeration order 误用 controller。
 - hardware HIL 缺失时有明确 skip/environment report；硬件具备后默认双 VM、双 controller HIL 通过。
 
-### 后续 Consumer facade：按产品需求启动
+### 后续 Consumer convenience：按产品需求启动
 
-该工作不是新的platform backend Phase，也不阻塞Windows/Android v0.1。只有出现明确的Kotlin-only、Swift-only或其他非Rust-hosted application需求，并能说明为什么产品Rust adapter不足时才启动：
+Production `BleHub`与foreign `BleEventSink`已直接支持Kotlin/Swift application，不再需要另一个native consumer facade。后续工作只可增加调用方侧convenience，例如Kotlin `Flow`/`Channel`或Swift `AsyncStream` adapter：
 
-- 先记录目标语言、应用ownership、事件执行位置、package形态和需要避免的额外FFI crossing；
-- 在不改动Rust-first contract的前提下比较foreign callback、native executor adapter等方案，明确拒绝BleHub-owned polling queue/runtime；
-- 为选定facade补充API snapshot、exception/panic containment、callback线程、重入、backpressure、close drain、late callback和lifecycle计数测试；
-- 为每种正式支持的语言建立artifact-only clean consumer，再决定其semver/ABI承诺和发布节奏；
-- 若实现需要修改共享command/event/DTO或`BleBackend`，按ABI reopening流程重新审计所有已发布平台，而不是把consumer convenience静默写入core。
+- adapter必须包装同一production Hub/command/event/DTO，不定义第二套协议；
+- queue、executor、buffer、drop/backpressure与application lifecycle由adapter/调用方拥有，不进入BleHub core；
+- 为正式发布的adapter补充API snapshot、exception/panic containment、callback线程、重入、close drain、late callback和artifact-only consumer；
+- 若需要修改共享command/event/DTO、`BleBackend`或`BleEventSink`，按ABI reopening流程重新审计所有已发布平台。
 
-详细架构约束以5.6为准。任何UniFFI export只增加跨语言入口；现有Rust consumer始终保留直接Rust调用路径。
+详细架构约束以5.6为准；Rust consumer始终保留同一canonical定义的direct调用路径。
 
 ---
 
@@ -2572,7 +2687,7 @@ Windows 和 Android 均需在真实 BLE 外设上完成：
 18. Windows使用至少一个与BLESS/BlueZ实现独立的真实参考外设通过smoke，避免只适配测试栈。项目Android Peripheral可以满足该类别；运行项目standalone fixture固件的nRF52840是推荐的长期硬件参考外设，但不作为v0.1必须采购的指定型号。LightBlue只有在实际操作证据完整时才算其覆盖的普通互操作smoke，不能替代项目fixture的确定notification gate。
 19. `tests/consumers/windows` 与 `tests/consumers/android` 只使用同一批 staged/release candidate 构建运行，不依赖源码路径、Gradle project dependency、未打包本地产物或 workspace feature unification。
 
-Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Windows/Android native loading、backend assembly、reload/suspend/close、late callback 和 event throughput 结论；Go 时 `examples/tauri-central` 完成 Rust-owned command/state/event 闭环，且不以Tauri JSON mobile bridge替代`BleBackend`/UniFFI。spike 未完成或 No-Go 不阻塞 production ABI，也不得通过修改公共 contract 掩盖；须保存证据并延后 showcase。
+Tauri plugin/showcase 是非 v0.1 ABI gate、但属于Phase 3 downstream交付项：先记录`integrations/tauri-plugin-blehub`的跨平台Rust plugin deterministic assembly，再记录`assembly/macos` Swift/CoreBluetooth assembly、P-Android真实闭环，以及从Tauri入口执行的压力/故障恢复/长时soak（含reload/suspend/close、late callback和event throughput）；随后扩展Windows、Android和iOS provider。`examples/tauri-central`必须只消费该integration并保持Rust-owned command/state/event闭环，且不以Tauri JSON mobile bridge替代`BleBackend`/UniFFI。Flutter integration作为后续独立federated package推进，不改变Tauri/Flutter之外的core与backend contract。某一平台spike未完成或No-Go不阻塞production ABI，但必须保存证据、标出阻塞边界，不能通过修改公共contract掩盖。
 
 ---
 
@@ -2587,7 +2702,7 @@ Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Window
 | Android GATT 并发不稳定 | 每connection严格串行operation queue；correlation包含command/operation/target/generation，late callback不能完成下一条operation |
 | duplicate native wrapper竞争callback或被另一owner清理 | 同一backend/adapter ownership domain内一个native identity只有一个owning record；重建使旧correlation失效 |
 | 平台身份差异 | backend生成session-scoped opaque`PeripheralId`/GATT handle并私有映射native object，不承诺MAC或跨重启稳定 |
-| UniFFI长期对象生命周期 | Android/Apple接入前及完整ABI freeze前分别重跑foreign backend + direct handle + Rust sink runtime；未声明exception不得伪装成功 |
+| UniFFI长期对象生命周期 | Android/Apple接入前及完整ABI freeze前分别以唯一production image重跑exported Hub + foreign backend + direct handle + foreign sink runtime；未声明exception不得伪装成功 |
 | direct handle形成引用环或晚到callback访问已释放state | handle只持`Weak<EventIngressState>`；explicit close/drain、backend release、10,000次lifecycle与race tests |
 | Stable UniFFI Kotlin/JNA性能或包体开销 | 已接受representative benchmark中的相对JNI开销；final candidate记录绝对throughput/latency、AAR体积和高频notification结果，超过BLE workload门槛时先优化payload/call frequency，不切experimental JNI或恢复双框架 |
 | 工具链不可复现 | Pixi lock + Just 单入口 + doctor + CI |
@@ -2596,8 +2711,8 @@ Tauri showcase 是非 v0.1 gate 的跟踪项：downstream spike 应记录 Window
 | Tauri mobile bridge演变成第二套BLE协议 | Tauri Rust core才是downstream；native plugin/glue只做assembly/lifecycle，所有BLE command/event继续走统一`BleBackend`、UniFFI与ingress |
 | WebView/event 序列化阻塞平台 callback | sink 只可靠入队；projection、序列化和 `AppHandle::emit` 在 Tauri-owned task/runtime 执行，并单独压测 queue/throughput |
 | Tauri mobile 打包产生重复 native library/symbol 或生命周期泄漏 | `spikes/tauri-downstream` 先验证同一 Rust image、AAR/XCFramework loading、reload/suspend/close 和 late callback；失败不反向修改 core contract |
-| Apple 只能在 macOS 构建 | 独立 macOS CI，不跨平台最终打包 |
-| QEMU USB passthrough 在 Windows 不稳定 | Phase 2 先做 spike；按物理 USB 端口绑定；失败时把同一 Linux Peripheral VM 移到 Linux/KVM host，保持 guest/harness 不变 |
+| Apple 只能在 macOS/Xcode 构建 | 使用项目真实Mac mini通过本机Pixi + Just执行全部Apple gate；不以Windows Swift或GitHub-hosted macOS workflow替代 |
+| QEMU USB passthrough 在 Windows 不稳定 | Phase 2 先做 spike；按物理 USB 端口绑定；失败时把同一 Linux Peripheral VM 移到 Linux/KVM host，保持guest/provider控制面不变 |
 | USB BLE adapter 不支持 peripheral/advertising | guest doctor 检查 BlueZ GATT/advertising manager 和 controller capabilities |
 | Android开发Peripheral受厂商后台限制或保存配置时重建GATT Server | 首版保持前台和亮屏、显式记录server/advertiser lifecycle；notification必须调用Framework发送API并等待completion callback，不以value编辑或UI状态推定成功 |
 | nRF52840角色混淆或固件与共享profile漂移 | standalone Peripheral固件与HCI P-Controller固件分开命名/报告；构建时消费或校验同一profile，记录firmware revision，未实现BLESS等价控制前只计reference smoke |

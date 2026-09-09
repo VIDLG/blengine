@@ -1,0 +1,16 @@
+[default]
+description = "Access to the canonical BleHub Central commands and lifecycle."
+permissions = [
+    "allow-capabilities",
+    "allow-initialize",
+    "allow-start-scan",
+    "allow-stop-scan",
+    "allow-connect",
+    "allow-disconnect",
+    "allow-discover-gatt",
+    "allow-read-characteristic",
+    "allow-write-characteristic",
+    "allow-set-notifications",
+    "allow-read-rssi",
+    "allow-close",
+]

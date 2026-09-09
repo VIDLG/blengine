@@ -18,6 +18,7 @@ sccache = ">=0.16,<0.18"
 
 [feature.rust.dependencies]
 rust = "1.95.*"
+rust-src = "1.95.*"
 
 [feature.jvm.dependencies]
 openjdk = "17.*"
@@ -40,6 +41,7 @@ rust-std-aarch64-apple-darwin = "1.95.*"
 [feature.apple-ci.target.osx-arm64.dependencies]
 rust-std-x86_64-apple-darwin = "1.95.*"
 
+
 [environments]
 default = { features = ["rust"], solve-group = "development" }
 jvm = { features = ["rust", "jvm"], solve-group = "development" }
@@ -51,6 +53,10 @@ RUSTC_WRAPPER = "sccache"
 CARGO_INCREMENTAL = "0"
 
 [target.win-64.dependencies]
+packer = "1.16.0.*"
+"qemu.qmp" = "0.0.6.*"
+
+[target.unix.dependencies]
 packer = "1.16.0.*"
 "qemu.qmp" = "0.0.6.*"
 

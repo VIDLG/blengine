@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use crate::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEventSink, BleHubError,
@@ -7,29 +7,64 @@ use crate::{
     StartScanCommand, StopScanCommand, WriteCharacteristicCommand, ingress::EventIngressState,
 };
 
+#[derive(uniffi::Object)]
 pub struct BleHub {
     backend: RwLock<Option<Arc<dyn BleBackend>>>,
     capabilities: BackendCapabilities,
     ingress: Arc<EventIngressState>,
+    lifecycle: (Mutex<LifecycleState>, Condvar),
+}
+
+#[derive(Clone)]
+enum LifecycleState {
+    Open,
+    Closing,
+    Closed(Option<BleHubError>),
 }
 
 fn dispose_after_assembly_failure(backend: &dyn BleBackend, stage: &'static str) {
-    if let Err(error) = backend.dispose() {
+    if let Err(_error) = backend.dispose() {
         tracing::error!(
             target: "blehub::lifecycle",
             diagnostic = "assembly_rollback_failed",
             stage,
-            error = %error,
+            error_class = "backend_cleanup",
             "backend cleanup failed while rolling back BleHub assembly"
         );
     }
 }
 
 impl BleHub {
+    /// Holds the command-gate read guard through the backend call so dispose's
+    /// write guard cannot remove or dispose the backend during dispatch.
+    fn with_backend(
+        &self,
+        dispatch: impl FnOnce(&dyn BleBackend) -> Result<(), CommandDispatchError>,
+    ) -> Result<(), CommandDispatchError> {
+        let backend = self.backend.read().map_err(|_error| {
+            tracing::error!(
+                target: "blehub::lifecycle",
+                diagnostic = "command_gate_poisoned",
+                error_class = "mutex_poisoned",
+                "failed to acquire BleHub command gate"
+            );
+            CommandDispatchError::BackendUnavailable {
+                detail: "command gate is poisoned".to_owned(),
+                platform_details: None,
+            }
+        })?;
+        let backend = backend.as_deref().ok_or(CommandDispatchError::Closed)?;
+        dispatch(backend)
+    }
+}
+
+#[uniffi::export]
+impl BleHub {
+    #[uniffi::constructor]
     pub fn new(
         backend: Arc<dyn BleBackend>,
-        downstream: Box<dyn BleEventSink>,
-    ) -> Result<Self, BleHubError> {
+        downstream: Arc<dyn BleEventSink>,
+    ) -> Result<Arc<Self>, BleHubError> {
         let capabilities = match backend
             .capabilities()
             .and_then(BackendCapabilities::validated)
@@ -59,37 +94,16 @@ impl BleHub {
             });
         }
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             backend: RwLock::new(Some(backend)),
             capabilities,
             ingress,
-        })
+            lifecycle: (Mutex::new(LifecycleState::Open), Condvar::new()),
+        }))
     }
 
     pub fn capabilities(&self) -> BackendCapabilities {
         self.capabilities.clone()
-    }
-
-    /// Holds the command-gate read guard through the backend call so dispose's
-    /// write guard cannot remove or dispose the backend during dispatch.
-    fn with_backend(
-        &self,
-        dispatch: impl FnOnce(&dyn BleBackend) -> Result<(), CommandDispatchError>,
-    ) -> Result<(), CommandDispatchError> {
-        let backend = self.backend.read().map_err(|error| {
-            tracing::error!(
-                target: "blehub::lifecycle",
-                diagnostic = "command_gate_poisoned",
-                detail = %error,
-                "failed to acquire BleHub command gate"
-            );
-            CommandDispatchError::BackendUnavailable {
-                detail: "command gate is poisoned".to_owned(),
-                platform_details: None,
-            }
-        })?;
-        let backend = backend.as_deref().ok_or(CommandDispatchError::Closed)?;
-        dispatch(backend)
     }
 
     pub fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError> {
@@ -144,34 +158,66 @@ impl BleHub {
     }
 
     pub fn dispose(&self) -> Result<(), BleHubError> {
-        let mut backend_slot = match self.backend.write() {
-            Ok(backend_slot) => backend_slot,
-            Err(error) => {
-                tracing::error!(
-                    target: "blehub::lifecycle",
-                    diagnostic = "command_gate_poisoned",
-                    operation = "dispose",
-                    detail = %error,
-                    "recovered poisoned BleHub command gate"
-                );
-                error.into_inner()
+        let mut lifecycle = self
+            .lifecycle
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        loop {
+            match &*lifecycle {
+                LifecycleState::Open => {
+                    *lifecycle = LifecycleState::Closing;
+                    break;
+                }
+                LifecycleState::Closing => {
+                    lifecycle = self
+                        .lifecycle
+                        .1
+                        .wait(lifecycle)
+                        .unwrap_or_else(|error| error.into_inner());
+                }
+                LifecycleState::Closed(result) => return result.clone().map_or(Ok(()), Err),
             }
-        };
-        let Some(backend) = backend_slot.take() else {
-            return Ok(());
+        }
+        drop(lifecycle);
+
+        let backend = {
+            let mut backend_slot = match self.backend.write() {
+                Ok(backend_slot) => backend_slot,
+                Err(error) => {
+                    tracing::error!(
+                        target: "blehub::lifecycle",
+                        diagnostic = "command_gate_poisoned",
+                        operation = "dispose",
+                        error_class = "mutex_poisoned",
+                        "recovered poisoned BleHub command gate"
+                    );
+                    error.into_inner()
+                }
+            };
+            backend_slot
+                .take()
+                .expect("open lifecycle must own the backend")
         };
 
         self.ingress.close();
         let backend_result = backend.dispose();
-        if let Err(error) = &backend_result {
+        if let Err(_error) = &backend_result {
             tracing::error!(
                 target: "blehub::lifecycle",
                 diagnostic = "backend_dispose_failed",
-                error = %error,
+                error_class = "backend_cleanup",
                 "backend cleanup failed during BleHub dispose"
             );
         }
         drop(backend);
+        let mut lifecycle = self
+            .lifecycle
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *lifecycle = LifecycleState::Closed(backend_result.clone().err());
+        self.lifecycle.1.notify_all();
         backend_result
     }
 }
@@ -184,17 +230,22 @@ impl Drop for BleHub {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc, Barrier, Mutex, Weak,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        thread,
+        time::{Duration, Instant},
     };
 
     use crate::{
         BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleEventSink,
         BleHubError, CommandDispatchError, CommandId, ConnectCommand, DisconnectCommand,
         DiscoverGattCommand, EventIngressStatus, EventSinkError, InitializeCommand, Platform,
-        ReadCharacteristicCommand, ReadRssiCommand, ScanSessionId, SetNotificationsCommand,
-        StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+        ReadCharacteristicCommand, ReadRssiCommand, ScanOptions, ScanSessionId,
+        SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
     };
 
     use super::BleHub;
@@ -205,6 +256,7 @@ mod tests {
         bind_result: Result<(), BleHubError>,
         dispose_result: Result<(), BleHubError>,
         push_during_bind: bool,
+        dispose_barriers: Option<(Arc<Barrier>, Arc<Barrier>)>,
     }
 
     struct ConstructorBackendState {
@@ -238,6 +290,7 @@ mod tests {
                     bind_result,
                     dispose_result,
                     push_during_bind,
+                    dispose_barriers: None,
                 },
                 state,
             )
@@ -321,6 +374,10 @@ mod tests {
 
         fn dispose(&self) -> Result<(), BleHubError> {
             self.state.dispose_count.fetch_add(1, Ordering::AcqRel);
+            if let Some((entered, release)) = &self.dispose_barriers {
+                entered.wait();
+                release.wait();
+            }
             self.state.ingress.lock().unwrap().take();
             self.dispose_result.clone()
         }
@@ -342,10 +399,23 @@ mod tests {
         }
     }
 
-    fn tracking_sink() -> (Box<dyn BleEventSink>, Arc<AtomicUsize>) {
+    struct BlockingSink {
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+    }
+
+    impl BleEventSink for BlockingSink {
+        fn on_event(&self, _: BleEvent) -> Result<(), EventSinkError> {
+            self.entered.wait();
+            self.release.wait();
+            Ok(())
+        }
+    }
+
+    fn tracking_sink() -> (Arc<dyn BleEventSink>, Arc<AtomicUsize>) {
         let drop_count = Arc::new(AtomicUsize::new(0));
         (
-            Box::new(DropTrackingSink {
+            Arc::new(DropTrackingSink {
                 drop_count: Arc::clone(&drop_count),
             }),
             drop_count,
@@ -364,6 +434,16 @@ mod tests {
 
     fn observed_ingress(state: &ConstructorBackendState) -> Weak<BackendEventIngressHandle> {
         state.observed_ingress.lock().unwrap().clone().unwrap()
+    }
+
+    fn blocking_dispose_backend(
+        entered: Arc<Barrier>,
+        release: Arc<Barrier>,
+    ) -> (Arc<ConstructorBackend>, Arc<ConstructorBackendState>) {
+        let (mut backend, state) =
+            backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
+        Arc::get_mut(&mut backend).unwrap().dispose_barriers = Some((entered, release));
+        (backend, state)
     }
 
     fn scan_started() -> BleEvent {
@@ -504,6 +584,159 @@ mod tests {
 
         assert_eq!(callback.push(scan_started()), EventIngressStatus::Closed);
         assert_eq!(sink_drop_count.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn dispose_releases_command_gate_before_waiting_for_ingress_drain() {
+        let (backend, state) =
+            backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let hub = BleHub::new(
+            backend,
+            Arc::new(BlockingSink {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+        )
+        .unwrap();
+        let callback = state.ingress.lock().unwrap().clone().unwrap();
+        let push = thread::spawn(move || callback.push(scan_started()));
+        entered.wait();
+
+        let dispose_hub = Arc::clone(&hub);
+        let dispose = thread::spawn(move || dispose_hub.dispose());
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if let Ok(backend_slot) = hub.backend.try_read()
+                && backend_slot.is_none()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "dispose did not release the command gate after closing the backend slot"
+            );
+            thread::yield_now();
+        }
+
+        let command = StartScanCommand {
+            command_id: CommandId { value: 3 },
+            scan_session_id: ScanSessionId { value: 4 },
+            options: ScanOptions {
+                service_uuids: Vec::new(),
+                name_prefix: None,
+                company_id: None,
+                allow_duplicates: false,
+            },
+        };
+        assert_eq!(hub.start_scan(command), Err(CommandDispatchError::Closed));
+        assert_eq!(state.dispose_count.load(Ordering::Acquire), 0);
+
+        release.wait();
+        assert_eq!(push.join().unwrap(), EventIngressStatus::Delivered);
+        assert_eq!(dispose.join().unwrap(), Ok(()));
+        assert_eq!(state.dispose_count.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn concurrent_dispose_waits_for_the_first_cleanup() {
+        let (backend, state) =
+            backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let hub = BleHub::new(
+            backend,
+            Arc::new(BlockingSink {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+        )
+        .unwrap();
+        let callback = state.ingress.lock().unwrap().clone().unwrap();
+        let push = thread::spawn(move || callback.push(scan_started()));
+        entered.wait();
+
+        let first_hub = Arc::clone(&hub);
+        let first = thread::spawn(move || first_hub.dispose());
+        let second_hub = Arc::clone(&hub);
+        let (done_tx, done_rx) = mpsc::channel();
+        let second = thread::spawn(move || {
+            let result = second_hub.dispose();
+            done_tx.send(result).unwrap();
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert_eq!(state.dispose_count.load(Ordering::Acquire), 0);
+
+        release.wait();
+        assert_eq!(push.join().unwrap(), EventIngressStatus::Delivered);
+        assert_eq!(first.join().unwrap(), Ok(()));
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Ok(())
+        );
+        second.join().unwrap();
+        assert_eq!(state.dispose_count.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn concurrent_dispose_waits_during_backend_cleanup() {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (backend, state) = blocking_dispose_backend(Arc::clone(&entered), Arc::clone(&release));
+        let hub = BleHub::new(
+            backend,
+            Arc::new(DropTrackingSink {
+                drop_count: Arc::new(AtomicUsize::new(0)),
+            }),
+        )
+        .unwrap();
+        let first_hub = Arc::clone(&hub);
+        let first = thread::spawn(move || first_hub.dispose());
+        entered.wait();
+        let second_hub = Arc::clone(&hub);
+        let (done_tx, done_rx) = mpsc::channel();
+        let second = thread::spawn(move || done_tx.send(second_hub.dispose()).unwrap());
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        assert_eq!(state.dispose_count.load(Ordering::Acquire), 1);
+        release.wait();
+        assert_eq!(first.join().unwrap(), Ok(()));
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Ok(())
+        );
+        second.join().unwrap();
+    }
+
+    #[test]
+    fn multiple_close_observers_receive_the_first_cleanup_error() {
+        let cleanup_error = BleHubError::BackendCleanup {
+            detail: "first cleanup failure".to_owned(),
+            platform_details: None,
+        };
+        let (backend, _) = backend(
+            Ok(BackendCapabilities::new(Platform::Test)),
+            Ok(()),
+            Err(cleanup_error.clone()),
+        );
+        let hub = BleHub::new(
+            backend,
+            Arc::new(DropTrackingSink {
+                drop_count: Arc::new(AtomicUsize::new(0)),
+            }),
+        )
+        .unwrap();
+        assert_eq!(hub.dispose(), Err(cleanup_error.clone()));
+        let observers: Vec<_> = (0..4)
+            .map(|_| {
+                let hub = Arc::clone(&hub);
+                thread::spawn(move || hub.dispose())
+            })
+            .collect();
+        for observer in observers {
+            assert_eq!(observer.join().unwrap(), Err(cleanup_error.clone()));
+        }
     }
 
     #[test]

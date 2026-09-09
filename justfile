@@ -6,14 +6,20 @@ mod binding "just/binding/mod.just"
 # Test Peripheral providers.
 mod peripheral "just/peripheral/mod.just"
 
-# Active capability and production-candidate probes.
-mod spike "just/spike/mod.just"
+# Stable UniFFI production runtime and package validation.
+mod ffi "just/ffi/mod.just"
 
 # Unit, conformance, fixture, and instrumentation selection.
 mod test "just/test/mod.just"
 
 # Production Windows backend development and explicit RF smoke tests.
 mod windows "just/windows/mod.just"
+
+# Production Apple backend development and platform build gates.
+mod apple "just/apple/mod.just"
+
+# Tauri integration and reference-app verification entry points.
+mod tauri "just/tauri/mod.just"
 
 default:
     @just --list --list-submodules
@@ -23,7 +29,7 @@ fmt:
     rtk cargo fmt --manifest-path tests/hil/windows/Cargo.toml
     rtk cargo fmt --manifest-path tests/consumers/windows/Cargo.toml
     rtk cargo fmt --manifest-path examples/windows-central/Cargo.toml
-    rtk cargo fmt --manifest-path spikes/uniffi-production-candidate/Cargo.toml
+
     ruff check --fix tools
     ruff format tools
     just --fmt
@@ -31,19 +37,29 @@ fmt:
 check:
     rtk cargo check --workspace
 
-lint:
+[private]
+lint-common:
     just --fmt --check
     rtk cargo fmt --all -- --check
     rtk cargo fmt --manifest-path tests/hil/windows/Cargo.toml -- --check
     rtk cargo fmt --manifest-path tests/consumers/windows/Cargo.toml -- --check
     rtk cargo fmt --manifest-path examples/windows-central/Cargo.toml -- --check
-    rtk cargo fmt --manifest-path spikes/uniffi-production-candidate/Cargo.toml -- --check
+
     rtk cargo clippy --workspace --all-targets -- -D warnings
-    rtk cargo clippy --manifest-path tests/hil/windows/Cargo.toml --all-targets -- -D warnings
-    rtk cargo clippy --manifest-path examples/windows-central/Cargo.toml --all-targets -- -D warnings
-    rtk cargo clippy --manifest-path spikes/uniffi-production-candidate/Cargo.toml --all-targets -- -D warnings
     ruff check tools
     just peripheral profiles-check
+
+[private]
+[windows]
+lint-windows:
+    rtk cargo clippy --manifest-path tests/hil/windows/Cargo.toml --all-targets -- -D warnings
+    rtk cargo clippy --manifest-path examples/windows-central/Cargo.toml --all-targets -- -D warnings
+
+[windows]
+lint: lint-common lint-windows
+
+[unix]
+lint: lint-common
 
 verify: check lint test::all binding::snapshot-check
 
@@ -83,9 +99,6 @@ sccache-stats:
 
 ble-scan *args:
     python -m tools.scan_ble {{ args }}
-
-swift-bootstrap:
-    python -m tools.swift_toolchain install
 
 swift-doctor:
     python -m tools.swift_toolchain verify

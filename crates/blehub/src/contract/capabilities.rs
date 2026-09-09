@@ -2,6 +2,11 @@ use super::BleHubError;
 
 pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
 
+#[uniffi::export]
+pub fn blehub_contract_version() -> u32 {
+    BLEHUB_CONTRACT_VERSION
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Enum)]
 pub enum Platform {
     Windows,

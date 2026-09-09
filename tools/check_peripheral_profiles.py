@@ -7,7 +7,7 @@ from typing import NotRequired, TypedDict, cast
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_ROOT = PROJECT_ROOT / "tests" / "conformance" / "scenarios"
 PROFILE_PATHS = (
-    SCENARIO_ROOT / "android-basic-gatt-peripheral.json",
+    SCENARIO_ROOT / "android-peripheral.json",
     SCENARIO_ROOT / "qemu-basic-gatt-peripheral.json",
 )
 
@@ -112,6 +112,25 @@ def main() -> int:
             + f"service_uuid={service_uuid} status=valid"
         )
         print(message)
+    android_roles = {
+        characteristic["role"]
+        for characteristic in profiles[0]["services"][0]["characteristics"]
+    }
+    if "updates" not in android_roles or "indication-updates" not in android_roles:
+        raise ValueError(
+            "Android profile must include both updates and indication-updates roles"
+        )
+    indication = next(
+        characteristic
+        for characteristic in profiles[0]["services"][0]["characteristics"]
+        if characteristic["role"] == "indication-updates"
+    )
+    if sorted(indication["properties"]) != ["indicate", "read"]:
+        raise ValueError("indication-updates characteristic must be read+indicate only")
+    print(
+        f"profile={profiles[0]['profile_id']} file={PROFILE_PATHS[0].name} "
+        + "modes=notification+strict-indication status=valid"
+    )
     print("provider_profile_isolation=passed")
     return 0
 

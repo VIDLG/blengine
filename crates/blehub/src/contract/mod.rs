@@ -9,7 +9,7 @@ mod ids;
 pub use advertisement::{AdvertisementObservation, ManufacturerData, ServiceData};
 pub use capabilities::{
     AdapterSnapshot, AdapterState, AuthorizationState, BLEHUB_CONTRACT_VERSION,
-    BackendCapabilities, Platform,
+    BackendCapabilities, Platform, blehub_contract_version,
 };
 pub use commands::{
     CommandKind, ConnectCommand, DisconnectCommand, DiscoverGattCommand, InitializeCommand,

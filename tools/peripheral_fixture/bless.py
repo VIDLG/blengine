@@ -11,6 +11,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any
 import tomllib
 from qemu.qmp import QMPClient, QMPError
 
-from tools.local_config import resolve_toolchain_root
+from tools.local_config import resolve_local_value, resolve_qemu_root
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 VM_SOURCE_ROOT = PROJECT_ROOT / "vm" / "linux-peripheral"
@@ -33,7 +34,7 @@ SCENARIO_PATH = (
 )
 GUEST_SCENARIO_NAME = "basic-gatt-peripheral.json"
 LOCK_PATH = VM_SOURCE_ROOT / "image.lock.toml"
-USB_LOCK_PATH = VM_SOURCE_ROOT / "usb.lock.toml"
+
 WORK_ROOT = PROJECT_ROOT / ".work" / "vm" / "linux-peripheral"
 DOWNLOAD_ROOT = WORK_ROOT / "downloads"
 BASE_ROOT = WORK_ROOT / "base-image"
@@ -74,18 +75,14 @@ PACKER_VERSION = "1.16.0"
 
 
 def load_lock() -> dict[str, Any]:
+    if sys.platform == "darwin":
+        raise RuntimeError(
+            "the Linux BLESS VM is maintained on Windows/Linux; use Android or nRF52840 DK on macOS"
+        )
     with LOCK_PATH.open("rb") as stream:
         document = tomllib.load(stream)
     if document.get("schema_version") != 1:
         raise RuntimeError(f"unsupported VM image lock schema in {LOCK_PATH}")
-    return document
-
-
-def load_usb_lock() -> dict[str, Any]:
-    with USB_LOCK_PATH.open("rb") as stream:
-        document = tomllib.load(stream)
-    if document.get("schema_version") != 1:
-        raise RuntimeError(f"unsupported USB lock schema in {USB_LOCK_PATH}")
     return document
 
 
@@ -156,13 +153,25 @@ def download(url: str, destination: Path, algorithm: str, expected: str) -> Path
 
 
 def qemu_install_root(lock: dict[str, Any]) -> Path:
-    configured = resolve_toolchain_root("qemu", "BLEHUB_QEMU_ROOT")
+    configured = resolve_qemu_root("BLEHUB_QEMU_ROOT")
     return configured.path / lock["qemu"]["version"]
 
 
+def qemu_system_binary(lock: dict[str, Any]) -> str:
+    return str(lock["qemu"].get("system_binary", "qemu-system-x86_64"))
+
+
 def qemu_executable(lock: dict[str, Any], name: str) -> Path:
+    if os.name != "nt":
+        resolved = shutil.which(name)
+        if resolved is not None:
+            return Path(resolved).resolve()
     suffix = ".exe" if os.name == "nt" else ""
     return qemu_install_root(lock) / f"{name}{suffix}"
+
+
+def expected_qemu_version(lock: dict[str, Any]) -> str:
+    return str(lock["qemu"]["version"])
 
 
 def qemu_version(path: Path) -> str:
@@ -200,7 +209,7 @@ def packer_executable() -> str:
 
 def packer_environment(lock: dict[str, Any]) -> dict[str, str]:
     environment = os.environ.copy()
-    qemu_root = str(qemu_install_root(lock))
+    qemu_root = str(qemu_executable(lock, qemu_system_binary(lock)).parent)
     environment["PATH"] = qemu_root + os.pathsep + environment.get("PATH", "")
     environment["PACKER_PLUGIN_PATH"] = str(PACKER_PLUGIN_ROOT)
     environment["PACKER_CACHE_DIR"] = str(PACKER_CACHE_ROOT)
@@ -225,14 +234,14 @@ def run_packer(lock: dict[str, Any], *arguments: str, timeout: int = 3600) -> No
 def initialize_packer(lock: dict[str, Any]) -> None:
     PACKER_PLUGIN_ROOT.mkdir(parents=True, exist_ok=True)
     PACKER_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    run_packer(lock, "init", str(PACKER_ROOT), timeout=600)
+    run_packer(lock, "init", str(PACKER_TEMPLATE), timeout=600)
 
 
 def packer_variable_arguments(
     lock: dict[str, Any], qemu: Path, base_image: Path, fingerprint: str
 ) -> list[str]:
     pixi = lock["pixi"]
-    return [
+    arguments = [
         f"-var=base_image={base_image.as_posix()}",
         f"-var=base_image_sha512={lock['guest_image']['sha512']}",
         f"-var=instance_id=blehub-linux-peripheral-{fingerprint[:16]}",
@@ -246,32 +255,48 @@ def packer_variable_arguments(
         f"-var=ssh_private_key_file={SSH_PRIVATE_KEY.as_posix()}",
         f"-var=ssh_public_key_file={SSH_PUBLIC_KEY.as_posix()}",
     ]
+    firmware = qemu_firmware_code(lock, qemu)
+    if firmware is not None:
+        arguments.append(f"-var=firmware_code={firmware.as_posix()}")
+    return arguments
+
+
+def qemu_firmware_code(lock: dict[str, Any], qemu: Path) -> Path | None:
+    filename = lock["qemu"].get("firmware_code")
+    if filename is None:
+        return None
+    firmware = qemu.parent.parent / "share" / "qemu" / str(filename)
+    if not firmware.is_file():
+        raise RuntimeError(f"QEMU firmware is missing: {firmware}")
+    return firmware
 
 
 def verify_qemu(lock: dict[str, Any]) -> Path:
-    executable = qemu_executable(lock, "qemu-system-x86_64")
+    executable = qemu_executable(lock, qemu_system_binary(lock))
     image_tool = qemu_executable(lock, "qemu-img")
     if not executable.is_file() or not image_tool.is_file():
-        raise RuntimeError(
-            "pinned QEMU is not installed; run `pixi run just peripheral vm-bootstrap`"
-        )
-    version = lock["qemu"]["version"]
+        instruction = "run `pixi run just peripheral vm-bootstrap`"
+        raise RuntimeError(f"pinned QEMU is not installed; {instruction}")
+    version = expected_qemu_version(lock)
     output = qemu_version(executable)
     if version not in output:
         raise RuntimeError(f"unexpected QEMU version: {output!r}; expected {version}")
+    qemu_firmware_code(lock, executable)
     return executable
 
 
 def install_qemu(lock: dict[str, Any]) -> Path:
     if os.name != "nt":
-        raise RuntimeError("the current pinned QEMU bootstrap supports Windows hosts")
+        raise RuntimeError(
+            "the current pinned QEMU bootstrap supports Windows hosts; macOS uses Android or nRF52840 DK"
+        )
     try:
         return verify_qemu(lock)
     except RuntimeError:
         pass
 
     qemu = lock["qemu"]
-    configured = resolve_toolchain_root("qemu", "BLEHUB_QEMU_ROOT")
+    configured = resolve_qemu_root("BLEHUB_QEMU_ROOT")
     installer = download(
         qemu["installer_url"],
         configured.path / "downloads" / qemu["installer_filename"],
@@ -351,7 +376,6 @@ def ensure_ssh_key() -> None:
 def bootstrap() -> None:
     ensure_work_directories()
     lock = load_lock()
-    usb_lock = load_usb_lock()
     qemu = install_qemu(lock)
     guest = lock["guest_image"]
     image = download(
@@ -367,13 +391,7 @@ def bootstrap() -> None:
         "sha256",
         pixi["sha256"],
     )
-    zadig = usb_lock["zadig"]
-    zadig_asset = download(
-        zadig["url"],
-        DOWNLOAD_ROOT / zadig["filename"],
-        "sha256",
-        zadig["sha256"],
-    )
+
     ensure_ssh_key()
     initialize_packer(lock)
     print(f"qemu_executable={qemu}")
@@ -384,7 +402,6 @@ def bootstrap() -> None:
     print(f"packer_executable={packer_executable()}")
     print(f"packer_plugin_root={PACKER_PLUGIN_ROOT}")
     print(f"pixi_asset={pixi_asset}")
-    print(f"zadig_asset={zadig_asset}")
 
 
 def fingerprint_files(paths: tuple[Path, ...]) -> str:
@@ -449,12 +466,13 @@ def create_overlay(lock: dict[str, Any], backing: Path, destination: Path) -> No
 
 
 def qemu_command(lock: dict[str, Any], image: Path, accelerator: str) -> list[str]:
+    qemu = verify_qemu(lock)
     command = [
-        str(verify_qemu(lock)),
+        str(qemu),
         "-name",
         "blehub-linux-peripheral",
         "-machine",
-        "q35",
+        str(lock["qemu"].get("machine_type", "q35")),
         "-accel",
         accelerator,
         "-smp",
@@ -480,6 +498,12 @@ def qemu_command(lock: dict[str, Any], image: Path, accelerator: str) -> list[st
         "-device",
         "qemu-xhci,id=xhci",
     ]
+    cpu_model = lock["qemu"].get("cpu_model")
+    if cpu_model is not None:
+        command.extend(("-cpu", str(cpu_model)))
+    firmware = qemu_firmware_code(lock, qemu)
+    if firmware is not None:
+        command.extend(("-bios", str(firmware)))
     return command
 
 
@@ -538,11 +562,12 @@ def start_qemu(lock: dict[str, Any], image: Path, accelerator: str) -> None:
     with QEMU_LOG.open("ab") as log:
         subprocess.Popen(
             command,
-            cwd=qemu_install_root(lock),
+            cwd=verify_qemu(lock).parent,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
             creationflags=creation_flags,
+            start_new_session=os.name != "nt",
             close_fds=True,
         )
     wait_for_qmp()
@@ -834,7 +859,7 @@ def build() -> None:
         lock,
         "validate",
         *variables,
-        str(PACKER_ROOT),
+        str(PACKER_TEMPLATE),
         timeout=300,
     )
     run_packer(
@@ -842,7 +867,7 @@ def build() -> None:
         "build",
         "-force",
         *variables,
-        str(PACKER_ROOT),
+        str(PACKER_TEMPLATE),
         timeout=3600,
     )
     candidate = PACKER_OUTPUT_ROOT / "provisioned.qcow2"
@@ -858,7 +883,7 @@ def build() -> None:
                 "schema_version": 1,
                 "image_fingerprint": fingerprint,
                 "guest_image_build": lock["guest_image"]["build"],
-                "qemu_version": lock["qemu"]["version"],
+                "qemu_version": expected_qemu_version(lock),
                 "packer_version": PACKER_VERSION,
                 "packer_qemu_plugin_version": "1.1.6",
                 "pixi_version": pixi["version"],
@@ -875,11 +900,17 @@ def build() -> None:
 
 def select_accelerator() -> str:
     requested = os.environ.get("BLEHUB_VM_ACCEL", "auto").strip().lower()
-    if requested in {"tcg", "whpx"}:
+    supported = {"tcg", "whpx"} if os.name == "nt" else {"tcg", "hvf"}
+    if requested in supported:
         print(f"qemu_accelerator_selection=explicit-{requested}")
         return requested
     if requested != "auto":
-        raise RuntimeError("BLEHUB_VM_ACCEL must be `auto`, `tcg`, or `whpx`")
+        values = ", ".join(f"`{value}`" for value in sorted(supported))
+        raise RuntimeError(f"BLEHUB_VM_ACCEL must be `auto` or one of {values}")
+    if sys.platform == "darwin":
+        accelerator = str(load_lock()["qemu"].get("accelerator", "hvf"))
+        print(f"qemu_accelerator_selection=auto-{accelerator}-macos")
+        return accelerator
     if os.name != "nt":
         print("qemu_accelerator_selection=auto-tcg-non-windows")
         return "tcg"
@@ -917,10 +948,14 @@ def start() -> None:
 
 def status() -> None:
     lock = load_lock()
-    configured = resolve_toolchain_root("qemu", "BLEHUB_QEMU_ROOT")
-    executable = qemu_executable(lock, "qemu-system-x86_64")
-    print(f"qemu_root={configured.path}")
-    print(f"qemu_root_source={configured.source}")
+    executable = qemu_executable(lock, qemu_system_binary(lock))
+    if os.name == "nt":
+        configured = resolve_qemu_root("BLEHUB_QEMU_ROOT")
+        print(f"qemu_root={configured.path}")
+        print(f"qemu_root_source={configured.source}")
+    else:
+        print(f"qemu_root={executable.parent}")
+        print("qemu_root_source=PATH")
     print(f"qemu_executable={executable}")
     print(f"qemu_installed={str(executable.is_file()).lower()}")
     if executable.is_file():
@@ -974,19 +1009,16 @@ if test -f /opt/blehub/fixture/current/basic-gatt-peripheral.json; then
 else
     echo 'fixture_profile=missing'
 fi
-printf 'usb_2357_0604='; if lsusb -d 2357:0604 >/dev/null 2>&1; then echo present; usb_present=true; else echo absent; usb_present=false; fi
 bluetooth_state="$(systemctl is-active bluetooth.service || true)"
 printf 'bluetooth_service=%s\\n' "$bluetooth_state"
+controller_list=""
 if test "$bluetooth_state" = active; then
     controller_list="$(timeout 10 bluetoothctl list 2>/dev/null || true)"
-    printf 'bluetooth_controllers=%s\\n' "$(printf '%s\\n' "$controller_list" | grep -c '^Controller ' || true)"
-    printf '%s\\n' "$controller_list"
-else
-    echo 'bluetooth_controllers=0'
 fi
-if "$usb_present"; then
-    test "$bluetooth_state" = active
-    test "$(printf '%s\\n' "$controller_list" | grep -c '^Controller ' || true)" -eq 1
+controller_count="$(printf '%s\\n' "$controller_list" | grep -c '^Controller ' || true)"
+printf 'bluetooth_controllers=%s\\n' "$controller_count"
+printf '%s\\n' "$controller_list"
+if test "$controller_count" -eq 1; then
     rfkill_state="$(/usr/sbin/rfkill list bluetooth)"
     printf 'rfkill_state=%s\\n' "$(printf '%s' "$rfkill_state" | tr '\\n' ';')"
     ! printf '%s\\n' "$rfkill_state" | grep -q 'blocked: yes'
@@ -1003,7 +1035,7 @@ fi
 """
     ssh(command, timeout=120)
     print("doctor_result=pass")
-    print("doctor_note=USB controller absence is allowed until the passthrough gate")
+    print("doctor_note=USB passthrough is optional until a controller is configured")
 
 
 def logs() -> None:
@@ -1098,288 +1130,132 @@ def powershell_json(script: str) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
-def windows_usb_status() -> dict[str, Any]:
-    controller = load_usb_lock()["controller"]
-    instance_id = controller["windows_instance_id"].replace("'", "''")
-    hardware_prefix = (
-        f"USB\\VID_{controller['vendor_id']}&PID_{controller['product_id']}\\*"
+def run_elevated_script(script: str) -> None:
+    if os.name != "nt":
+        raise RuntimeError("elevated Windows operations are only available on Windows")
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    command = (
+        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait "
+        "-PassThru -ArgumentList @('-NoProfile','-NonInteractive',"
+        "'-ExecutionPolicy','Bypass','-EncodedCommand',"
+        f"'{encoded}'); exit $process.ExitCode"
     )
-    script = f"""
-$instance = '{instance_id}'
-$device = Get-PnpDevice -InstanceId $instance -ErrorAction Stop
-$matching = @(Get-PnpDevice -PresentOnly | Where-Object {{ $_.InstanceId -like '{hardware_prefix}' }})
-[pscustomobject]@{{
-    status = [string]$device.Status
-    class = [string]$device.Class
-    friendly_name = [string]$device.FriendlyName
-    instance_id = [string]$device.InstanceId
-    problem = [string]$device.Problem
-    service = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_Service').Data
-    driver_inf = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_DriverInfPath').Data
-    driver_provider = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_DriverProvider').Data
-    driver_version = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_DriverVersion').Data
-    location = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_LocationInfo').Data
-    matching_present_devices = $matching.Count
-}} | ConvertTo-Json -Compress
-"""
-    status = powershell_json(script)
-    if status["instance_id"].upper() != controller["windows_instance_id"].upper():
-        raise RuntimeError("Windows returned a different USB controller instance")
-    if status["matching_present_devices"] != 1:
-        raise RuntimeError(
-            "expected exactly one present UB500 matching the pinned VID/PID; "
-            f"found {status['matching_present_devices']}"
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "UAC was cancelled"
+        raise RuntimeError(f"elevated operation failed: {detail}")
+
+
+def peripheral_usb_config() -> dict[str, str] | None:
+    values = {
+        key: resolve_local_value(
+            "peripheral_usb", key, environment_variable, None
+        ).value
+        for key, environment_variable in (
+            ("vendor_id", "BLEHUB_PERIPHERAL_USB_VENDOR_ID"),
+            ("product_id", "BLEHUB_PERIPHERAL_USB_PRODUCT_ID"),
+            ("serial", "BLEHUB_PERIPHERAL_USB_SERIAL"),
+            ("qmp_id", "BLEHUB_PERIPHERAL_USB_QMP_ID"),
+            ("bus", "BLEHUB_PERIPHERAL_USB_BUS"),
         )
-    return status
+    }
+    if values["vendor_id"] is None and values["product_id"] is None:
+        return None
+    if values["vendor_id"] is None or values["product_id"] is None:
+        raise RuntimeError(
+            "peripheral USB configuration requires both vendor_id and product_id"
+        )
+    for key in ("vendor_id", "product_id"):
+        value = values[key]
+        if (
+            value is None
+            or len(value) != 4
+            or any(c not in "0123456789abcdefABCDEF" for c in value)
+        ):
+            raise RuntimeError(
+                f"peripheral_usb.{key} must be exactly four hexadecimal digits"
+            )
+    qmp_id = values["qmp_id"] or "ble-controller"
+    bus = values["bus"] or "xhci.0"
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", qmp_id):
+        raise RuntimeError("peripheral_usb.qmp_id contains unsupported characters")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", bus):
+        raise RuntimeError("peripheral_usb.bus contains unsupported characters")
+    result = {
+        "vendor_id": values["vendor_id"].lower(),
+        "product_id": values["product_id"].lower(),
+        "qmp_id": qmp_id,
+        "bus": bus,
+    }
+    if values["serial"] is not None:
+        result["serial"] = values["serial"]
+    return result
+
+
+def require_peripheral_usb_config() -> dict[str, str]:
+    config = peripheral_usb_config()
+    if config is None:
+        raise RuntimeError(
+            "no USB peripheral controller configured; nRF52840 Dongle is pending"
+        )
+    return config
 
 
 def qmp_usb_attached() -> bool | None:
-    if not qmp_available():
+    config = peripheral_usb_config()
+    if config is None or not qmp_available():
         return None
     try:
         return bool(
             qmp_execute(
                 "qom-get",
-                {"path": "/machine/peripheral/ub500", "property": "attached"},
+                {
+                    "path": f"/machine/peripheral/{config['qmp_id']}",
+                    "property": "attached",
+                },
             )
         )
     except QMPError:
         return None
 
 
-def print_usb_status(status_document: dict[str, Any]) -> None:
-    for key, value in status_document.items():
-        print(f"host_usb_{key}={value}")
+def print_usb_status() -> None:
+    config = peripheral_usb_config()
+    print(f"usb_controller_configured={str(config is not None).lower()}")
+    if config is not None:
+        for key, value in config.items():
+            print(f"usb_controller_{key}={value}")
     attached = qmp_usb_attached()
     if attached is None:
-        value = "absent" if qmp_available() else "unavailable"
+        value = "absent" if qmp_available() and config is not None else "unavailable"
     else:
         value = str(attached).lower()
     print(f"qemu_usb_attached={value}")
 
 
 def usb_status() -> None:
-    print_usb_status(windows_usb_status())
+    print_usb_status()
 
 
 def delete_qmp_usb() -> None:
+    config = peripheral_usb_config()
     attached = qmp_usb_attached()
-    if attached is None:
+    if config is None or attached is None:
         return
-    qmp_execute("device_del", {"id": "ub500"})
-    deadline = time.monotonic() + 15
+    qmp_execute("device_del", {"id": config["qmp_id"]})
+    deadline = time.monotonic() + (30 if sys.platform == "darwin" else 15)
     while time.monotonic() < deadline:
         if qmp_usb_attached() is None:
             print("qemu_usb_detached=true")
             return
         time.sleep(0.5)
-    raise RuntimeError("QEMU did not remove the UB500 usb-host device")
-
-
-def usb_bind() -> None:
-    ensure_work_directories()
-    status_document = windows_usb_status()
-    print_usb_status(status_document)
-    if status_document["service"].lower() == "winusb":
-        print("host_usb_bind=already-winusb")
-        return
-    if qmp_available():
-        delete_qmp_usb()
-    usb_lock = load_usb_lock()
-    zadig = usb_lock["zadig"]
-    executable = DOWNLOAD_ROOT / zadig["filename"]
-    if not executable.is_file():
-        raise RuntimeError(
-            "the pinned Zadig executable is missing; rerun `peripheral vm-bootstrap`"
-        )
-    verify_hash(executable, "sha256", zadig["sha256"])
-    print("zadig_action=Select Options > List All Devices")
-    print("zadig_device=Generic Bluetooth Adapter")
-    print("zadig_expected_usb_id=2357:0604")
-    print("zadig_target_driver=WinUSB")
-    print("zadig_warning=Do not select the MediaTek adapter or the parent USB hub")
-    quoted = str(executable).replace("'", "''")
-    expected_hash = zadig["sha256"].lower()
-    staging_name = f"zadig-{secrets.token_hex(16)}"
-    script = f"""
-$ErrorActionPreference = 'Stop'
-$source = '{quoted}'
-$parent = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
-if ([string]::IsNullOrWhiteSpace($parent)) {{ throw "Program Files could not be resolved" }}
-$parentItem = Get-Item -LiteralPath $parent -Force -ErrorAction Stop
-if (-not $parentItem.PSIsContainer) {{ throw "Program Files is not a directory" }}
-if (($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
-    throw "refusing to stage Zadig below a reparse point"
-}}
-$stage = Join-Path $parent 'BleHub-{staging_name}'
-$copy = Join-Path $stage 'zadig.exe'
-$created = $false
-try {{
-    if (Test-Path -LiteralPath $stage) {{ throw "elevated Zadig staging path already exists" }}
-    $stageItem = New-Item -ItemType Directory -Path $stage -ErrorAction Stop
-    $created = $true
-    if (($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
-        throw "elevated Zadig staging path is a reparse point"
-    }}
-    & icacls.exe $stage /setowner '*S-1-5-32-544' | Out-Null
-    if ($LASTEXITCODE -ne 0) {{ throw "failed to set elevated Zadig staging owner" }}
-    & icacls.exe $stage /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-18:(OI)(CI)F' | Out-Null
-    if ($LASTEXITCODE -ne 0) {{ throw "failed to protect elevated Zadig staging directory" }}
-    $stageItem = Get-Item -LiteralPath $stage -Force -ErrorAction Stop
-    if (($stageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {{
-        throw "protected Zadig staging path became a reparse point"
-    }}
-    $bytes = [IO.File]::ReadAllBytes($source)
-    $stream = [IO.File]::Open($copy, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try {{
-        $stream.Write($bytes, 0, $bytes.Length)
-        $stream.Flush($true)
-    }} finally {{
-        $stream.Dispose()
-    }}
-    $actual = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne '{expected_hash}') {{ throw "elevated Zadig copy failed pinned SHA-256 verification" }}
-    $process = Start-Process -FilePath $copy -Wait -PassThru
-    if ($process.ExitCode -ne 0) {{ throw "Zadig failed with exit code $($process.ExitCode)" }}
-}} finally {{
-    if ($created) {{
-        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-    }}
-}}
-"""
-    run_elevated_script(script, timeout=1800)
-    status_document = windows_usb_status()
-    print_usb_status(status_document)
-    if status_document["service"].lower() != "winusb":
-        raise RuntimeError(
-            "the pinned UB500 instance is not bound to WinUSB after Zadig closed"
-        )
-    print("host_usb_bind=winusb")
-
-
-def run_elevated_script(script: str, *, timeout: int = 600) -> None:
-    ensure_work_directories()
-    script_bytes = script.encode("utf-8")
-    script_hash = hashlib.sha256(script_bytes).hexdigest()
-    for _ in range(10):
-        script_path = RUN_ROOT / f"elevated-operation-{secrets.token_hex(16)}.ps1"
-        try:
-            descriptor = os.open(
-                script_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-        except FileExistsError:
-            continue
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(script_bytes)
-        break
-    else:
-        raise RuntimeError("could not create an exclusive elevated-operation script")
-
-    quoted_path = str(script_path).replace("'", "''")
-    bootstrap = f"""
-$ErrorActionPreference = 'Stop'
-$path = '{quoted_path}'
-try {{
-    $bytes = [IO.File]::ReadAllBytes($path)
-    $hasher = [Security.Cryptography.SHA256]::Create()
-    try {{
-        $actual = ([BitConverter]::ToString($hasher.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
-    }} finally {{
-        $hasher.Dispose()
-    }}
-    if ($actual -ne '{script_hash}') {{ throw 'elevated-operation script SHA-256 mismatch' }}
-    $source = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
-    & ([ScriptBlock]::Create($source))
-    exit 0
-}} catch {{
-    [Console]::Error.WriteLine($_.Exception.Message)
-    exit 1
-}} finally {{
-    Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-}}
-"""
-    encoded_bootstrap = base64.b64encode(bootstrap.encode("utf-16-le")).decode("ascii")
-    command = (
-        "$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait "
-        "-PassThru -ArgumentList @('-NoProfile','-NonInteractive',"
-        "'-ExecutionPolicy','Bypass','-EncodedCommand',"
-        f"'{encoded_bootstrap}'); exit $process.ExitCode"
-    )
-    try:
-        result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    finally:
-        script_path.unlink(missing_ok=True)
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "UAC was cancelled"
-        raise RuntimeError(f"elevated operation failed: {detail}")
-
-
-def usb_rollback() -> None:
-    if qmp_available():
-        fixture_stop(check=False)
-        delete_qmp_usb()
-    status_document = windows_usb_status()
-    if status_document["service"].lower() != "winusb":
-        print("host_usb_rollback=not-required")
-        print_usb_status(status_document)
-        return
-    driver_inf = status_document["driver_inf"]
-    if re.fullmatch(r"oem[0-9]+\.inf", driver_inf, flags=re.IGNORECASE) is None:
-        raise RuntimeError(
-            f"refusing to delete unexpected WinUSB driver INF {driver_inf!r}"
-        )
-    controller = load_usb_lock()["controller"]
-    instance_id = controller["windows_instance_id"].replace("'", "''")
-    hardware_prefix = (
-        f"USB\\VID_{controller['vendor_id']}&PID_{controller['product_id']}\\*"
-    )
-    script = f"""
-$ErrorActionPreference = 'Stop'
-$instance = '{instance_id}'
-$expectedInf = '{driver_inf}'
-$device = Get-PnpDevice -PresentOnly -InstanceId $instance -ErrorAction Stop
-$matching = @(Get-PnpDevice -PresentOnly | Where-Object {{ $_.InstanceId -like '{hardware_prefix}' }})
-if ($matching.Count -ne 1) {{ throw "pinned UB500 VID/PID is no longer unique" }}
-$service = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_Service').Data
-$currentInf = [string](Get-PnpDeviceProperty -InstanceId $instance -KeyName 'DEVPKEY_Device_DriverInfPath').Data
-if ($service -ine 'WinUSB') {{ throw "pinned UB500 is no longer bound to WinUSB" }}
-if ($currentInf -notmatch '(?i)^oem[0-9]+\\.inf$') {{ throw "elevated INF identity has an invalid form" }}
-if ($currentInf -ine $expectedInf) {{ throw "UB500 INF changed across the elevation boundary" }}
-$allDevices = @(Get-PnpDevice -ErrorAction Stop)
-$shared = @(
-    foreach ($candidate in $allDevices) {{
-        $properties = @(Get-PnpDeviceProperty -InstanceId $candidate.InstanceId -ErrorAction Stop)
-        $driverInfProperties = @($properties | Where-Object {{ $_.KeyName -eq 'DEVPKEY_Device_DriverInfPath' }})
-        if ($driverInfProperties.Count -gt 1) {{ throw "PnP instance has multiple driver INF properties" }}
-        if ($driverInfProperties.Count -eq 1 -and ([string]$driverInfProperties[0].Data) -ieq $currentInf) {{
-            $candidate
-        }}
-    }}
-)
-if ($shared.Count -ne 1 -or $shared[0].InstanceId -ine $instance) {{ throw "refusing to force-delete a shared driver package" }}
-& pnputil.exe /delete-driver $currentInf /uninstall /force
-if ($LASTEXITCODE -ne 0) {{ throw "pnputil delete failed with exit code $LASTEXITCODE" }}
-& pnputil.exe /scan-devices
-if ($LASTEXITCODE -ne 0) {{ throw "pnputil scan failed with exit code $LASTEXITCODE" }}
-"""
-    run_elevated_script(script)
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        status_document = windows_usb_status()
-        if status_document["service"].lower() == "bthusb":
-            print("host_usb_rollback=bthusb")
-            print_usb_status(status_document)
-            return
-        time.sleep(2)
-    raise RuntimeError("UB500 did not return to the inbox BTHUSB driver")
+    raise RuntimeError("QEMU did not remove the configured usb-host device")
 
 
 def wait_for_guest_controller(timeout: int = 30) -> None:
@@ -1400,23 +1276,20 @@ def wait_for_guest_controller(timeout: int = 30) -> None:
 
 
 def usb_attach() -> None:
-    status_document = windows_usb_status()
-    if status_document["service"].lower() != "winusb":
-        raise RuntimeError("the pinned UB500 must be bound to WinUSB before attach")
+    config = require_peripheral_usb_config()
     if not qmp_available():
         raise RuntimeError("the VM must be running before USB attach")
     delete_qmp_usb()
-    controller = load_usb_lock()["controller"]
-    qmp_execute(
-        "device_add",
-        {
-            "driver": "usb-host",
-            "id": "ub500",
-            "vendorid": int(controller["vendor_id"], 16),
-            "productid": int(controller["product_id"], 16),
-            "bus": "xhci.0",
-        },
-    )
+    arguments: dict[str, Any] = {
+        "driver": "usb-host",
+        "id": config["qmp_id"],
+        "vendorid": int(config["vendor_id"], 16),
+        "productid": int(config["product_id"], 16),
+        "bus": config["bus"],
+    }
+    if "serial" in config:
+        arguments["serial"] = config["serial"]
+    qmp_execute("device_add", arguments)
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         if qmp_usb_attached() is True:
@@ -1424,17 +1297,26 @@ def usb_attach() -> None:
         time.sleep(0.5)
     else:
         delete_qmp_usb()
-        raise RuntimeError("QEMU created usb-host but could not claim the UB500")
-    result = ssh(
-        "for attempt in $(seq 1 20); do lsusb -d 2357:0604 >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1",
-        check=False,
-        capture=True,
-        timeout=30,
-    )
+        raise RuntimeError(
+            "QEMU created usb-host but could not claim the configured controller"
+        )
+    device = f"{config['vendor_id']}:{config['product_id']}"
+    try:
+        result = ssh(
+            f"for attempt in $(seq 1 20); do lsusb -d {device} >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1",
+            check=False,
+            capture=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as error:
+        delete_qmp_usb()
+        raise RuntimeError(
+            "guest USB detection timed out after QEMU claimed the controller"
+        ) from error
     if result.returncode != 0:
         delete_qmp_usb()
         raise RuntimeError(
-            "the UB500 was claimed by QEMU but did not appear in the guest"
+            "configured controller was claimed by QEMU but did not appear in the guest"
         )
     ssh("sudo systemctl start bluetooth.service", timeout=60)
     wait_for_guest_controller()
@@ -1453,7 +1335,9 @@ def usb_detach() -> None:
 
 def bluez_restart() -> None:
     if not qmp_available() or qmp_usb_attached() is not True:
-        raise RuntimeError("the running VM must own the UB500 before restarting BlueZ")
+        raise RuntimeError(
+            "the running VM must own the configured USB controller before restarting BlueZ"
+        )
     fixture_stop(check=False)
     ssh("sudo systemctl restart bluetooth.service", timeout=60)
     wait_for_guest_controller()
@@ -1464,7 +1348,9 @@ def bluez_restart() -> None:
 
 def guest_reboot() -> None:
     if not qmp_available() or qmp_usb_attached() is not True:
-        raise RuntimeError("the running VM must own the UB500 before guest reboot")
+        raise RuntimeError(
+            "the running VM must own the configured USB controller before guest reboot"
+        )
     boot_id_before = ssh(
         "cat /proc/sys/kernel/random/boot_id", capture=True, timeout=10
     ).stdout.strip()
@@ -1703,8 +1589,10 @@ def restore_fixture_release(previous_target: str | None) -> None:
 
 
 def fixture_start() -> None:
-    if qmp_usb_attached() is not True:
-        raise RuntimeError("attach the UB500 before starting the BLESS fixture")
+    if not qmp_available():
+        raise RuntimeError(
+            "the Linux Peripheral VM must be running before starting BLESS"
+        )
     require_fixture_environment()
     previous_target = guest_link_target("current")
     fixture_sync()
@@ -2229,8 +2117,6 @@ def parse_args() -> argparse.Namespace:
             "logs",
             "clean",
             "usb-status",
-            "usb-bind",
-            "usb-rollback",
             "usb-attach",
             "usb-detach",
             "bluez-restart",
@@ -2312,10 +2198,6 @@ def main() -> int:
             clean()
         elif args.command == "usb-status":
             usb_status()
-        elif args.command == "usb-bind":
-            usb_bind()
-        elif args.command == "usb-rollback":
-            usb_rollback()
         elif args.command == "usb-attach":
             usb_attach()
         elif args.command == "usb-detach":

@@ -5,16 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-[lib]
-crate-type = ["staticlib", "cdylib", "rlib"]
-
-[[bin]]
-name = "uniffi-bindgen"
-path = "src/uniffi_bindgen.rs"
-required-features = ["bindgen"]
-
-[features]
-bindgen = ["uniffi/cli"]
 
 [dependencies]
 thiserror.workspace = true

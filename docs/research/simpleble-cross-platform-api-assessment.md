@@ -789,7 +789,7 @@ BleHub FakeBackend应继续覆盖：
 - 验证`RSSI == -127` synthetic observation，而非直接照搬过滤；
 - 不内建三次connect retry和global deferred flag。
 
-### Phase 3 Android
+### Phase 4 Android
 
 必须重点避免SimpleBLE当前风险：
 
@@ -803,7 +803,7 @@ BleHub FakeBackend应继续覆盖：
 - 不使用hash-derived handle或process-lifetime `NativeCache`；
 - AAR contents + artifact-only consumer + emulator fake + real-device HIL分层。
 
-### Phase 5 Apple
+### Phase 3 Apple
 
 - 使用CoreBluetooth identifier作为backend identity evidence，不暴露为MAC；
 - delegate queue policy在factory固定并测试；

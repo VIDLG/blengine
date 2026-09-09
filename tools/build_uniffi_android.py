@@ -3,17 +3,17 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from tools.android_toolchain import toolchain_environment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MANIFEST = PROJECT_ROOT / "spikes" / "uniffi-lifecycle" / "Cargo.toml"
-DEFAULT_OUTPUT_ROOT = (
-    PROJECT_ROOT / "spikes" / "uniffi-lifecycle" / "generated" / "android-jni"
-)
-DEFAULT_LIBRARY_NAME = "libblehub_uniffi_lifecycle.so"
+DEFAULT_MANIFEST = PROJECT_ROOT / "crates" / "blehub-uniffi" / "Cargo.toml"
+DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "tests" / "ffi" / "generated" / "android-jni"
+DEFAULT_LIBRARY_NAME = "libblehub_uniffi.so"
 
 
 @dataclass(frozen=True)
@@ -27,34 +27,46 @@ TARGETS = (
     AndroidRustTarget(
         triple="aarch64-linux-android",
         abi="arm64-v8a",
-        linker="aarch64-linux-android24-clang.cmd",
+        linker="aarch64-linux-android24-clang",
     ),
     AndroidRustTarget(
         triple="x86_64-linux-android",
         abi="x86_64",
-        linker="x86_64-linux-android24-clang.cmd",
+        linker="x86_64-linux-android24-clang",
     ),
 )
 
 
+def _ndk_host_tag() -> tuple[str, str]:
+    if sys.platform == "win32":
+        return "windows-x86_64", ".cmd"
+    if sys.platform == "darwin":
+        return "darwin-x86_64", ""
+    if sys.platform.startswith("linux"):
+        return "linux-x86_64", ""
+    raise SystemExit(f"unsupported Android NDK host platform: {sys.platform}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Build a UniFFI fixture for Android ABIs"
+        description="Build the production BleHub UniFFI library for Android ABIs"
     )
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
-    parser.add_argument("--library-name", default=DEFAULT_LIBRARY_NAME)
+    _ = parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    _ = parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    _ = parser.add_argument("--library-name", default=DEFAULT_LIBRARY_NAME)
     arguments = parser.parse_args()
+    manifest = cast(Path, arguments.manifest)
+    output_root = cast(Path, arguments.output_root)
+    library_name = cast(str, arguments.library_name)
 
     environment = toolchain_environment()
     target_dir = Path(environment["CARGO_TARGET_DIR"])
     ndk_root = Path(environment["ANDROID_NDK_HOME"])
-    linker_root = (
-        ndk_root / "toolchains" / "llvm" / "prebuilt" / "windows-x86_64" / "bin"
-    )
+    host_tag, executable_suffix = _ndk_host_tag()
+    linker_root = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "bin"
 
     for target in TARGETS:
-        linker = linker_root / target.linker
+        linker = linker_root / f"{target.linker}{executable_suffix}"
         if not linker.is_file():
             raise SystemExit(f"missing Android NDK linker: {linker}")
 
@@ -64,8 +76,10 @@ def main() -> int:
         command = [
             "cargo",
             "build",
+            "--quiet",
+            "--locked",
             "--manifest-path",
-            str(arguments.manifest),
+            str(manifest),
             "--lib",
             "--release",
             "--target",
@@ -75,14 +89,14 @@ def main() -> int:
         if result.returncode != 0:
             return result.returncode
 
-        source = target_dir / target.triple / "release" / arguments.library_name
+        source = target_dir / target.triple / "release" / library_name
         if not source.is_file():
             raise SystemExit(
                 f"Cargo did not produce expected Android library: {source}"
             )
-        destination = arguments.output_root / target.abi / arguments.library_name
+        destination = output_root / target.abi / library_name
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        _ = shutil.copy2(source, destination)
         print(f"android_native_{target.abi}={destination}")
 
     return 0

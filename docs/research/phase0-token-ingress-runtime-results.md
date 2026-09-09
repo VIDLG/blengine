@@ -3,7 +3,7 @@
 - Status: partial Phase 0 mechanism evidence; the complete Phase 0 gate is not closed
 - Date: 2026-08-29
 - Normative source: [`.plan/PLAN.md`](../../.plan/PLAN.md)
-- Execution catalog: [`docs/testing/ffi-spikes.md`](../testing/ffi-spikes.md)
+- Execution catalog: [`docs/testing/ffi-runtime.md`](../testing/ffi-runtime.md)
 - Archived fixture: [`spikes/archive/boltffi-token-ingress/`](../../spikes/archive/boltffi-token-ingress/)
 
 ## 1. Conclusion

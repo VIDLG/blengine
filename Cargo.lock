@@ -106,6 +106,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blehub-uniffi"
+version = "0.0.0"
+dependencies = [
+ "blehub",
+ "uniffi",
+]
+
+[[package]]
 name = "blehub-windows"
 version = "0.0.0"
 dependencies = [

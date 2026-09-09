@@ -293,7 +293,6 @@ fn parse_cli() -> Result<Cli, ExampleError> {
 
 fn run(cli: Cli, fault_started: &AtomicBool) -> Result<(), ExampleError> {
     let (hub, backend, probe, receiver) = create_accounted_hub()?;
-    let hub = Arc::new(hub);
     let check_result = run_fault_check(
         &hub,
         &backend,

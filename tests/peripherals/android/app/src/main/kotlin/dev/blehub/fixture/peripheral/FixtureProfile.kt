@@ -10,10 +10,9 @@ internal data class FixtureProfile(
     val services: List<ServiceProfile>,
 ) {
     companion object {
-        private const val FILE_NAME = "android-basic-gatt-peripheral.json"
-
         fun load(context: Context): FixtureProfile {
-            val text = context.assets.open(FILE_NAME).bufferedReader().use { it.readText() }
+            val text = context.assets.open("android-peripheral.json")
+                .bufferedReader().use { it.readText() }
             val root = JSONObject(text)
             require(root.getInt("schema_version") == 1) { "unsupported fixture schema" }
 

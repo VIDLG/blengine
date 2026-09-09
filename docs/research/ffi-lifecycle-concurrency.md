@@ -84,7 +84,7 @@ Rust safe code不能自动证明foreign wrapper graph、逻辑竞态、close顺�
 
 ### 3.1 已验证的框架与production对象图机制
 
-已归档的`spikes/archive/uniffi-lifecycle/`及其Android/Apple consumer先验证了Stable UniFFI的representative retention、callback、error、race与package机制。随后`spikes/uniffi-production-candidate/`直接依赖production `blehub` crate，并在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机和Android 16 x86_64模拟器上验证：
+已归档的`spikes/archive/uniffi-lifecycle/`及其Android/Apple consumer先验证了Stable UniFFI的representative retention、callback、error、race与package机制。随后已归档的`spikes/archive/uniffi-production-candidate/`直接依赖production `blehub` crate，并在Windows Kotlin/JVM、Windows Swift `6.3.3`、Android 16 arm64真机和Android 16 x86_64模拟器上验证：
 
 - Rust `BleHub`保存foreign `BleBackend`，foreign backend保存唯一长期exported ingress root；
 - native callback通过`BackendEventIngressHandle { Weak<EventIngressState> }`到达Rust-only `BleEventSink`；
@@ -111,7 +111,7 @@ representative Apple fixture的权威证据仍是GitHub Actions run [`3324975130
 - final release/minified package、artifact manifest、绝对性能、close latency与包体阈值；
 - 任何Windows/Android Framework BLE、CoreBluetooth、权限、RF或硬件行为。
 
-这些保留为Phase 0剩余package evidence或Phase 1/Phase 4 ABI candidate gate，不能由当前minimal scan/connect fixture外推。
+这些保留为Phase 0剩余package evidence或Phase 1/Phase 5 ABI candidate gate，不能由当前minimal scan/connect fixture外推。
 
 ### 3.3 历史BoltFFI证据的角色
 
@@ -227,13 +227,16 @@ fn dispatch(&self, request: Command) -> Result<(), CommandDispatchError> {
 }
 ```
 
-close取得exclusive/write guard：
+close取得exclusive/write guard，等待已进入的command返回并取走backend slot后立即释放guard；后续ingress drain与native cleanup不再持有Hub ownership锁：
 
 ```rust
 pub fn dispose(&self) -> Result<(), BleHubError> {
-    let mut slot = self.backend.write_recovering_poison();
-    let Some(backend) = slot.take() else {
-        return Ok(());
+    let backend = {
+        let mut slot = self.backend.write_recovering_poison();
+        let Some(backend) = slot.take() else {
+            return Ok(());
+        };
+        backend
     };
 
     self.ingress.close();
@@ -243,7 +246,7 @@ pub fn dispose(&self) -> Result<(), BleHubError> {
 }
 ```
 
-关键不是准确helper名，而是取得close线性化点后不能因poison或backend cleanup error提前跳过安全释放。重复dispose和`Drop`观察到`None`并返回/记录结果。
+关键不是准确helper名，而是取得close线性化点后不能因poison或backend cleanup error提前跳过安全释放。slot一旦在write guard下变为`None`，新command只能返回`Closed`，因此必须在等待ingress或调用foreign/native cleanup前释放guard；这避免command/close ownership锁与callback drain或backend内部锁形成AB/BA。重复dispose和`Drop`观察到`None`并返回/记录结果。
 
 | 操作 | 线性化点 |
 |---|---|
@@ -346,6 +349,7 @@ phase与sink在同一个mutex内线性化，所以不再需要mutex外原子flag
 ```text
 command/close write guard
 -> backend slot take
+-> release command/close write guard
 -> ingress mutex acquisition waits for admitted delivery
 -> phase = Closed; downstream.take()
 -> release downstream sink
@@ -354,7 +358,7 @@ command/close write guard
    -> detach/invalidate callbacks and correlation
    -> take/release root ingress wrapper
    -> remaining best-effort native cleanup
--> release Hub backend ownership
+-> release local backend Arc ownership
 ```
 
 close返回后保证：
@@ -373,7 +377,7 @@ close返回后保证：
 | 竞态 | 期望结果 | 主要机制 |
 |---|---|---|
 | command先获得read guard | close等待command返回 | `RwLock` exclusion |
-| close先获得write guard | 新command返回`Closed` | backend slot |
+| close先获得write guard并取走slot | 释放write guard后新command取得read guard并返回`Closed` | backend slot |
 | command返回前同步push | event可先于`Ok`到达，无自锁 | ingress不取command gate |
 | 多callback thread push | 同一Hub sink串行 | downstream mutex |
 | push与close | 已admit delivery完成，其他返回`Closed` | ingress phase + single mutex linearization |
@@ -389,7 +393,7 @@ close返回后保证：
 
 ## 10. 验证计划
 
-完整case以[`docs/testing/ffi-spikes.md`](../testing/ffi-spikes.md)为执行目录。2026-08-29 production candidate已通过pure Rust、Windows Kotlin/JVM、Windows Swift、Android 16 arm64真机、Android 16 x86_64模拟器和Android AAR consumer的适用对象图case；macOS production candidate、完整event wire、final performance/package与少数扩展catalog case仍未完成。至少包括：
+完整case以[`docs/testing/ffi-runtime.md`](../testing/ffi-runtime.md)为执行目录。2026-08-29 production candidate已通过pure Rust、Windows Kotlin/JVM、Windows Swift、Android 16 arm64真机、Android 16 x86_64模拟器和Android AAR consumer的适用对象图case；macOS production candidate、完整event wire、final performance/package与少数扩展catalog case仍未完成。至少包括：
 
 - pure Rust deterministic barrier tests；
 - generated desktop Kotlin/JVM、Android ART/AAR和Swift runtime tests；

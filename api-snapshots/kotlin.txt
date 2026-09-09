@@ -188,6 +188,11 @@ sealed class EventIngressStatus {
     DownstreamFailed(message: String),
 }
 
+sealed class EventSinkException {
+    Rejected(detail: String),
+    UnexpectedCallback(detail: String),
+}
+
 data class GattCharacteristic(
     var id: GattCharacteristicId,
     var uuid: BluetoothUuid,

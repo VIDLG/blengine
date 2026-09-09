@@ -40,11 +40,12 @@ Earlier evidence is not relabeled to cover these later or unexecuted boundaries.
 
 ## Next implementation lane
 
-The active implementation lane is selected by the actual execution host while phase status and evidence remain independent:
+The subsequent user-approved implementation order is now:
 
-- on Windows, prioritize Phase 3 Android, then Phase 4 Windows + Android v0.1;
-- on macOS, including the Mutagen-synchronized Mac mini checkout, prioritize the macOS-first Apple thread;
-- macOS work before Phase 4 freeze consumes the current unfrozen candidate, and applicable Apple gates must rerun after the production ABI freezes;
+- Phase 3: one shared Swift/CoreBluetooth Apple backend, macOS first and iOS independently validated;
+- Phase 4: Android Central backend;
+- Phase 5: Windows + Apple + Android v0.1 and production ABI freeze;
+- work before Phase 5 consumes the current unfrozen candidate, and affected gates must rerun against the freeze candidate;
 - macOS evidence does not prove iOS, Windows evidence does not prove Android, and Mutagen synchronization proves only source transport.
 
 Phase 2 completion does not freeze the public ABI or mark Phase 3, Phase 4, or Phase 5 complete.

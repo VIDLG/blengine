@@ -1,9 +1,0 @@
-[crates.blehub.bindings.kotlin]
-android = true
-package_name = "dev.blehub.candidate.blehub"
-kotlin_target_version = "2.1.20"
-
-[crates.blehub_uniffi_production_candidate.bindings.kotlin]
-android = true
-package_name = "dev.blehub.candidate.fixture"
-kotlin_target_version = "2.1.20"

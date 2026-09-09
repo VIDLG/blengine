@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import secrets
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from tools.android_toolchain import (
-    android_executable,
-    sdk_root,
-    select_test_device,
-    toolchain_environment,
-)
+from tools.android_toolchain import adb_environment, adb_executable, select_test_device
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APK = REPO_ROOT / "tests/peripherals/android/app/build/outputs/apk/debug/app-debug.apk"
@@ -21,6 +18,17 @@ PACKAGE = "dev.blehub.fixture.peripheral"
 ACTIVITY_CLASS = f"{PACKAGE}.MainActivity"
 ADB_COMPONENT = f"{PACKAGE}/{ACTIVITY_CLASS}"
 LOG_TAG = "BleHubPeripheral"
+REQUIRED_PERMISSIONS = (
+    "android.permission.BLUETOOTH_ADVERTISE",
+    "android.permission.BLUETOOTH_CONNECT",
+)
+INSTALL_TIMEOUT_SECONDS = 30.0
+INSTALLER_PACKAGE = "com.android.packageinstaller"
+INSTALLER_CONFIRM_BUTTON = "com.android.packageinstaller:id/button1"
+INSTALLER_CONFIRM_QUESTION = "com.android.packageinstaller:id/install_confirm_question"
+INSTALLER_SUCCESS = "com.android.packageinstaller:id/install_success"
+INSTALL_UI_DUMP = "/sdcard/blehub-install-ui.xml"
+INSTALL_SUCCESS_TIMEOUT_SECONDS = 5.0
 SUBSCRIPTION_BURST_TIMEOUT_FLOOR_SECONDS = 180.0
 SUBSCRIPTION_BURST_OVERHEAD_SECONDS = 20.0
 SUBSCRIPTION_MIN_OPERATIONS_PER_SECOND = {
@@ -39,7 +47,7 @@ class Args:
 
 
 def _device() -> tuple[str, dict[str, str]]:
-    environment = toolchain_environment()
+    environment = adb_environment()
     selected = select_test_device("physical", environment=environment)
     print(f"android_test_device={selected.serial}", flush=True)
     return selected.serial, environment
@@ -79,14 +87,12 @@ def _adb(
     *args: str,
     timeout: float | None = None,
 ) -> None:
-    adb = sdk_root() / "platform-tools/adb.exe"
-    _run([str(adb), "-s", serial, *args], environment, timeout=timeout)
+    _run([str(adb_executable()), "-s", serial, *args], environment, timeout=timeout)
 
 
 def _adb_output(serial: str, environment: dict[str, str], *args: str) -> str:
-    adb = sdk_root() / "platform-tools/adb.exe"
     result = subprocess.run(
-        [str(adb), "-s", serial, *args],
+        [str(adb_executable()), "-s", serial, *args],
         env=environment,
         check=False,
         capture_output=True,
@@ -99,40 +105,283 @@ def _adb_output(serial: str, environment: dict[str, str], *args: str) -> str:
     return result.stdout
 
 
+def _installer_nodes(
+    serial: str, environment: dict[str, str]
+) -> list[ET.Element] | None:
+    try:
+        dump = subprocess.run(
+            [
+                str(adb_executable()),
+                "-s",
+                serial,
+                "shell",
+                "uiautomator",
+                "dump",
+                INSTALL_UI_DUMP,
+            ],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5.0,
+        )
+        if dump.returncode != 0:
+            return None
+        ui = subprocess.run(
+            [str(adb_executable()), "-s", serial, "shell", "cat", INSTALL_UI_DUMP],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5.0,
+        )
+        if ui.returncode != 0:
+            return None
+        return list(ET.fromstring(ui.stdout).iter("node"))
+    except (ET.ParseError, OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _button_center(nodes: list[ET.Element], resource_id: str) -> tuple[int, int] | None:
+    for node in nodes:
+        if (
+            node.get("package") != INSTALLER_PACKAGE
+            or node.get("resource-id") != resource_id
+            or node.get("class") != "android.widget.Button"
+            or node.get("clickable") != "true"
+            or node.get("enabled") != "true"
+        ):
+            continue
+        bounds = node.get("bounds", "")
+        try:
+            left_top, right_bottom = bounds.split("][")
+            left, top = (int(value) for value in left_top.removeprefix("[").split(","))
+            right, bottom = (
+                int(value) for value in right_bottom.removesuffix("]").split(",")
+            )
+        except (ValueError, IndexError):
+            return None
+        return ((left + right) // 2, (top + bottom) // 2)
+    return None
+
+
+def _install_prompt_button(
+    serial: str, environment: dict[str, str]
+) -> tuple[int, int] | None:
+    nodes = _installer_nodes(serial, environment)
+    if nodes is None:
+        return None
+    has_target_title = any(
+        node.get("package") == INSTALLER_PACKAGE
+        and node.get("resource-id") == f"{INSTALLER_PACKAGE}:id/alertTitle"
+        and node.get("text") == "BleHub Peripheral"
+        for node in nodes
+    )
+    has_confirmation_question = any(
+        node.get("package") == INSTALLER_PACKAGE
+        and node.get("resource-id") == INSTALLER_CONFIRM_QUESTION
+        for node in nodes
+    )
+    if not has_target_title or not has_confirmation_question:
+        return None
+    return _button_center(nodes, INSTALLER_CONFIRM_BUTTON)
+
+
+def _install_success_button(
+    serial: str, environment: dict[str, str]
+) -> tuple[int, int] | None:
+    nodes = _installer_nodes(serial, environment)
+    if nodes is None:
+        return None
+    has_target_title = any(
+        node.get("package") == INSTALLER_PACKAGE
+        and node.get("resource-id") == f"{INSTALLER_PACKAGE}:id/alertTitle"
+        and node.get("text") == "BleHub Peripheral"
+        for node in nodes
+    )
+    has_success_message = any(
+        node.get("package") == INSTALLER_PACKAGE
+        and node.get("resource-id") == INSTALLER_SUCCESS
+        for node in nodes
+    )
+    if not has_target_title or not has_success_message:
+        return None
+    return _button_center(nodes, INSTALLER_CONFIRM_BUTTON)
+
+
+def _install_apk(serial: str, environment: dict[str, str]) -> None:
+    command = [
+        str(adb_executable()),
+        "-s",
+        serial,
+        "install",
+        "-r",
+        "-g",
+        str(APK),
+    ]
+    process = subprocess.Popen(command, env=environment)
+    deadline = time.monotonic() + INSTALL_TIMEOUT_SECONDS
+    prompt_clicked = False
+    while process.poll() is None:
+        if not prompt_clicked:
+            try:
+                button = _install_prompt_button(serial, environment)
+            except (OSError, subprocess.TimeoutExpired):
+                button = None
+            if button is not None:
+                x, y = button
+                print(
+                    f"android_install_confirmation=click x={x} y={y}",
+                    flush=True,
+                )
+                _adb(
+                    serial,
+                    environment,
+                    "shell",
+                    "input",
+                    "tap",
+                    str(x),
+                    str(y),
+                    timeout=5.0,
+                )
+                prompt_clicked = True
+        if time.monotonic() >= deadline:
+            process.kill()
+            _ = process.wait()
+            detail = f"timed out after {INSTALL_TIMEOUT_SECONDS} seconds: {' '.join(command)}"
+            raise SystemExit(detail)
+        time.sleep(0.5)
+    if process.returncode != 0:
+        raise SystemExit(process.returncode)
+
+
+def _open_installed_app(serial: str, environment: dict[str, str]) -> None:
+    success_deadline = time.monotonic() + INSTALL_SUCCESS_TIMEOUT_SECONDS
+    while time.monotonic() < success_deadline:
+        button = _install_success_button(serial, environment)
+        if button is not None:
+            x, y = button
+            print(f"android_install_success=click x={x} y={y}", flush=True)
+            _adb(
+                serial,
+                environment,
+                "shell",
+                "input",
+                "tap",
+                str(x),
+                str(y),
+                timeout=5.0,
+            )
+            return
+        time.sleep(0.5)
+
+
+def _apk_fingerprint() -> str:
+    with APK.open("rb") as apk:
+        return hashlib.file_digest(apk, "sha256").hexdigest()
+
+
+def _installed_apk_fingerprint(serial: str, environment: dict[str, str]) -> str | None:
+    installed = subprocess.run(
+        [str(adb_executable()), "-s", serial, "shell", "pm", "path", PACKAGE],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if installed.returncode != 0:
+        return None
+    paths = [
+        line.removeprefix("package:").strip()
+        for line in installed.stdout.splitlines()
+        if line.startswith("package:")
+    ]
+    base_apk = next((path for path in paths if path.endswith("/base.apk")), None)
+    if base_apk is None:
+        return None
+    apk = subprocess.run(
+        [str(adb_executable()), "-s", serial, "exec-out", "cat", base_apk],
+        env=environment,
+        check=False,
+        capture_output=True,
+    )
+    if apk.returncode != 0:
+        return None
+    return hashlib.sha256(apk.stdout).hexdigest()
+
+
 def install(serial: str, environment: dict[str, str]) -> None:
     _require_apk()
-    _run(
-        [
-            str(android_executable()),
-            f"--sdk={sdk_root()}",
-            "install",
-            f"--device={serial}",
-            f"--apks={APK}",
-            "--install-options=-r,-g",
-        ],
-        environment,
+    _install_apk(serial, environment)
+    for permission in REQUIRED_PERMISSIONS:
+        _adb(
+            serial,
+            environment,
+            "shell",
+            "pm",
+            "grant",
+            PACKAGE,
+            permission,
+            timeout=30.0,
+        )
+    _open_installed_app(serial, environment)
+
+
+def _remove_existing_install(serial: str, environment: dict[str, str]) -> None:
+    installed = subprocess.run(
+        [str(adb_executable()), "-s", serial, "shell", "pm", "path", PACKAGE],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     )
+    if installed.returncode != 0 or not installed.stdout.strip():
+        return
+    result = subprocess.run(
+        [str(adb_executable()), "-s", serial, "uninstall", PACKAGE],
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output = result.stdout + result.stderr
+    if result.returncode != 0 and "Unknown package" not in output:
+        if "DELETE_FAILED_INTERNAL_ERROR" in output:
+            detail = "Android package manager rejected fixture uninstall"
+            detail += " (DELETE_FAILED_INTERNAL_ERROR); unlock the device, restart"
+            detail += " ADB, or reboot the test device before retrying android-start"
+            raise SystemExit(detail)
+        raise SystemExit(output.strip() or result.returncode)
+
+
+def _require_unlocked(serial: str, environment: dict[str, str]) -> None:
+    output = _adb_output(serial, environment, "shell", "dumpsys", "window")
+    if "mInputRestricted=true" in output or "mDreamingLockscreen=true" in output:
+        raise SystemExit(
+            "Android test device is locked; unlock it before deploying the BLE fixture"
+        )
 
 
 def start(serial: str, environment: dict[str, str]) -> None:
+    _require_unlocked(serial, environment)
     _require_apk()
-    _run(
-        [
-            str(android_executable()),
-            f"--sdk={sdk_root()}",
-            "run",
-            f"--device={serial}",
-            f"--apks={APK}",
-            f"--activity={ACTIVITY_CLASS}",
-            "--type=ACTIVITY",
-            "--install-options=-r,-g",
-        ],
-        environment,
-    )
+    _remove_existing_install(serial, environment)
+    install(serial, environment)
+    _reactivate(serial, environment)
     wait_ready(serial, environment)
 
 
-def resume(serial: str, environment: dict[str, str]) -> None:
+def _reactivate(serial: str, environment: dict[str, str]) -> None:
     _adb(
         serial,
         environment,
@@ -152,22 +401,49 @@ def resume(serial: str, environment: dict[str, str]) -> None:
         ADB_COMPONENT,
         timeout=30.0,
     )
+
+
+def resume(serial: str, environment: dict[str, str]) -> None:
+    _reactivate(serial, environment)
     wait_ready(serial, environment)
 
 
+def ensure(serial: str, environment: dict[str, str]) -> None:
+    _require_apk()
+    fingerprint = _apk_fingerprint()
+    if _installed_apk_fingerprint(serial, environment) == fingerprint:
+        print(f"android_fixture_apk={fingerprint} action=resume", flush=True)
+        resume(serial, environment)
+        return
+    print(f"android_fixture_apk={fingerprint} action=install", flush=True)
+    start(serial, environment)
+
+
 def wait_ready(serial: str, environment: dict[str, str]) -> None:
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 10.0
+    recovery_attempted = False
     while True:
-        outcome = command(serial, environment, "ready")
+        try:
+            outcome = command(serial, environment, "ready")
+        except SystemExit as error:
+            if recovery_attempted or "timed out" not in str(error):
+                raise
+            outcome = ""
         if "result=ok" in outcome:
             return
-        if "fixture is not advertising: STARTING" not in outcome:
-            raise SystemExit(1)
-        if time.monotonic() >= deadline:
-            raise SystemExit(
-                "timed out waiting for Android fixture advertising readiness"
-            )
-        time.sleep(0.1)
+        if "fixture is not advertising: STARTING" in outcome:
+            if time.monotonic() >= deadline:
+                raise SystemExit(
+                    "timed out waiting for Android fixture advertising readiness"
+                )
+            time.sleep(0.1)
+            continue
+        if "fixture is not advertising: STOPPED" in outcome and not recovery_attempted:
+            recovery_attempted = True
+            print("android_fixture_start_recovery=resume", flush=True)
+            _reactivate(serial, environment)
+            continue
+        raise SystemExit(1)
 
 
 def command(
@@ -464,6 +740,7 @@ def parse_args() -> Args:
     for name in (
         "install",
         "start",
+        "ensure",
         "resume",
         "stop",
         "disconnect",
@@ -506,6 +783,8 @@ def main() -> int:
         install(serial, environment)
     elif args.command == "start":
         start(serial, environment)
+    elif args.command == "ensure":
+        ensure(serial, environment)
     elif args.command == "resume":
         resume(serial, environment)
     elif args.command == "log":

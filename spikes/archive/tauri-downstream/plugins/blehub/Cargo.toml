@@ -1,0 +1,10 @@
+[package]
+name = "blehub-tauri-plugin-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+blehub = { path = "../../../../crates/blehub" }
+serde = { version = "1", features = ["derive"] }
+tauri = "2.11.5"

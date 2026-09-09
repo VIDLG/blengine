@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.local_config import ConfiguredPath, resolve_toolchain_root
+from tools.local_config import ConfiguredPath, resolve_android_sdk_root
 
 ANDROID_CLI_VERSION = "1.0.15985488"
 AVD_NAME = "medium_phone"
@@ -42,54 +43,84 @@ class AndroidDevice:
         return "emulator" if self.is_emulator else "physical"
 
 
-PACKAGES = (
-    AndroidPackage(
-        "cmdline-tools/latest",
-        "23.0.0",
-        "cmdline-tools/latest",
-        ("bin/sdkmanager.bat",),
-    ),
-    AndroidPackage(
-        "platform-tools",
-        "37.0.1",
-        "platform-tools",
-        ("adb.exe",),
-    ),
-    AndroidPackage(
-        "build-tools/36.0.0",
-        "36.0.0",
-        "build-tools/36.0.0",
-        ("aapt2.exe",),
-    ),
-    AndroidPackage(
-        "platforms/android-36",
-        "2.0.0",
-        "platforms/android-36",
-        ("android.jar",),
-    ),
-    AndroidPackage(
-        "ndk/28.2.13676358",
-        "28.2.13676358",
-        "ndk/28.2.13676358",
-        ("toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe",),
-    ),
-    AndroidPackage(
-        "emulator",
-        "37.1.11",
-        "emulator",
-        ("emulator.exe",),
-    ),
-    AndroidPackage(
-        "system-images/android-36/google_apis_playstore/x86_64",
-        "7.0.0",
-        "system-images/android-36/google_apis_playstore/x86_64",
-        ("system.img",),
-    ),
-)
+def _host_executable(name: str) -> str:
+    return f"{name}.exe" if os.name == "nt" else name
+
+
+def _ndk_host_tag() -> str:
+    if os.name == "nt":
+        return "windows-x86_64"
+    if sys.platform == "darwin":
+        return "darwin-x86_64"
+    return "linux-x86_64"
+
+
+def _emulator_abi() -> str:
+    if sys.platform == "darwin" and platform.machine().lower() in {
+        "arm64",
+        "aarch64",
+    }:
+        return "arm64-v8a"
+    return "x86_64"
+
+
+def _android_packages() -> tuple[AndroidPackage, ...]:
+    emulator_abi = _emulator_abi()
+    system_image = f"system-images/android-36/google_apis_playstore/{emulator_abi}"
+    ndk_clang = (
+        f"toolchains/llvm/prebuilt/{_ndk_host_tag()}/bin/{_host_executable('clang')}"
+    )
+    return (
+        AndroidPackage(
+            "cmdline-tools/latest",
+            "23.0.0",
+            "cmdline-tools/latest",
+            (f"bin/{_host_executable('sdkmanager')}",),
+        ),
+        AndroidPackage(
+            "platform-tools",
+            "37.0.1",
+            "platform-tools",
+            (_host_executable("adb"),),
+        ),
+        AndroidPackage(
+            "build-tools/36.0.0",
+            "36.0.0",
+            "build-tools/36.0.0",
+            (_host_executable("aapt2"),),
+        ),
+        AndroidPackage(
+            "platforms/android-36",
+            "2.0.0",
+            "platforms/android-36",
+            ("android.jar",),
+        ),
+        AndroidPackage(
+            "ndk/28.2.13676358",
+            "28.2.13676358",
+            "ndk/28.2.13676358",
+            (ndk_clang,),
+        ),
+        AndroidPackage(
+            "emulator",
+            "37.1.11",
+            "emulator",
+            (_host_executable("emulator"),),
+        ),
+        AndroidPackage(
+            system_image,
+            "7.0.0",
+            system_image,
+            ("system.img",),
+        ),
+    )
+
+
+PACKAGES = _android_packages()
 
 
 def configured_sdk_root() -> ConfiguredPath:
-    return resolve_toolchain_root("android", "BLEHUB_ANDROID_ROOT")
+    return resolve_android_sdk_root()
 
 
 def sdk_root() -> Path:
@@ -97,12 +128,26 @@ def sdk_root() -> Path:
 
 
 def android_executable() -> Path:
-    executable = shutil.which("android.exe") or shutil.which("android")
+    local_executable = Path.home() / ".local" / "bin" / _host_executable("android")
+    executable = (
+        str(local_executable)
+        if local_executable.is_file()
+        else shutil.which("android.exe") or shutil.which("android")
+    )
     if executable is None:
-        raise RuntimeError(
-            "Google Android CLI is required; install it with "
-            "`winget install -e --id Google.AndroidCLI`"
-        )
+        if sys.platform == "darwin":
+            instruction = (
+                "install the official macOS CLI from "
+                "https://dl.google.com/android/cli/latest/darwin_arm64/install.sh"
+            )
+        elif os.name == "nt":
+            instruction = "install it with `winget install -e --id Google.AndroidCLI`"
+        else:
+            instruction = (
+                "install the official Linux CLI from "
+                "https://dl.google.com/android/cli/latest/linux_x86_64/install.sh"
+            )
+        raise RuntimeError(f"Google Android CLI is required; {instruction}")
     return Path(executable).resolve()
 
 
@@ -264,7 +309,36 @@ def create_avd() -> None:
 
 
 def adb_executable() -> Path:
-    return sdk_root() / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+    name = _host_executable("adb")
+    managed = sdk_root() / "platform-tools" / name
+    if managed.is_file():
+        return managed
+    resolved = shutil.which(name)
+    return Path(resolved).resolve() if resolved is not None else managed
+
+
+def adb_environment() -> dict[str, str]:
+    executable = adb_executable()
+    if not executable.is_file():
+        raise RuntimeError(
+            "Android SDK Platform-Tools are unavailable; install the project SDK or "
+            "put the official `adb` executable on PATH"
+        )
+    returncode, output = _run_output([str(executable), "version"])
+    expected = next(
+        package.version for package in PACKAGES if package.package == "platform-tools"
+    )
+    if returncode != 0 or not any(
+        line.startswith(f"Version {expected}") for line in output.splitlines()
+    ):
+        raise RuntimeError(
+            f"unexpected adb version output {output.strip()!r}; expected {expected}"
+        )
+    environment = os.environ.copy()
+    environment["PATH"] = os.pathsep.join(
+        (str(executable.parent), environment.get("PATH", ""))
+    )
+    return environment
 
 
 def _connected_devices(environment: dict[str, str]) -> list[AndroidDevice]:

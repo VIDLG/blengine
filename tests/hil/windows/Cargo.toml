@@ -10,7 +10,7 @@ autobins = false
 
 [dependencies]
 blehub = { path = "../../../crates/blehub" }
-blehub-windows = { path = "../../../crates/blehub-windows", features = ["hil-callback-gates"] }
+blehub-windows = { path = "../../../platforms/windows", features = ["hil-callback-gates"] }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [[bin]]

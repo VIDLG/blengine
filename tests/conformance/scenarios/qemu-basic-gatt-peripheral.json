@@ -35,6 +35,15 @@
           "initial_value_hex": "00"
         },
         {
+          "role": "indication-updates",
+          "uuid": "fff50000-0000-4000-8000-000000000000",
+          "properties": [
+            "read",
+            "indicate"
+          ],
+          "initial_value_hex": "00"
+        },
+        {
           "role": "read-only",
           "uuid": "fff30000-0000-4000-8000-000000000000",
           "properties": [

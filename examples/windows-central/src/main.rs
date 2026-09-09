@@ -21,9 +21,11 @@ mod windows_example {
 
     impl BleEventSink for ChannelSink {
         fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError> {
-            self.sender.send(event).map_err(|error| EventSinkError {
-                message: error.to_string(),
-            })
+            self.sender
+                .send(event)
+                .map_err(|error| EventSinkError::Rejected {
+                    detail: error.to_string(),
+                })
         }
     }
 
@@ -31,7 +33,7 @@ mod windows_example {
         let (service_uuid, scan_duration) = parse_arguments()?;
         let (sender, receiver) = mpsc::channel();
         let backend = Arc::new(WindowsBackend::new()?);
-        let hub = BleHub::new(backend, Box::new(ChannelSink { sender }))?;
+        let hub = BleHub::new(backend, Arc::new(ChannelSink { sender }))?;
 
         let capabilities = hub.capabilities();
         println!(

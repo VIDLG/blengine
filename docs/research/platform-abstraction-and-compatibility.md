@@ -211,7 +211,7 @@ v0.1故意不提供通用AND/OR表达式、任意closure、地址过滤、RSSI�
 
 #### Apple
 
-[`scanForPeripherals(withServices:options:)`](../platform-api-reference/apple/cbcentralmanager-scanforperipherals.md) 可按service UUID预筛选；`nil`表示扫描全部。callback通过[`advertisementData`](../platform-api-reference/apple/cbcentralmanagerdelegate-diddiscover.md)提供local name、service UUID、manufacturer/service data和connectable；normal与overflow service UUID都属于advertised service observation，solicited UUID不混入。name/company没有native pushdown证据，因此callback mapping仍是统一正确性边界。前台[`AllowDuplicates`](../platform-api-reference/apple/cbcentralmanagerscanoptionallowduplicateskey.md)可关闭coalescing；后台扫描要求service filter且scan option无效，这会削弱duplicate hint，但不能改变公共predicate。
+[`scanForPeripherals(withServices:options:)`](../platform-api-reference/apple/cbcentralmanager-scanforperipherals.md) 可按service UUID预筛选；`nil`表示扫描全部。callback的[`advertisementData`](../platform-api-reference/apple/cbcentralmanagerdelegate-diddiscover.md)可通过对应key暴露local name、service UUID、manufacturer/service data和connectable，但官方只描述它包含“any advertisement data”，不保证每次callback完整或原样呈现全部空口AD structure。已暴露的normal与overflow service UUID都属于advertised service observation，solicited UUID不混入；当CoreBluetooth在明确service filter下返回callback时，该native match可作为所请求service的positive evidence，但不能据此补造name/company等字段。name/company没有native pushdown证据，因此callback mapping仍是统一正确性边界。前台[`AllowDuplicates`](../platform-api-reference/apple/cbcentralmanagerscanoptionallowduplicateskey.md)可关闭coalescing；后台扫描要求service filter且scan option无效，这会削弱duplicate hint，但不能改变公共predicate。
 
 #### BlueZ
 

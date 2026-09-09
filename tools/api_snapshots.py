@@ -7,10 +7,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUST_SOURCE_ROOT = PROJECT_ROOT / "crates" / "blehub" / "src"
-KOTLIN_BINDING = (
-    PROJECT_ROOT / "generated" / "kotlin" / "dev" / "blehub" / "ffi" / "blehub.kt"
-)
-SWIFT_BINDING = PROJECT_ROOT / "generated" / "swift" / "blehub.swift"
+GENERATED_ROOT = PROJECT_ROOT / ".work" / "api-snapshot-generated"
+KOTLIN_BINDING = GENERATED_ROOT / "kotlin" / "dev" / "blehub" / "ffi" / "blehub.kt"
+SWIFT_BINDING = GENERATED_ROOT / "swift" / "blehub.swift"
 SNAPSHOT_ROOT = PROJECT_ROOT / "api-snapshots"
 
 SNAPSHOT_PATHS = {

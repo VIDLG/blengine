@@ -168,9 +168,11 @@ struct ChannelSink {
 
 impl BleEventSink for ChannelSink {
     fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError> {
-        self.sender.send(event).map_err(|error| EventSinkError {
-            message: error.to_string(),
-        })
+        self.sender
+            .send(event)
+            .map_err(|error| EventSinkError::Rejected {
+                detail: error.to_string(),
+            })
     }
 }
 
@@ -219,16 +221,16 @@ pub fn parse_timeout_and_service(
     Ok((timeout, service_uuid))
 }
 
-pub fn create_hub() -> Result<(BleHub, EventReceiver), ExampleError> {
+pub fn create_hub() -> Result<(Arc<BleHub>, EventReceiver), ExampleError> {
     let (sender, receiver) = mpsc::channel();
     let backend = Arc::new(WindowsBackend::new()?);
-    let hub = BleHub::new(backend, Box::new(ChannelSink { sender }))?;
+    let hub = BleHub::new(backend, Arc::new(ChannelSink { sender }))?;
     Ok((hub, EventReceiver::new(receiver)))
 }
 
 pub fn create_accounted_hub() -> Result<
     (
-        BleHub,
+        Arc<BleHub>,
         Arc<WindowsBackend>,
         WindowsResourceProbe,
         EventReceiver,
@@ -238,7 +240,7 @@ pub fn create_accounted_hub() -> Result<
     let (sender, receiver) = mpsc::channel();
     let (backend, probe) = WindowsBackend::new_accounted()?;
     let backend = Arc::new(backend);
-    let hub = BleHub::new(backend.clone(), Box::new(ChannelSink { sender }))?;
+    let hub = BleHub::new(backend.clone(), Arc::new(ChannelSink { sender }))?;
     Ok((hub, backend, probe, EventReceiver::new(receiver)))
 }
 

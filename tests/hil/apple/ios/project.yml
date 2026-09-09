@@ -1,0 +1,44 @@
+name: BleHubAppleIOSProbe
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "26.2"
+packages:
+  BleHubUniFfi:
+    path: ../../../../.work/staged/apple-production
+targets:
+  BleHubAppleIOSProbe:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: BleHubAppleIOSProbe
+        excludes:
+          - Info.plist
+      - path: ../../../../platforms/apple/Sources/BleHubApple
+      - path: ../support/SwiftProbeHarness.swift
+      - path: ../support/AppleCoreBluetoothRfScenario.swift
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: Apple Development
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: BleHubAppleIOSProbe/Info.plist
+        MARKETING_VERSION: 0.1.1
+        PRODUCT_BUNDLE_IDENTIFIER: dev.blehub.ios-probe
+        PRODUCT_NAME: BleHubAppleIOSProbe
+        SUPPORTED_PLATFORMS: iphoneos
+        SUPPORTS_MACCATALYST: NO
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: 1
+    dependencies:
+      - package: BleHubUniFfi
+        product: BleHubUniFfi
+schemes:
+  BleHubAppleIOSProbe:
+    build:
+      targets:
+        BleHubAppleIOSProbe: all
+    run:
+      config: Debug

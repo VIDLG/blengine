@@ -19,7 +19,7 @@ Windows RF runner位于standalone `tests/hil/windows` Cargo crate，只通过Jus
 
 ### 当前物理外设：项目Android Peripheral
 
-开发期使用Android真机（当前为OnePlus 11，ADB serial `3ac5cc09`）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-android-basic-gatt-v1`，可显式发送notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
+开发期使用Android真机（当前为OnePlus 11，ADB serial `3ac5cc09`）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-android-peripheral-v1`，在同一 GATT 数据库中提供普通 `updates` 和严格 Indication 用的 `indication-updates`，可显式发送 notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
 
 2026-08-29已从Windows通过LightBlue和项目recipe实际验证共享fixture的以下基础路径：
 

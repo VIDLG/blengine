@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/blehub", "crates/blehub-testkit", "crates/blehub-windows"]
+members = [
+    "crates/blehub",
+    "crates/blehub-uniffi",
+    "platforms/windows",
+    "tests/support/blehub-testkit",
+]
 exclude = ["tests/hil/windows"]
 resolver = "3"
 

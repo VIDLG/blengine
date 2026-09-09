@@ -131,6 +131,7 @@ async def _scan(args: argparse.Namespace) -> list[dict[str, Any]]:
     discovered = await BleakScanner.discover(
         timeout=args.timeout,
         return_adv=True,
+        service_uuids=args.service_uuid,
     )
     matches = [
         _to_record(device, advertisement)

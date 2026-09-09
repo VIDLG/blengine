@@ -1,0 +1,4 @@
+[crates.blehub.bindings.kotlin]
+android = true
+package_name = "dev.blehub"
+kotlin_target_version = "2.1.20"

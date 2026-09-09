@@ -201,7 +201,10 @@ class WriteBatchLedger:
         }
 
 
-def load_scenario(path: Path) -> dict[str, Any]:
+def load_scenario(
+    path: Path,
+    expected_profile_id: str = PROFILE_ID,
+) -> dict[str, Any]:
     document = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise TypeError("scenario root must be an object")
@@ -212,8 +215,10 @@ def load_scenario(path: Path) -> dict[str, Any]:
     )
     if document["schema_version"] != 1:
         raise ValueError("scenario.schema_version must be 1")
-    if document["profile_id"] != PROFILE_ID:
-        raise ValueError(f"scenario.profile_id must be {PROFILE_ID!r}")
+    if document["profile_id"] != expected_profile_id:
+        raise ValueError(
+            f"scenario.profile_id must be {expected_profile_id!r}"
+        )
 
     advertising = document["advertising"]
     if not isinstance(advertising, dict):
@@ -852,7 +857,7 @@ async def serve(args: argparse.Namespace) -> None:
         GATTCharacteristicProperties,
     )
 
-    scenario = load_scenario(args.scenario)
+    scenario = load_scenario(args.scenario, args.expected_profile_id)
     updates_service_uuid, updates_characteristic_uuid = updates_target(scenario)
     run_id = args.run_id or str(uuid.uuid4())
     write_batch_ledger = WriteBatchLedger()
@@ -914,7 +919,12 @@ async def serve(args: argparse.Namespace) -> None:
 
     server.read_request_func = read_request
     server.write_request_func = write_request
-    await server.add_gatt(gatt_tree)
+    try:
+        await asyncio.wait_for(server.add_gatt(gatt_tree), timeout=10)
+    except asyncio.TimeoutError as error:
+        raise RuntimeError(
+            "BLESS CoreBluetooth service registration did not complete within 10 seconds"
+        ) from error
 
     stop_event = asyncio.Event()
     control_event = asyncio.Event()
@@ -988,9 +998,11 @@ def parse_args() -> argparse.Namespace:
 
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("--scenario", required=True, type=Path)
+    validate_parser.add_argument("--expected-profile-id", default=PROFILE_ID)
 
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--scenario", required=True, type=Path)
+    serve_parser.add_argument("--expected-profile-id", default=PROFILE_ID)
     serve_parser.add_argument(
         "--status-file",
         type=Path,
@@ -1015,7 +1027,7 @@ def main() -> int:
     args = parse_args()
     try:
         if args.command == "validate":
-            scenario = load_scenario(args.scenario)
+            scenario = load_scenario(args.scenario, args.expected_profile_id)
             validate_control_protocol()
             emit("valid", profile_id=scenario["profile_id"])
         else:

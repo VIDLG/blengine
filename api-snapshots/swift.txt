@@ -103,12 +103,31 @@ struct BleEventError {
     public var platformDetails: PlatformErrorDetails?
 }
 
+protocol BleEventSink {
+    func onEvent(event: BleEvent) throws
+}
+
 enum BleHubError {
     case BackendAssembly(detail: String)
     case BackendCleanup(detail: String, platformDetails: PlatformErrorDetails?)
     case ResourceBusy(detail: String)
     case InvalidConfiguration(field: String, detail: String)
     case FfiContract(detail: String)
+}
+
+protocol BleHubProtocol {
+    func capabilities() -> BackendCapabilities
+    func connect(command: ConnectCommand) throws
+    func disconnect(command: DisconnectCommand) throws
+    func discoverGatt(command: DiscoverGattCommand) throws
+    func dispose() throws
+    func initialize(command: InitializeCommand) throws
+    func readCharacteristic(command: ReadCharacteristicCommand) throws
+    func readRssi(command: ReadRssiCommand) throws
+    func setNotifications(command: SetNotificationsCommand) throws
+    func startScan(command: StartScanCommand) throws
+    func stopScan(command: StopScanCommand) throws
+    func writeCharacteristic(command: WriteCharacteristicCommand) throws
 }
 
 struct BluetoothUuid {
@@ -186,6 +205,11 @@ enum EventIngressStatus {
     case closed
     case invalidEvent(message: String)
     case downstreamFailed(message: String)
+}
+
+enum EventSinkError {
+    case Rejected(detail: String)
+    case UnexpectedCallback(detail: String)
 }
 
 struct GattCharacteristic {

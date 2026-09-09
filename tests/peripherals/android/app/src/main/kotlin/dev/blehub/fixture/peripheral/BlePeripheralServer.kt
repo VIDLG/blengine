@@ -82,6 +82,7 @@ internal class BlePeripheralServer(
     private val characteristics = mutableMapOf<UUID, BluetoothGattCharacteristic>()
     private val connectedDevices = mutableMapOf<String, BluetoothDevice>()
     private val subscriptions = mutableMapOf<String, SubscriptionMode>()
+    private val subscriptionCharacteristics = mutableMapOf<String, UUID>()
     private val inFlightUpdates = mutableSetOf<String>()
     private val pendingServices = mutableSetOf<UUID>()
 
@@ -94,9 +95,12 @@ internal class BlePeripheralServer(
     private var notificationBurst: ActiveNotificationBurst? = null
     private var writeBatch: ActiveWriteBatch? = null
 
-    private val updateProfile = profile.services
+    private val notificationProfile = profile.services
         .flatMap(ServiceProfile::characteristics)
         .single { it.role == "updates" }
+    private val indicationProfile = profile.services
+        .flatMap(ServiceProfile::characteristics)
+        .single { it.role == "indication-updates" }
 
     private class ActiveNotificationBurst(
         val generation: Long,
@@ -164,6 +168,7 @@ internal class BlePeripheralServer(
                 } else {
                     connectedDevices.remove(key)
                     subscriptions.remove(key)
+                    subscriptionCharacteristics.remove(key)
                     inFlightUpdates.remove(key)
                     if (notificationBurst?.device?.address == key) {
                         finishNotificationBurstLocked(
@@ -300,8 +305,10 @@ internal class BlePeripheralServer(
                     if (generation != lifecycleGeneration) return
                     if (mode == SubscriptionMode.DISABLED) {
                         subscriptions.remove(device.address)
+                        subscriptionCharacteristics.remove(device.address)
                     } else {
                         subscriptions[device.address] = checkNotNull(mode)
+                        subscriptionCharacteristics[device.address] = descriptor.characteristic.uuid
                     }
                     if (!notificationSubscriberMatchesBurstLocked()) {
                         finishNotificationBurstLocked(
@@ -443,6 +450,7 @@ internal class BlePeripheralServer(
             characteristics.clear()
             connectedDevices.clear()
             subscriptions.clear()
+            subscriptionCharacteristics.clear()
             inFlightUpdates.clear()
             pendingServices.clear()
             writeBatch = null
@@ -475,6 +483,7 @@ internal class BlePeripheralServer(
             pendingServices.clear()
             connectedDevices.clear()
             subscriptions.clear()
+            subscriptionCharacteristics.clear()
             inFlightUpdates.clear()
             writeBatch = null
             captured to completion
@@ -504,6 +513,29 @@ internal class BlePeripheralServer(
     fun sendNotification(value: ByteArray) = sendUpdate(value, SubscriptionMode.NOTIFICATION)
 
     fun sendIndication(value: ByteArray) = sendUpdate(value, SubscriptionMode.INDICATION)
+
+    private fun profileFor(mode: SubscriptionMode): CharacteristicProfile = when (mode) {
+        SubscriptionMode.NOTIFICATION -> notificationProfile
+        SubscriptionMode.INDICATION -> notificationProfile
+        SubscriptionMode.DISABLED -> error("disabled subscriptions have no update characteristic")
+    }
+
+    private fun subscribedCharacteristic(
+        deviceAddress: String,
+        mode: SubscriptionMode,
+    ): BluetoothGattCharacteristic? {
+        val uuid = subscriptionCharacteristics[deviceAddress] ?: profileFor(mode).uuid
+        val profile = profile.services
+            .flatMap(ServiceProfile::characteristics)
+            .singleOrNull { it.uuid == uuid }
+            ?: return null
+        val supportsMode = when (mode) {
+            SubscriptionMode.NOTIFICATION -> CharacteristicProperty.NOTIFY in profile.properties
+            SubscriptionMode.INDICATION -> CharacteristicProperty.INDICATE in profile.properties
+            SubscriptionMode.DISABLED -> false
+        }
+        return characteristics[uuid]?.takeIf { supportsMode }
+    }
 
     fun sendNotificationBurst(
         burstId: ByteArray,
@@ -554,15 +586,15 @@ internal class BlePeripheralServer(
                 "a notification or indication is already in flight"
             }
             checkNotNull(gattServer) { "GATT server is not running" }
-            checkNotNull(characteristics[updateProfile.uuid]) {
-                "updates characteristic is unavailable"
-            }
             val targets = connectedDevices
                 .filterKeys { subscriptions[it] == mode }
                 .values
                 .toList()
             check(targets.size == 1) {
                 "$modeName burst requires exactly one $mode subscriber; found ${targets.size}"
+            }
+            checkNotNull(subscribedCharacteristic(targets.single().address, mode)) {
+                "subscribed $mode characteristic is unavailable"
             }
             notificationBurst = ActiveNotificationBurst(
                 generation = lifecycleGeneration,
@@ -734,28 +766,29 @@ internal class BlePeripheralServer(
     }
 
     private fun sendUpdate(value: ByteArray, mode: SubscriptionMode) {
-        val (server, characteristic, targets) = synchronized(lock) {
+        val (server, targets) = synchronized(lock) {
             check(notificationBurst == null) {
                 "a notification or indication burst is active"
             }
-            values[updateProfile.uuid] = value.copyOf()
             val selectedServer = checkNotNull(gattServer) { "GATT server is not running" }
-            val selectedCharacteristic = checkNotNull(characteristics[updateProfile.uuid]) {
-                "updates characteristic is unavailable"
-            }
             val selectedTargets = connectedDevices
                 .filterKeys { subscriptions[it] == mode }
-                .values
-                .toList()
+                .map { (address, device) ->
+                    val characteristic = checkNotNull(subscribedCharacteristic(address, mode)) {
+                        "subscribed $mode characteristic is unavailable"
+                    }
+                    values[characteristic.uuid] = value.copyOf()
+                    device to characteristic
+                }
             check(selectedTargets.isNotEmpty()) { "no connected device subscribed for $mode" }
-            check(selectedTargets.none { it.address in inFlightUpdates }) {
+            check(selectedTargets.none { it.first.address in inFlightUpdates }) {
                 "a notification or indication is already in flight"
             }
-            Triple(selectedServer, selectedCharacteristic, selectedTargets)
+            selectedServer to selectedTargets
         }
 
         var accepted = 0
-        targets.forEach { device ->
+        targets.forEach { (device, characteristic) ->
             synchronized(lock) {
                 check(inFlightUpdates.add(device.address)) {
                     "a notification or indication is already in flight"
@@ -801,7 +834,7 @@ internal class BlePeripheralServer(
         val dispatch = synchronized(lock) {
             val burst = notificationBurst ?: return
             val server = gattServer
-            val characteristic = characteristics[updateProfile.uuid]
+            val characteristic = subscribedCharacteristic(burst.device.address, burst.mode)
             when {
                 burst.generation != lifecycleGeneration -> {
                     failure = "subscription burst fixture generation changed"
@@ -812,7 +845,7 @@ internal class BlePeripheralServer(
                     null
                 }
                 characteristic == null -> {
-                    failure = "updates characteristic is unavailable"
+                    failure = "subscribed ${burst.mode} characteristic is unavailable"
                     null
                 }
                 !notificationSubscriberMatchesBurstLocked() -> {
@@ -836,7 +869,7 @@ internal class BlePeripheralServer(
                         burst.payloadBytes,
                     )
                     burst.nextSequence += 1
-                    values[updateProfile.uuid] = payload.copyOf()
+                    values[profileFor(burst.mode).uuid] = payload.copyOf()
                     inFlightUpdates.add(burst.device.address)
                     NotificationBurstDispatch(
                         generation = burst.generation,
@@ -982,7 +1015,7 @@ internal class BlePeripheralServer(
                 phase = phase,
                 connectedDevices = connectedDevices.keys.sorted(),
                 subscriptions = subscriptions.toSortedMap(),
-                updateValue = values[updateProfile.uuid]?.copyOf() ?: byteArrayOf(),
+                updateValue = values[notificationProfile.uuid]?.copyOf() ?: byteArrayOf(),
                 lastEvent = lastEvent,
             )
         }
