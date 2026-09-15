@@ -32,5 +32,13 @@ let package = Package(
                 .product(name: "SwiftRs", package: "swift-rs"),
             ]
         ),
+        .testTarget(
+            name: "BleHubTauriAppleAssemblyTests",
+            dependencies: [
+                "BleHubTauriAppleAssembly",
+                .product(name: "BleHubApple", package: "apple"),
+                .product(name: "BleHubUniFfi", package: "apple-production"),
+            ]
+        ),
     ]
 )

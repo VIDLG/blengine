@@ -51,17 +51,34 @@ private func latestIOSAdapterSnapshot(in events: [BleEvent]) -> AdapterSnapshot?
 
 private final class ProbeRunner {
     private let runId: String
+    private let coordinationPath: String
+    private(set) var rfResultUrl: URL?
 
-    init(runId: String) {
+    init(runId: String, coordinationPath: String) {
         self.runId = runId
+        self.coordinationPath = coordinationPath
     }
 
     func run() -> String {
+        let scenarioName = argument(after: "--rf-scenario") ?? "io"
+        let rfRequested = argument(after: "--rf-service-uuid") != nil || CommandLine.arguments.contains("--rf-scenario")
+        var activeFixture: SwiftProbeHarness?
         do {
+            if rfRequested {
+                try prepareRfCoordinationDirectory(path: coordinationPath, runId: runId)
+                rfResultUrl = URL(fileURLWithPath: coordinationPath).appendingPathComponent("result.txt")
+                guard argument(after: "--rf-service-uuid") != nil else {
+                    throw RfLedgerError(description: "--rf-scenario requires --rf-service-uuid")
+                }
+            }
+            guard let scenario = AppleRfScenario(rawValue: scenarioName) else {
+                throw RfLedgerError(description: "unknown --rf-scenario: \(scenarioName)")
+            }
             let backend = try AppleBleBackend(
                 queueLabel: "dev.blehub.apple.ios-device-probe"
             )
             let fixture = try SwiftProbeHarness(backend: backend)
+            activeFixture = fixture
             defer {
                 try? fixture.dispose()
             }
@@ -99,6 +116,8 @@ private final class ProbeRunner {
                 "apple_ios_corebluetooth_initialize=passed",
             ]
 
+            if rfRequested { output.append("apple_ios_rf_scenario=\(scenarioName)") }
+
             let authorizationDeadline = Date().addingTimeInterval(120)
             var authorizedSnapshot: AdapterSnapshot?
             while Date() < authorizationDeadline {
@@ -131,6 +150,7 @@ private final class ProbeRunner {
             output.append("apple_ios_corebluetooth_runtime=passed")
 
             if let serviceUuid = argument(after: "--rf-service-uuid") {
+                let configuration = try RfFixtureConfiguration.fromArguments(CommandLine.arguments, serviceUuid: serviceUuid)
                 let targetIdentifierValue = argument(after: "--rf-target-identifier")
                 let targetIdentifier: UUID?
                 if let targetIdentifierValue {
@@ -165,41 +185,30 @@ private final class ProbeRunner {
                     diagnosticTargetPeripheralId = nil
                 }
                 AppleAdvertisementDiagnostics.reset()
-                let scan = try runScan(
+                let rfOutput = try runIOSRfScenario(
                     fixture: fixture,
+                    scenario: scenario,
                     serviceUuid: serviceUuid,
+                    runId: runId,
+                    coordinationPath: coordinationPath,
                     unfiltered: unfiltered,
                     allowDuplicates: allowDuplicates,
                     diagnosticTargetPeripheralId: diagnosticTargetPeripheralId,
-                    scanDuration: scanDuration
+                    scanDuration: scanDuration,
+                    configuration: configuration
                 )
-                output.append(contentsOf: scan.output.map {
+                output.append(contentsOf: rfOutput.map {
                     $0.replacingOccurrences(of: "apple_macos_", with: "apple_ios_")
                 })
                 output.append(contentsOf: AppleAdvertisementDiagnostics.snapshot().map {
                     "apple_ios_corebluetooth_raw_advertisement=\($0)"
                 })
-                if unfiltered && targetIdentifier == nil {
-                    output.append("apple_ios_corebluetooth_unfiltered_scan=passed")
-                    return output.joined(separator: "\n") + "\n"
-                }
                 if let targetIdentifier {
                     output.append(
                         "apple_ios_corebluetooth_diagnostic_target_identifier=\(targetIdentifier.uuidString.lowercased())"
                     )
                     output.append("apple_ios_corebluetooth_diagnostic_target=matched")
                 }
-                output.append(contentsOf: try runConnection(
-                    fixture: fixture,
-                    peripheralId: scan.advertisement.peripheralId,
-                    discoverGattServiceUuid: serviceUuid,
-                    runGattIoAfterDiscovery: true,
-                    runNotificationsAfterDiscovery: false,
-                    fixtureCoordinationPath: nil
-                ).map {
-                    $0.replacingOccurrences(of: "apple_macos_", with: "apple_ios_")
-                })
-                output.append("apple_ios_corebluetooth_rf=passed")
             }
             return output.joined(separator: "\n") + "\n"
         } catch {
@@ -207,7 +216,11 @@ private final class ProbeRunner {
                 "apple_ios_corebluetooth_raw_advertisement=\($0)"
             }.joined(separator: "\n")
             let suffix = diagnostics.isEmpty ? "" : "\n\(diagnostics)"
-            return "apple_ios_probe_run_id=\(runId)\napple_ios_corebluetooth_probe=failed: \(error)\(suffix)\n"
+            let rfFailure = rfRequested
+                ? "apple_ios_rf_scenario=\(scenarioName)\napple_ios_rf_\(scenarioName)=failed\napple_ios_corebluetooth_rf=failed\n"
+                : ""
+            let snapshot = activeFixture.map { "\napple_ios_rf_failure_snapshot=\($0.snapshot().events)" } ?? ""
+            return "apple_ios_probe_run_id=\(runId)\n\(rfFailure)apple_ios_corebluetooth_probe=failed: \(error)\(snapshot)\(suffix)\n"
         }
     }
 }
@@ -265,12 +278,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         statusLabel = label
 
         let runId = argument(after: "--run-id") ?? "missing"
-        let runner = ProbeRunner(runId: runId)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let runner = ProbeRunner(
+            runId: runId,
+            coordinationPath: documents.appendingPathComponent("blehub-rf-\(runId)", isDirectory: true).path
+        )
         self.runner = runner
-        let resultUrl = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        )[0].appendingPathComponent("blehub-result.txt")
+        let resultUrl = documents.appendingPathComponent("blehub-result.txt")
         try? FileManager.default.removeItem(at: resultUrl)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -285,6 +299,9 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             let diagnostic = ([stateLine] + lifecycle).joined(separator: "\n")
             let resultWithLifecycle = result + diagnostic + "\n"
             do {
+                if let rfResultUrl = runner.rfResultUrl {
+                    try resultWithLifecycle.write(to: rfResultUrl, atomically: true, encoding: .utf8)
+                }
                 try resultWithLifecycle.write(to: resultUrl, atomically: true, encoding: .utf8)
             } catch {
                 DispatchQueue.main.async {
@@ -293,9 +310,15 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 return
             }
             DispatchQueue.main.async {
-                self?.statusLabel?.text = result.contains("runtime=passed")
-                    ? "BleHub iOS CoreBluetooth runtime passed."
-                    : result
+                let lines = result.split(separator: "\n").map(String.init)
+                if lines.contains("apple_ios_corebluetooth_rf=passed") {
+                    self?.statusLabel?.text = "BleHub iOS RF scenario passed.\n\(runId)"
+                } else if !lines.contains(where: { $0.hasPrefix("apple_ios_rf_scenario=") }) &&
+                    lines.contains("apple_ios_corebluetooth_runtime=passed") {
+                    self?.statusLabel?.text = "BleHub iOS CoreBluetooth runtime passed."
+                } else {
+                    self?.statusLabel?.text = result
+                }
             }
         }
         return true

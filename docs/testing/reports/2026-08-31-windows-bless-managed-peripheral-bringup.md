@@ -80,7 +80,7 @@ bluez_supported_advertising_instances=3
 ```
 
 BLESS then strictly loaded the original shared scenario (subsequently split into
-[`qemu-basic-gatt-peripheral.json`](../../../tests/conformance/scenarios/qemu-basic-gatt-peripheral.json)
+[`qemu-basic-gatt-peripheral.json`](../../../tests/conformance/scenarios/archive/bless/qemu-basic-gatt-peripheral.json)
 and its Android counterpart), registered the GATT application, started
 advertising, and wrote a structured readiness document containing the profile,
 run ID, and advertised service UUID.

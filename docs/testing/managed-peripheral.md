@@ -1,5 +1,7 @@
 # Managed BLE Peripheral Test Environment
 
+> Status: archived reference. The active Peripheral conformance baseline is nRF52840 standalone firmware with the isolated BTP/AutoPTS provider under `tests/peripherals/nrf52840`. This document describes the retained Android/BLESS/Linux VM workflow for historical or explicitly requested compatibility runs; it is not part of the default HIL path.
+
 ## Status and scope
 
 This document provides evolving execution guidance for the managed-peripheral baseline and test boundaries defined in [Plan section 13](../../.plan/PLAN.md#13-测试与-spike-执行边界), the Windows work in [Phase 2](../../.plan/PLAN.md#phase-2windows-backend), and the HIL acceptance criteria in [section 15](../../.plan/PLAN.md#15-v01-验收标准).
@@ -129,9 +131,11 @@ A failed doctor or readiness handshake is an **environment failure**, not a BleH
 Repository ownership is split by responsibility rather than placing guest behavior, host orchestration, and VM lifecycle in one package:
 
 ```text
-tests/peripherals/bless/       # Guest BLESS fixture and profile behavior.
-tools/peripheral_fixture/      # Host-side provider orchestration and diagnostics.
-vm/linux-peripheral/           # Packer template, image locks, and guest provisioning inputs.
+tests/peripherals/archive/bless/ # Archived BLESS provider and guest fixture behavior.
+tests/peripherals/archive/android/ # Archived Android provider implementation and app fixture.
+tests/peripherals/nrf52840/   # nRF52840 provider implementation.
+tests/support/peripheral/     # Shared provider process/readiness/cleanup support.
+vm/archive/linux-peripheral/    # Archived Packer template, image locks, and guest provisioning inputs.
 ```
 
 Shared GATT scenarios remain under `tests/conformance/scenarios/`; provider code consumes those project-owned fixtures instead of duplicating UUIDs, manufacturer data, or payload contracts.
@@ -183,7 +187,7 @@ Use three independently fingerprinted layers:
 | Layer | Fingerprint inputs | Change action |
 |---|---|---|
 | Provisioned image | Debian/QEMU locks, Packer and minimal NoCloud templates, `provision.sh`, generic systemd runner, Pixi bootstrap, BlueZ/firmware and guest permission configuration | Explicit `vm-build`; rebuild the provisioned qcow2 through Packer |
-| Fixture environment | `tests/peripherals/bless/pixi.toml` and `pixi.lock` | Explicit guest `pixi install --locked`; do not rebuild the image and do not install silently during `vm-start` or tests |
+| Fixture environment | `tests/peripherals/archive/bless/pixi.toml` and `pixi.lock` | Explicit guest `pixi install --locked`; do not rebuild the image and do not install silently during `vm-start` or tests |
 | Fixture source | `bless_fixture.py` and the selected shared scenario JSON | Copy through the existing SSH control channel, atomically activate, and restart the fixture service |
 
 Prefer an allowlisted SSH/SCP or tar-over-SSH deployment over directly mounting a Windows host directory with QEMU 9p/virtiofs. The fixture contains only small files, while a direct host mount adds Windows path, permission, locking, virtiofsd availability, CI portability, and root-service trust concerns. Deployment must copy to a staging/release directory, verify the expected fingerprint, then atomically update `/opt/blehub/fixture/current`; a failed deployment must leave the previous release usable. The root service must never execute a partially copied tree or an arbitrary writable project-root mount.
@@ -233,7 +237,7 @@ A deliberate interrupted-copy/invalid-source injection and runtime-overlay reset
 
 `vm-bootstrap` is the only command allowed to perform explicit first-time host downloads or installation. `vm-fixture-install` is the explicit guest fixture-environment update command. Ordinary `vm-start`, tests, doctor, and source sync operations must fail with remediation guidance rather than silently changing toolchains, resolving dependencies, or accepting licenses.
 
-Large base images, Packer caches/plugins, overlays, sockets, PID files, and runtime logs belong under ignored `.work/vm/linux-peripheral/`. Tracked metadata under `vm/linux-peripheral/` records immutable asset URLs, versions, cryptographic hashes, and provisioning inputs so an environment can be reproduced and reported without committing disk images.
+Large base images, Packer caches/plugins, overlays, sockets, PID files, and runtime logs belong under ignored `.work/vm/linux-peripheral/`. Tracked metadata under `vm/archive/linux-peripheral/` records immutable asset URLs, versions, cryptographic hashes, and provisioning inputs so an environment can be reproduced and reported without committing disk images.
 
 VM automation can make provisioning and lifecycle repeatable, but it cannot make RF deterministic or guarantee that Windows has released the USB controller from its Bluetooth driver. The hardware spike must still establish host-driver ownership, passthrough, reset, detach/attach, and recovery behavior before these commands become a supported test provider.
 

@@ -17,6 +17,7 @@ targets:
           - Info.plist
       - path: ../../../../platforms/apple/Sources/BleHubApple
       - path: ../support/SwiftProbeHarness.swift
+      - path: ../support/RfFixtureConfiguration.swift
       - path: ../support/AppleCoreBluetoothRfScenario.swift
     settings:
       base:

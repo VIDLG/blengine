@@ -4,7 +4,7 @@ This standalone Cargo workspace owns the repository-only Tauri adapter for the
 canonical [BleHub contract](../../.plan/PLAN.md). The package and Cargo `links`
 name are both `tauri-plugin-blehub`; the Tauri namespace is `blehub`.
 `publish = false` remains intentional. The reference application is
-[`examples/tauri-central`](../../examples/tauri-central/), not part of this workspace.
+[`examples/tauri-blehub-internal`](../../examples/tauri-blehub-internal/), not part of this workspace.
 
 ## Ownership and entry points
 
@@ -22,13 +22,17 @@ nor a second native image.
 
 Windows provider wiring exists in source but has not been validated in this
 refactor's Windows runtime/RF lane. Android remains a future provider. macOS and
-iOS use one shared Swift package under `assembly/apple-assembly`, with one narrow launcher
+iOS use one shared Swift package under
+[`assembly/apple-assembly`](plugins/blehub/assembly/apple-assembly/)
+(macOS 13 / iOS 16), with one narrow launcher
 carrying a ticket, generated `attach_backend`, canonical `BleHub::new`, and
 `BackendAssembly::finish()`. The iOS build uses Tauri's official `ios_path` mobile plugin setup as its
 single Swift linker owner; macOS uses the plugin build script's `SwiftLinker`.
 The package/product name is the Cargo package name required by Tauri's linker.
 No target uses both paths, and no second Tauri command/event bridge or native
-image is added. The host supplies no assembly factory/callback.
+image is added. Same-candidate source-package staging supplies generated bindings
+and headers, not new API definitions or a second native image. The host supplies
+no assembly factory/callback.
 See the [assembly decision](../../docs/research/tauri-apple-assembly-ecosystem.md)
 and the [dependency/responsibility diagram](../../.plan/PLAN.md#551-tauri-薄适配器装配).
 
@@ -130,9 +134,57 @@ The recipe explicitly tests both independent workspaces: plugin with
 `--no-default-features`, example with `--no-default-features --features demo`.
 It does not validate default native linkage, Windows execution, or RF. Native
 assembly, app builds, browser/native UI checks, RF, and release-candidate soak
-remain separate; see the [example README](../../examples/tauri-central/README.md).
-Final refactor test results are recorded by the coordinating agent, not inferred
-from older spike passes or this documentation update.
+remain separate; see the [example README](../../examples/tauri-blehub-internal/README.md).
+The coordinating session reports two real macOS Swift assembly XCTest tests passed
+with the package's `testTarget` now registered. Both complete unsigned Tauri iOS
+app builds (`aarch64-sim` / `aarch64`) passed: final plist and `LC_BUILD_VERSION`
+minimum OS are 16.0, and each final slice contains the 123 BleHub UniFFI
+definitions exactly once plus one assembly entry, with zero old harness symbols
+and zero additional BleHub dylibs. These are build/symbol gates, not iOS runtime,
+development-signing, or RF results; those Tauri iOS gates remain unrun.
+
+macOS WDIO now uses a test-layer `NSWorkspace`/LaunchServices owner for the actual
+debug/instrumented bundle, retaining `NSRunningApplication` for exact-instance
+cleanup. With `services: []`, ordinary WebDriver Classic connects to the same
+Rust embedded server only after temporary loopback port/PID ownership and
+`/status` readiness checks. This replaces npm-service process ownership, not the
+protocol or TCC policy; Windows/Linux retain their service. See the
+[E2E ownership details](../../examples/tauri-blehub-internal/e2e/tauri/README.md).
+
+System logs identified the old direct-spawn root cause: responsible process
+`sshd-keygen-wrapper`, with Bluetooth `Policy disallows prompt`. At
+2026-09-09 15:38:30 the new path logged the app as responsible and
+`AUTHREQ_PROMPTING` / `display_prompt`; that attempt timed out at 30 seconds.
+After the user authorized Bluetooth, native E2E passed **2 tests / 4 skipped**
+without RF, closing the macOS Tauri TCC blocker. Earlier demo (3 passed /
+3 skipped) and owner lifecycle passes remain separate evidence.
+
+The first scan then produced start and terminal events without advertisements:
+E2E lacked `android-ensure` before its first scan, while native HIL exit stops
+the Peripheral. RF-only setup now ensures readiness once, teardown restores
+radio/advertising, and visible-flow waits propagate early UI errors without
+altering fault `allowError`. With no backend changes or relaxed assertions,
+the first complete Tauri RF run passed **6 tests / 0 skipped** in about 1m35s,
+covering visible flow, two fresh-ID repeats, 10 cycles, discovery radio loss,
+active-subscription passive loss/recovery, and dispose. App PID cleanup and
+Android `STATE_ON` / advertising readiness were confirmed.
+
+A later UI-only change adds missing evidence, command ID, and scope to timeout
+diagnostics. All 19 component tests passed, including rejection of scan
+start/terminal without a valid advertisement (stale-session/nonconnectable
+observations do not permit connect). The final diagnostic candidate then
+actually reran the RF command: **6 passing / 0 skipped in 1m34.6s** (WDIO total
+1m36), with owned app exit and Peripheral `STATE_ON` / ready confirmed. This is
+new same-candidate RF evidence, not an inherited earlier pass or long-soak proof.
+
+Apple prepare/build workflows share staging and must run serially. A parallel
+prepare caused a missing-directory failure; after serial staging recovery the
+native iOS HIL signing retry still failed with `errSecInternalComponent` before
+RF, including the latest serial `runtime-ios-android` retry. Native
+macOS-to-Android Peripheral `all` RF reran and passed independently before the
+Tauri RF pass. Historical iOS I/O RF does not prove a current full pass; Tauri
+iOS remains unrun and Windows was not tested. Candidate-specific records are in
+the [dated report](../../docs/testing/reports/2026-09-09-tauri-apple-dual-target-workflow.md).
 
 Tauri is an optional downstream validation surface. Unfinished Tauri platform,
 RF, or soak work delays that showcase, **not Phase 5's public ABI freeze**.

@@ -194,6 +194,18 @@ fn notification_action(
 }
 
 #[tauri::command]
+pub fn open_settings() -> Result<(), String> {
+    #[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "native"))]
+    {
+        return super::apple_assembly::open_settings();
+    }
+    #[cfg(not(all(feature = "native", any(target_os = "macos", target_os = "ios"))))]
+    {
+        Err("opening platform settings is unavailable on this target".to_owned())
+    }
+}
+
+#[tauri::command]
 pub fn capabilities(state: State<'_, super::PluginState>) -> ProjectedCapabilities {
     state.hub.capabilities().into()
 }

@@ -13,7 +13,7 @@
 ## 一次性迁移
 
 1. 审查 Windows 工作树，把此前同步的源码、测试、配置、锁文件和文档提交并推送到 GitHub `main`，作为共同基线。排除本机配置、临时文件、构建产物和凭证；如有验证失败，明确保留失败边界。
-2. 保留 Mac 旧目录作为备份，包括未提交内容和 ignored 配置。Mac 当前只有名为 `macos` 的空 Git 仓库，不应自行做独立的初始提交。
+2. 保留 Mac 旧目录作为备份，包括未提交内容和 ignored 配置。对于只有空 Git 仓库的同步目录，不应自行做独立的初始提交。
 3. 在 Mac 的另一个空目录中从 GitHub 完整 clone。下面的目标目录 `blehub-git` 必须尚不存在：
 
    ```sh
@@ -32,6 +32,12 @@
 6. 确认新 clone 可用后，由用户决定旧目录何时清理，或是否把新 clone 改名为原工作目录。迁移后 Mac 在 `main` 上跟踪 `origin/main`，不是继续使用旧空仓库的 `macos` 分支。
 
 完整 clone 会建立正确的 `.git`、索引、远端和共同历史；不要只复制 `.git` 到不匹配的源码目录，也不要用 `--allow-unrelated-histories` 拼接两个独立初始历史。这些是迁移步骤，不表示 Mac 已完成迁移。
+
+## 2026-09-09 Mac 迁移结果
+
+Mac 已在原目录接入完整的 GitHub 历史，`main` 跟踪 `origin/main`，共同基线为 `ce0c5d54dcd7a337c0c688bfcff7b08b44d89590`。HTTPS 凭据在 agent 会话中不可用，因此 `origin` 使用同一仓库的 SSH 地址 `git@github.com:VIDLG/blehub.git`，读取权限已验证；本次没有 commit 或 push。
+
+本次在确认索引为空、没有本地提交后，fetch 历史并建立分支/索引，未 checkout 或覆盖实现文件。对照结果显示 Mac 的已跟踪实现已包含在共同基线中；旧迁移文档与忽略规则先备份至 ignored `.work/git-migration-backup/`，再接纳远端新约定。该操作是一次性迁移，不应在有暂存内容或既有本地历史的工作区照搬。未跟踪的本机文件仍保留，未擅自删除或提交。
 
 ## 日常使用
 

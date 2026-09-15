@@ -70,3 +70,4 @@ CARGO_TARGET_DIR = "$PIXI_PROJECT_ROOT/.work/cargo-target"
 
 [pypi-dependencies]
 bleak = ">=1, <2"
+pyserial = ">=3.5, <4"

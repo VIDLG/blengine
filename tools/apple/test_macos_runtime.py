@@ -12,11 +12,22 @@ import time
 import uuid
 from pathlib import Path
 
+from tools.apple.rf_fixture import (
+    EXTERNAL_MACOS_SCENARIOS,
+    RfFixtureConfig,
+    add_profile_arguments,
+    fixture_from_arguments,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 HIL_ROOT = PROJECT_ROOT / "tests" / "hil" / "apple" / "macos"
 HIL_SUPPORT_ROOT = PROJECT_ROOT / "tests" / "hil" / "apple" / "support"
-ANDROID_PROFILE_PATH = (
-    PROJECT_ROOT / "tests" / "conformance" / "scenarios" / "android-peripheral.json"
+NRF_PROFILE_PATH = (
+    PROJECT_ROOT
+    / "tests"
+    / "conformance"
+    / "scenarios"
+    / "blehub-nrf-indication-v2.json"
 )
 APPLE_SOURCE_ROOT = PROJECT_ROOT / "platforms" / "apple" / "Sources" / "BleHubApple"
 PRODUCTION_PACKAGE_ROOT = PROJECT_ROOT / ".work" / "staged" / "apple-production"
@@ -27,8 +38,11 @@ BUNDLE_EXECUTABLE = BUNDLE_ROOT / "Contents" / "MacOS" / "BleHubAppleMacOSProbe"
 BUNDLE_SOURCE_HASH = WORK_ROOT / "bundle-source.sha256"
 CONNECTION_COMMANDS = {
     "connect-android",
+    "notifications-external",
+    "strict-indication-external",
     "rssi-android",
     "passive-disconnect-android",
+    "passive-disconnect-external",
     "gatt-android",
     "io-android",
     "notifications-android",
@@ -36,14 +50,23 @@ CONNECTION_COMMANDS = {
 }
 GATT_COMMANDS = {
     "gatt-android",
+    "notifications-external",
+    "strict-indication-external",
     "io-android",
     "notifications-android",
     "strict-indication-android",
 }
 IO_COMMANDS = {"io-android"}
-NOTIFICATION_COMMANDS = {"notifications-android"}
-STRICT_INDICATION_COMMANDS = {"strict-indication-android"}
-PASSIVE_DISCONNECT_COMMANDS = {"passive-disconnect-android"}
+NOTIFICATION_COMMANDS = {
+    "notifications-android",
+    "notifications-external",
+    "strict-indication-external",
+}
+STRICT_INDICATION_COMMANDS = {"strict-indication-android", "strict-indication-external"}
+PASSIVE_DISCONNECT_COMMANDS = {
+    "passive-disconnect-android",
+    "passive-disconnect-external",
+}
 RF_SCENARIO_COMMANDS = {
     "scan": "scan-android",
     "connection": "connect-android",
@@ -55,6 +78,16 @@ RF_SCENARIO_COMMANDS = {
     "passive-disconnect": "passive-disconnect-android",
 }
 RF_ALL_SCENARIOS = tuple(RF_SCENARIO_COMMANDS)
+EXTERNAL_RF_COMMANDS = {
+    "scan": "scan-android",
+    "connection": "connect-android",
+    "gatt": "gatt-android",
+    "io": "io-android",
+    "notification": "notifications-external",
+    "indication": "strict-indication-external",
+    "rssi": "rssi-android",
+    "passive-disconnect": "passive-disconnect-external",
+}
 
 
 def _required_executable(name: str) -> str:
@@ -85,11 +118,11 @@ def _file_sha256(path: Path) -> str:
 
 def _android_fixture_service_uuid() -> str:
     try:
-        document = json.loads(ANDROID_PROFILE_PATH.read_text(encoding="utf-8"))
+        document = json.loads(NRF_PROFILE_PATH.read_text(encoding="utf-8"))
         service_uuids = document["advertising"]["service_uuids"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError(
-            f"cannot read Android Peripheral service UUID from {ANDROID_PROFILE_PATH}"
+            f"cannot read Android Peripheral service UUID from {NRF_PROFILE_PATH}"
         ) from error
     if not isinstance(service_uuids, list) or len(service_uuids) != 1:
         raise RuntimeError(
@@ -126,6 +159,10 @@ def _stage_source_package() -> None:
     _ = shutil.copy2(
         HIL_SUPPORT_ROOT / "SwiftProbeHarness.swift",
         probe_destination / "SwiftProbeHarness.swift",
+    )
+    _ = shutil.copy2(
+        HIL_SUPPORT_ROOT / "RfFixtureConfiguration.swift",
+        probe_destination / "RfFixtureConfiguration.swift",
     )
     production_package_path = json.dumps(str(PRODUCTION_PACKAGE_ROOT))
     manifest = f"""// swift-tools-version: 5.9
@@ -274,7 +311,11 @@ def _terminate_probe_app(coordination_root: Path) -> None:
 
 
 def _run_notification_coordination(
-    command: list[str], coordination_root: Path, *, recipe: str = "android-notify"
+    command: list[str],
+    coordination_root: Path,
+    *,
+    recipe: str = "android-notify",
+    provider_owned: bool = False,
 ) -> None:
     print("+", " ".join(command), flush=True)
     process = subprocess.Popen(
@@ -288,13 +329,54 @@ def _run_notification_coordination(
         _wait_for_marker(
             coordination_root / "notification-enabled", process, timeout=240
         )
-        _trigger_android_notification("deadbeef", expect_success=True, recipe=recipe)
+        if not provider_owned:
+            _trigger_android_notification(
+                "deadbeef", expect_success=True, recipe=recipe
+            )
         _wait_for_marker(
             coordination_root / "notification-disabled", process, timeout=60
         )
-        _trigger_android_notification("cafebabe", expect_success=False, recipe=recipe)
+        if not provider_owned:
+            _trigger_android_notification(
+                "cafebabe", expect_success=False, recipe=recipe
+            )
         _ = (coordination_root / "post-disable-triggered").write_text(
             "ready\n", encoding="ascii"
+        )
+        stdout, stderr = process.communicate(timeout=30)
+    except BaseException:
+        _terminate_probe_app(coordination_root)
+        if process.poll() is None:
+            process.terminate()
+            try:
+                _ = process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _ = process.wait(timeout=5)
+        raise
+    if stdout:
+        print(stdout, end="")
+    if stderr:
+        print(stderr, end="", file=sys.stderr)
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command)
+
+
+def _run_provider_passive_disconnect_coordination(
+    command: list[str], coordination_root: Path
+) -> None:
+    print("+", " ".join(command), flush=True)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_marker(coordination_root / "probe-pid", process, timeout=30)
+        _wait_for_marker(coordination_root / "connected", process, timeout=180)
+        _wait_for_marker(
+            coordination_root / "passive-disconnected", process, timeout=60
         )
         stdout, stderr = process.communicate(timeout=30)
     except BaseException:
@@ -377,9 +459,22 @@ def _run_passive_disconnect_coordination(
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
-def _launch(open_executable: str, command_name: str) -> None:
+def _launch(
+    open_executable: str,
+    command_name: str,
+    fixture: RfFixtureConfig | None = None,
+    coordination_path: Path | None = None,
+) -> None:
+    if fixture is not None and command_name not in set(EXTERNAL_RF_COMMANDS.values()):
+        raise RuntimeError(
+            "external fixture scenario must not invoke Android coordination"
+        )
     run_id = uuid.uuid4().hex
-    result_path = WORK_ROOT / f"{command_name}-{run_id}-result.txt"
+    result_name = (
+        command_name.removesuffix("-android") + "-external" if fixture else command_name
+    )
+    result_path = WORK_ROOT / f"{result_name}-{run_id}-result.txt"
+    print(f"apple_macos_result_path={result_path}", flush=True)
     result_path.unlink(missing_ok=True)
     command = [
         open_executable,
@@ -390,8 +485,16 @@ def _launch(open_executable: str, command_name: str) -> None:
         "--wait-for-authorization",
     ]
     service_uuid = (
-        _android_fixture_service_uuid() if command_name.endswith("-android") else None
+        fixture.serviceUuid
+        if fixture
+        else (
+            _android_fixture_service_uuid()
+            if command_name.endswith("-android")
+            else None
+        )
     )
+    if fixture:
+        command.extend(fixture.app_arguments())
     if service_uuid is not None:
         command.extend(["--scan-service-uuid", service_uuid])
         if os.environ.get("BLEHUB_APPLE_RF_DUMP_ADVERTISEMENTS") == "1":
@@ -408,14 +511,24 @@ def _launch(open_executable: str, command_name: str) -> None:
         command.append("--discover-gatt-after-connect")
     if command_name in IO_COMMANDS:
         command.append("--run-gatt-io")
-    coordination_root = WORK_ROOT / f"{command_name}-{run_id}-coordination"
+    coordination_root: Path | None = None
+    if (
+        coordination_path is not None
+        or command_name in NOTIFICATION_COMMANDS
+        or command_name in STRICT_INDICATION_COMMANDS
+        or command_name in PASSIVE_DISCONNECT_COMMANDS
+    ):
+        coordination_root = (
+            coordination_path or WORK_ROOT / f"{command_name}-{run_id}-coordination"
+        )
+        shutil.rmtree(coordination_root, ignore_errors=True)
+        coordination_root.mkdir(parents=True)
     if (
         command_name in NOTIFICATION_COMMANDS
         or command_name in STRICT_INDICATION_COMMANDS
         or command_name in PASSIVE_DISCONNECT_COMMANDS
     ):
-        shutil.rmtree(coordination_root, ignore_errors=True)
-        coordination_root.mkdir(parents=True)
+        assert coordination_root is not None
         if (
             command_name in NOTIFICATION_COMMANDS
             or command_name in STRICT_INDICATION_COMMANDS
@@ -424,13 +537,20 @@ def _launch(open_executable: str, command_name: str) -> None:
         command.extend(["--fixture-coordination-path", str(coordination_root)])
     command.extend(["--result-path", str(result_path)])
     if command_name in NOTIFICATION_COMMANDS:
-        _run_notification_coordination(command, coordination_root)
+        assert coordination_root is not None
+        _run_notification_coordination(
+            command, coordination_root, provider_owned=fixture is not None
+        )
     elif command_name in STRICT_INDICATION_COMMANDS:
         _run_notification_coordination(
             command, coordination_root, recipe="android-indicate"
         )
     elif command_name in PASSIVE_DISCONNECT_COMMANDS:
-        _run_passive_disconnect_coordination(command, coordination_root)
+        assert coordination_root is not None
+        if fixture is not None:
+            _run_provider_passive_disconnect_coordination(command, coordination_root)
+        else:
+            _run_passive_disconnect_coordination(command, coordination_root)
     else:
         _run(command, timeout=180)
     if not result_path.is_file():
@@ -458,8 +578,11 @@ def _launch(open_executable: str, command_name: str) -> None:
         expected = "apple_macos_corebluetooth_scan=passed"
     else:
         expected = "apple_macos_corebluetooth_authorization=passed"
-    if expected not in result.splitlines():
-        raise RuntimeError("the macOS CoreBluetooth probe did not pass")
+    required = [expected, *(fixture.evidence() if fixture else [])]
+    if not set(required).issubset(result.splitlines()):
+        raise RuntimeError(
+            "the macOS CoreBluetooth probe did not pass the requested fixture contract"
+        )
 
 
 def _run_rf_scenario(open_executable: str, scenario: str) -> None:
@@ -489,10 +612,34 @@ def main() -> int:
             "runtime",
             "authorize",
             "rf-android",
+            "rf-external",
+            "build",
         ),
     )
     _ = parser.add_argument("scenario", nargs="?", default="all")
+    add_profile_arguments(parser)
+    _ = parser.add_argument(
+        "--coordination-path",
+        type=Path,
+        help="provider-owned coordination directory for external RF scenarios",
+    )
     args = parser.parse_args()
+    fixture = None
+    if args.command == "rf-external":
+        if args.scenario not in EXTERNAL_MACOS_SCENARIOS:
+            parser.error(
+                f"external RF scenario must be one of {EXTERNAL_MACOS_SCENARIOS}; no provider control is available"
+            )
+        try:
+            fixture = fixture_from_arguments(args)
+        except ValueError as error:
+            parser.error(str(error))
+    elif (
+        args.profile is not None
+        or args.write_with_response != "102030"
+        or args.write_without_response != "abcd"
+    ):
+        parser.error("profile and payload overrides require rf-external")
     command_name = getattr(args, "command", None)
     if not isinstance(command_name, str):
         raise TypeError("missing macOS probe command")
@@ -501,7 +648,16 @@ def main() -> int:
     codesign = _required_executable("codesign")
     plutil = _required_executable("plutil")
     _build_bundle(swift, codesign, plutil)
-    if command_name == "runtime":
+    if command_name == "build":
+        print(f"apple_macos_probe_build=passed: {BUNDLE_ROOT}")
+    elif command_name == "rf-external":
+        _launch(
+            _required_executable("open"),
+            EXTERNAL_RF_COMMANDS[args.scenario],
+            fixture,
+            args.coordination_path,
+        )
+    elif command_name == "runtime":
         _run([str(BUNDLE_EXECUTABLE)], timeout=45)
     elif command_name == "authorize":
         _launch(_required_executable("open"), "authorize")

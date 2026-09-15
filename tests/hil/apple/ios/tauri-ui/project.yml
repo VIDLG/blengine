@@ -1,0 +1,35 @@
+name: BleHubTauriInternalUITests
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "26.2"
+targets:
+  BleHubTauriInternalUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: BleHubTauriInternalUITests
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: Apple Development
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: 0.1.0
+        PRODUCT_BUNDLE_IDENTIFIER: dev.blehub.tauri.blehubinternal.uitests
+        PRODUCT_NAME: BleHubTauriInternalUITests
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: 1
+        TEST_TARGET_NAME: blehub-tauri-internal_iOS
+schemes:
+  BleHubTauriInternalUITests:
+    build:
+      targets:
+        BleHubTauriInternalUITests: all
+    test:
+      config: Debug
+      targets:
+        - name: BleHubTauriInternalUITests
+          parallelizable: false
+          randomExecutionOrder: false

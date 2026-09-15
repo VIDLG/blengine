@@ -93,6 +93,7 @@ fn plugin<R: Runtime>(
     Builder::new("blehub")
         .invoke_handler(tauri::generate_handler![
             commands::capabilities,
+            commands::open_settings,
             commands::initialize,
             commands::start_scan,
             commands::stop_scan,

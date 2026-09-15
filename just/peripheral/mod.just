@@ -1,12 +1,13 @@
 set working-directory := "../.."
 
-android_project := "tests/peripherals/android"
+android_project := "tests/peripherals/archive/android"
 android_run := "pixi run -e android"
-android_control := android_run + " python -m tools.peripheral_fixture.android"
-vm_control := "python -m tools.peripheral_fixture.bless"
+android_control := android_run + " python -m tests.peripherals.archive.android.provider"
+vm_control := "python -m tests.peripherals.archive.bless.provider"
 
 import "android.just"
-import "vm.just"
+import "nrf.just"
+import "bless.just"
 
 # Verify provider profiles have aligned GATT semantics and isolated RF identities.
 profiles-check:

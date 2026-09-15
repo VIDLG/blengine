@@ -56,9 +56,9 @@ enum ProbeError: Error, CustomStringConvertible {
         case .notificationFailed(let operation, let error):
             "CoreBluetooth notification \(operation) failed: \(error)"
         case .invalidGattDatabase(let detail):
-            "CoreBluetooth returned an unexpected Android fixture database: \(detail)"
+            "CoreBluetooth returned an unexpected external fixture database: \(detail)"
         case .invalidGattValue(let detail):
-            "CoreBluetooth returned an unexpected Android fixture value: \(detail)"
+            "CoreBluetooth returned an unexpected external fixture value: \(detail)"
         case .invalidNotification(let detail):
             "CoreBluetooth returned an unexpected notification result: \(detail)"
         case .disconnectTimeout(let events):
@@ -279,7 +279,8 @@ func runScan(
 func runGattDiscovery(
     fixture: SwiftProbeHarness,
     connectionId: ConnectionId,
-    expectedServiceUuid: String
+    expectedServiceUuid: String,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> (output: [String], database: GattDatabase) {
     let command = DiscoverGattCommand(
         commandId: CommandId(value: 5),
@@ -318,7 +319,8 @@ func runGattDiscovery(
     try validateAndroidGattDatabase(
         database,
         command: command,
-        expectedServiceUuid: BluetoothUuid(value: expectedServiceUuid.lowercased())
+        expectedServiceUuid: BluetoothUuid(value: expectedServiceUuid.lowercased()),
+        configuration: configuration
     )
     let descriptorCount = database.services.reduce(0) { serviceTotal, service in
         serviceTotal + service.characteristics.reduce(0) { characteristicTotal, characteristic in
@@ -341,7 +343,8 @@ func runGattDiscovery(
 func validateAndroidGattDatabase(
     _ database: GattDatabase,
     command: DiscoverGattCommand,
-    expectedServiceUuid: BluetoothUuid
+    expectedServiceUuid: BluetoothUuid,
+    configuration: RfFixtureConfiguration = .android
 ) throws {
     guard database.connectionId == command.connectionId,
           database.gattSessionId == command.gattSessionId
@@ -353,7 +356,7 @@ func validateAndroidGattDatabase(
         throw ProbeError.invalidGattDatabase("expected exactly one primary \(expectedServiceUuid.value) service")
     }
 
-    let expectedCharacteristics: [BluetoothUuid: CharacteristicProperties] = [
+    var expectedCharacteristics: [BluetoothUuid: CharacteristicProperties] = [
         BluetoothUuid(value: "fff10000-0000-4000-8000-000000000000"): CharacteristicProperties(
             readable: true,
             writableWithResponse: true,
@@ -390,7 +393,11 @@ func validateAndroidGattDatabase(
             indicatable: false
         ),
     ]
-    guard service.characteristics.count == expectedCharacteristics.count else {
+    if !configuration.hasIndicationOnly {
+        expectedCharacteristics.removeValue(forKey: BluetoothUuid(value: "fff50000-0000-4000-8000-000000000000"))
+    }
+    guard service.characteristics.count == expectedCharacteristics.count,
+          Set(service.characteristics.map(\.uuid)).count == expectedCharacteristics.count else {
         throw ProbeError.invalidGattDatabase(
             "expected \(expectedCharacteristics.count) fixture characteristics, got \(service.characteristics.count)"
         )
@@ -411,14 +418,12 @@ func validateAndroidGattDatabase(
     let updateUuid = BluetoothUuid(value: "fff20000-0000-4000-8000-000000000000")
     let cccdUuid = BluetoothUuid(value: "00002902-0000-1000-8000-00805f9b34fb")
     let indicationUuid = BluetoothUuid(value: "fff50000-0000-4000-8000-000000000000")
-    guard let updateCharacteristic = service.characteristics.first(where: { $0.uuid == updateUuid }),
-          updateCharacteristic.descriptors.contains(where: { $0.uuid == cccdUuid }),
-          let indicationCharacteristic = service.characteristics.first(where: {
-              $0.uuid == indicationUuid
-          }),
-          indicationCharacteristic.descriptors.contains(where: { $0.uuid == cccdUuid })
-    else {
-        throw ProbeError.invalidGattDatabase("updates characteristic is missing its CCCD")
+    let subscribedUuids = configuration.hasIndicationOnly ? [updateUuid, indicationUuid] : [updateUuid]
+    for uuid in subscribedUuids {
+        guard let characteristic = service.characteristics.first(where: { $0.uuid == uuid }),
+              characteristic.descriptors.contains(where: { $0.uuid == cccdUuid }) else {
+            throw ProbeError.invalidGattDatabase("updates characteristic \(uuid.value) is missing its CCCD")
+        }
     }
 
     let serviceIds = database.services.map(\.id)
@@ -583,7 +588,8 @@ func waitForProbeHost(path: String?, marker: String, timeout: TimeInterval) thro
 func runGattIo(
     fixture: SwiftProbeHarness,
     database: GattDatabase,
-    expectedServiceUuid: String
+    expectedServiceUuid: String,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> [String] {
     let serviceUuid = BluetoothUuid(value: expectedServiceUuid.lowercased())
     let characteristicUuid = BluetoothUuid(value: "fff10000-0000-4000-8000-000000000000")
@@ -601,13 +607,13 @@ func runGattIo(
         commandId: 6,
         operation: "initial read"
     )
-    guard initialValue == Data([0x00]) else {
+    guard initialValue == (try configuration.initialValue) else {
         throw ProbeError.invalidGattValue(
-            "initial FFF1 value was \(hexValue(initialValue)); expected 00"
+            "initial FFF1 value was \(hexValue(initialValue)); expected \(configuration.initialValueHex)"
         )
     }
 
-    let withResponseValue = Data([0x10, 0x20, 0x30])
+    let withResponseValue = try configuration.writeWithResponse
     try runCharacteristicWrite(
         fixture: fixture,
         connectionId: database.connectionId,
@@ -632,7 +638,7 @@ func runGattIo(
         )
     }
 
-    let withoutResponseValue = Data([0xAB, 0xCD])
+    let withoutResponseValue = try configuration.writeWithoutResponse
     try runCharacteristicWrite(
         fixture: fixture,
         connectionId: database.connectionId,
@@ -672,7 +678,8 @@ func runNotifications(
     database: GattDatabase,
     expectedServiceUuid: String,
     fixtureCoordinationPath: String?,
-    strictIndication: Bool = false
+    strictIndication: Bool = false,
+    configuration: RfFixtureConfiguration
 ) throws -> (
     output: [String],
     ledgerOffset: Int,
@@ -682,7 +689,7 @@ func runNotifications(
 ) {
     let serviceUuid = BluetoothUuid(value: expectedServiceUuid.lowercased())
     let characteristicUuid = BluetoothUuid(
-        value: strictIndication
+        value: strictIndication && configuration.hasIndicationOnly
             ? "fff50000-0000-4000-8000-000000000000"
             : "fff20000-0000-4000-8000-000000000000"
     )
@@ -770,7 +777,7 @@ func runNotifications(
     }
 
     try signalProbeHost(path: fixtureCoordinationPath, marker: "notification-enabled")
-    let expectedValue = Data([0xDE, 0xAD, 0xBE, 0xEF])
+    let expectedValue = try configuration.notificationValue
     let valueDeadline = Date().addingTimeInterval(45)
     while Date() < valueDeadline {
         let events = Array(fixture.snapshot().events.dropFirst(ledgerOffset))
@@ -1032,8 +1039,12 @@ private enum ExpectedGattIoDomain {
 func validateGattIoEventLedger(
     _ events: [BleEvent],
     database: GattDatabase,
-    characteristicId: GattCharacteristicId
+    characteristicId: GattCharacteristicId,
+    configuration: RfFixtureConfiguration = .android
 ) throws {
+    let readValues: [UInt64: Data] = try [
+        6: configuration.initialValue, 8: configuration.writeWithResponse, 10: configuration.writeWithoutResponse,
+    ]
     let expected: [(UInt64, ExpectedGattIoDomain)] = [
         (6, .read),
         (7, .write),
@@ -1104,6 +1115,10 @@ func validateGattIoEventLedger(
             )
         }
         let domain = domains[0]
+        if case .characteristicRead(_, _, _, _, let value) = events[domain.0],
+           value != readValues[commandValue] {
+            throw ProbeError.invalidGattValue("command \(commandValue) readback differs from configured payload")
+        }
         guard domain.1 == expectedDomain,
               domain.2 == database.connectionId,
               domain.3 == database.gattSessionId,
@@ -1126,7 +1141,8 @@ func runConnection(
     runRssiAfterConnect: Bool,
     runPassiveDisconnectAfterConnect: Bool,
     strictIndication: Bool,
-    fixtureCoordinationPath: String?
+    fixtureCoordinationPath: String?,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> [String] {
     let connect = ConnectCommand(
         commandId: CommandId(value: 4),
@@ -1195,7 +1211,8 @@ func runConnection(
         let discovery = try runGattDiscovery(
             fixture: fixture,
             connectionId: connect.connectionId,
-            expectedServiceUuid: discoverGattServiceUuid
+            expectedServiceUuid: discoverGattServiceUuid,
+            configuration: configuration
         )
         output.append(contentsOf: discovery.output)
         if runGattIoAfterDiscovery {
@@ -1216,7 +1233,8 @@ func runConnection(
                 contentsOf: try runGattIo(
                     fixture: fixture,
                     database: discovery.database,
-                    expectedServiceUuid: discoverGattServiceUuid
+                    expectedServiceUuid: discoverGattServiceUuid,
+                    configuration: configuration
                 )
             )
         } else if runNotificationsAfterDiscovery {
@@ -1225,7 +1243,8 @@ func runConnection(
                 database: discovery.database,
                 expectedServiceUuid: discoverGattServiceUuid,
                 fixtureCoordinationPath: fixtureCoordinationPath,
-                strictIndication: strictIndication
+                strictIndication: strictIndication,
+                configuration: configuration
             )
             output.append(contentsOf: notification.output)
             notificationLedgerOffset = notification.ledgerOffset
@@ -1403,7 +1422,8 @@ func runConnection(
         try validateGattIoEventLedger(
             Array(finalEvents.dropFirst(gattIoLedgerOffset)),
             database: gattIoDatabase,
-            characteristicId: gattIoCharacteristicId
+            characteristicId: gattIoCharacteristicId,
+            configuration: configuration
         )
         output.append("apple_macos_corebluetooth_gatt_io_event_order=passed")
         output.append("apple_macos_corebluetooth_gatt_io=passed")
@@ -1442,7 +1462,8 @@ func runProbe(
     runRssiAfterConnect: Bool,
     runPassiveDisconnectAfterConnect: Bool,
     strictIndication: Bool,
-    fixtureCoordinationPath: String?
+    fixtureCoordinationPath: String?,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> [String] {
     let backend = try AppleBleBackend(
         queueLabel: "dev.blehub.apple.macos-initialization-probe"
@@ -1534,12 +1555,13 @@ func runProbe(
                     runRssiAfterConnect: runRssiAfterConnect,
                     runPassiveDisconnectAfterConnect: runPassiveDisconnectAfterConnect,
                     strictIndication: strictIndication,
-                    fixtureCoordinationPath: fixtureCoordinationPath
+                    fixtureCoordinationPath: fixtureCoordinationPath,
+                    configuration: configuration
                 )
             )
         }
     }
-    return output
+    return configuration.evidence + output
 }
 
 func executeProbe(
@@ -1561,6 +1583,7 @@ func executeProbe(
             marker: "probe-pid",
             value: "\(getpid())\n"
         )
+        let configuration = try RfFixtureConfiguration.fromArguments(CommandLine.arguments, serviceUuid: scanServiceUuid)
         let output = try runProbe(
             waitForAuthorization: waitForAuthorization,
             scanServiceUuid: scanServiceUuid,
@@ -1571,7 +1594,8 @@ func executeProbe(
             runRssiAfterConnect: runRssiAfterConnect,
             runPassiveDisconnectAfterConnect: runPassiveDisconnectAfterConnect,
             strictIndication: strictIndication,
-            fixtureCoordinationPath: fixtureCoordinationPath
+            fixtureCoordinationPath: fixtureCoordinationPath,
+            configuration: configuration
         )
         let text = output.joined(separator: "\n") + "\n"
         print(text, terminator: "")

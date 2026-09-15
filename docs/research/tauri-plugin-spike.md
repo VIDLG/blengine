@@ -3,7 +3,7 @@
 - Date: 2026-09-05
 - Status: historical spike evidence plus the current user-authorized integration
   decision. Maintained code lives under `integrations/tauri-plugin-blehub` and
-  `examples/tauri-central`. Historical passes below are not refactor reruns;
+  `examples/tauri-blehub-internal`. Historical passes below are not refactor reruns;
   current release-candidate RF/soak evidence must be recorded separately.
 - Scope: Tauri 2 plugin loading, `BleHub` assembly, visible React/Astryx
   basic-flow command coverage, synchronous command acknowledgement, bounded
@@ -19,7 +19,7 @@ The historical fixture is archived under
 [`spikes/archive/tauri-downstream/`](../../spikes/archive/tauri-downstream/).
 The maintained Cargo workspace is split between
 [`integrations/tauri-plugin-blehub/`](../../integrations/tauri-plugin-blehub/)
-and [`examples/tauri-central/`](../../examples/tauri-central/).
+and [`examples/tauri-blehub-internal/`](../../examples/tauri-blehub-internal/).
 
 ```text
 spikes/archive/tauri-downstream/
@@ -202,7 +202,7 @@ canonical API ownership, the single-image shell, generated binding consumption,
 and foreign trait implementation; callback direction does not create a reverse
 Cargo dependency. Operational details and commands live in the
 [plugin README](../../integrations/tauri-plugin-blehub/README.md) and
-[example README](../../examples/tauri-central/README.md).
+[example README](../../examples/tauri-blehub-internal/README.md).
 
 This update records decisions, not new passes. The coordinating agent records
 final refactor results. `tauri::tauri-rust-test` explicitly runs the nonnative

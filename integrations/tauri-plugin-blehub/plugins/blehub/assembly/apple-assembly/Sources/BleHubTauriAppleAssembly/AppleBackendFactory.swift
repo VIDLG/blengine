@@ -1,12 +1,33 @@
 import BleHubApple
 import BleHubUniFfi
 import SwiftRs
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
+
+@_cdecl("blehub_tauri_apple_open_settings")
+public func bleHubTauriAppleOpenSettings() -> Int32 {
+    #if os(iOS)
+    guard let url = URL(string: UIApplication.openSettingsURLString) else { return -1 }
+    UIApplication.shared.open(url)
+    return 0
+    #elseif os(macOS)
+    guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") else {
+        return -1
+    }
+    return NSWorkspace.shared.open(url) ? 0 : -1
+    #else
+    return -1
+    #endif
+}
 
 /// The Apple assembly owns construction of the platform backend only.
 /// BleHub ownership remains in the Rust Tauri plugin.
 public enum AppleBackendFactory {
     public static func make() throws -> AppleBleBackend {
-        try AppleBleBackend(queueLabel: "dev.blehub.tauri.central.apple")
+        try AppleBleBackend(queueLabel: "dev.blehub.tauri.blehubinternal.apple")
     }
 }
 

@@ -1,6 +1,6 @@
 # Linux 开发与测试执行指南
 
-本文依据 [`.plan/PLAN.md` 的 Phase 6](../../.plan/PLAN.md#phase-6linux) 与[第 13 节](../../.plan/PLAN.md#13-测试与-spike-执行边界)，说明未来如何执行 Linux Central 的开发和测试。架构、公共契约和阶段优先级仍以 Plan 为准；本文不是第二份架构 Plan，也不提前授权实现 Linux backend、Linux development VM 或相关 recipe。
+本文依据 [`.plan/PLAN.md` 的 Phase 6](../../.plan/PLAN.md#phase-6linux) 与[第 13 节](../../.plan/PLAN.md#13-测试与-spike-执行边界)，说明未来如何执行 Linux Central 的开发和测试。架构、公共契约和阶段优先级仍以 Plan 为准；本文不是第二份架构 Plan，也不提前授权实现 Linux backend、Linux development VM 或相关 recipe。当前 Linux Peripheral VM + BLESS 已进入 archive，仅供历史/optional compatibility 使用；active Peripheral baseline 是 nRF52840 + 隔离 BTP/AutoPTS provider。
 
 ## 1. 阶段边界
 
@@ -15,16 +15,16 @@ Linux Central/backend 的产品化固定在 **Phase 6**。当前主线仍是 Win
 Phase 6 之前只允许两类 Linux 工作：
 
 1. 在普通 hosted Linux runner 上重跑 pure core tests，防止公共核心被 Windows API 或 ABI 污染。该 portability job 不要求 QEMU、BlueZ 或蓝牙硬件，也不代表 Linux backend 已启动。
-2. USB 蓝牙硬件到位且 Windows/Android HIL 确有需要时，建设项目管理的 **Linux Peripheral VM**。该 VM 只运行 BlueZ/BLESS 测试外设，不包含 BleHub Linux Central backend。
+2. 历史上 USB 蓝牙硬件到位时建设的 **Linux Peripheral VM** 保留在 `vm/archive/linux-peripheral`，仅用于显式 compatibility/recovery 重现；它只运行 BlueZ/BLESS 测试外设，不包含 BleHub Linux Central backend。
 
 ## 2. 两类 Linux VM 必须分开
 
 | 环境 | 最早建设阶段 | 固定角色 | 用途 |
 |---|---|---|---|
-| Linux Peripheral VM | Phase 6 前仅在 Windows/Android HIL 硬件到位且需要时 | Peripheral/Advertiser | 承载项目管理的 BlueZ/BLESS 外设、共享 scenario、run ID、fixture 和 telemetry |
+| Linux Peripheral VM（archive） | 历史基础设施 | Peripheral/Advertiser | 保留 BlueZ/BLESS 外设、scenario、run ID、fixture 和 telemetry 的历史/兼容路径，不是 active baseline |
 | Linux Central/development VM | Phase 6 | Central/DUT | 原生构建和运行 BleHub Linux backend、D-Bus 测试、real BlueZ integration 与 Linux Central HIL |
 
-Linux Peripheral VM 是跨平台 HIL 基础设施，可依次被 Windows、Android、Apple 和未来 Linux Central 复用。复用它不等于开始实现 Linux Central backend。
+Linux Peripheral VM 是已归档的跨平台 HIL 基础设施。使用它不等于开始实现 Linux Central backend，也不构成 active nRF conformance 证据。
 
 两类 VM 应使用独立的 recipe/profile 和明确的角色命名。Peripheral VM 始终只承担 Peripheral 角色；Central VM 始终只承担 Central 角色。
 
@@ -129,7 +129,7 @@ Linux Central -> Linux BLESS 的自包含 RF HIL 要求两套独立 controller�
 - Peripheral VM 独占 P-Controller；
 - Windows host 通过 SSH 启停两个 guest、下发测试并汇总日志；
 - Peripheral 控制面继续使用项目共享的 CLI/NDJSON contract；
-- 复用`tests/peripherals/bless/`中的guest fixture、`tools/peripheral_fixture/`中的host编排、共享scenario、run ID、BLE fixture和telemetry assertion。
+- 历史兼容运行复用`tests/peripherals/archive/bless/`中的provider与guest fixture、共享scenario、run ID、BLE fixture和telemetry assertion；这些结果不进入active nRF conformance。
 
 该方案资源占用和编排复杂度更高，但 adapter role、BlueZ/D-Bus 实例和日志边界最清楚。
 
@@ -225,7 +225,7 @@ BLESS HIL 不能替代 FakeBackend 对 duplicate、orphan、stale 和任意乱�
 以下 recipe 名称是 Phase 6 的计划接口，当前不得据此假定它们已经存在：
 
 - `just linux-vm-start`：启动通用 Linux Central/development VM；
-- `just peripheral vm-start`：启动Linux Peripheral VM；该计划入口属于Peripheral provider，不与Linux Central VM混用；
+- `just peripheral vm-start`：显式启动归档的Linux Peripheral VM；该入口仅用于历史/兼容路径，不与Linux Central VM混用；
 - `just linux-test`：默认不要求硬件；
 - `just linux-test-hil`：先运行 dual-controller doctor，再执行串行 HIL。
 
@@ -278,4 +278,4 @@ BLESS HIL 不能替代 FakeBackend 对 duplicate、orphan、stale 和任意乱�
 - 多 adapter 环境不会因 enumeration order 误用 controller；
 - HIL 硬件缺失时提供明确 skip/environment report；
 - 两个 controller 到位后，默认双 VM HIL 通过；
-- 共享 BLESS scenario/telemetry 得到复用，并由至少一个非 BLESS 外设完成兼容性 smoke。
+- Linux Central 相关的历史 BLESS scenario/telemetry 仍可显式复用，并由 active nRF 外设完成主要兼容性 smoke。

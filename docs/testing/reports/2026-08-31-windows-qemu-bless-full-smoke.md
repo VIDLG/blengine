@@ -58,7 +58,7 @@ pixi run just windows::check
 pixi run just windows::test
 pixi run just lint
 pixi run just test::all
-pixi run python tests/peripherals/bless/bless_fixture.py validate --scenario tests/conformance/scenarios/qemu-basic-gatt-peripheral.json
+pixi run python tests/peripherals/bless/bless_fixture.py validate --scenario tests/conformance/scenarios/archive/bless/qemu-basic-gatt-peripheral.json
 ```
 
 Observed deterministic results:

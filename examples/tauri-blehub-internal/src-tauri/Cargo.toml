@@ -1,0 +1,30 @@
+[package]
+name = "blehub-tauri-internal"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "blehub_tauri_internal_lib"
+path = "src/lib.rs"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.2", features = [] }
+serde_json = "1"
+
+[features]
+default = ["native"]
+native = ["tauri-plugin-blehub/native"]
+demo = ["dep:blehub"]
+wdio = ["dep:tauri-plugin-wdio-webdriver"]
+
+[dependencies]
+blehub = { path = "../../../crates/blehub", optional = true }
+tauri-plugin-blehub = { path = "../../../integrations/tauri-plugin-blehub/plugins/blehub", default-features = false }
+
+tauri = { version = "2.11.5", features = [] }
+
+[dependencies.tauri-plugin-wdio-webdriver]
+version = "1.3.0"
+optional = true

@@ -6,7 +6,7 @@ The maintained Tauri implementation was migrated out of the active spike path:
 
 ```text
 integrations/tauri-plugin-blehub/
-examples/tauri-central/
+examples/tauri-blehub-internal/
 ```
 
 The former workspace is archived at `spikes/archive/tauri-downstream/`. No
@@ -22,7 +22,7 @@ development session.
 
 - `integrations/tauri-plugin-blehub` owns the Tauri Rust plugin and the narrow
   macOS Swift assembly launcher.
-- `examples/tauri-central` owns the reference window, frontend, permissions,
+- `examples/tauri-blehub-internal` owns the reference window, frontend, permissions,
   and lifecycle wiring.
 - The plugin and example continue to use the canonical `BleHub` /
   `BleBackend` / `BleEventSink` contract and do not define a second BLE
@@ -41,7 +41,7 @@ assembly consumes the staged production Apple package.
 The migrated Tauri host was built as:
 
 ```text
-.work/cargo-target/debug/blehub-tauri-central
+.work/cargo-target/debug/blehub-tauri-internal
 ```
 
 Observed results:
@@ -86,7 +86,7 @@ load the standard library without relying on a separate rustup toolchain.
 ## Validation
 
 The active native WebDriver spec was restored to
-`examples/tauri-central/e2e/tauri/specs/basic-flow.e2e.js`; the archived copy was
+`examples/tauri-blehub-internal/e2e/tauri/specs/basic-flow.e2e.js`; the archived copy was
 not used as an active test path. The E2E Just recipe now installs its locked Node
 dependencies before invoking WebdriverIO.
 
@@ -94,11 +94,11 @@ Passed:
 
 ```text
 pixi run cargo test --locked --manifest-path integrations/tauri-plugin-blehub/Cargo.toml --workspace
-pixi run cargo test --locked --manifest-path examples/tauri-central/Cargo.toml --workspace
+pixi run cargo test --locked --manifest-path examples/tauri-blehub-internal/Cargo.toml --workspace
 pixi run -e apple-ci swift test --package-path integrations/tauri-plugin-blehub/plugins/blehub/assembly/macos
 pixi run just tauri::tauri-ui-build
-pixi run cargo check --locked --features wdio --manifest-path examples/tauri-central/src-tauri/Cargo.toml
-pixi run npm --prefix examples/tauri-central/ui run test:component
+pixi run cargo check --locked --features wdio --manifest-path examples/tauri-blehub-internal/src-tauri/Cargo.toml
+pixi run npm --prefix examples/tauri-blehub-internal/ui run test:component
 pixi run just tauri::tauri-host-build
 pixi run just tauri::tauri-native-e2e
 pixi run just tauri::tauri-native-rf

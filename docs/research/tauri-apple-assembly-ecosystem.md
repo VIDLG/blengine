@@ -1,11 +1,11 @@
 # Tauri Apple Assembly Ecosystem Review
 
 - Date: 2026-09-05
-- Scope: Rust Tauri desktop plugin assembly of the existing Swift
+- Scope: unified macOS+iOS Rust Tauri plugin assembly of the existing Swift
   `AppleBleBackend`
-- Status: current decision aligned with the user-authorized refactor. macOS
-  plugin-owned construction and ownership transfer are implemented; validation
-  remains candidate/platform-specific. This update records no new pass.
+- Status: shared Apple assembly and official iOS build integration are implemented.
+  Current results below are supplied by the coordinating session, not rerun by
+  this documentation update; runtime, signing, and RF remain platform-specific.
 
 ## Boundary
 
@@ -19,14 +19,14 @@ Tauri Web UI
     -> Rust Tauri plugin
     -> Rust-owned BleHub
     -> canonical Stable UniFFI foreign BleBackend proxy
-    -> Swift AppleBleBackend (plugin-owned macOS assembly)
+    -> Swift AppleBleBackend (plugin-owned shared macOS+iOS assembly)
     -> CoreBluetooth
 ```
 
 The plugin and app stay separate. The plugin owns assembly, typed IPC/projection,
 bounded event transport, the Rust `BleHub`, and cleanup. The app owns window,
 configuration/capability grants, frontend IDs, timeout policy, and flow tracking.
-Apple transport stays under `platforms/apple`. The macOS launcher transfers the
+Apple transport stays under `platforms/apple`. The shared Apple launcher transfers the
 Swift backend through canonical Stable UniFFI and Rust retains the resulting Hub.
 
 The [Plan responsibility diagram](../../.plan/PLAN.md#551-tauri-薄适配器装配)
@@ -43,49 +43,57 @@ separates three different relationships:
    Rust-host registry and another copy hidden in a loaded native library.
    Validate the linked artifact; a source graph alone does not prove this gate.
 
-`init()` with default `native` selects plugin-owned Swift assembly on macOS and
+`init()` with default `native` selects plugin-owned Swift assembly on macOS+iOS and
 Rust `WindowsBackend` on Windows. Unsupported/no-native targets fail setup,
 never silently select a fake. Windows wiring is not a validated Windows Tauri
 runtime/RF result. `with_backend(backend)` remains the test/optional-provider seam
 with identical IPC and permissions; the example's demo is explicitly selected
 with `--no-default-features --features demo`.
 
-## Future iOS shape — not an implemented provider
+## Unified Apple assembly and official iOS build ownership
 
-The intended iOS variant uses the native half of a Tauri mobile plugin. Its
-Swift host would construct `AppleBleBackend`; Rust must not duplicate the
-CoreBluetooth backend just to obtain a Rust constructor. This is a design
-boundary, not a claim of current iOS Tauri setup, signing, lifecycle, or RF.
+macOS 13 and iOS 16 share
+`integrations/tauri-plugin-blehub/plugins/blehub/assembly/apple-assembly`.
+The one-time ticket launcher and generated `attach_backend` flow below are
+shared; iOS does not need a second Swift `PluginHandle` assembly command or a
+second CoreBluetooth implementation. Mobile glue must not introduce per-BLE-
+operation JSON commands.
 
-The intended one-time flow is:
+The plugin's `build.rs` selects exactly one Swift build/link owner per target:
 
-```text
-Rust plugin requests `assemble(ticket)` through PluginHandle
-    -> Swift Tauri Plugin creates AppleBleBackend
-    -> Swift calls generated Stable UniFFI attach_backend with that ticket
-    -> Rust completes the canonical BleHub assembly and owns command/event flow
-```
+- iOS: official `tauri_plugin::Builder::ios_path("assembly/apple-assembly")`,
+  which owns the Swift link step; no additional direct `SwiftLinker` invocation.
+- macOS: the plugin build script's `SwiftLinker`, without the mobile builder path.
 
-Mobile hooks are limited to assembly, permission, lifecycle, and disposal
-coordination; they must not become per-BLE-operation JSON commands. The existing
-canonical generated `attach_backend(ticket, backend)` already represents the
-foreign backend ownership transfer. `swift-rs` launches macOS construction only;
-it is not the trait/DTO transfer mechanism and does not prove iOS mobile behavior.
+The Swift package/product is named `tauri-plugin-blehub` as required by the
+Tauri linker. `swift-rs` is narrow launch/link glue, not the trait/DTO ownership
+transfer mechanism. The generic constructor, `BackendAssembly` guard/registry,
+and exported `attach_backend` remain in `crates/blehub`. Source-package staging
+provides same-candidate generated bindings/headers; it neither defines another
+API nor introduces a second native image.
 
-The generic constructor, `BackendAssembly` guard/registry, and exported
-`attach_backend` are owned by `crates/blehub`. Tauri-specific launcher and host
-coordination remain in the integration; neither a second attach protocol nor a
-CoreBluetooth factory belongs in `crates/blehub-uniffi`. Mobile invocation
-reentry, cancellation, permission/Activity lifetime, binding initialization,
-and final single-image packaging must be independently validated before a
-mobile provider is enabled. Android Central sequencing remains Phase 4.
+The example has the standard mobile entry point in `src-tauri/src/lib.rs`.
+Official CLI `2.11.4`, its npm lock, and `scripts.tauri` live at the example root,
+not `ui/`; standard `npm run tauri` lets Xcode callbacks rediscover that CLI.
+No custom Tauri XcodeGen template or callback wrapper is maintained.
+`tauri::ios-init` explicitly passes `--skip-targets-install`, and
+`tauri::ios-build` supports complete unsigned `aarch64-sim` / `aarch64` app builds.
+
+The tracked, manually maintained `tests/hil/apple/ios/project.yml` belongs to
+the independent native Swift HIL. In contrast, the example's
+`src-tauri/gen/apple/project.yml` is official ignored generated output and must
+not be hand-edited. `ios init` reuses an existing template: preserve the old
+`gen/apple` directory outside the generation path before regenerating after
+relevant configuration changes. iOS Tauri runtime, development signing, RF,
+and mobile lifecycle still require independent validation. Android Central
+sequencing remains Phase 4; this change adds no Android implementation.
 
 ## Options
 
 | Option | Useful capability | Decision |
 |---|---|---|
 | Stable UniFFI | Existing foreign `BleBackend`, `BleEventSink`, object handles, generated Swift package, and the tested production image | **Keep as the only BLE ABI** |
-| `swift-rs` | Links a Swift package and calls narrow `@_cdecl` functions with C-compatible values | Keep the one-function macOS launcher; not BLE DTOs, traits, ownership transfer, or operations |
+| `swift-rs` | Links a Swift package and calls narrow `@_cdecl` functions with C-compatible values | Keep the narrow shared Apple launcher with one linker owner per target; not BLE DTOs, traits, ownership transfer, or operations |
 | `swift-bridge` | Rich Rust/Swift structs, classes, results, and async bridge | Do not add: it would create a second Rust/Swift ABI beside UniFFI |
 | Rust `objc2-core-bluetooth`/`corebluetooth` | Could make a Tauri macOS path pure Rust | Do not duplicate the already-tested Swift Apple backend |
 | Child process or JSON proxy | Easy process boundary | Reject: it changes ownership, timing, and event semantics |
@@ -100,7 +108,7 @@ machine and another RF/lifecycle validation matrix.
 ## Decision
 
 Use Stable UniFFI for every `BleHub`/backend/event value and callback. The
-implemented macOS path has only a narrow assembly launcher:
+implemented macOS+iOS path has only a narrow assembly launcher:
 
 ```text
 let assembly = BackendAssembly::new(sink)
@@ -131,8 +139,8 @@ timer. If a provider needs a second operation protocol or duplicate image, that
 provider is a No-Go; it is not enabled by relabeling setup as ownership proof.
 
 The maintained implementation is under
-`integrations/tauri-plugin-blehub/plugins/blehub/assembly/macos/`, with the
-reference host under `examples/tauri-central/`. The previous implementation
+`integrations/tauri-plugin-blehub/plugins/blehub/assembly/apple-assembly/`, with the
+reference host under `examples/tauri-blehub-internal/`. The previous implementation
 slice is retained at `spikes/archive/tauri-downstream/` as historical evidence.
 The migrated path constructs the production Swift backend inside the plugin and
 transfers it into the plugin-owned Tauri `BleHub` through the canonical Stable
@@ -170,11 +178,75 @@ callback.
 - Each Tauri app permits one installation only, including after removal.
   Restart needs a new app and Hub, not reuse of retained closed state.
 
-These decisions do not create new historical pass evidence. The coordinating
-agent records final refactor tests; nonnative/demo tests and Apple selection
-checks are distinct from native image linkage, Windows runtime, RF, and soak.
+Current coordinating-session evidence is deliberately bounded:
+
+- Two real macOS Swift assembly XCTest tests are registered and passed after correcting
+  the missing manifest `testTarget`; this is not a zero-test success.
+- Complete unsigned Tauri iOS simulator/device app builds both passed. Final
+  plist minimum OS and `LC_BUILD_VERSION` are 16.0; each slice has all 123 BleHub
+  UniFFI definitions exactly once, one assembly entry, zero old harness symbols,
+  and zero additional BleHub dylibs. iOS Tauri runtime, development signing,
+  and RF have not run.
+- System logs established why the old WDIO direct spawn could not prompt:
+  responsibility belonged to `sshd-keygen-wrapper`, and Bluetooth policy logged
+  `Policy disallows prompt`. This was a launch-attribution defect, not simply
+  an unanswered authorization request.
+- The test-only `macos-owner.js` + `launch-app.swift` now launch the actual bundle
+  through standard `NSWorkspace`/LaunchServices and retain `NSRunningApplication`.
+  macOS WDIO uses `services: []` and ordinary WebDriver Classic against the same
+  Rust embedded server. A temporary IPv4 loopback port, `lsof` match to the
+  returned app PID, and `/status` readiness check precede session creation.
+  Stdin EOF, including after Node-parent `SIGKILL`, triggers exact-instance
+  `terminate` with bounded `forceTerminate` fallback. No `osascript` or `pkill`
+  scripting is involved. Windows/Linux retain the npm service. Its lack of an
+  official attach option does not prohibit this automation: only process
+  ownership changes, not the protocol, BLE ABI, or OS security policy.
+- The new demo run passed 3 tests with 3 skipped; owner lifecycle scenarios
+  passed independently. The coordinating thread's dedicated
+  `tauri::macos-owner-test` entry builds the bundle and owner and runs lifecycle
+  tests without BLE commands or a successful native E2E prerequisite.
+- Native Initialize initially timed out after 30 seconds despite the
+  2026-09-09 15:38:30 TCC log confirming the app as responsible and
+  `AUTHREQ_PROMPTING` / `display_prompt`. After user authorization, native E2E
+  passed 2 tests / 4 skipped without RF. The macOS Tauri TCC blocker is closed;
+  the preceding prompt/timeout is historical, not the current authorization state.
+- `tauri::macos-bundle` builds the same debug/instrumented bundle;
+  `tauri::macos-authorize` is human launch → click Initialize → allow → quit,
+  not validation. Login-keychain access is the human-only
+  `pixi run just apple unlock-login-keychain` step, never an agent password input.
+- Apple prepare and builds consuming its shared staging must be serialized.
+  Concurrent preparation caused a missing-directory failure; serial recovery
+  restored staging, after which native iOS HIL signing still failed with
+  `errSecInternalComponent` before RF. Staging races and signing failures are
+  distinct, and neither is RF evidence.
+- The first authorized Tauri scan showed start and terminal events but no
+  advertisement. E2E had not ensured the Android Peripheral before its first
+  scan, whereas native HIL exit stops that fixture. RF-only setup now calls
+  `android-ensure` once before scanning; teardown restores radio/advertising.
+  Visible-flow waits surface early UI errors without changing fault `allowError`.
+- Native macOS → Android Peripheral `all` RF reran and passed independently.
+  Then `pixi run just tauri tauri-native-rf` passed 6 tests / 0 skipped in about
+  1m35s: visible flow, two fresh-ID repeats, 10 cycles, discovery radio loss,
+  active-subscription passive loss/recovery, and dispose. App PID cleanup and
+  Android `STATE_ON` / advertising readiness were confirmed. No backend changed
+  and no assertion was weakened.
+- The subsequent UI-only timeout diagnostics name missing evidence, command ID,
+  and scope. All 19 component tests passed; a regression requires timeout and
+  no connect for scan start/terminal without a matching valid advertisement,
+  including stale-session or explicitly nonconnectable observations. The final
+  diagnostic candidate subsequently reran the same RF command and passed
+  6 tests / 0 skipped in 1m34.6s (WDIO total 1m36). Owned app exit and Peripheral
+  `STATE_ON` / ready were confirmed. This independently validates that candidate;
+  neither this rerun nor the first pass establishes long-soak coverage.
+- The latest serial native iOS `runtime-ios-android` retry still failed at
+  `codesign` with `errSecInternalComponent` before RF. Historical iOS I/O RF is
+  not a current full-matrix result; Tauri iOS remains unrun and Windows untested.
+
+The coordinating agent owns the detailed run report; this document records the
+architecture and evidence boundary rather than duplicating the maintenance log.
+See the [candidate-specific report](../testing/reports/2026-09-09-tauri-apple-dual-target-workflow.md).
 Tauri-specific remaining gates delay their provider/showcase only and **do not
 block Phase 5 public ABI freeze**. See the
 [integration README](../../integrations/tauri-plugin-blehub/README.md) for the
-maintained interface and [example README](../../examples/tauri-central/README.md)
+maintained interface and [example README](../../examples/tauri-blehub-internal/README.md)
 for flow policy and execution recipes.

@@ -18,6 +18,8 @@ DEFAULT_FIXTURE = (
     / "tests"
     / "conformance"
     / "scenarios"
+    / "archive"
+    / "android"
     / "android-peripheral.json"
 )
 

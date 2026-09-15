@@ -9,7 +9,7 @@ Windows-first 的目标是尽早验证 BLE 事件和状态机，不是把公共 
 | 阶段/条件 | 执行内容 | Lane |
 |---|---|---|
 | Phase 0-1 | 运行平台无关 contract/bridge、`FakeBackend` 和共享 conformance；Windows 不拥有这些语义的私有副本 | `core-primary`；可移植性由 `core-portability` 复核 |
-| Phase 2，Android项目外设可用 | private Windows mapping fixtures、按需窄native adapter、scripted conformance、package，以及真实scan/GATT/notification开发smoke | `tests/peripherals/android`、`windows`；开发RF smoke不作为BLESS release HIL通过 |
+| Phase 2，Android项目外设可用 | private Windows mapping fixtures、按需窄native adapter、scripted conformance、package，以及真实scan/GATT/notification开发smoke | `tests/peripherals/archive/android`、`windows`；Android 仅为 archived compatibility fixture，开发RF smoke不作为BLESS release HIL通过 |
 | Phase 2，USB adapter与managed peripheral环境可用后 | 自动RF smoke、fault injection、资源清理和至少10次scan/connect soak | `windows-hil` |
 | Release candidate | 执行并保存 Windows HIL 报告 | `windows-hil`，独占 runner |
 
@@ -19,7 +19,7 @@ Windows RF runner位于standalone `tests/hil/windows` Cargo crate，只通过Jus
 
 ### 当前物理外设：项目Android Peripheral
 
-开发期使用Android真机（当前为OnePlus 11，ADB serial `3ac5cc09`）运行[`tests/peripherals/android`](../../tests/peripherals/android/)中的项目Kotlin GATT Server。它直接消费fixture `blehub-android-peripheral-v1`，在同一 GATT 数据库中提供普通 `updates` 和严格 Indication 用的 `indication-updates`，可显式发送 notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
+历史开发期使用Android真机（当前为OnePlus 11，ADB serial `3ac5cc09`）运行归档的[`tests/peripherals/archive/android`](../../tests/peripherals/archive/android/)项目Kotlin GATT Server。它直接消费fixture `blehub-android-peripheral-v1`，在同一 GATT 数据库中提供普通 `updates` 和严格 Indication 用的 `indication-updates`，可显式发送 notification/indication并通过Android CLI/ADB控制；构建和操作见[Android开发外设指南](android-peripheral.md)。QEMU/BLESS消费语义对齐但广播service不同的`blehub-qemu-basic-gatt-v1`，因此两者并行运行时也不能被同一个service filter混淆。LightBlue保留为项目fixture不可用时的手工fallback。
 
 2026-08-29已从Windows通过LightBlue和项目recipe实际验证共享fixture的以下基础路径：
 

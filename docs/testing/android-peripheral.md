@@ -1,12 +1,12 @@
 # Android managed development peripheral
 
-This page describes the project-managed Kotlin BLE Peripheral under [`tests/peripherals/android/`](../../tests/peripherals/android/). It runs on a physical Android device and provides the Phase 2 day-to-day RF fixture for the Windows Central backend. It is test infrastructure, not an Android Central backend and not a BleHub product capability.
+This page describes the project-managed Kotlin BLE Peripheral under [`tests/peripherals/archive/android/`](../../tests/peripherals/archive/android/). It runs on a physical Android device and provides the Phase 2 day-to-day RF fixture for the Windows Central backend. It is test infrastructure, not an Android Central backend and not a BleHub product capability.
 
 The app is deliberately small:
 
 - Kotlin and Android Framework APIs only;
 - no Rust, UniFFI, AndroidX, Compose, foreground service, or production AAR dependency;
-- GATT shape loaded directly from [`android-peripheral.json`](../../tests/conformance/scenarios/android-peripheral.json), including ordinary `updates` and `indication-updates` characteristics;
+- GATT shape loaded directly from [`android-peripheral.json`](../../tests/conformance/scenarios/archive/android/android-peripheral.json), including ordinary `updates` and `indication-updates` characteristics;
 - foreground Activity with the screen kept awake;
 - explicit notification, indication, disconnect, and status controls;
 - Android CLI for deployment and ADB intents for deterministic control.

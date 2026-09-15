@@ -4,8 +4,8 @@ This directory contains project-managed BLE Peripheral fixtures used to validate
 
 All providers consume the shared profile under [`../conformance/scenarios/`](../conformance/scenarios/) rather than duplicating UUIDs or characteristic properties.
 
-- [`android/`](android/) is the Phase 2 development fixture for physical Android devices.
-- [`bless/`](bless/) contains the Linux/BlueZ BLESS provider used inside the managed Peripheral VM. A USB adapter enumerated by a Windows or macOS host is not a BLESS provider until the Linux guest exclusively owns it and passes doctor/readiness.
-- `nrf52840/` is reserved for an optional independently implemented hardware reference fixture after its firmware stack is reviewed.
+- [`nrf52840/`](nrf52840/) is the active standalone hardware reference provider. Its host provider, BTP/AutoPTS adapter, profile provisioning, firmware identity and recovery logic belong here. AutoPTS is nRF-provider-only and is not a public BleHub or shared Peripheral dependency.
+- [`archive/android/`](archive/android/) retains the former Android development fixture for historical and optional compatibility runs; it is not part of the active conformance baseline.
+- [`archive/bless/`](archive/bless/) retains the former Linux/BlueZ BLESS provider and guest server for historical and optional compatibility runs; its VM/image inputs are archived separately under `vm/archive/linux-peripheral/`.
 
-Passing one provider does not imply another provider's stronger gate passed. In particular, the Android fixture does not replace BLESS fault injection or soak testing.
+The active baseline is nRF52840 + standalone firmware + isolated BTP/AutoPTS control + real macOS/iOS/Windows Central RF. Archived providers and their reports are not automatically evidence for the active nRF lane.

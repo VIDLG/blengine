@@ -1,6 +1,6 @@
 # LightBlue 手工测试外设
 
-本页说明如何用 LightBlue 创建与 [`android-peripheral.json`](../../tests/conformance/scenarios/android-peripheral.json) 对应的手工测试外设。该 JSON 是 Android/手工 fallback 的完整 UUID 和属性来源；QEMU/BLESS 使用独立的 `qemu-basic-gatt-peripheral.json` 广播身份，避免并行测试串扰。
+本页说明如何用 LightBlue 创建与 [`android-peripheral.json`](../../tests/conformance/scenarios/archive/android/android-peripheral.json) 对应的手工测试外设。该 JSON 是 Android/手工 fallback 的完整 UUID 和属性来源；QEMU/BLESS 使用独立的 `archive/bless/qemu-basic-gatt-peripheral.json` 广播身份，避免并行测试串扰。
 
 该外设现在只作为[`tests/peripherals/android`](../../tests/peripherals/android/)项目fixture不可用时的手工fallback，用于开发期扫描和基础GATT smoke test；日常确定notification验证改用[Android开发外设](android-peripheral.md)。它不替代平台backend conformance、受控BLESS managed peripheral或最终自动HIL。2026-08-29已用Windows Central与HONOR 90 GT上的LightBlue实际通过本页`ble-scan`和`test fixture`：广播、连接、GATT discovery、read、write with/without response和subscribe/unsubscribe均成功。2026-08-30又在CCCD订阅成功期间分别手工和通过ADB更新`FFF2...`；Windows经RF读取到新值，但没有收到Notify/Indicate callback，因此该LightBlue配置不作为notification delivery gate。当前工具走Bleak，只证明OS/RF/fixture可用，不证明尚未实现的BleHub `WindowsBackend`。
 

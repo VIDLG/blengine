@@ -6,10 +6,11 @@ from typing import NotRequired, TypedDict, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_ROOT = PROJECT_ROOT / "tests" / "conformance" / "scenarios"
-PROFILE_PATHS = (
-    SCENARIO_ROOT / "android-peripheral.json",
-    SCENARIO_ROOT / "qemu-basic-gatt-peripheral.json",
+ARCHIVED_PROFILE_PATHS = (
+    SCENARIO_ROOT / "archive" / "android" / "android-peripheral.json",
+    SCENARIO_ROOT / "archive" / "bless" / "qemu-basic-gatt-peripheral.json",
 )
+NRF_PROFILE_PATH = SCENARIO_ROOT / "blehub-nrf-indication-v2.json"
 
 
 class CharacteristicDefinition(TypedDict):
@@ -83,29 +84,38 @@ def require_distinct(values: list[str], label: str) -> None:
 
 
 def main() -> int:
-    profiles = [load_profile(path) for path in PROFILE_PATHS]
+    archived_profiles = [load_profile(path) for path in ARCHIVED_PROFILE_PATHS]
+    nrf_profile = load_profile(NRF_PROFILE_PATH)
+    all_profiles = [*archived_profiles, nrf_profile]
     require_distinct(
-        [profile["profile_id"] for profile in profiles],
+        [profile["profile_id"] for profile in all_profiles],
         "profile_id",
     )
     require_distinct(
-        [profile["advertising"]["local_name"] for profile in profiles],
+        [profile["advertising"]["local_name"] for profile in all_profiles],
         "local name",
     )
-    service_uuids = [profile["services"][0]["uuid"].casefold() for profile in profiles]
-    require_distinct(service_uuids, "advertised/root service UUID")
+    service_uuids = [
+        profile["services"][0]["uuid"].casefold() for profile in archived_profiles
+    ]
+    all_service_uuids = [
+        profile["services"][0]["uuid"].casefold() for profile in all_profiles
+    ]
+    require_distinct(all_service_uuids, "advertised/root service UUID")
 
-    expected = semantic_signature(profiles[0])
-    for path, profile in zip(PROFILE_PATHS[1:], profiles[1:], strict=True):
+    expected = semantic_signature(archived_profiles[0])
+    for path, profile in zip(
+        ARCHIVED_PROFILE_PATHS[1:], archived_profiles[1:], strict=True
+    ):
         if semantic_signature(profile) != expected:
             message = (
                 f"{path.name}: provider-independent GATT semantics differ from "
-                + PROFILE_PATHS[0].name
+                + ARCHIVED_PROFILE_PATHS[0].name
             )
             raise ValueError(message)
 
     for path, profile, service_uuid in zip(
-        PROFILE_PATHS, profiles, service_uuids, strict=True
+        ARCHIVED_PROFILE_PATHS, archived_profiles, service_uuids, strict=True
     ):
         message = (
             f"profile={profile['profile_id']} file={path.name} "
@@ -114,7 +124,7 @@ def main() -> int:
         print(message)
     android_roles = {
         characteristic["role"]
-        for characteristic in profiles[0]["services"][0]["characteristics"]
+        for characteristic in archived_profiles[0]["services"][0]["characteristics"]
     }
     if "updates" not in android_roles or "indication-updates" not in android_roles:
         raise ValueError(
@@ -122,14 +132,25 @@ def main() -> int:
         )
     indication = next(
         characteristic
-        for characteristic in profiles[0]["services"][0]["characteristics"]
+        for characteristic in archived_profiles[0]["services"][0]["characteristics"]
         if characteristic["role"] == "indication-updates"
     )
     if sorted(indication["properties"]) != ["indicate", "read"]:
         raise ValueError("indication-updates characteristic must be read+indicate only")
     print(
-        f"profile={profiles[0]['profile_id']} file={PROFILE_PATHS[0].name} "
+        f"profile={archived_profiles[0]['profile_id']} file={ARCHIVED_PROFILE_PATHS[0].name} "
         + "modes=notification+strict-indication status=valid"
+    )
+    nrf_roles = {
+        characteristic["role"]
+        for characteristic in nrf_profile["services"][0]["characteristics"]
+    }
+    if nrf_roles != {"read-write", "updates", "indications", "read-only", "write-only"}:
+        raise ValueError(
+            "nRF52840 profile must contain exactly the five v2 GATT roles"
+        )
+    print(
+        f"profile={nrf_profile['profile_id']} file={NRF_PROFILE_PATH.name} status=valid"
     )
     print("provider_profile_isolation=passed")
     return 0

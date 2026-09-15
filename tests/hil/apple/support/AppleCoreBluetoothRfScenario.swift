@@ -73,6 +73,351 @@ enum ProbeError: Error, CustomStringConvertible {
     }
 }
 
+enum AppleRfScenario: String {
+    case io, notification, indication, rssi
+    case passiveDisconnect = "passive-disconnect"
+    case recovery
+
+    var usesNotifications: Bool {
+        self == .notification || self == .indication || self == .passiveDisconnect || self == .recovery
+    }
+
+    var needsHost: Bool { usesNotifications }
+}
+
+// Caller-owned IDs: initialization is 1; each recovery cycle reserves a disjoint
+// command block. Opaque attribute IDs remain backend-owned and session-scoped.
+struct RfCycleIds {
+    var cycle: UInt64 = 1
+    func command(_ local: UInt64) -> CommandId { CommandId(value: (cycle - 1) * 100 + local) }
+    var scan: ScanSessionId { ScanSessionId(value: cycle) }
+    var connection: ConnectionId { ConnectionId(value: cycle) }
+    var gatt: GattSessionId { GattSessionId(value: cycle) }
+    var subscription: SubscriptionId { SubscriptionId(value: cycle) }
+    var rejectedSubscription: SubscriptionId { SubscriptionId(value: 1000 + cycle) }
+}
+
+struct RfLedgerError: Error, CustomStringConvertible {
+    let description: String
+}
+
+func rfCommandId(_ event: BleEvent) -> CommandId? {
+    switch event {
+    case .adapterSnapshotChanged(let id, _), .connectionStateChanged(let id, _, _): return id
+    case .scanStarted(let id, _), .gattDiscovered(let id, _),
+         .characteristicRead(let id, _, _, _, _), .characteristicWritten(let id, _, _, _),
+         .notificationStateChanged(let id, _, _, _, _, _), .rssiRead(let id, _, _),
+         .commandCompleted(let id, _): return id
+    case .scanStopped(_, .ok(.requested(let id))): return id
+    default: return nil
+    }
+}
+
+// Validate all domains with this command ID, not merely the first matching tuple.
+// Returning their indices lets the cycle ledger reject every unaccounted event.
+@discardableResult
+func validateRfCommand(
+    _ events: [BleEvent], id: CommandId, expectedError: BleErrorCategory? = nil,
+    domains: [(BleEvent) -> Bool]
+) throws -> [Int] {
+    let indices = events.indices.filter { rfCommandId(events[$0]) == id }
+    guard indices.count == domains.count + 1,
+          let last = indices.last,
+          case .commandCompleted(_, let error) = events[last],
+          error?.category == expectedError,
+          zip(indices.dropLast(), domains).allSatisfy({ $0.1(events[$0.0]) })
+    else {
+        throw RfLedgerError(description: "command \(id.value): expected \(domains.count) correlated domains before exactly one \(String(describing: expectedError)) terminal; events=\(events)")
+    }
+    return indices
+}
+
+func waitForRfTerminal(
+    fixture: SwiftProbeHarness, commandId: CommandId, operation: String, timeout: TimeInterval
+) throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if fixture.snapshot().events.contains(where: {
+            if case .commandCompleted(let id, _) = $0 { return id == commandId }; return false
+        }) { return }
+        waitForCallbacks()
+    }
+    throw ProbeError.gattIoTimeout(operation, fixture.snapshot().events)
+}
+
+@discardableResult
+func validateRssiLedger(_ events: [BleEvent], command: ReadRssiCommand) throws -> Int16 {
+    var value: Int16 = 0
+    try validateRfCommand(events, id: command.commandId, domains: [{
+        guard case .rssiRead(_, let connection, let rssi) = $0,
+              connection == command.connectionId else { return false }
+        value = rssi
+        return true
+    }])
+    return value
+}
+
+func runStrictIndicationRejection(
+    fixture: SwiftProbeHarness, database: GattDatabase, serviceUuid: String, ids: RfCycleIds
+) throws {
+    guard let characteristic = database.services.first(where: { $0.uuid.value == serviceUuid.lowercased() })?
+        .characteristics.first(where: { $0.uuid.value == "fff20000-0000-4000-8000-000000000000" }),
+        characteristic.properties.notifiable, characteristic.properties.indicatable
+    else { throw ProbeError.invalidGattDatabase("strict rejection requires dual-property FFF2") }
+    let command = SetNotificationsCommand(
+        commandId: ids.command(13), connectionId: database.connectionId,
+        gattSessionId: database.gattSessionId, subscriptionId: ids.rejectedSubscription,
+        characteristicId: characteristic.id, action: .enable(mode: .requireIndication)
+    )
+    try fixture.setNotifications(command: command)
+    try waitForRfTerminal(fixture: fixture, commandId: command.commandId, operation: "dual-property strict Indication", timeout: 10)
+    try validateRfCommand(fixture.snapshot().events, id: command.commandId, expectedError: .notSupported, domains: [])
+}
+
+func isRfPassiveDisconnect(_ event: BleEvent, connectionId: ConnectionId) -> Bool {
+    guard case .connectionStateChanged(nil, let observed, let result) = event,
+          observed == connectionId else { return false }
+    switch result {
+    case .ok(let state): return state == .disconnected
+    case .err(let error): return error.category == .connection
+    }
+}
+
+// A completed cycle retains its range in the append-only sink. Later cycles never
+// clear that sink: this check catches even a wrong-command callback carrying an
+// old connection, GATT session, subscription, or scan session.
+func validateRetiredRfEvents(_ events: [BleEvent], after end: Int, ids: RfCycleIds) throws {
+    for (offset, event) in events.dropFirst(end).enumerated() {
+        var retired = rfCommandId(event).map {
+            $0.value > (ids.cycle - 1) * 100 && $0.value < ids.cycle * 100
+        } ?? false
+        switch event {
+        case .scanStarted(_, let scan), .scanStopped(let scan, _): retired = retired || scan == ids.scan
+        case .advertisementObserved(let ad): retired = retired || ad.scanSessionId == ids.scan
+        case .connectionStateChanged(_, let connection, _), .rssiRead(_, let connection, _):
+            retired = retired || connection == ids.connection
+        case .gattDiscovered(_, let database):
+            retired = retired || database.connectionId == ids.connection || database.gattSessionId == ids.gatt
+        case .characteristicRead(_, let connection, let gatt, _, _),
+             .characteristicWritten(_, let connection, let gatt, _):
+            retired = retired || connection == ids.connection || gatt == ids.gatt
+        case .notificationStateChanged(_, let connection, let gatt, let sub, _, _),
+             .notificationReceived(let connection, let gatt, let sub, _, _):
+            retired = retired || connection == ids.connection || gatt == ids.gatt ||
+                sub == ids.subscription || sub == ids.rejectedSubscription
+        case .backendError: retired = true
+        default: break
+        }
+        if retired {
+            throw RfLedgerError(description: "late event for retired cycle \(ids.cycle) at index \(end + offset): \(event)")
+        }
+    }
+}
+
+// Complete accounting for one RF cycle, including rejected strict requests and
+// no-command domains. Unknown, duplicate, reordered, or miscorrelated events fail.
+func validateRfCycleLedger(_ events: [BleEvent], ids: RfCycleIds, scenario: AppleRfScenario,
+                           configuration: RfFixtureConfiguration = .android) throws {
+    var accounted = Set<Int>()
+    var previousTerminal = -1
+    func claim(_ local: UInt64, error: BleErrorCategory? = nil, _ domains: [(BleEvent) -> Bool]) throws {
+        let indices = try validateRfCommand(events, id: ids.command(local), expectedError: error, domains: domains)
+        guard let first = indices.first, let last = indices.last, first > previousTerminal else {
+            throw RfLedgerError(description: "command \(ids.command(local).value) crossed the preceding command's terminal boundary")
+        }
+        previousTerminal = last
+        accounted.formUnion(indices)
+    }
+    try claim(2, [{ if case .scanStarted(_, let scan) = $0 { return scan == ids.scan }; return false }])
+    try claim(3, [{ requestedScanStopped(scanId: ids.scan, commandId: ids.command(3), event: $0) }])
+    try claim(4, [.connecting, .connected].map { state in
+        { connectionState(state, commandId: ids.command(4), connectionId: ids.connection, event: $0) }
+    })
+    var discovered: GattDatabase?
+    try claim(5, [{
+        guard case .gattDiscovered(_, let database) = $0,
+              database.connectionId == ids.connection, database.gattSessionId == ids.gatt else { return false }
+        discovered = database
+        return true
+    }])
+    guard let database = discovered else { throw ProbeError.gattTimeout(events) }
+    let startIndex = events.firstIndex { if case .scanStarted = $0 { return true }; return false }!
+    let stopIndex = events.firstIndex { if case .scanStopped = $0 { return true }; return false }!
+    var advertisements = 0
+    for index in events.indices {
+        if case .advertisementObserved(let ad) = events[index], ad.scanSessionId == ids.scan,
+           index > startIndex, index < stopIndex {
+            advertisements += 1
+            accounted.insert(index)
+        }
+    }
+    guard advertisements > 0 else { throw ProbeError.scanTimeout(events) }
+    if scenario == .indication { try claim(13, error: .notSupported, []) }
+    if scenario.usesNotifications {
+        let uuid = scenario == .indication ? "fff50000-0000-4000-8000-000000000000" : "fff20000-0000-4000-8000-000000000000"
+        guard let characteristic = database.services.flatMap({ $0.characteristics }).first(where: { $0.uuid.value == uuid }) else {
+            throw ProbeError.invalidGattDatabase("missing \(uuid)")
+        }
+        let mode: NotificationMode = scenario == .indication ? .indication : .notification
+        try validateNotificationEventLedger(events, database: database, subscriptionId: ids.subscription,
+                                            characteristicId: characteristic.id, expectedValue: Data([0xDE, 0xAD, 0xBE, 0xEF]),
+                                            ids: ids, expectedMode: mode, expectDisable: scenario != .passiveDisconnect)
+        for local: UInt64 in scenario == .passiveDisconnect ? [6] : [6, 7] {
+            try claim(local, [{
+                guard case .notificationStateChanged(_, let connection, let gatt, let sub, let char, let state) = $0 else { return false }
+                return connection == ids.connection && gatt == ids.gatt && sub == ids.subscription && char == characteristic.id &&
+                    state == (local == 6 ? .enabled(actualMode: mode) : .disabled)
+            }])
+        }
+        accounted.formUnion(events.indices.filter { if case .notificationReceived = events[$0] { return true }; return false })
+    } else if scenario == .rssi {
+        try validateRssiLedger(events, command: ReadRssiCommand(commandId: ids.command(12), connectionId: ids.connection))
+        try claim(12, [{ if case .rssiRead(_, let connection, _) = $0 { return connection == ids.connection }; return false }])
+    } else {
+        guard let characteristic = database.services.flatMap({ $0.characteristics }).first(where: {
+            $0.uuid.value == "fff10000-0000-4000-8000-000000000000"
+        }) else { throw ProbeError.invalidGattDatabase("missing IO characteristic") }
+        try validateGattIoEventLedger(events, database: database, characteristicId: characteristic.id, configuration: configuration)
+        for local: UInt64 in [6, 7, 8, 9, 10] {
+            try claim(local, [{ event in
+                switch event {
+                case .characteristicRead(_, let connection, let gatt, let char, _):
+                    return [6, 8, 10].contains(local) && connection == ids.connection && gatt == ids.gatt && char == characteristic.id
+                case .characteristicWritten(_, let connection, let gatt, let char):
+                    return [7, 9].contains(local) && connection == ids.connection && gatt == ids.gatt && char == characteristic.id
+                default: return false
+                }
+            }])
+        }
+    }
+    let disconnectIndex: Int
+    if scenario == .passiveDisconnect {
+        let indices = events.indices.filter { isRfPassiveDisconnect(events[$0], connectionId: ids.connection) }
+        guard indices.count == 1 else { throw ProbeError.disconnectTimeout(events) }
+        disconnectIndex = indices[0]
+        accounted.insert(disconnectIndex)
+    } else {
+        let local: UInt64 = scenario == .io ? 11 : (scenario.usesNotifications ? 8 : 6)
+        try claim(local, [{ connectionState(.disconnected, commandId: ids.command(local), connectionId: ids.connection, event: $0) }])
+        disconnectIndex = events.firstIndex {
+            connectionState(.disconnected, commandId: ids.command(local), connectionId: ids.connection, event: $0)
+        }!
+    }
+    // All GATT/value/RSSI activity must precede the disconnected domain, not just
+    // the return from a polling loop. The logical disconnect terminal alone may follow.
+    for index in events.indices where index > disconnectIndex {
+        if case .commandCompleted = events[index], scenario != .passiveDisconnect { continue }
+        throw RfLedgerError(description: "event after disconnect boundary: \(events[index])")
+    }
+    guard accounted.count == events.count else {
+        let unexpected = events.indices.filter { !accounted.contains($0) }.map { "\($0): \(events[$0])" }
+        throw RfLedgerError(description: "unaccounted RF cycle \(ids.cycle) events: \(unexpected)")
+    }
+}
+
+func prepareRfCoordinationDirectory(path: String, runId: String) throws {
+    guard !runId.isEmpty, runId != "missing", runId.utf8.count <= 128,
+          runId.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_")).contains($0) }),
+          path.hasPrefix("/"), URL(fileURLWithPath: path).lastPathComponent == "blehub-rf-\(runId)"
+    else { throw RfLedgerError(description: "invalid RF run ID or absolute Documents coordination path") }
+    guard !FileManager.default.fileExists(atPath: path) else {
+        throw RfLedgerError(description: "RF run directory already exists; use a fresh run ID: \(runId)")
+    }
+    try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+}
+
+func validateRfPostDispose(_ events: [BleEvent], before: [BleEvent]) throws {
+    guard events == before else {
+        throw RfLedgerError(description: "events changed after dispose; before=\(before.count), after=\(events)")
+    }
+}
+
+func runIOSRfScenario(
+    fixture: SwiftProbeHarness, scenario: AppleRfScenario, serviceUuid: String,
+    runId: String, coordinationPath: String, unfiltered: Bool = false,
+    allowDuplicates: Bool = true, diagnosticTargetPeripheralId: (() -> PeripheralId?)? = nil,
+    scanDuration: TimeInterval = 30,
+    configuration: RfFixtureConfiguration = .android
+) throws -> [String] {
+    var output = configuration.evidence
+    var cycles: [RfCycleEvidence] = []
+    let historyStart = fixture.snapshot().events.count
+    for cycle in 1 ... (scenario == .recovery ? 3 : 1) {
+        let ids = RfCycleIds(cycle: UInt64(cycle))
+        let path: String
+        if scenario == .recovery {
+            path = URL(fileURLWithPath: coordinationPath).appendingPathComponent("cycle-\(cycle)").path
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: false)
+            try signalProbeHost(path: path, marker: "cycle-ready", value: "\(runId)\n")
+            try waitForProbeHost(path: path, marker: "fixture-ready", timeout: 90)
+        } else { path = coordinationPath }
+        // Include the host-ACK wait in the next cycle's accounting; never skip
+        // events by taking a fresh offset after that wait.
+        let start = cycles.last?.range.upperBound ?? historyStart
+        let scan = try runScan(fixture: fixture, serviceUuid: serviceUuid, unfiltered: unfiltered,
+                               allowDuplicates: allowDuplicates, diagnosticTargetPeripheralId: diagnosticTargetPeripheralId,
+                               scanDuration: scanDuration, ids: ids)
+        output.append(contentsOf: scan.output)
+        // Preserve the historical diagnostic scan-only path, but never call it an RF pass.
+        if unfiltered && diagnosticTargetPeripheralId == nil {
+            guard scenario == .io else {
+                throw RfLedgerError(description: "a complete RF scenario requires provider-filtered scan or an explicit target")
+            }
+            output.append("apple_ios_corebluetooth_unfiltered_scan=passed")
+            return output
+        }
+        output.append(contentsOf: try runConnection(
+            fixture: fixture, peripheralId: scan.advertisement.peripheralId,
+            discoverGattServiceUuid: serviceUuid, runGattIoAfterDiscovery: scenario == .io,
+            runNotificationsAfterDiscovery: scenario.usesNotifications,
+            fixtureCoordinationPath: scenario.needsHost ? path : nil, ids: ids, rfScenario: scenario,
+                        configuration: configuration
+        ))
+        cycles.append(RfCycleEvidence(ids: ids, range: start ..< fixture.snapshot().events.count))
+        try validateRfHistory(fixture.snapshot().events, cycles: cycles, scenario: scenario, configuration: configuration)
+        if scenario == .recovery {
+            try signalProbeHost(path: path, marker: "cycle-passed", value: "\(runId)\n")
+            output.append("apple_ios_rf_recovery_cycle_\(cycle)=passed")
+        }
+    }
+    // No pending operations remain. Keep the same sink alive to observe disposal
+    // and native callbacks; a second backend/Hub would hide the boundary under test.
+    let beforeDispose = fixture.snapshot().events
+    try fixture.dispose()
+    Thread.sleep(forTimeInterval: 2)
+    let finalEvents = fixture.snapshot().events
+    try validateRfPostDispose(finalEvents, before: beforeDispose)
+    try validateRfHistory(finalEvents, cycles: cycles, scenario: scenario, configuration: configuration)
+    output.append("apple_ios_rf_ledger=passed")
+    output.append("apple_ios_rf_post_dispose_silence=passed")
+    output.append("apple_ios_rf_\(scenario.rawValue)=passed")
+    output.append("apple_ios_corebluetooth_rf=passed")
+    return output
+}
+
+struct RfCycleEvidence {
+    let ids: RfCycleIds
+    let range: Range<Int>
+}
+
+func validateRfHistory(_ events: [BleEvent], cycles: [RfCycleEvidence], scenario: AppleRfScenario,
+                       configuration: RfFixtureConfiguration = .android) throws {
+    for (index, cycle) in cycles.enumerated() {
+        guard cycle.ids.cycle == UInt64(index + 1),
+              index == 0 || cycle.range.lowerBound == cycles[index - 1].range.upperBound else {
+            throw RfLedgerError(description: "RF cycle IDs or event ranges were reused or skipped")
+        }
+        guard cycle.range.upperBound <= events.count else {
+            throw RfLedgerError(description: "append-only RF history was truncated")
+        }
+        try validateRfCycleLedger(Array(events[cycle.range]), ids: cycle.ids, scenario: scenario, configuration: configuration)
+        try validateRetiredRfEvents(events, after: cycle.range.upperBound, ids: cycle.ids)
+    }
+    if let end = cycles.last?.range.upperBound, end != events.count {
+        throw RfLedgerError(description: "unaccounted events after completed RF cycles: \(Array(events.dropFirst(end)))")
+    }
+}
+
 func waitForCallbacks() {
     Thread.sleep(forTimeInterval: 0.05)
 }
@@ -187,12 +532,13 @@ func runScan(
     unfiltered: Bool = false,
     allowDuplicates: Bool = true,
     diagnosticTargetPeripheralId: (() -> PeripheralId?)? = nil,
-    scanDuration: TimeInterval = 30
+    scanDuration: TimeInterval = 30,
+    ids: RfCycleIds = RfCycleIds()
 ) throws -> (output: [String], advertisement: AdvertisementObservation) {
     let serviceUuid = BluetoothUuid(value: value.lowercased())
     let startCommand = StartScanCommand(
-        commandId: CommandId(value: 2),
-        scanSessionId: ScanSessionId(value: 1),
+        commandId: ids.command(2),
+        scanSessionId: ids.scan,
         options: ScanOptions(
             serviceUuids: unfiltered ? [] : [serviceUuid],
             namePrefix: nil,
@@ -244,7 +590,7 @@ func runScan(
     }
 
     let stopCommand = StopScanCommand(
-        commandId: CommandId(value: 3),
+        commandId: ids.command(3),
         scanSessionId: startCommand.scanSessionId
     )
     try fixture.stopScan(command: stopCommand)
@@ -325,12 +671,14 @@ func runScan(
 func runGattDiscovery(
     fixture: SwiftProbeHarness,
     connectionId: ConnectionId,
-    expectedServiceUuid: String
+    expectedServiceUuid: String,
+    ids: RfCycleIds = RfCycleIds(),
+    configuration: RfFixtureConfiguration = .android
 ) throws -> (output: [String], database: GattDatabase) {
     let command = DiscoverGattCommand(
-        commandId: CommandId(value: 5),
+        commandId: ids.command(5),
         connectionId: connectionId,
-        gattSessionId: GattSessionId(value: 1)
+        gattSessionId: ids.gatt
     )
     let eventOffset = fixture.snapshot().events.count
     try fixture.discoverGatt(command: command)
@@ -364,7 +712,8 @@ func runGattDiscovery(
     try validateAndroidGattDatabase(
         database,
         command: command,
-        expectedServiceUuid: BluetoothUuid(value: expectedServiceUuid.lowercased())
+        expectedServiceUuid: BluetoothUuid(value: expectedServiceUuid.lowercased()),
+        configuration: configuration
     )
     let descriptorCount = database.services.reduce(0) { serviceTotal, service in
         serviceTotal + service.characteristics.reduce(0) { characteristicTotal, characteristic in
@@ -387,7 +736,8 @@ func runGattDiscovery(
 func validateAndroidGattDatabase(
     _ database: GattDatabase,
     command: DiscoverGattCommand,
-    expectedServiceUuid: BluetoothUuid
+    expectedServiceUuid: BluetoothUuid,
+    configuration: RfFixtureConfiguration = .android
 ) throws {
     guard database.connectionId == command.connectionId,
           database.gattSessionId == command.gattSessionId
@@ -399,7 +749,7 @@ func validateAndroidGattDatabase(
         throw ProbeError.invalidGattDatabase("expected exactly one primary \(expectedServiceUuid.value) service")
     }
 
-    let expectedCharacteristics: [BluetoothUuid: CharacteristicProperties] = [
+    var expectedCharacteristics: [BluetoothUuid: CharacteristicProperties] = [
         BluetoothUuid(value: "fff10000-0000-4000-8000-000000000000"): CharacteristicProperties(
             readable: true,
             writableWithResponse: true,
@@ -436,7 +786,11 @@ func validateAndroidGattDatabase(
             indicatable: false
         ),
     ]
-    guard service.characteristics.count == expectedCharacteristics.count else {
+    if !configuration.hasIndicationOnly {
+        expectedCharacteristics.removeValue(forKey: BluetoothUuid(value: "fff50000-0000-4000-8000-000000000000"))
+    }
+    guard service.characteristics.count == expectedCharacteristics.count,
+          Set(service.characteristics.map(\.uuid)).count == expectedCharacteristics.count else {
         throw ProbeError.invalidGattDatabase(
             "expected \(expectedCharacteristics.count) fixture characteristics, got \(service.characteristics.count)"
         )
@@ -457,14 +811,12 @@ func validateAndroidGattDatabase(
     let updateUuid = BluetoothUuid(value: "fff20000-0000-4000-8000-000000000000")
     let cccdUuid = BluetoothUuid(value: "00002902-0000-1000-8000-00805f9b34fb")
     let indicationUuid = BluetoothUuid(value: "fff50000-0000-4000-8000-000000000000")
-    guard let updateCharacteristic = service.characteristics.first(where: { $0.uuid == updateUuid }),
-          updateCharacteristic.descriptors.contains(where: { $0.uuid == cccdUuid }),
-          let indicationCharacteristic = service.characteristics.first(where: {
-              $0.uuid == indicationUuid
-          }),
-          indicationCharacteristic.descriptors.contains(where: { $0.uuid == cccdUuid })
-    else {
-        throw ProbeError.invalidGattDatabase("updates characteristic is missing its CCCD")
+    let subscribedUuids = configuration.hasIndicationOnly ? [updateUuid, indicationUuid] : [updateUuid]
+    for uuid in subscribedUuids {
+        guard let characteristic = service.characteristics.first(where: { $0.uuid == uuid }),
+              characteristic.descriptors.contains(where: { $0.uuid == cccdUuid }) else {
+            throw ProbeError.invalidGattDatabase("updates characteristic \(uuid.value) is missing its CCCD")
+        }
     }
 
     let serviceIds = database.services.map(\.id)
@@ -623,13 +975,14 @@ func waitForProbeHost(path: String?, marker: String, timeout: TimeInterval) thro
         }
         waitForCallbacks()
     }
-    throw ProbeError.notificationTimeout("host marker \(marker)", [])
+    throw ProbeError.notificationTimeout("host marker \(marker) at \(path)", [])
 }
 
 func runGattIo(
     fixture: SwiftProbeHarness,
     database: GattDatabase,
-    expectedServiceUuid: String
+    expectedServiceUuid: String,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> [String] {
     let serviceUuid = BluetoothUuid(value: expectedServiceUuid.lowercased())
     let characteristicUuid = BluetoothUuid(value: "fff10000-0000-4000-8000-000000000000")
@@ -647,13 +1000,13 @@ func runGattIo(
         commandId: 6,
         operation: "initial read"
     )
-    guard initialValue == Data([0x00]) else {
+    guard initialValue == (try configuration.initialValue) else {
         throw ProbeError.invalidGattValue(
-            "initial FFF1 value was \(hexValue(initialValue)); expected 00"
+            "initial FFF1 value was \(hexValue(initialValue)); expected \(configuration.initialValueHex)"
         )
     }
 
-    let withResponseValue = Data([0x10, 0x20, 0x30])
+    let withResponseValue = try configuration.writeWithResponse
     try runCharacteristicWrite(
         fixture: fixture,
         connectionId: database.connectionId,
@@ -678,7 +1031,7 @@ func runGattIo(
         )
     }
 
-    let withoutResponseValue = Data([0xAB, 0xCD])
+    let withoutResponseValue = try configuration.writeWithoutResponse
     try runCharacteristicWrite(
         fixture: fixture,
         connectionId: database.connectionId,
@@ -717,7 +1070,10 @@ func runNotifications(
     fixture: SwiftProbeHarness,
     database: GattDatabase,
     expectedServiceUuid: String,
-    fixtureCoordinationPath: String?
+    fixtureCoordinationPath: String?,
+    ids: RfCycleIds = RfCycleIds(),
+    strictIndication: Bool = false,
+    leaveActive: Bool = false
 ) throws -> (
     output: [String],
     ledgerOffset: Int,
@@ -726,21 +1082,24 @@ func runNotifications(
     expectedValue: Data
 ) {
     let serviceUuid = BluetoothUuid(value: expectedServiceUuid.lowercased())
-    let characteristicUuid = BluetoothUuid(value: "fff20000-0000-4000-8000-000000000000")
+    let characteristicUuid = BluetoothUuid(value: strictIndication
+        ? "fff50000-0000-4000-8000-000000000000"
+        : "fff20000-0000-4000-8000-000000000000")
+    let expectedMode: NotificationMode = strictIndication ? .indication : .notification
     guard let service = database.services.first(where: { $0.uuid == serviceUuid }),
           let characteristic = service.characteristics.first(where: { $0.uuid == characteristicUuid })
     else {
         throw ProbeError.invalidGattDatabase("updates characteristic is missing")
     }
 
-    let subscriptionId = SubscriptionId(value: 1)
+    let subscriptionId = ids.subscription
     let enable = SetNotificationsCommand(
-        commandId: CommandId(value: 6),
+        commandId: ids.command(6),
         connectionId: database.connectionId,
         gattSessionId: database.gattSessionId,
         subscriptionId: subscriptionId,
         characteristicId: characteristic.id,
-        action: .enable(mode: .platformDefault)
+        action: .enable(mode: strictIndication ? .requireIndication : .platformDefault)
     )
     let ledgerOffset = fixture.snapshot().events.count
     try fixture.setNotifications(command: enable)
@@ -771,7 +1130,7 @@ func runNotifications(
                     observedSubscriptionId == enable.subscriptionId,
                     characteristicId == enable.characteristicId,
                     case .enabled(let actualMode) = state,
-                    actualMode == .notification
+                    actualMode == expectedMode
                 else {
                     return false
                 }
@@ -800,12 +1159,17 @@ func runNotifications(
               else {
                   return false
               }
-              return actualMode == .notification
+              return actualMode == expectedMode
           })
     else {
         throw ProbeError.notificationTimeout("enable", enabledEvents)
     }
 
+    try validateNotificationEventLedger(
+        enabledEvents, database: database, subscriptionId: subscriptionId,
+        characteristicId: characteristic.id, expectedValue: Data([0xDE, 0xAD, 0xBE, 0xEF]),
+        ids: ids, expectedMode: expectedMode, expectDisable: false, expectValue: false
+    )
     try signalProbeHost(path: fixtureCoordinationPath, marker: "notification-enabled")
     let expectedValue = Data([0xDE, 0xAD, 0xBE, 0xEF])
     let valueDeadline = Date().addingTimeInterval(45)
@@ -851,8 +1215,21 @@ func runNotifications(
         throw ProbeError.notificationTimeout("value delivery", valueEvents)
     }
 
+    try validateNotificationEventLedger(
+        valueEvents, database: database, subscriptionId: subscriptionId,
+        characteristicId: characteristic.id, expectedValue: expectedValue,
+        ids: ids, expectedMode: expectedMode, expectDisable: false
+    )
+    if leaveActive {
+        return ([
+            "apple_macos_corebluetooth_notification_actual_mode=notification",
+            "apple_macos_corebluetooth_notification_value=\(hexValue(expectedValue))",
+            "apple_macos_corebluetooth_passive_disconnect_active_subscription=passed",
+        ], ledgerOffset, subscriptionId, characteristic.id, expectedValue)
+    }
+
     let disable = SetNotificationsCommand(
-        commandId: CommandId(value: 7),
+        commandId: ids.command(7),
         connectionId: database.connectionId,
         gattSessionId: database.gattSessionId,
         subscriptionId: subscriptionId,
@@ -929,12 +1306,14 @@ func runNotifications(
         database: database,
         subscriptionId: subscriptionId,
         characteristicId: characteristic.id,
-        expectedValue: expectedValue
+        expectedValue: expectedValue,
+        ids: ids,
+        expectedMode: expectedMode
     )
 
     return (
         output: [
-            "apple_macos_corebluetooth_notification_actual_mode=notification",
+            "apple_macos_corebluetooth_notification_actual_mode=\(strictIndication ? "indication" : "notification")",
             "apple_macos_corebluetooth_notification_value=\(hexValue(expectedValue))",
             "apple_macos_corebluetooth_notification_enable_disable_order=passed",
             "apple_macos_corebluetooth_notification_post_disable_silence=passed",
@@ -952,11 +1331,16 @@ func validateNotificationEventLedger(
     database: GattDatabase,
     subscriptionId: SubscriptionId,
     characteristicId: GattCharacteristicId,
-    expectedValue: Data
+    expectedValue: Data,
+    ids: RfCycleIds = RfCycleIds(),
+    expectedMode: NotificationMode = .notification,
+    expectDisable: Bool = true,
+    expectValue: Bool = true
 ) throws {
-    let enableId = CommandId(value: 6)
-    let disableId = CommandId(value: 7)
-    for (commandId, enabled) in [(enableId, true), (disableId, false)] {
+    let enableId = ids.command(6)
+    let disableId = ids.command(7)
+    let commands = expectDisable ? [(enableId, true), (disableId, false)] : [(enableId, true)]
+    for (commandId, enabled) in commands {
         let terminals = events.enumerated().compactMap { index, event -> (Int, BleEventError?)? in
             guard case .commandCompleted(let observedCommandId, let error) = event,
                   observedCommandId == commandId
@@ -1013,15 +1397,21 @@ func validateNotificationEventLedger(
         }
         if enabled {
             guard case .enabled(let actualMode) = states[0].5,
-                  actualMode == .notification
+                  actualMode == expectedMode
             else {
-                throw ProbeError.invalidNotification("enable did not report Notification mode")
+                throw ProbeError.invalidNotification("enable did not report expected mode \(expectedMode)")
             }
         } else if states[0].5 != .disabled {
             throw ProbeError.invalidNotification("disable did not report Disabled state")
         }
     }
 
+    if !expectValue {
+        guard !events.contains(where: { if case .notificationReceived = $0 { return true }; return false }) else {
+            throw ProbeError.invalidNotification("value arrived before host trigger")
+        }
+        return
+    }
     let values = events.compactMap {
         event -> (ConnectionId, GattSessionId, SubscriptionId, GattCharacteristicId, Data)? in
         guard case .notificationReceived(
@@ -1052,6 +1442,16 @@ func validateNotificationEventLedger(
             "expected exactly one correctly correlated \(hexValue(expectedValue)) value"
         )
     }
+    let valueIndex = events.firstIndex { if case .notificationReceived = $0 { return true }; return false }!
+    let enableIndex = events.firstIndex {
+        if case .commandCompleted(let id, _) = $0 { return id == enableId }; return false
+    }!
+    let disableIndex = events.firstIndex {
+        if case .notificationStateChanged(let id, _, _, _, _, _) = $0 { return id == disableId }; return false
+    } ?? events.count
+    guard enableIndex < valueIndex, valueIndex < disableIndex else {
+        throw ProbeError.invalidNotification("value was outside the enabled subscription interval")
+    }
 }
 
 private enum ExpectedGattIoDomain {
@@ -1062,8 +1462,12 @@ private enum ExpectedGattIoDomain {
 func validateGattIoEventLedger(
     _ events: [BleEvent],
     database: GattDatabase,
-    characteristicId: GattCharacteristicId
+    characteristicId: GattCharacteristicId,
+    configuration: RfFixtureConfiguration = .android
 ) throws {
+    let readValues: [UInt64: Data] = try [
+        6: configuration.initialValue, 8: configuration.writeWithResponse, 10: configuration.writeWithoutResponse,
+    ]
     let expected: [(UInt64, ExpectedGattIoDomain)] = [
         (6, .read),
         (7, .write),
@@ -1134,6 +1538,10 @@ func validateGattIoEventLedger(
             )
         }
         let domain = domains[0]
+        if case .characteristicRead(_, _, _, _, let value) = events[domain.0],
+           value != readValues[commandValue] {
+            throw ProbeError.invalidGattValue("command \(commandValue) readback differs from configured payload")
+        }
         guard domain.1 == expectedDomain,
               domain.2 == database.connectionId,
               domain.3 == database.gattSessionId,
@@ -1153,11 +1561,14 @@ func runConnection(
     discoverGattServiceUuid: String?,
     runGattIoAfterDiscovery: Bool,
     runNotificationsAfterDiscovery: Bool,
-    fixtureCoordinationPath: String?
+    fixtureCoordinationPath: String?,
+    ids: RfCycleIds = RfCycleIds(),
+    rfScenario: AppleRfScenario? = nil,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> [String] {
     let connect = ConnectCommand(
-        commandId: CommandId(value: 4),
-        connectionId: ConnectionId(value: 1),
+        commandId: ids.command(4),
+        connectionId: ids.connection,
         peripheralId: peripheralId
     )
     let connectOffset = fixture.snapshot().events.count
@@ -1222,7 +1633,9 @@ func runConnection(
         let discovery = try runGattDiscovery(
             fixture: fixture,
             connectionId: connect.connectionId,
-            expectedServiceUuid: discoverGattServiceUuid
+            expectedServiceUuid: discoverGattServiceUuid,
+            ids: ids,
+            configuration: configuration
         )
         output.append(contentsOf: discovery.output)
         if runGattIoAfterDiscovery {
@@ -1243,15 +1656,24 @@ func runConnection(
                 contentsOf: try runGattIo(
                     fixture: fixture,
                     database: discovery.database,
-                    expectedServiceUuid: discoverGattServiceUuid
+                    expectedServiceUuid: discoverGattServiceUuid,
+                    configuration: configuration
                 )
             )
         } else if runNotificationsAfterDiscovery {
+            if rfScenario == .indication {
+                try runStrictIndicationRejection(fixture: fixture, database: discovery.database,
+                                               serviceUuid: discoverGattServiceUuid, ids: ids)
+                output.append("apple_macos_corebluetooth_indication_dual_property_not_supported=passed")
+            }
             let notification = try runNotifications(
                 fixture: fixture,
                 database: discovery.database,
                 expectedServiceUuid: discoverGattServiceUuid,
-                fixtureCoordinationPath: fixtureCoordinationPath
+                fixtureCoordinationPath: fixtureCoordinationPath,
+                ids: ids,
+                strictIndication: rfScenario == .indication,
+                leaveActive: rfScenario == .passiveDisconnect
             )
             output.append(contentsOf: notification.output)
             notificationLedgerOffset = notification.ledgerOffset
@@ -1260,6 +1682,38 @@ func runConnection(
             notificationCharacteristicId = notification.characteristicId
             notificationExpectedValue = notification.expectedValue
         }
+    }
+
+    if rfScenario == .rssi {
+        let command = ReadRssiCommand(commandId: ids.command(12), connectionId: connect.connectionId)
+        try fixture.readRssi(command: command)
+        try waitForRfTerminal(fixture: fixture, commandId: command.commandId, operation: "RSSI", timeout: 15)
+        let rssi = try validateRssiLedger(fixture.snapshot().events, command: command)
+        output.append("apple_macos_corebluetooth_rssi_value=\(rssi)")
+        output.append("apple_macos_corebluetooth_rssi=passed")
+    }
+    if rfScenario == .passiveDisconnect {
+        // runNotifications returned only after enable + one exact, correlated payload,
+        // without disabling. The host must cut the Android radio, not cancelConnection.
+        try signalProbeHost(path: fixtureCoordinationPath, marker: "radio-off-ready")
+        try waitForProbeHost(path: fixtureCoordinationPath, marker: "radio-off-confirmed", timeout: 60)
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline {
+            if fixture.snapshot().events.contains(where: { isRfPassiveDisconnect($0, connectionId: ids.connection) }) {
+                break
+            }
+            waitForCallbacks()
+        }
+        guard fixture.snapshot().events.contains(where: { isRfPassiveDisconnect($0, connectionId: ids.connection) }) else {
+            throw ProbeError.disconnectTimeout(fixture.snapshot().events)
+        }
+        try signalProbeHost(path: fixtureCoordinationPath, marker: "passive-disconnected")
+        try waitForProbeHost(path: fixtureCoordinationPath, marker: "radio-restored", timeout: 90)
+        Thread.sleep(forTimeInterval: 2)
+        return output + [
+            "apple_macos_corebluetooth_passive_disconnect=passed",
+            "apple_macos_corebluetooth_passive_disconnect_silence=passed",
+        ]
     }
 
     let disconnectCommandId: UInt64
@@ -1273,7 +1727,7 @@ func runConnection(
         disconnectCommandId = 5
     }
     let disconnect = DisconnectCommand(
-        commandId: CommandId(value: disconnectCommandId),
+        commandId: ids.command(disconnectCommandId),
         connectionId: connect.connectionId
     )
     try fixture.disconnect(command: disconnect)
@@ -1330,7 +1784,8 @@ func runConnection(
         try validateGattIoEventLedger(
             Array(finalEvents.dropFirst(gattIoLedgerOffset)),
             database: gattIoDatabase,
-            characteristicId: gattIoCharacteristicId
+            characteristicId: gattIoCharacteristicId,
+            configuration: configuration
         )
         output.append("apple_macos_corebluetooth_gatt_io_event_order=passed")
         output.append("apple_macos_corebluetooth_gatt_io=passed")
@@ -1346,7 +1801,9 @@ func runConnection(
             database: notificationDatabase,
             subscriptionId: notificationSubscriptionId,
             characteristicId: notificationCharacteristicId,
-            expectedValue: notificationExpectedValue
+            expectedValue: notificationExpectedValue,
+            ids: ids,
+            expectedMode: rfScenario == .indication ? .indication : .notification
         )
     }
 

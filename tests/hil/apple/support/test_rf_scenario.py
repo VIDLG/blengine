@@ -42,8 +42,10 @@ let package = Package(
             support / name
             for name in (
                 "SwiftProbeHarness.swift",
+                "RfFixtureConfiguration.swift",
                 "AppleCoreBluetoothRfScenario.swift",
                 "AppleCoreBluetoothRfScenarioTests.swift",
+                "ExternalFixtureConfigurationTests.swift",
             )
         )
         for source in sources:
@@ -56,7 +58,7 @@ let package = Package(
                 "--package-path",
                 str(package),
                 "--filter",
-                "AppleCoreBluetoothRfScenarioTests",
+                "AppleCoreBluetoothRfScenarioTests|ExternalFixtureConfigurationTests",
             ],
             check=True,
             timeout=540,
