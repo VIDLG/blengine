@@ -1,4 +1,6 @@
-use super::{AssemblyAdmissionError, CleanupError, HubCleanup, HubRegistration};
+use super::{
+    AssemblyAdmissionError, CleanupError, CleanupStartResult, HubCleanup, HubRegistration,
+};
 use blehub::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleEventSink, BleHub,
     BleHubError, CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
@@ -220,6 +222,50 @@ fn blocking_dispose_does_not_block_start_or_runtime_and_shares_error_after_cance
     });
     assert_eq!(attempts.load(Ordering::SeqCst), 1);
     assert_eq!(backend_handle.dispose_count(), 1);
+}
+
+#[test]
+fn discarded_disposal_worker_preserves_root_and_failure_remains_observable() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let cleanup = HubCleanup::new();
+    let (backend, handle) = FakeBackend::scripted([]);
+    let hub = BleHub::new(Arc::new(backend), Arc::new(Sink)).unwrap();
+    let identity = Arc::downgrade(&hub);
+    cleanup.attach(hub).unwrap();
+    let CleanupStartResult::Started {
+        primary: Some(disposal),
+    } = cleanup.shared.state.lock().unwrap().start_cleanup()
+    else {
+        panic!("primary disposal target missing");
+    };
+    let slot = disposal.slot;
+
+    // Builder::spawn drops the supplied closure when it cannot create a thread.
+    // Exercise that ownership path without exhausting actual OS resources.
+    drop(disposal.into_worker(Arc::clone(&cleanup.shared)));
+    assert_eq!(handle.dispose_count(), 0);
+    assert_eq!(identity.strong_count(), 1);
+    cleanup
+        .shared
+        .record_disposal_result(slot, Err(CleanupError::WorkerStopped));
+    runtime.block_on(async {
+        for _ in 0..2 {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), cleanup.wait_for_completion())
+                    .await
+                    .expect("failed disposal slot did not settle"),
+                Err(CleanupError::WorkerStopped)
+            );
+        }
+    });
+
+    // The failure policy intentionally leaks the root allocation. Release this
+    // fixture's native resources explicitly without changing the recorded error.
+    identity.upgrade().unwrap().dispose().unwrap();
+    assert_eq!(handle.dispose_count(), 1);
 }
 
 #[test]

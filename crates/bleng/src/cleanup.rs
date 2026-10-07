@@ -1,20 +1,135 @@
 //! Hub ownership admission and asynchronous disposal coordination.
 //!
+//! # Five-step execution model
+//!
+//! 1. Register under the lock: establish identity, ownership, and a result slot.
+//! 2. Schedule outside the lock: hand a disposal target to its worker.
+//! 3. Execute in the background: run native dispose/drop without the state lock.
+//! 4. Account under the lock: store success/failure before notifying waiters.
+//! 5. Complete from state: require cleanup started, admission released, and all
+//!    slots settled. A notification wakes a check; it never proves completion.
+//!
+//! These rules separate short state transitions from potentially blocking or
+//! reentrant work; asynchronous execution must not mean untracked ownership.
+//!
+//! # Core invariants
+//!
+//! - Only the primary Hub is dispatchable. Rejected/late Hubs are registered
+//!   solely for identity checking and mandatory cleanup, never as extra backends.
+//! - Admission is reserved before foreign assembly and released by its RAII
+//!   guard. Cleanup can start during assembly, but cannot finish until that
+//!   guard is released and any resulting Hub's disposal is accounted for.
+//! - `CleanupState` owns the decisions and results; `CleanupCoordinator` owns
+//!   locking, wakeups, and disposal scheduling. Foreign disposal runs outside
+//!   the state lock, on an OS thread independent of the owner Tokio runtime.
+//! - Dropping a completion waiter does not cancel cleanup. `watch` signals are
+//!   wakeups/diagnostics, not an event log: waiters recheck authoritative state.
+//!
+//! # Locking discipline
+//!
+//! - Lock only to reserve admission, register ownership, transfer a disposal
+//!   target, record a result, clone the dispatch root, or inspect completion.
+//! - Evaluate the runtime-open predicate after locking; pass the resulting
+//!   bool to CleanupState. This avoids a pre-lock snapshot, but does not make
+//!   the separate runtime atomic and cleanup state one atomic transaction.
+//! - Release the state lock BEFORE foreign assembly, thread creation, native
+//!   dispose/root destruction, or awaiting a change. Never join a worker here.
+//! - Register a result slot BEFORE scheduling its worker, so a concurrent close
+//!   cannot overlook already-owned cleanup even if the worker has not started.
+//! - Result/admission notifications may be sent under the lock; registration
+//!   and start notifications are sent after unlocking. Neither means completion:
+//!   a woken waiter acquires the lock and rechecks the full state conjunction.
+//!
+//! # Why an independent disposal thread
+//!
+//! Native cleanup may be scheduled after the owner Tokio runtime shuts down,
+//! so it cannot rely on that runtime accepting another blocking-pool job.
+//! Already-running spawn_blocking work is not generally cancelled by shutdown;
+//! the issue here is scheduling late work, not interrupting a running task.
+//! One OS thread per disposal costs more than pool reuse, but is appropriate
+//! for this lifecycle-level work. Completion is tracked by slots, not a join.
+//! Neither execution choice can forcibly interrupt a blocked native dispose.
+//!
+//! # Assembly and ownership flow
+//!
+//! `[lock]` / `[unlock]` below refer to the CleanupCoordinator state mutex.
+//! Indentation denotes calls; the outcome branches run after the state call
+//! returns. Registering a rejected Hub does not call back into the coordinator.
+//!
 //! ```text
-//! Idle
-//! ├── begin_admission() → AdmissionHeld
-//! │   ├── commit Hub  → Ready
-//! │   └── guard Drop  → Idle
-//! └── start_cleanup()  → Disposing
-//!     ├── all disposal slots complete → Finished
-//!     └── any disposal error           → FinishedWithError
+//! begin_admission()
+//!   [lock] read runtime_open; reserve the single assembly slot or reject
+//!   [unlock] on acceptance: notify; return the admission guard
+//!   |
+//!   v
+//! foreign backend assembly [no state lock]
+//!   | failure: guard Drop releases admission (see below)
+//!   v
+//! AssemblyAdmission::commit(hub)
+//!   CleanupCoordinator::register_owned_hub()
+//!     [lock] read runtime_open
+//!       CleanupState::register_owned_hub()
+//!         duplicate identity -> Err(DuplicateOwnedHub); no new slot
+//!         accepted primary   -> retain Hub; return Primary
+//!         rejected/late      -> register_rejected_hub()
+//!                               record identity + result slot
+//!                               return Rejected { disposal, reason }
+//!     [unlock] BEFORE handling the outcome
+//!       duplicate -> return error; existing registration owns cleanup duty
+//!       Primary   -> notify; return Ok; DO NOT schedule disposal yet
+//!       Rejected  -> notify; schedule_disposal(disposal); return Err(reason)
+//!                    (schedule now, but do not wait for native disposal)
+//!   |
+//!   v
+//! admission guard Drop, on success or error
+//!   [lock] release admission; notify completion waiters
+//!   [unlock]
 //! ```
 //!
-//! `AssemblyAdmission` closes the assembly/close race. The disposal thread
-//! owns each Hub until its result is recorded. `CleanupCoordinator` stores the
-//! authoritative state and wakes every close waiter after each state transition.
+//! # Cleanup, shared disposal path, and completion
+//!
+//! ```text
+//! start_cleanup()
+//!   [lock] if already started: no change
+//!          otherwise mark started; take the primary Hub's DisposalTarget
+//!   [unlock] if newly started: notify; schedule_disposal(primary) if present
+//!   |
+//!   | primary is scheduled here; rejected/late Hubs are scheduled at commit
+//!   v
+//! schedule_disposal(target) [no state lock; shared by both paths]
+//!   create independent OS thread with target.into_worker()
+//!   | creation fails: preserve Hub root; record WorkerStopped (see below)
+//!   | succeeds: caller continues without joining the worker
+//!   v
+//! worker executes [no state lock]
+//!   dispose_owned_hub() -- synchronous dispose + root drop, with panic guards
+//!   |
+//!   v
+//! CleanupCoordinator::record_disposal_result(slot, result)
+//!   [lock] store result in primary/rejected slot; notify completion waiters
+//!   [unlock]
+//!   (also used by the scheduling caller if thread creation fails)
+//!
+//! wait_for_completion()
+//!   subscribe to changes BEFORE checking state
+//!   [lock] check: cleanup started AND admission released AND all slots settled
+//!          complete -> read retained result; unlock and return
+//!   [unlock] if incomplete: await a change, then lock and recheck
+//!   result priority: primary error first, then rejected errors, otherwise Ok
+//! ```
+//!
+//! Admission and cleanup overlap; they are not mutually exclusive phases.
+//! A worker that cannot be created, or a panic that leaves native disposal in
+//! an unsafe state, deliberately preserves a Hub root rather than triggering
+//! potentially blocking/reentrant destruction on the caller. These exceptional
+//! paths report `WorkerStopped`; they do not claim successful resource release.
+//!
+//! Detailed rationale, ownership tables, race cases, and test evidence are in
+//! [`docs/research/bleng-cleanup-design-2026-10-07.md`](../../../docs/research/bleng-cleanup-design-2026-10-07.md).
+//! A [Chinese version](../../../docs/research/bleng-cleanup-design-2026-10-07.zh-CN.md) is also available.
 
 use std::{
+    mem::ManuallyDrop,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, PoisonError, Weak},
 };
@@ -200,12 +315,23 @@ impl RejectedHub {
     }
 }
 
+impl DisposalTarget {
+    fn into_worker(self, shared: Arc<CleanupCoordinator>) -> impl FnOnce() + Send + 'static {
+        // If thread creation fails, dropping its closure must not run BleHub's
+        // blocking Drop on the caller. Only an executing worker unwraps this
+        // root; an unstarted worker deliberately leaks it instead.
+        let hub = ManuallyDrop::new(self.hub);
+        let slot = self.slot;
+        move || {
+            let result = dispose_owned_hub(ManuallyDrop::into_inner(hub));
+            shared.record_disposal_result(slot, result);
+        }
+    }
+}
+
 impl CleanupState {
-    fn reserve_admission(
-        &mut self,
-        is_open: impl FnOnce() -> bool,
-    ) -> Result<(), AssemblyAdmissionError> {
-        if self.started || !is_open() {
+    fn reserve_admission(&mut self, runtime_open: bool) -> Result<(), AssemblyAdmissionError> {
+        if self.started || !runtime_open {
             return Err(AssemblyAdmissionError::Closed);
         }
         if self.admission_reserved || self.primary.is_some() {
@@ -225,7 +351,7 @@ impl CleanupState {
         &mut self,
         hub: Arc<BleHub>,
         registration: HubRegistration,
-        is_open: impl FnOnce() -> bool,
+        runtime_open: bool,
     ) -> Result<HubRegistrationOutcome, AssemblyAdmissionError> {
         let identity = Arc::downgrade(&hub);
         if self
@@ -241,30 +367,33 @@ impl CleanupState {
             return Err(AssemblyAdmissionError::DuplicateOwnedHub);
         }
 
-        let open = is_open();
         let can_claim_primary =
             matches!(registration, HubRegistration::Admitted) || !self.admission_reserved;
-        if !self.started && open && self.primary.is_none() && can_claim_primary {
+        if !self.started && runtime_open && self.primary.is_none() && can_claim_primary {
             self.primary = Some(PrimaryRegistration::new(identity, hub));
             return Ok(HubRegistrationOutcome::Primary);
         }
 
-        let reason = if self.started || !open {
+        Ok(self.register_rejected_hub(hub, identity, runtime_open))
+    }
+
+    fn register_rejected_hub(
+        &mut self,
+        hub: Arc<BleHub>,
+        identity: Weak<BleHub>,
+        runtime_open: bool,
+    ) -> HubRegistrationOutcome {
+        let reason = if self.started || !runtime_open {
             AssemblyAdmissionError::Closed
         } else {
             AssemblyAdmissionError::AdditionalHubRejected
         };
-        let slot = self.register_rejected_hub(identity);
-        Ok(HubRegistrationOutcome::Rejected {
-            disposal: DisposalTarget { hub, slot },
-            reason,
-        })
-    }
-
-    fn register_rejected_hub(&mut self, identity: Weak<BleHub>) -> DisposalSlot {
         let slot = DisposalSlot::Rejected(self.rejected_hubs.len());
         self.rejected_hubs.push(RejectedHub::new(identity));
-        slot
+        HubRegistrationOutcome::Rejected {
+            disposal: DisposalTarget { hub, slot },
+            reason,
+        }
     }
 
     fn release_admission(&mut self) {
@@ -339,9 +468,9 @@ impl CleanupState {
 
 /// Shared cleanup state that may outlive the public cleanup façade.
 ///
-/// The runtime handle belongs here because disposal jobs can be created by
-/// either the façade or an admission guard, while the state and notifier must
-/// remain available after either caller has been dropped.
+/// Disposal workers and admission guards retain this coordinator independently
+/// of the façade and owner runtime. The state and notifier remain available
+/// until those owners finish registration, disposal, and result publication.
 struct CleanupCoordinator {
     state: Mutex<CleanupState>,
     changed: watch::Sender<CleanupSignal>,
@@ -373,7 +502,9 @@ impl CleanupCoordinator {
     ) -> Result<(), AssemblyAdmissionError> {
         let outcome = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.register_owned_hub(hub, registration, is_open)?
+            // Read runtime state after acquiring the lock, not before waiting for it.
+            let runtime_open = is_open();
+            state.register_owned_hub(hub, registration, runtime_open)?
         };
         match outcome {
             HubRegistrationOutcome::Primary => {
@@ -396,15 +527,34 @@ impl CleanupCoordinator {
     /// result ledger, rather than the detached thread, is the completion
     /// boundary observed by `HubCleanup::wait_for_completion()`.
     fn schedule_disposal(self: &Arc<Self>, disposal: DisposalTarget) {
-        let shared = Arc::clone(self);
+        let slot = disposal.slot;
         let result = std::thread::Builder::new()
             .name("blehub-disposal".to_owned())
-            .spawn(move || {
-                let result = dispose_owned_hub(disposal.hub);
-                shared.record_disposal_result(disposal.slot, result);
-            });
+            .spawn(disposal.into_worker(Arc::clone(self)));
         if result.is_err() {
-            self.record_disposal_result(disposal.slot, Err(CleanupError::WorkerStopped));
+            // The discarded worker preserves its Hub root rather than running
+            // native cleanup here. Settle the slot as failed, not as disposed.
+            self.record_disposal_result(slot, Err(CleanupError::WorkerStopped));
+        }
+    }
+}
+
+fn dispose_owned_hub(hub: Arc<BleHub>) -> Result<(), CleanupError> {
+    match catch_unwind(AssertUnwindSafe(|| hub.dispose())) {
+        Ok(result) => {
+            // A downstream destructor can panic even after native disposal
+            // completed. Always settle the cleanup slot for close waiters.
+            if catch_unwind(AssertUnwindSafe(|| drop(hub))).is_err() {
+                return Err(CleanupError::WorkerStopped);
+            }
+            result.map_err(CleanupError::Backend)
+        }
+        Err(_) => {
+            // A panic can leave BleHub's lifecycle stuck in Closing. Its
+            // Drop would retry dispose and wait forever; preserve the root
+            // rather than hang every close waiter on this unrecoverable bug.
+            std::mem::forget(hub);
+            Err(CleanupError::WorkerStopped)
         }
     }
 }
@@ -430,26 +580,6 @@ impl AssemblyAdmission {
 impl Drop for AssemblyAdmission {
     fn drop(&mut self) {
         self.shared.release_admission();
-    }
-}
-
-fn dispose_owned_hub(hub: Arc<BleHub>) -> Result<(), CleanupError> {
-    match catch_unwind(AssertUnwindSafe(|| hub.dispose())) {
-        Ok(result) => {
-            // A downstream destructor can panic even after native disposal
-            // completed. Always settle the cleanup slot for close waiters.
-            if catch_unwind(AssertUnwindSafe(|| drop(hub))).is_err() {
-                return Err(CleanupError::WorkerStopped);
-            }
-            result.map_err(CleanupError::Backend)
-        }
-        Err(_) => {
-            // A panic can leave BleHub's lifecycle stuck in Closing. Its
-            // Drop would retry dispose and wait forever; preserve the root
-            // rather than hang every close waiter on this unrecoverable bug.
-            std::mem::forget(hub);
-            Err(CleanupError::WorkerStopped)
-        }
     }
 }
 
@@ -496,7 +626,9 @@ impl HubCleanup {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        state.reserve_admission(is_open)?;
+        // Read runtime state after acquiring the lock, not before waiting for it.
+        let runtime_open = is_open();
+        state.reserve_admission(runtime_open)?;
         drop(state);
         self.shared.signal(CleanupSignal::AdmissionReserved);
         Ok(AssemblyAdmission {
