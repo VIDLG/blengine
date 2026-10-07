@@ -43,6 +43,12 @@ handles must not appear in generated Swift/Kotlin declarations.
 
 ### Async operation ownership
 
+The current per-instance private-runtime model and caller-runtime coexistence
+rules are recorded in the [runtime integration section](bleng-cleanup-design-2026-10-07.md#private-runtime-and-caller-runtime)
+and its [Chinese version](bleng-cleanup-design-2026-10-07.zh-CN.md). They explain
+why facade operations use an explicit owner handle rather than the caller's
+executor, and distinguish async handoff from nested blocking `block_on`.
+
 The public UniFFI `Bleng` object and the private runtime owner are intentionally
 separate ownership layers:
 

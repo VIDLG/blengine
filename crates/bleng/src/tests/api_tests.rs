@@ -29,6 +29,36 @@ fn timeout_boundary_rejects_only_zero() {
 }
 
 #[test]
+fn private_runtime_timers_work_with_timerless_caller_runtimes() {
+    let callers = [
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap(),
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap(),
+    ];
+    for caller in callers {
+        caller.block_on(async {
+            // Neither caller enables timers. next_event must create and drive
+            // its timeout on BLeng's private runtime, not the caller's executor.
+            let bleng = super::Bleng::new().unwrap();
+            assert!(matches!(
+                bleng.next_event(1).await,
+                Err(BlengError::Timeout)
+            ));
+            bleng.shutdown().await.unwrap();
+            drop(bleng);
+
+            // Dropping the private runtime from an async caller must not panic
+            // or stop the caller's runtime.
+            assert_eq!(tokio::spawn(async { 42 }).await.unwrap(), 42);
+        });
+    }
+}
+
+#[test]
 fn event_reader_errors_preserve_timeout_and_transport_categories() {
     assert!(matches!(
         BlengError::from(runtime::EventReadError::Timeout),

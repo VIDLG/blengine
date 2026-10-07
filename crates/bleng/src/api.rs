@@ -42,6 +42,11 @@ pub struct Bleng {
 
 impl Bleng {
     /// Spawns one foreign-facing operation on the private runtime and awaits it.
+    ///
+    /// A foreign caller may have no Tokio runtime, while a Rust caller may have
+    /// a different one. The explicit owner handle keeps operation timers and
+    /// actor orchestration on this instance's runtime in either case. The
+    /// caller only awaits a JoinHandle; this does not nest a blocking executor.
     /// Dropping the foreign waiter aborts this task, without promising cancellation
     /// of a native BLE command that has already been dispatched.
     async fn spawn_on_runtime<T: Send + 'static>(

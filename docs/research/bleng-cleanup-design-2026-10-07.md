@@ -356,6 +356,69 @@ are outside the recoverable result protocol.
 
 ## 8. Runtime integration and evidence
 
+### Private runtime and caller runtime
+
+Each `Bleng::new()` creates one private `RuntimeOwner`, whose constructor builds
+`Builder::new_multi_thread().enable_time().build()`. The owner retains that
+runtime, the actor, and the event receiver. This is one runtime per BLeng
+instance, not per operation, not process-global, and not borrowed from the caller.
+The low-level `BleHub` still owns no runtime.
+
+[`api.rs`](../../crates/bleng/src/api.rs) uses `spawn_on_runtime()` to submit
+operation futures through the owner's explicit `Handle`. Declaring an API
+`async` alone would not select that runtime: the owner needs its own executor
+context to create and drive timeout/deadline timers. Swift/Kotlin callers need
+not supply Tokio; a Rust caller may already have its own Tokio runtime.
+
+```text
+caller executor (Tokio or foreign async integration)
+  polls the facade future and awaits its JoinHandle
+                         |
+                         | explicit owner.handle().spawn(operation)
+                         v
+BLeng private Tokio runtime
+  drives operation futures, timers, and actor orchestration
+                         |
+                         +-- result wakes the caller's waiter
+```
+
+Two Tokio runtimes can coexist here. The caller polls the facade/JoinHandle while
+the operation is scheduled on BLeng's runtime. This path does not call `block_on`
+inside the caller's async task, replace the caller's runtime, or require its
+timers to be enabled. It creates a Tokio task, not a new OS thread per API call.
+The actor, rather than this task boundary, serializes operation state changes.
+
+The boundary still has costs and limits:
+
+- Each BLeng instance adds a runtime worker pool and task handoffs. Reusing an
+  instance avoids repeatedly paying that setup cost; independence is not free.
+- Do not introduce nested blocking `block_on` calls or synchronous cross-runtime
+  waits. A custom backend waiting on caller-runtime work can deadlock if that
+  caller is itself blocked awaiting the backend. Normal async waiting is the
+  intended integration.
+- This is not a guarantee that arbitrary timer/socket futures bound to one
+  runtime can be moved to another. BLeng's private wrapper accepts its own
+  operation futures, not a public executor-injection API. A custom backend owns
+  any executor-bound resources and their lifetimes.
+- `shutdown()` awaits logical actor/Hub cleanup; the runtime object remains
+  owned until the last `Arc<RuntimeOwner>` is released. Its `Drop` uses
+  `shutdown_background()`, avoiding blocking runtime destruction in an async
+  caller. This does not make detached native cleanup instantly complete.
+- Each spawned facade operation retains an owner clone. `AbortOnDrop` requests
+  cancellation if the outer future is dropped, because dropping a JoinHandle
+  alone would detach the task. This still does not cancel dispatched native BLE
+  work or a synchronous foreign call already executing.
+
+The API regression
+[`private_runtime_timers_work_with_timerless_caller_runtimes`](../../crates/bleng/src/tests/api_tests.rs)
+checks current-thread and multithreaded caller runtimes without timers. BLeng's
+`next_event()` still times out, shutdown succeeds, dropping BLeng inside the
+async caller does not panic, and that caller can still run a task afterward.
+This is deterministic Rust coexistence evidence, not an additional Swift/Kotlin
+or platform RF gate.
+
+### Logical shutdown and cleanup integration
+
 [`RuntimeOwner::close()`](../../crates/bleng/src/runtime/owner.rs) closes the
 runtime gate, starts cleanup, and coordinates actor shutdown before publishing
 its shared close result. Cleanup's completion wait is one part of that protocol;

@@ -266,6 +266,38 @@ AND 每个 rejected_hub.result 都已存在
 
 ## 8. Runtime 集成与验证证据
 
+### 私有 runtime 与调用方 runtime
+
+每次 `Bleng::new()` 都创建一个私有 `RuntimeOwner`，由它的构造函数执行 `Builder::new_multi_thread().enable_time().build()`，并持有 runtime、actor 和事件接收端。这里是**每个 BLeng 实例一份 runtime**，不是每个操作一份，不是进程全局共享，也不是借用调用方的 runtime。底层 `BleHub` 仍不拥有 runtime。
+
+[`api.rs`](../../crates/bleng/src/api.rs) 的 `spawn_on_runtime()` 通过 owner 的明确 `Handle` 提交操作 future。仅仅声明 API 为 `async` 并不会自动选择执行器；owner 需要自己的执行上下文来创建和驱动 timeout/deadline。Swift/Kotlin 调用方不必提供 Tokio，Rust 调用方则可以已有自己的 Tokio runtime。
+
+```text
+调用方执行器（Tokio 或 foreign async 集成）
+  poll facade future，await 对应 JoinHandle
+                       |
+                       | 明确调用 owner.handle().spawn(operation)
+                       v
+BLeng 私有 Tokio runtime
+  驱动操作 future、timer 和 actor 协作
+                       |
+                       +-- 结果唤醒调用方的等待任务
+```
+
+**两份 Tokio runtime 可以这样共存，不会因为同时存在就发生冲突。** 调用方负责 poll facade/JoinHandle，BLeng runtime 负责调度内部操作。该路径不会在调用方的 async task 中嵌套 `block_on()`，不会替换调用方的 runtime，也不要求调用方启用 timer。每次 API 创建的是 Tokio task，不是一个新的 OS 线程；操作状态的串行化仍由 actor 负责。
+
+这个边界也有成本和限制：
+
+- 每个 BLeng 实例都会增加 runtime worker pool 和 task 交接成本。复用实例可避免反复创建 runtime；独立性不是零成本。
+- 不应引入嵌套阻塞的 `block_on()` 或同步跨 runtime 等待。自定义 backend 若同步等待调用方 runtime 的工作，而调用方又被阻塞着等待 backend，就可能死锁。正常集成方式是异步等待。
+- 这里不保证可以随意迁移已经绑定某个 runtime 的 timer/socket future。BLeng 的私有包装只接收自身的操作 future，不是向外暴露的执行器注入 API；自定义 backend 必须管理自己依赖的执行设施、资源和生命周期。
+- `shutdown()` 等待的是 actor/Hub 的逻辑关闭；runtime 对象仍由 owner 持有，直到最后一个 `Arc<RuntimeOwner>` 释放。其 `Drop` 使用 `shutdown_background()`，避免在 async 调用方执行阻塞的 runtime 析构，但不表示分离的原生清理瞬间完成。
+- 每个 facade 操作任务都会保留一份 owner 引用。外层 future 被丢弃时，`AbortOnDrop` 请求取消这个任务，因为仅丢弃 JoinHandle 默认会使任务分离继续执行。它仍不等于取消已经 dispatch 的原生 BLE 工作，也不会中断已经执行中的同步 foreign 调用。
+
+API 回归测试 [`private_runtime_timers_work_with_timerless_caller_runtimes`](../../crates/bleng/src/tests/api_tests.rs) 使用**未启用 timer 的单线程和多线程调用方 runtime**：验证 BLeng 的 `next_event()` 仍能超时，shutdown 成功，在 async 调用方中释放 BLeng 不会 panic，调用方随后仍能继续执行任务。这是确定性的 Rust 共存证据，不是新增 Swift/Kotlin 或平台 RF 验证。
+
+### 逻辑关闭与 cleanup 集成
+
 [`RuntimeOwner::close()`](../../crates/bleng/src/runtime/owner.rs) 关闭 runtime gate、启动 cleanup，并协调 actor 关闭，然后发布共享 close 结果。cleanup 的完成等待只是其中一环，它本身不等待 actor 终止，也不逐项等待 BLE 操作。
 
 `RuntimeOwner::Drop` 会启动 cleanup 并执行不能 await 的 runtime 关闭，因此显式异步 close 才是调用方可观察完成与错误的边界。

@@ -255,6 +255,10 @@ impl Drop for WaiterTicket {
 
 /// Owns the Tokio runtime and actor for one BLeng instance.
 ///
+/// Each instance builds its own multithreaded runtime with timers enabled;
+/// it neither borrows the caller's runtime nor uses a process-global executor.
+/// Facade operations use its explicit handle, so another runtime can drive the
+/// caller's async wait without becoming the executor for BLeng operations.
 /// The public facade holds this owner behind `Arc`; foreign callers interact
 /// only through async methods and never receive Tokio or Kameo types.
 pub(crate) struct RuntimeOwner {
