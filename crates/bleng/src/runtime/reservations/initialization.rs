@@ -2,9 +2,7 @@ use blehub::{AdapterSnapshot, BleEvent, BleEventError, CommandDispatchError, Com
 
 use crate::waiter::{WaiterError, WaiterSuccess};
 
-use super::dispatch::{
-    DispatchEffect, DispatchReservation, DispatchResolution, ReconcileFault, record_terminal,
-};
+use super::dispatch::{CommandProgress, DispatchEffect, DispatchResolution, ReconcileFault};
 
 /// Readiness is distinct from runtime lifecycle and adapter power.
 /// A Pending record survives waiter retirement so late callbacks remain correlated.
@@ -22,16 +20,16 @@ impl InitializationState {
         event: BleEvent,
     ) -> Result<Option<BleEvent>, ReconcileFault> {
         if let Some(init) = self.pending_mut()
-            && init.dispatch.is_awaiting_dispatch_ack()
+            && init.progress.is_awaiting_dispatch_ack()
             && init.matches_event(&event)
         {
-            init.dispatch.buffer(event)?;
+            init.progress.buffer(event)?;
             return Ok(None);
         }
         Ok(Some(event))
     }
 
-    pub fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconcileFault> {
+    pub fn record_event(&mut self, event: &BleEvent) {
         if let Some(init) = self.pending_mut()
             && init.matches_event(event)
             && let BleEvent::AdapterSnapshotChanged { snapshot, .. } = event
@@ -39,7 +37,6 @@ impl InitializationState {
         {
             init.snapshot = Some(snapshot.clone());
         }
-        Ok(())
     }
 
     pub fn resolve_dispatch(
@@ -49,18 +46,18 @@ impl InitializationState {
     ) -> Option<DispatchResolution> {
         let init = self
             .pending_mut()
-            .filter(|init| init.dispatch.command_id == command_id)?;
+            .filter(|init| init.progress.command_id == command_id)?;
         Some(if result.is_err() {
             DispatchResolution {
-                effect: if init.dispatch.buffered.is_empty() {
-                    DispatchEffect::Cleanup
-                } else {
+                effect: if init.progress.has_buffered_events() {
                     DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
+                } else {
+                    DispatchEffect::Cleanup
                 },
                 ..Default::default()
             }
         } else {
-            init.dispatch.accepted_resolution()
+            init.progress.accepted_resolution()
         })
     }
 
@@ -103,8 +100,7 @@ impl InitializationState {
 
     pub fn has_failed(&self) -> bool {
         self.pending().is_some_and(|init| {
-            !init.dispatch.is_awaiting_dispatch_ack()
-                && init.terminal.as_ref().is_some_and(Result::is_err)
+            !init.progress.is_awaiting_dispatch_ack() && init.progress.terminal_failed()
         })
     }
 
@@ -117,11 +113,11 @@ impl InitializationState {
     ) -> bool {
         let Some(init) = self
             .pending_mut()
-            .filter(|init| init.dispatch.command_id == command_id)
+            .filter(|init| init.progress.command_id == command_id)
         else {
             return false;
         };
-        record_terminal(&mut init.terminal, result);
+        init.progress.record_terminal(result);
         true
     }
 
@@ -131,18 +127,15 @@ impl InitializationState {
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
         let init = self
             .pending()
-            .filter(|init| init.dispatch.command_id == command_id)?;
-        init.dispatch.waiter_result(&init.terminal, || {
-            init.snapshot.clone().map(WaiterSuccess::Initialized)
-        })
+            .filter(|init| init.progress.command_id == command_id)?;
+        init.progress
+            .waiter_result(|| init.snapshot.clone().map(WaiterSuccess::Initialized))
     }
 
     /// Called only after the actor has settled the result from this evidence.
     pub fn complete_if_ready(&mut self) {
         if self.pending().is_some_and(|init| {
-            !init.dispatch.is_awaiting_dispatch_ack()
-                && init.terminal == Some(Ok(()))
-                && init.snapshot.is_some()
+            init.progress.is_complete(init.snapshot.is_some()) && init.progress.terminal_succeeded()
         }) {
             *self = Self::Ready;
         }
@@ -152,9 +145,8 @@ impl InitializationState {
 /// Dispatch, correlated snapshot, and terminal may arrive in either order.
 /// The enum payload matches its owner's visibility, but exposes no record internals.
 pub struct InitReservation {
-    dispatch: DispatchReservation,
+    progress: CommandProgress,
     snapshot: Option<AdapterSnapshot>,
-    terminal: Option<Result<(), BleEventError>>,
 }
 
 impl InitReservation {
@@ -165,7 +157,7 @@ impl InitReservation {
                 ..
             }
             | BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.dispatch.command_id
+                *command_id == self.progress.command_id
             }
             _ => false,
         }
@@ -173,9 +165,8 @@ impl InitReservation {
 
     fn new(command_id: CommandId) -> Self {
         Self {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             snapshot: None,
-            terminal: None,
         }
     }
 }

@@ -3,7 +3,7 @@ use crate::{
         BlengActor, RuntimePhase,
         messages::{BeginReply, OperationResult},
         owner::BeginHandoff,
-        reservations::InitializationState,
+        reservations::{GattAccess, InitializationState},
     },
     waiter::{WaiterError, WaiterExpectation, WaiterSuccess},
 };
@@ -193,18 +193,22 @@ impl Message<CancelledRediscovery> for BlengActor {
         );
         let characteristic_id = message.database.services[0].characteristics[0].id;
         assert_eq!(
-            self.connections.validate_gatt_io(
+            self.connections.validate_gatt_access(
                 connection_id,
                 message.database.gatt_session_id,
                 characteristic_id,
-                true,
+                GattAccess::Read,
             ),
             Ok(key),
             "the committed session remains readable without a pending discovery"
         );
         assert_eq!(
-            self.connections
-                .validate_gatt_io(connection_id, session_id, characteristic_id, true),
+            self.connections.validate_gatt_access(
+                connection_id,
+                session_id,
+                characteristic_id,
+                GattAccess::Read
+            ),
             Err(WaiterError::GattNotReady),
             "the cancelled draft session must not become usable"
         );
@@ -394,8 +398,12 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
         assert_eq!(self.connections.waiter_result(sibling_id), None);
         assert_eq!(self.connections.validate_rssi(connection_id), Ok(key));
         assert_eq!(
-            self.connections
-                .validate_gatt_io(connection_id, session_id, characteristic_id, false),
+            self.connections.validate_gatt_access(
+                connection_id,
+                session_id,
+                characteristic_id,
+                GattAccess::Write
+            ),
             Ok(key),
             "the committed database remains usable without a draft or cancelled I/O slot"
         );
@@ -426,8 +434,12 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
             "the existing route still excludes a duplicate enable"
         );
         assert_eq!(
-            self.connections
-                .validate_gatt_io(connection_id, session_id, characteristic_id, true),
+            self.connections.validate_gatt_access(
+                connection_id,
+                session_id,
+                characteristic_id,
+                GattAccess::Read
+            ),
             Err(WaiterError::OperationBusy),
             "the active route still excludes reads of its characteristic"
         );

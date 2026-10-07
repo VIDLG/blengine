@@ -109,8 +109,8 @@ use super::{
     messages::DispatchResolved,
     owner::BeginHandoff,
     reservations::{
-        ConnectionReservations, DispatchEffect, DispatchResolution, InitializationState,
-        ReconcileFault, ScanState, connection_lost,
+        ConnectionReservations, DispatchEffect, DispatchResolution, GattAccess,
+        InitializationState, ReconcileFault, ScanState, connection_lost,
     },
 };
 
@@ -224,12 +224,12 @@ impl BlengActor {
 
             pub(super) fn validate_rssi(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
 
-            pub(super) fn validate_gatt_io(
+            pub(super) fn validate_gatt_access(
                 &self,
                 connection_id: ConnectionId,
                 session_id: GattSessionId,
                 characteristic_id: GattCharacteristicId,
-                read: bool,
+                access: GattAccess,
             ) -> Result<PeripheralId, WaiterError>;
 
             pub(super) fn validate_notification_enable(
@@ -466,10 +466,10 @@ impl BlengActor {
             }
             BleEvent::CommandCompleted { command_id, error } => {
                 self.record_terminal(*command_id, error.clone());
-                Ok(())
             }
-            _ => self.connections.record_event(event),
+            _ => return self.connections.record_event(event),
         }
+        Ok(())
     }
 
     /// Settle caller delivery before retiring native reservations, including for late callbacks.

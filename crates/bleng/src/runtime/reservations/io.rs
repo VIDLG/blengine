@@ -1,15 +1,12 @@
-use blehub::{
-    BleEvent, BleEventError, CommandId, ConnectionId, GattCharacteristicId, GattSessionId,
-};
+use blehub::{BleEvent, CommandId, ConnectionId, GattCharacteristicId, GattSessionId};
 
 use crate::waiter::{WaiterError, WaiterSuccess};
 
-use super::{connection::connection_lost, dispatch::DispatchReservation};
+use super::{connection::connection_lost, dispatch::CommandProgress};
 
 pub(super) struct RssiReservation {
-    pub(super) dispatch: DispatchReservation,
+    pub(super) progress: CommandProgress,
     pub(super) value: Option<i16>,
-    pub(super) terminal: Option<Result<(), BleEventError>>,
 }
 
 impl RssiReservation {
@@ -19,9 +16,9 @@ impl RssiReservation {
                 command_id,
                 connection_id,
                 ..
-            } => self.dispatch.command_id == *command_id && expected == *connection_id,
+            } => self.progress.command_id == *command_id && expected == *connection_id,
             BleEvent::CommandCompleted { command_id, .. } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
             }
             _ => connection_lost(event, expected),
         }
@@ -31,23 +28,21 @@ impl RssiReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.dispatch.waiter_result(&self.terminal, || {
+        self.progress.waiter_result(|| {
             self.value
                 .map(|value| WaiterSuccess::RssiRead(connection_id, value))
         })
     }
     pub(super) fn is_retirable(&self) -> bool {
-        self.dispatch
-            .is_complete(&self.terminal, self.value.is_some())
+        self.progress.is_complete(self.value.is_some())
     }
 }
 
 pub(super) struct ReadReservation {
-    pub(super) dispatch: DispatchReservation,
+    pub(super) progress: CommandProgress,
     session_id: GattSessionId,
     characteristic_id: GattCharacteristicId,
     pub(super) value: Option<Vec<u8>>,
-    pub(super) terminal: Option<Result<(), BleEventError>>,
 }
 
 impl ReadReservation {
@@ -60,13 +55,13 @@ impl ReadReservation {
                 characteristic_id,
                 ..
             } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
                     && self.session_id == *gatt_session_id
                     && self.characteristic_id == *characteristic_id
                     && expected == *connection_id
             }
             BleEvent::CommandCompleted { command_id, .. } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
             }
             _ => connection_lost(event, expected),
         }
@@ -78,11 +73,10 @@ impl ReadReservation {
         characteristic_id: GattCharacteristicId,
     ) -> Self {
         Self {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             session_id,
             characteristic_id,
             value: None,
-            terminal: None,
         }
     }
 
@@ -90,7 +84,7 @@ impl ReadReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.dispatch.waiter_result(&self.terminal, || {
+        self.progress.waiter_result(|| {
             self.value
                 .clone()
                 .map(|value| WaiterSuccess::CharacteristicRead {
@@ -102,17 +96,15 @@ impl ReadReservation {
         })
     }
     pub(super) fn is_retirable(&self) -> bool {
-        self.dispatch
-            .is_complete(&self.terminal, self.value.is_some())
+        self.progress.is_complete(self.value.is_some())
     }
 }
 
 pub(super) struct WriteReservation {
-    pub(super) dispatch: DispatchReservation,
+    pub(super) progress: CommandProgress,
     session_id: GattSessionId,
     characteristic_id: GattCharacteristicId,
     pub(super) written: bool,
-    pub(super) terminal: Option<Result<(), BleEventError>>,
 }
 
 impl WriteReservation {
@@ -124,13 +116,13 @@ impl WriteReservation {
                 gatt_session_id,
                 characteristic_id,
             } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
                     && self.session_id == *gatt_session_id
                     && self.characteristic_id == *characteristic_id
                     && expected == *connection_id
             }
             BleEvent::CommandCompleted { command_id, .. } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
             }
             _ => connection_lost(event, expected),
         }
@@ -142,11 +134,10 @@ impl WriteReservation {
         characteristic_id: GattCharacteristicId,
     ) -> Self {
         Self {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             session_id,
             characteristic_id,
             written: false,
-            terminal: None,
         }
     }
 
@@ -154,7 +145,7 @@ impl WriteReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.dispatch.waiter_result(&self.terminal, || {
+        self.progress.waiter_result(|| {
             self.written.then_some(WaiterSuccess::CharacteristicWritten(
                 connection_id,
                 self.session_id,
@@ -163,6 +154,6 @@ impl WriteReservation {
         })
     }
     pub(super) fn is_retirable(&self) -> bool {
-        self.dispatch.is_complete(&self.terminal, self.written)
+        self.progress.is_complete(self.written)
     }
 }

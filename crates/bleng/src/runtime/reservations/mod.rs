@@ -9,12 +9,21 @@
 //! through the runtime-scoped re-exports below; shared implementation details use
 //! `pub(super)`, and record-local fields and helpers remain private.
 //!
-//! Read `dispatch` first for the common acknowledgement boundary, followed by
+//! Read `dispatch` first: `CommandProgress` owns acknowledgement, bounded buffering,
+//! and the authoritative first terminal; typed domain evidence stays in each record.
+//! Follow it with
 //! `initialization` and `scan`. `connections` owns the peripheral-keyed collection
 //! and global pre-ack routing priority; `connection` owns one connection record
 //! and its operation reconciliation. Then read the subordinate `gatt`, `io`, and
 //! `subscription` records. Collection ownership is distinct from record-local
-//! evidence and retirement; there is no second command-routing map.
+//! evidence and retirement; there is no second command-routing map. The collection
+//! resolves identities; connection-local validators preserve each operation's error
+//! precedence and share child-command handoff facts, not a universal busy policy.
+//!
+//! A connection always owns its GATT state; committed database and discovery are
+//! independently optional so rediscovery can preserve the old database. Subscription
+//! routes use Enabling/Active/Disabling states; rejection and retirement explicitly
+//! choose Keep/Remove, and failed disable restores the active route.
 //!
 //! Commands win the caller handoff before installing a reservation, then spawn
 //! native dispatch without an intervening await. Losing cancellation creates
@@ -37,8 +46,12 @@ mod io;
 mod scan;
 mod subscription;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) use connection::connection_lost;
 pub(super) use connections::ConnectionReservations;
 pub(super) use dispatch::{DispatchEffect, DispatchResolution, ReconcileFault};
+pub(super) use gatt::GattAccess;
 pub(super) use initialization::InitializationState;
 pub(super) use scan::ScanState;

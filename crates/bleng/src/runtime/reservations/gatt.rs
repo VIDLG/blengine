@@ -1,16 +1,24 @@
-use blehub::{BleEvent, BleEventError, CommandId, ConnectionId, GattDatabase, GattSessionId};
+use blehub::{BleEvent, CommandId, ConnectionId, GattDatabase, GattSessionId};
 
 use crate::waiter::{WaiterError, WaiterSuccess};
 
-use super::{connection::connection_lost, dispatch::DispatchReservation};
+use super::{connection::connection_lost, dispatch::CommandProgress};
 
 /// GATT state under one connection. A committed database survives while a
 /// later discovery transition is in flight, so failed rediscovery cannot erase
 /// the last usable session.
 #[derive(Default)]
 pub(super) struct GattReservation {
-    pub(super) database: Option<GattDatabase>,
+    database: Option<GattDatabase>,
     pub(super) discovery: Option<GattDiscoveryReservation>,
+}
+
+/// Operation-specific admission policy; this does not describe native capabilities.
+#[derive(Clone, Copy, Debug)]
+pub enum GattAccess {
+    Read,
+    Write,
+    EnableNotifications,
 }
 
 impl GattReservation {
@@ -28,31 +36,28 @@ impl GattReservation {
         self.discovery = Some(GattDiscoveryReservation::new(command_id, session_id));
     }
 
-    /// Returns whether a new database was committed. Failed rediscovery keeps
-    /// the old database; callers settle the discovery waiter before calling this.
-    pub(super) fn commit_completed_discovery(&mut self) -> bool {
+    /// Retires discovery only after dispatch acknowledgement and completion.
+    /// Success requires both a database draft and a successful terminal; failure
+    /// preserves the committed database. Callers settle the waiter before calling this.
+    pub(super) fn retire_completed_discovery(&mut self) {
         if !self
             .discovery
             .as_ref()
             .is_some_and(GattDiscoveryReservation::is_retirable)
         {
-            return false;
+            return;
         }
         let discovery = self.discovery.take().expect("completed discovery exists");
         if discovery.is_successful() {
             self.database = discovery.draft_database;
-            true
-        } else {
-            false
         }
     }
 }
 
 /// One in-flight GATT discovery/rediscovery transition.
 pub(super) struct GattDiscoveryReservation {
-    pub(super) dispatch: DispatchReservation,
+    pub(super) progress: CommandProgress,
     session_id: GattSessionId,
-    pub(super) terminal: Option<Result<(), BleEventError>>,
     /// Database drafted by this discovery; it becomes committed only after
     /// the discovery terminal succeeds.
     pub(super) draft_database: Option<GattDatabase>,
@@ -65,12 +70,12 @@ impl GattDiscoveryReservation {
                 command_id,
                 database,
             } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
                     && self.session_id == database.gatt_session_id
                     && expected == database.connection_id
             }
             BleEvent::CommandCompleted { command_id, .. } => {
-                self.dispatch.command_id == *command_id
+                self.progress.command_id == *command_id
             }
             _ => connection_lost(event, expected),
         }
@@ -78,24 +83,22 @@ impl GattDiscoveryReservation {
 
     fn new(command_id: CommandId, session_id: GattSessionId) -> Self {
         Self {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             session_id,
-            terminal: None,
             draft_database: None,
         }
     }
 
     fn is_retirable(&self) -> bool {
-        self.dispatch
-            .is_complete(&self.terminal, self.draft_database.is_some())
+        self.progress.is_complete(self.draft_database.is_some())
     }
 
     fn is_successful(&self) -> bool {
-        self.draft_database.is_some() && self.terminal == Some(Ok(()))
+        self.draft_database.is_some() && self.progress.terminal_succeeded()
     }
 
     pub(super) fn waiter_result(&self) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.dispatch.waiter_result(&self.terminal, || {
+        self.progress.waiter_result(|| {
             self.draft_database
                 .clone()
                 .map(WaiterSuccess::GattDiscovered)

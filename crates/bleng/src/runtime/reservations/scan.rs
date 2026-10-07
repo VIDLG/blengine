@@ -5,9 +5,7 @@ use blehub::{
 
 use crate::waiter::{WaiterError, WaiterSuccess};
 
-use super::dispatch::{
-    DispatchEffect, DispatchReservation, DispatchResolution, ReconcileFault, record_terminal,
-};
+use super::dispatch::{CommandProgress, DispatchEffect, DispatchResolution, ReconcileFault};
 
 /// Owns the single scan slot and its transition back to idle.
 /// Reserved includes pending, running, and stopped-but-unsettled sessions;
@@ -26,26 +24,25 @@ impl ScanState {
         event: BleEvent,
     ) -> Result<Option<BleEvent>, ReconcileFault> {
         if let Some(scan) = self.reserved_mut() {
-            if scan.dispatch.is_awaiting_dispatch_ack() && scan.matches_start_event(&event) {
-                scan.dispatch.buffer(event)?;
+            if scan.progress.is_awaiting_dispatch_ack() && scan.matches_start_event(&event) {
+                scan.progress.buffer(event)?;
                 return Ok(None);
             }
             if let Some(stop) = scan.stop.as_mut()
-                && stop.dispatch.is_awaiting_dispatch_ack()
+                && stop.progress.is_awaiting_dispatch_ack()
                 && stop.matches_event(&event, scan.session_id)
             {
-                stop.dispatch.buffer(event)?;
+                stop.progress.buffer(event)?;
                 return Ok(None);
             }
         }
         Ok(Some(event))
     }
 
-    pub fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconcileFault> {
+    pub fn record_event(&mut self, event: &BleEvent) {
         if let Some(scan) = self.reserved_mut() {
             scan.record_event(event);
         }
-        Ok(())
     }
 
     pub fn resolve_dispatch(
@@ -54,11 +51,11 @@ impl ScanState {
         result: &Result<(), CommandDispatchError>,
     ) -> Option<DispatchResolution> {
         let scan = self.reserved_mut()?;
-        if scan.dispatch.command_id == command_id {
+        if scan.progress.command_id == command_id {
             return Some(if result.is_err() {
                 // A rejected start with correlated callbacks may already own a native scan.
-                let contradictory = !scan.dispatch.buffered.is_empty();
-                self.reject_start(command_id);
+                let contradictory = scan.progress.has_buffered_events();
+                *self = Self::Idle;
                 DispatchResolution {
                     effect: if contradictory {
                         DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
@@ -68,30 +65,38 @@ impl ScanState {
                     ..Default::default()
                 }
             } else {
-                scan.dispatch.accepted_resolution()
+                scan.progress.accepted_resolution()
             });
         }
         let stop = scan
             .stop
             .as_mut()
-            .filter(|stop| stop.dispatch.command_id == command_id)?;
+            .filter(|stop| stop.progress.command_id == command_id)?;
         Some(if result.is_err() {
-            let contradictory = stop
-                .dispatch
-                .buffered
-                .iter()
-                .any(|event| matches!(event, BleEvent::ScanStopped { .. }));
-            scan.stop = None;
-            DispatchResolution {
-                effect: if contradictory {
-                    DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
-                } else {
-                    DispatchEffect::None
-                },
-                ..Default::default()
+            let mut resolution = DispatchResolution::default();
+            for event in stop.progress.take_buffered_events() {
+                match event {
+                    // Passive native teardown does not prove the rejected stop ran.
+                    event @ BleEvent::ScanStopped {
+                        result:
+                            ScanStopResult::Ok {
+                                reason: ScanStopReason::SystemSuspended,
+                            }
+                            | ScanStopResult::Err { .. },
+                        ..
+                    } => resolution.replay.push(event),
+                    BleEvent::ScanStopped { .. } => {
+                        resolution.effect =
+                            DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch);
+                    }
+                    // A rejected command's terminal cannot complete the native scan.
+                    _ => {}
+                }
             }
+            scan.stop = None;
+            resolution
         } else {
-            stop.dispatch.accepted_resolution()
+            stop.progress.accepted_resolution()
         })
     }
 
@@ -99,7 +104,7 @@ impl ScanState {
         self.reserved()?
             .stop
             .as_ref()
-            .map(|stop| stop.dispatch.command_id)
+            .map(|stop| stop.progress.command_id)
     }
 
     pub fn require_scan_available(&self) -> Result<(), WaiterError> {
@@ -144,16 +149,6 @@ impl ScanState {
         }
     }
 
-    /// A late rejection must never release a different scan's reservation.
-    fn reject_start(&mut self, command_id: CommandId) {
-        if self
-            .reserved()
-            .is_some_and(|scan| scan.dispatch.command_id == command_id)
-        {
-            *self = Self::Idle;
-        }
-    }
-
     /// Returns command ownership, including duplicates, not operation success.
     pub fn record_terminal(
         &mut self,
@@ -185,11 +180,10 @@ impl ScanState {
 /// Retained until accepted and late native start/stop callbacks are accounted for.
 // The public enum carries this opaque payload; its fields stay local to this module.
 pub struct ScanReservation {
-    dispatch: DispatchReservation,
+    progress: CommandProgress,
     session_id: ScanSessionId,
     stopped: bool,
     started: bool,
-    start_terminal: Option<Result<(), BleEventError>>,
     stop: Option<StopReservation>,
 }
 
@@ -198,7 +192,7 @@ impl ScanReservation {
         match event {
             BleEvent::ScanStarted { command_id, .. }
             | BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.dispatch.command_id
+                *command_id == self.progress.command_id
             }
             BleEvent::AdvertisementObserved { advertisement } => {
                 advertisement.scan_session_id == self.session_id
@@ -213,7 +207,7 @@ impl ScanReservation {
             BleEvent::ScanStarted {
                 command_id,
                 scan_id,
-            } if *command_id == self.dispatch.command_id && *scan_id == self.session_id => {
+            } if *command_id == self.progress.command_id && *scan_id == self.session_id => {
                 self.started = true;
             }
             BleEvent::ScanStopped {
@@ -234,8 +228,8 @@ impl ScanReservation {
                     ScanStopReason::SystemSuspended => true,
                     ScanStopReason::Requested { command_id } => {
                         self.stop.as_ref().is_some_and(|stop| {
-                            stop.dispatch.command_id == *command_id
-                                && !stop.dispatch.is_awaiting_dispatch_ack()
+                            stop.progress.command_id == *command_id
+                                && !stop.progress.is_awaiting_dispatch_ack()
                         })
                     }
                 };
@@ -246,11 +240,10 @@ impl ScanReservation {
 
     fn new(command_id: CommandId, session_id: ScanSessionId) -> Self {
         Self {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             session_id,
             stopped: false,
             started: false,
-            start_terminal: None,
             stop: None,
         }
     }
@@ -260,11 +253,7 @@ impl ScanReservation {
             return Err(WaiterError::ScanNotActive);
         }
         // Native stop must wait for start dispatch and domain/terminal completion.
-        if self.dispatch.is_awaiting_dispatch_ack()
-            || self.start_terminal.is_none()
-            || !self.started
-            || self.stop.is_some()
-        {
+        if !self.progress.is_complete(self.started) || self.stop.is_some() {
             return Err(WaiterError::ScanBusy);
         }
         Ok(())
@@ -272,14 +261,13 @@ impl ScanReservation {
 
     fn reserve_scan_stop(&mut self, command_id: CommandId) {
         self.stop = Some(StopReservation {
-            dispatch: DispatchReservation::new(command_id),
-            terminal: None,
+            progress: CommandProgress::new(command_id),
             stop_error: None,
         });
     }
 
     fn has_failed(&self) -> bool {
-        self.start_terminal.as_ref().is_some_and(Result::is_err)
+        self.progress.terminal_failed()
     }
 
     /// Returns whether scan start or stop owns the command, not whether it succeeded.
@@ -289,31 +277,31 @@ impl ScanReservation {
         command_id: CommandId,
         result: &Result<(), BleEventError>,
     ) -> bool {
-        if self.dispatch.command_id == command_id {
-            record_terminal(&mut self.start_terminal, result);
+        if self.progress.command_id == command_id {
+            self.progress.record_terminal(result);
             return true;
         }
         if let Some(stop) = self
             .stop
             .as_mut()
-            .filter(|stop| stop.dispatch.command_id == command_id)
+            .filter(|stop| stop.progress.command_id == command_id)
         {
-            record_terminal(&mut stop.terminal, result);
+            stop.progress.record_terminal(result);
             return true;
         }
         false
     }
 
     fn waiter_result(&self, command_id: CommandId) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if self.dispatch.command_id == command_id {
-            return self.dispatch.waiter_result(&self.start_terminal, || {
+        if self.progress.command_id == command_id {
+            return self.progress.waiter_result(|| {
                 self.started
                     .then_some(WaiterSuccess::ScanStarted(self.session_id))
             });
         }
         self.stop
             .as_ref()
-            .filter(|stop| stop.dispatch.command_id == command_id)?
+            .filter(|stop| stop.progress.command_id == command_id)?
             .waiter_result(self.session_id, self.stopped)
     }
 
@@ -321,31 +309,26 @@ impl ScanReservation {
     /// native teardown, even if the explicit stop terminal has not arrived.
     fn retire_completed(&mut self) -> bool {
         if let Some(stop) = &self.stop {
-            if !stop.dispatch.is_awaiting_dispatch_ack()
+            if !stop.progress.is_awaiting_dispatch_ack()
                 && self.stopped
-                && (stop.terminal.is_some() || stop.stop_error.is_some())
+                && (stop.progress.has_terminal() || stop.stop_error.is_some())
             {
                 return true;
             }
-            if !stop.dispatch.is_awaiting_dispatch_ack()
-                && stop.terminal.as_ref().is_some_and(Result::is_err)
-            {
+            if !stop.progress.is_awaiting_dispatch_ack() && stop.progress.terminal_failed() {
                 self.stop = None;
             }
         }
         // Native end does not settle a start whose domain/terminal is still
         // missing. Keep its evidence until settlement can precede retirement.
         self.stop.is_none()
-            && self
-                .dispatch
-                .is_complete(&self.start_terminal, self.started)
+            && self.progress.is_complete(self.started)
             && (self.has_failed() || self.stopped)
     }
 }
 
 struct StopReservation {
-    dispatch: DispatchReservation,
-    terminal: Option<Result<(), BleEventError>>,
+    progress: CommandProgress,
     stop_error: Option<BleEventError>,
 }
 
@@ -353,7 +336,7 @@ impl StopReservation {
     fn matches_event(&self, event: &BleEvent, session_id: ScanSessionId) -> bool {
         match event {
             BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.dispatch.command_id
+                *command_id == self.progress.command_id
             }
             BleEvent::ScanStopped { scan_id, .. } => *scan_id == session_id,
             _ => false,
@@ -365,14 +348,13 @@ impl StopReservation {
         session_id: ScanSessionId,
         stopped: bool,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if self.dispatch.is_awaiting_dispatch_ack() {
+        if self.progress.is_awaiting_dispatch_ack() {
             return None;
         }
         if let Some(error) = &self.stop_error {
             return Some(Err(WaiterError::Operation(error.clone())));
         }
-        self.dispatch.waiter_result(&self.terminal, || {
-            stopped.then_some(WaiterSuccess::ScanStopped(session_id))
-        })
+        self.progress
+            .waiter_result(|| stopped.then_some(WaiterSuccess::ScanStopped(session_id)))
     }
 }

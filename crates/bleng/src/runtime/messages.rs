@@ -36,6 +36,7 @@ use crate::waiter::{WaiterError, WaiterExpectation, WaiterSuccess};
 use super::{
     actor::{BlengActor, WaiterReceiver},
     owner::BeginHandoff,
+    reservations::GattAccess,
 };
 
 // Command requests and admission replies.
@@ -664,11 +665,11 @@ impl Message<BeginRead> for BlengActor {
     ) -> Self::Reply {
         self.require_open()?;
         self.require_initialized()?;
-        let peripheral_id = self.validate_gatt_io(
+        let peripheral_id = self.validate_gatt_access(
             message.connection,
             message.session,
             message.characteristic,
-            true,
+            GattAccess::Read,
         )?;
         let (command_id, result_rx) =
             self.register_waiter(WaiterExpectation::CharacteristicRead(
@@ -715,11 +716,11 @@ impl Message<BeginWrite> for BlengActor {
     ) -> Self::Reply {
         self.require_open()?;
         self.require_initialized()?;
-        let peripheral_id = self.validate_gatt_io(
+        let peripheral_id = self.validate_gatt_access(
             message.connection,
             message.session,
             message.characteristic,
-            false,
+            GattAccess::Write,
         )?;
         let (command_id, result_rx) =
             self.register_waiter(WaiterExpectation::CharacteristicWritten(

@@ -6,6 +6,8 @@
 
 mailbox 协议只保留 `runtime/messages.rs`，不再按命令/事件分设协议模块；actor 保留私有状态与协调，owner 保留调用方等待与 deadline。
 
+2026-10-07 当前 reservations 重构以本地工作树源码为依据：共享 `CommandProgress` 合并 dispatch 与首个 terminal 证据，连接内使用具体 `GattReservation`，订阅状态由私有 enum 表达，各操作 admission 归单连接记录。此次重构不新增依赖、通用操作状态机或路由索引；本文的源码核对不代表当前候选已通过完整验证，既有验证记录保留其原有归属。
+
 ## Owner、actor 与 lifecycle
 
 ```text
@@ -112,11 +114,11 @@ runtime/
 | [`actor.rs`](../../crates/bleng/src/runtime/actor.rs) | 定义 `BlengActor`、`Drop`、register/reserve 方法和全部状态协调方法；负责 ingress/dispatch-result 处理、跨 reservation 的动作和 waiter 结算，不持有 prelaunch rollback guard。 |
 | [`backend_port.rs`](../../crates/bleng/src/runtime/backend_port.rs) | backend assembly 与非阻塞 ingress；直接从 messages 导入 `IngressEvent`，不持有 owner 或解释 reservation 证据。 |
 | [`reservations/mod.rs`](../../crates/bleng/src/runtime/reservations/mod.rs) | 记录状态层边界，只重导出 runtime 实际使用的状态入口和协调结果。 |
-| [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | 共享 dispatch 证据、pre-ack 缓冲边界，以及一次性 reconciliation 结果和错误。 |
+| [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | `CommandProgress` 共享 dispatch/首个 terminal 进度、pre-ack 缓冲边界，以及一次性 reconciliation 结果和错误。 |
 | [`initialization.rs`](../../crates/bleng/src/runtime/reservations/initialization.rs) | 初始化证据、readiness 和初始化状态转换。 |
 | [`scan.rs`](../../crates/bleng/src/runtime/reservations/scan.rs) | 唯一扫描槽位、start/stop 证据和 session 退休。 |
-| [`connections.rs`](../../crates/bleng/src/runtime/reservations/connections.rs) | 连接集合、admission、操作登记、全局回调路由优先级和批量退休。 |
-| [`connection.rs`](../../crates/bleng/src/runtime/reservations/connection.rs) | 单连接根记录、disconnect、局部事件关联、dispatch reconciliation 和退休。 |
+| [`connections.rs`](../../crates/bleng/src/runtime/reservations/connections.rs) | 连接根集合、peripheral 槽位 admission、connection/command 查找与 peripheral key 解析、操作登记、全局回调路由优先级和批量退休。 |
+| [`connection.rs`](../../crates/bleng/src/runtime/reservations/connection.rs) | 单连接根记录、各操作 admission、disconnect、子命令进度遍历、局部事件关联、dispatch reconciliation 和退休。 |
 | [`gatt.rs`](../../crates/bleng/src/runtime/reservations/gatt.rs) | 已提交数据库与 pending discovery 的不同生命周期。 |
 | [`io.rs`](../../crates/bleng/src/runtime/reservations/io.rs) | RSSI、characteristic read/write 的局部证据与结果。 |
 | [`subscription.rs`](../../crates/bleng/src/runtime/reservations/subscription.rs) | 订阅 route、enable/disable transition 与实际模式验证。 |
@@ -128,6 +130,8 @@ runtime/
 初始化与扫描 enum 的 payload 类型必须与 enum 的声明可见性匹配，但不单独重导出，字段与局部方法也不开放。`pending()`、`reserved()`、`reserved_mut()`、`find()`、`find_mut()` 等原始记录查询均为内部实现。actor 断连结算通过 `ConnectionReservations::accepted_command_ids(connection_id)` 取得所需 command ID，不再取得整个连接记录。测试通过 dispatch resolution、相关事件、结果与 admission 判断验证行为，不为了检查内部字段放宽可见性。
 
 reservation 是命令与事件处理共用的 actor-confined 状态模型，不只是被动字段容器：它拥有局部 admission、回调关联、证据记录、dispatch reconciliation、结果判断与退休规则。reservation 是 actor 内的普通值，不单独调度。[`messages.rs`](../../crates/bleng/src/runtime/messages.rs) 统一命令准入与派发结果/ingress 消息入口；状态协调集中在 [`actor.rs`](../../crates/bleng/src/runtime/actor.rs)，局部状态判断靠近其 reservation 所有者。这是既有 runtime 内按角色划分源码，不是新增运行时或架构边界。
+
+建议按职责阅读：先看 `reservations/mod.rs` 的边界和 `dispatch.rs` 的共享进度，再看 `connections.rs` 的根查找与全局路由、`connection.rs` 的局部 admission/结算/退休，随后阅读 `gatt.rs`、`io.rs`、`subscription.rs` 的领域证据；初始化与扫描分别看 `initialization.rs`、`scan.rs`。最后对照 `messages.rs` 的准入交接和 `actor.rs` 的事件协调，避免把进度遍历误认为路由优先级。测试统一物理存放在 [`reservations/tests/`](../../crates/bleng/src/runtime/reservations/tests/)：`connections.rs` 通过容器行为接口覆盖跨 reservation 不变量；`subscription.rs` 由生产订阅模块通过 `#[path]` 挂载为自己的测试子模块，保持原有隐私边界。生产文件不内联测试函数，也不为测试放宽可见性；完整流程测试仍在 `runtime/tests/`。
 
 ## 命令 ID 与资源 ID 的独立分配
 
@@ -158,7 +162,7 @@ ID 是关联标识，不是成功操作的连续编号：允许跳号，不回�
 |---|---|
 | `BlengActor` | lifecycle gate、ID/等待方登记、命令交接和 reservation 安装协调、事件发布、waiter 结算。 |
 | `ConnectionReservations` | 按 peripheral 登记、按 connection/command 查找、terminal/result 路由、批量退休与根记录移除。 |
-| `ConnectionReservation` | 单连接状态、GATT/I/O/subscription 证据、`validate_gatt_io()` 的局部 admission 条件、结果与退休判断。 |
+| `ConnectionReservation` | 单连接状态、GATT/I/O/subscription 证据、disconnect/discovery/RSSI/I/O/订阅各操作的 admission 条件、结果与退休判断。 |
 
 `ConnectionReservations` 不包 `Option`：空容器已经表示没有 connection reservation，没有额外的「未创建容器」状态。唯一 scan slot 由 `ScanState` 表达 `Idle` 或 `Reserved(ScanReservation)`，根状态的验证、安装和释放也由它拥有。连接容器中的每一条 reservation 有各自的生命周期，但容器本身与 actor 同生共死。
 
@@ -166,7 +170,7 @@ ID 是关联标识，不是成功操作的连续编号：允许跳号，不回�
 
 容器不实现 `Deref<HashMap>` 或 `Index`，也不向外返回 map。pre-ack 路由和操作特有的拒绝回放筛选已交回容器及所属 reservation；事件协调层不再遍历连接记录，原 `iter_mut()` 接口删除。回放执行、fault/cleanup 和 waiter 交付仍由 actor 协调，没有引入通用集合策略框架。
 
-`DispatchResolved` 先由容器按 command 找到所属 connection，再处理其中的具体 slot，不再为每个操作重复扫描整张连接 map。domain event 通过 connection ID 查到目标后，仍校验 command/session/characteristic/subscription 的对应关系。`validate_gatt_io()` 移至单连接记录，保留原来的错误优先级。
+`DispatchResolved` 先由容器按 command 找到所属 connection，再处理其中的具体 slot，不再为每个操作重复扫描整张连接 map。domain event 通过 connection ID 查到目标后，仍校验 command/session/characteristic/subscription 的对应关系。容器先解析连接根与 peripheral key，再调用单连接记录的 `validate_disconnect()`、`validate_gatt_discovery()`、`validate_rssi()`、`validate_gatt_io()`、`validate_notification_enable()` 或 `validate_notification_disable()`，不在容器中重复局部条件；disable 还返回登记所需的 characteristic ID。
 
 调用顺序仍是记录证据、结算 waiter、再调用 `connections.retire_completed()`；容器不持有或自行结算 waiter。相关回归覆盖重复安装不能覆盖旧根、跨连接 terminal 隔离，以及同一 peripheral 重连后拒绝旧 terminal。
 
@@ -202,18 +206,43 @@ runtime 的生产代码和测试使用显式导入，不使用父模块或 prelu
 
 `RuntimeLifecycle::is_open()` 读取既有原子 phase，只用于查询当前是否 Open；它不保留 admission、不阻止并发 close/fault，也不新增状态。需要区分 `Faulted` 与 `Closed` 并映射错误的路径仍使用 phase；`require_open()` 保留相应错误映射。
 
-`DispatchReservation` 保存 `command_id`、`dispatch_accepted` 和 `buffered`。`is_awaiting_dispatch_ack()` 只表示尚未收到 dispatch acknowledgement，不表示 waiter 或原生操作仍 pending；dispatch 被接受不等于 BLE 操作完成。
+[`CommandProgress`](../../crates/bleng/src/runtime/reservations/dispatch.rs) 替代原 `DispatchReservation` 加各记录独立 terminal 字段的组合。每个命令的 `progress` 保存 `command_id`、私有 `buffered`、私有 `dispatch_accepted` 和私有 `terminal: Option<Result<(), BleEventError>>`；scan start/stop、connect/disconnect、discovery、RSSI、读写与订阅 transition 都复用它，不再另存 `start_terminal` 或 `terminal`。
 
-`DispatchReservation::waiter_result()` 只共享 accepted-dispatch/terminal 边界：未确认 dispatch 或缺少 terminal 时不能成功；terminal 错误交付为操作错误；terminal 成功后由具体 reservation 根据 domain 证据构造结果。连接错误、被动断连等操作特有的优先级仍由具体 reservation 判断，不隐藏在通用状态机中。
+`record_terminal()` 仅记录首个结果，冲突的重复 terminal 不能覆盖它；读取通过 `has_terminal()`、`terminal_succeeded()`、`terminal_failed()`。`is_awaiting_dispatch_ack()` 只表示尚未收到 dispatch acknowledgement，不表示 waiter 或原生操作仍 pending；dispatch 被接受不等于 BLE 操作完成。
+
+`CommandProgress::waiter_result(success)` 不再接收外部 terminal 参数：未确认 dispatch 或缺少 terminal 时返回 `None`；terminal 错误交付为操作错误；terminal 成功后才惰性调用具体 reservation 的 closure，由其 domain 证据构造 typed result。`is_complete(domain_ready)` 在 dispatch 已接受且 terminal 已到达后，允许 terminal 失败或所需 domain 完整时退休；它不判断 native 资源何时可安全移除。连接错误、被动断连等操作特有的优先级和退休条件仍由具体 reservation 判断，不隐藏在通用状态机中。
+
+snapshot、连接状态/error、discovery draft、RSSI/read payload、write 完成事实与通知状态仍保留在对应 reservation；共享进度不拥有这些 typed domain 证据、waiter 或路由策略。
+
+`buffered` 不向兄弟模块暴露：事件只能通过有界 `buffer()` 入队，拒绝处理通过 `has_buffered_events()` 查询或 `take_buffered_events()` 按原顺序接管事件。取走事件不表示 dispatch 被接受，也不决定回放策略；这些领域判断仍由各 reservation 负责。初始化与扫描的 `record_event()` 返回 `()`，不伪造不会发生的错误；actor 的协调方法仍返回 `Result`，因为连接侧的通知模式验证可以失败。
 
 | 已移除的冗余 bool | 唯一证据来源 |
 |---|---|
-| scan `failed` | `start_terminal` 为 `Some(Err(_))`。 |
+| scan `failed` | start 的 `progress.terminal_failed()`。 |
 | connection `failed` | `connect_error` 为 `Some(_)`。 |
-| discovery `failed` | `terminal` 为 `Some(Err(_))`。 |
+| discovery `failed` | discovery 的 `progress.terminal_failed()`。 |
 | discovery `discovered` | `draft_database` 为 `Some(_)`。 |
 
 独立 domain 事实仍需保留。拿到 draft database 并不表示 discovery 已成功，还必须确认 dispatch 被接受且 terminal 成功。
+
+### 子命令进度复用不统一操作准入
+
+`ConnectionReservation::child_progresses()` 枚举 disconnect、discovery、RSSI、read、write 和 subscription transition 的 `CommandProgress`；`has_pending_child_handoff()` 只查询其中尚未确认 dispatch 的命令。`command_progresses()` 再加入 connect 根，用于命令归属、accepted command 收集和根退休；`command_progresses_mut()` 供 terminal 按 command ID 查找并调用 `progress.record_terminal()`，不再维护 dispatch/terminal 成对列表。容器逐连接调用 `record_terminal()`，首次命中即停止，不先查找一遍命令再重复遍历。
+
+共享 predicate 只复用相同条件，不抹平各操作门禁或错误优先级：
+
+| 操作 | 单连接记录保留的检查 |
+|---|---|
+| disconnect | 不要求已经收到 `Connected`；connect 已接受即可拥有 native 生命周期。先排除 disconnected/connect failure/未确认 connect，再检查已有 disconnect 与未确认的子命令。 |
+| discovery | 先要求连接 active；disconnect、未确认 RSSI、pending discovery、read/write 或任何订阅 route 均返回 `GattBusy`。已接受的 RSSI 不因共享 predicate 被一概阻塞。 |
+| RSSI | 先要求连接 active；已有 RSSI、disconnect 或未确认的子命令返回 `OperationBusy`。 |
+| read/write | 保留连接 → disconnect/未确认 RSSI → committed session/characteristic → I/O/订阅冲突 → discovery 的顺序；目标错误仍先于后续 busy。read 还排斥同 characteristic 的订阅，write 不增加此限制。 |
+| enable | 使用 `GattAccess::EnableNotifications` 复用 GATT 检查，在 pending discovery 检查后拒绝同 characteristic 已有的订阅 route。 |
+| disable | 容器先找到连接；记录内先检查 subscription/session 与 active，再检查 transition busy，然后检查连接与兄弟操作。`Disabling` 仍是 active route，因此重复 disable 返回 `OperationBusy`，不是 `SubscriptionNotActive`。 |
+
+`GattAccess::{Read, Write, EnableNotifications}` 替代 `read: bool`，由 `validate_gatt_access()` 明确表达准入目的，而不是让 enable 假装成 write。read 对同 characteristic 的订阅冲突仍在 pending discovery 前检查，enable 的重复 route 检查仍在其后；枚举不统一这两种错误优先级，也不表达 backend capability。
+
+这些迭代器不是 callback 路由索引，也不替代全局 pre-ack 类别顺序。
 
 ## 证据、结算与回收顺序
 
@@ -249,7 +278,7 @@ initialization
   -> 未缓冲事件进入 process_event
 ```
 
-连接类别优先级作用于整个容器，不是每条连接各自探测完所有操作再换下一条；不使用 `dispatches()` 的一般遍历顺序代替它，也不新增命令索引。带外来 command 的已知连接断连事件仍公开交付，但在缓冲前和证据记录前均阻止其改变当前生命周期。
+连接类别优先级作用于整个容器，不是每条连接各自探测完所有操作再换下一条；不使用 `command_progresses()` / `child_progresses()` 的一般遍历顺序代替它，也不新增命令索引。带外来 command 的已知连接断连事件仍公开交付，但在缓冲前和证据记录前均阻止其改变当前生命周期。
 
 `DispatchResolution` 只是一次处理结果，不是新增的 canonical state：其中 `replay` 保存允许回放的事件，`DispatchEffect` 表示无需动作、cleanup 或 fault。actor 按以下顺序执行：
 
@@ -263,7 +292,7 @@ reservation 局部 dispatch 变化
 
 普通 GATT/read/write/RSSI/disconnect 的拒绝只允许回放被动 loss；订阅拒绝保留原来的较宽 connection-loss 规则。其他已逃逸 callback 是矛盾证据，要求 fail closed。干净的初始化拒绝只启动 Hub cleanup，不把 runtime 改成 Faulted。`ReconcileFault` 区分缓冲超限、实际通知模式不符和 dispatch 矛盾，actor 使用已有 tracing 记录原因，不记录 callback payload。
 
-有界缓冲由 `DispatchReservation` 统一限制为 64 条，不为重构添加新队列、锁或 executor。回归见 [`reconciliation.rs`](../../crates/bleng/src/runtime/tests/reconciliation.rs)：覆盖精确容量、外来事件不消耗容量、原序回放，以及 I/O 与订阅拒绝的不同 loss 策略；既有同步 callback、晚到证据和取消测试继续保护完整 actor 流程。
+每个命令的有界缓冲由 `CommandProgress` 统一限制为 64 条，不为重构添加新队列、锁或 executor。回归见 [`reconciliation.rs`](../../crates/bleng/src/runtime/tests/reconciliation.rs)：覆盖精确容量、外来事件不消耗容量、原序回放，以及 I/O 与订阅拒绝的不同 loss 策略；既有同步 callback、晚到证据和取消测试继续保护完整 actor 流程。
 
 ## ScanState 与扫描回收
 
@@ -277,7 +306,7 @@ Idle
 
 `Reserved` 只表示持有 scan slot，不等于已经开始射频扫描；它覆盖启动中、扫描中、stop 中以及 native 已停但晚到 start/stop 证据尚未齐全的阶段。没有额外增加 Running/Stopping 等重复状态，也不把独立的 domain、terminal 和 dispatch ack 事实压成线性 enum。
 
-实际 payload 使用 `Box<ScanReservation>`：当前 reservation 内联大小为 432 字节，装箱避免空闲 scan slot 也占据整份会话的空间。代价是每次成功登记 scan 多一次分配，不是每个回调分配；不新增 `Arc`、锁、执行器或共享状态。
+实际 payload 使用 `Box<ScanReservation>`，装箱避免空闲 scan slot 也占据整份会话的空间；不把重构前的布局测量当作当前类型大小。代价是每次成功登记 scan 多一次分配，不是每个回调分配；不新增 `Arc`、锁、执行器或共享状态。
 
 相较于 actor 持有 `Option<ScanReservation>`，新增类型的价值不是形式一致或方便宏转发，而是把 slot 可用性、登记和释放的策略放在同一个所有者上。`ScanState` 统一处理 terminal/result 路由、拒绝和退休，actor 只协调结算顺序。重复安装不能覆盖仍保留的会话；晚到的旧 start rejection 不能释放新会话。内部事件实现通过 `reserved()` / `reserved_mut()` 记录证据，这些访问不作为 actor 的对外 getter。
 
@@ -285,6 +314,10 @@ Idle
 scan retirement 不再接收原始 event 参数，只根据已关联的 reservation 证据（包括 `stop.stop_error`）决定回收。无关 scan 的 `ScanStopped::Err` 不能回收当前 scan 或丢弃其 pending stop 关联。
 
 scan 已停止也不代表 start 已完整记账：若 start 的 domain/terminal 证据不完整，必须保留 reservation，等证据足以结算 start waiter 后再回收。两种事件顺序、dispatch ack 前缓冲与晚到回调均遵循先结算、后回收。
+
+stop dispatch 被拒绝时，不能把缓冲的全部 `ScanStopped` 都判为矛盾。[契约的 `command_id()`](../../crates/blehub/src/contract/events.rs) 明确区分：`SystemSuspended` 与 `ScanStopResult::Err` 没有 command ID，是独立的原生结束证据；`Requested` 则携带 command ID。`ScanState::resolve_dispatch()` 移除被拒绝的 stop reservation，按原顺序回放被动结束；actor 先交付 `DispatchRejected`，再发布并记录回放事件，随后退休旧会话。被动结束不能把拒绝变成 stop 成功；被拒绝命令的 terminal 不参与回放。任何 buffered `Requested` 仍触发矛盾 fault，即使同批还有被动结束事件。
+
+`passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart` 覆盖被动暂停和原生扫描错误两种情况，验证拒绝优先、事件可见、槽位释放、重新扫描，以及旧 session/command 的晚到事件不影响新扫描。已有 rejected-stop 回归扩展为两种混合回调顺序，保证 fail-closed 策略不因允许被动回放而放宽。
 
 ## Begin 命令与具名交接结果
 
@@ -395,11 +428,49 @@ run_operation 中由 owner 统一 ask 并等待 actor reply
 
 ## GATT 提交、保留与局部回收
 
-`GattReservation` 分开保存已提交的 `database` 和正在进行的 `discovery` / `draft_database`。waiter 先结算，随后 `commit_completed_discovery()` 仅在 discovery 的成功证据完整时替换已提交数据库；连接此时清除旧 GATT session 的订阅路由。
+`ConnectionReservation.gatt` 始终是具体的 `GattReservation`，不再是 `Option<GattReservation>`。已提交的 `database` 为私有字段，外部通过 `committed_database()` 查询，只有 GATT owner 可以提交替换。其 `database: Option<GattDatabase>` 与 `discovery: Option<GattDiscoveryReservation>` 是两个独立槽位：两者都为空表示尚无数据库或 pending discovery；rediscovery 期间两者可以同时存在，不能改成互斥 enum。draft 仍属于 discovery。
 
-rediscovery 的 dispatch rejection 或 terminal failure 仍只移除临时 discovery，不抹掉已有数据库和可用 session；交接前取消则根本不会创建临时 discovery。`take_discovery()` 统一临时 discovery 的移除；`take_subscription_transition()` 在拒绝 disable 时保留 active route，在拒绝临时 enable 时移除尚未生效的 route。这些是 dispatch 拒绝/失败后的移除，不是 prelaunch rollback。`retire_completed_operations()` 与 `is_retirable()` 是证据完整后的 retirement，在 connection 内决定局部回收及连接是否可以移除，actor 仍拥有外层 `ConnectionReservations` 容器。
+```text
+ConnectionReservation.gatt: GattReservation
+  +-- database: None / Some(已提交数据库)
+  +-- discovery: None / Some(progress + session_id + draft_database)
+       完整成功 -> 先结算 waiter -> 替换 database -> 清除 discovery
+       拒绝/失败 -> 只清除 discovery -> 保留 database
+```
+
+waiter 先结算，随后 `retire_completed_discovery()` 退休已完成的 discovery，仅在成功证据完整时替换已提交数据库。此处不返回 bool，也不清空订阅：discovery 准入要求所有订阅已移除，pending discovery 又阻止新 enable，原生 callback 不会创建 route，因此完成时订阅容器必为空。外层 `Option`、`get_or_insert_with` 和「内层全空就将外层归一化为 `None`」的代码已无必要。
+
+rediscovery 的 dispatch rejection 或 terminal failure 仍只移除临时 discovery，不抹掉已有数据库和可用 session；交接前取消则根本不会创建临时 discovery。`resolve_pending_slot()` 统一 discovery、RSSI、read、write、disconnect 的 command 匹配、接受确认和拒绝处理：接受则回放 buffered events；拒绝则移除本次 pending slot，并且只允许被动断开回放。discovery 的 slot 与已提交数据库分离，因此移除不会抹掉旧数据库。订阅不使用此 helper，因为它允许 commanded connection loss，且 enable/disable 的拒绝恢复不同；`reject_subscription_transition()` 取代旧 `take_subscription_transition()`：先取出 transition 的 buffered events，再由订阅状态决定保留或移除 route。这些是 dispatch 拒绝/失败后的移除，不是 prelaunch rollback。`retire_completed_operations()` 与 `is_retirable()` 是证据完整后的 retirement，在 connection 内决定局部回收及连接是否可以移除，actor 仍拥有外层 `ConnectionReservations` 容器。
 
 terminal 采用首个结果，重复且冲突的 terminal 不能在等待数据库期间覆盖已有结果。这与「保留已提交数据库」一起防止无效 rediscovery 破坏旧 session。
+
+### 订阅状态与显式移除结果
+
+[`SubscriptionReservation`](../../crates/bleng/src/runtime/reservations/subscription.rs) 保留 session/characteristic 身份，私有 `state: SubscriptionState` 只表达以下合法组合：
+
+```rust
+enum SubscriptionState {
+    Enabling {
+        mode: NotificationModeRequest,
+        transition: NotificationTransition,
+    },
+    Active,
+    Disabling(NotificationTransition),
+}
+```
+
+不再并列保存 `active: bool` 与可选 transition；`NotificationTransition` 只持有 `progress` 和 `domain: Option<NotificationState>`，不重复保存 action。`NotificationTransition` 与 `transition()` 均为订阅内部细节；连接只通过 `progress()` / `progress_mut()` 访问共有命令进度，通过 `waiter_result(command_id, connection_id, subscription_id)` 获取具名结果，不再读取 transition 或拼装结果身份；`is_active()` 对 `Active` 和 `Disabling` 均为 true，`is_transitioning()` 对 enable/disable 为 true。disable 完成前保留 route 不等于承诺远端继续发送。
+
+```text
+Enabling -- 已接受 + terminal 成功 + 匹配 Enabled --> Active（Keep）
+    +-- dispatch 拒绝 / 已接受的 terminal 失败 --> Remove
+Active -- begin_disable --> Disabling
+Disabling -- 已接受 + terminal 成功 + 匹配 Disabled --> Remove
+    +-- dispatch 拒绝 / 已接受的 terminal 失败 --> Active（Keep）
+证据尚未齐全或仍等待 dispatch ack --> 保留当前状态（Keep）
+```
+
+`retire_transition()` 与 `reject_transition()` 显式返回 `SubscriptionDisposition::Keep` / `Remove`，不再用 bool 隐含 route 生命周期。连接在收到 `Remove` 后立即移除 route；订阅状态本身不增加 Removed tombstone。成功 transition 必须有对应的 domain，terminal 失败不要求 domain，但仍须等 dispatch ack 才能退休。严格模式在每个相关 Enabled callback 上验证，即使已有首个 domain 也不能忽略冲突模式；actual mode 仍从 transition 的 domain 构造结果，不另存副本。
 
 ### Rediscovery admission 行为修正
 
@@ -413,6 +484,7 @@ terminal 采用首个结果，重复且冲突的 terminal 不能在等待数据�
 
 - rediscovery 拒绝或失败后，已提交数据库与旧 session 仍可读取。
 - 数据库到达前，冲突的重复 terminal 不覆盖首个成功结果。
+- disable 完整退休后才允许 rediscovery；收到新 draft 仍不能 enable，只有完整提交后新 session 才能启用订阅，旧 session 与旧 subscription 不会复活。
 
 真实取消路径回归已替换原 prelaunch RAII 测试：
 
@@ -426,8 +498,19 @@ terminal 采用首个结果，重复且冲突的 terminal 不能在等待数据�
 
 订阅 route 不再保存生产代码未读取的 `actual_mode` 副本；enable 的实际模式仍从 transition 证据构造结果，再释放该证据。
 
-本轮 refactor 已报告 runtime actor 测试 115 项通过；[`runtime/tests/lifecycle.rs`](../../crates/bleng/src/runtime/tests/lifecycle.rs) 中两个新回归均通过：`waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths` 覆盖已过期与 timer 两条路径的退休发送失败；`close_waits_for_actor_teardown_after_mailbox_closes` 阻塞 Kameo unregister，证明 mailbox 已关闭、cleanup 已完成时 close 仍等待实际 actor teardown。
+此前 actor/lifecycle 简化记录曾报告 runtime actor 测试 115 项通过；[`runtime/tests/lifecycle.rs`](../../crates/bleng/src/runtime/tests/lifecycle.rs) 中两个新回归均通过：`waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths` 覆盖已过期与 timer 两条路径的退休发送失败；`close_waits_for_actor_teardown_after_mailbox_closes` 阻塞 Kameo unregister，证明 mailbox 已关闭、cleanup 已完成时 close 仍等待实际 actor teardown。
 
-新增 API 回归 [`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs) 已报告通过：先确认私有 task 已开始，再丢弃外层 future，并有界等待其捕获释放；这不是立即析构或 native cancellation 保证。当前完整主验证仍待完成，本次仅同步文档。
+此前新增 API 回归 [`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs) 曾报告通过：先确认私有 task 已开始，再丢弃外层 future，并有界等待其捕获释放；这不是立即析构或 native cancellation 保证。此处保留该测试的原始说明；当前 reservations 波次的验证见下文。
+
+2026-10-07 当前 reservations 工作树已完成以下确定性验证：
+
+- `pixi run rtk cargo test --locked --offline -p bleng -- --test-threads=1`：156 项通过。
+- `pixi run rtk cargo test --locked --offline --workspace -- --test-threads=1`：244 项通过，18 个 suites。
+- `pixi run just fmt`、`pixi run just lint`：通过，包括 workspace strict Clippy。
+- `pixi run just binding bleng-snapshot-check`：3 个已评审 Swift/Kotlin API 快照通过。
+- `pixi run just docs-check-mermaid`：112 个 Markdown 文件中的 21 个图通过。
+- UTF-8、代码围栏、尾随空白、冲突标记与 `git diff --check`：通过。
+
+以上是当前未提交源码的本机确定性结果，不是 RF、跨平台 runtime 或 ABI freeze 证据。未新增依赖：命令证据的乱序累积不能用线性状态机或 lexical RAII 替代，现有枚举、迭代器和所有权已经覆盖本次复用。
 
 此前记录的 locked workspace 验证为 222 个测试通过，其中 BLeng 的 134 个测试全部通过；workspace strict Clippy、格式、BLeng Swift/Kotlin 绑定快照及文档检查也通过。这些历史 gate 不重标为当前 candidate 的重跑；本次文档同步不声称新增 RF 验证或 ABI freeze。确定性 Rust 结果不等于平台 RF 证据。

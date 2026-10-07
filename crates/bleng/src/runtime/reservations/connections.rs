@@ -10,8 +10,8 @@ use crate::waiter::{WaiterError, WaiterSuccess};
 
 use super::{
     connection::{ConnectionReservation, DisconnectReservation, PreAckRoute},
-    dispatch::{DispatchEffect, DispatchReservation, DispatchResolution, ReconcileFault},
-    gatt::GattReservation,
+    dispatch::{CommandProgress, DispatchEffect, DispatchResolution, ReconcileFault},
+    gatt::GattAccess,
     io::{ReadReservation, RssiReservation, WriteReservation},
     subscription::SubscriptionReservation,
 };
@@ -41,8 +41,8 @@ impl ConnectionReservations {
             PreAckRoute::Connect,
         ] {
             for connection in self.by_peripheral.values_mut() {
-                if let Some(dispatch) = connection.pre_ack_route(route, &event) {
-                    dispatch.buffer(event)?;
+                if let Some(progress) = connection.pre_ack_route(route, &event) {
+                    progress.buffer(event)?;
                     return Ok(None);
                 }
             }
@@ -75,9 +75,9 @@ impl ConnectionReservations {
         if let Some(resolution) = connection.resolve_operation_dispatch(command_id, result) {
             return Some(resolution);
         }
-        debug_assert_eq!(connection.dispatch.command_id, command_id);
+        debug_assert_eq!(connection.progress.command_id, command_id);
         Some(if result.is_err() {
-            let contradictory = !connection.dispatch.buffered.is_empty();
+            let contradictory = connection.progress.has_buffered_events();
             self.remove(peripheral_id);
             DispatchResolution {
                 effect: if contradictory {
@@ -88,7 +88,7 @@ impl ConnectionReservations {
                 ..Default::default()
             }
         } else {
-            connection.dispatch.accepted_resolution()
+            connection.progress.accepted_resolution()
         })
     }
 
@@ -103,11 +103,11 @@ impl ConnectionReservations {
         } = event
             && let Some((_, connection)) = self.find(*connection_id)
         {
-            return *command_id != connection.dispatch.command_id
+            return *command_id != connection.progress.command_id
                 && !connection
                     .disconnect
                     .as_ref()
-                    .is_some_and(|slot| slot.dispatch.command_id == *command_id);
+                    .is_some_and(|slot| slot.progress.command_id == *command_id);
         }
         false
     }
@@ -117,7 +117,7 @@ impl ConnectionReservations {
             .1
             .disconnect
             .as_ref()
-            .map(|slot| slot.dispatch.command_id)
+            .map(|slot| slot.progress.command_id)
     }
 
     pub fn require_peripheral_available(
@@ -137,41 +137,7 @@ impl ConnectionReservations {
         let (key, connection) = self
             .find(connection_id)
             .ok_or(WaiterError::ConnectionNotActive)?;
-        // An accepted connect owns a native lifecycle even before Connected arrives.
-        if connection.disconnected
-            || connection.has_failed()
-            || connection.dispatch.is_awaiting_dispatch_ack()
-        {
-            return Err(WaiterError::ConnectionNotActive);
-        }
-        if connection.disconnect.is_some()
-            || connection
-                .gatt
-                .as_ref()
-                .and_then(|gatt| gatt.discovery.as_ref())
-                .is_some_and(|discovery| discovery.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .rssi
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .read
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .write
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection.subscriptions.values().any(|route| {
-                route
-                    .transition
-                    .as_ref()
-                    .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            })
-        {
-            // Pre-dispatch siblings must learn acceptance before passive loss.
-            return Err(WaiterError::OperationBusy);
-        }
+        connection.validate_disconnect()?;
         Ok(key)
     }
 
@@ -182,27 +148,7 @@ impl ConnectionReservations {
         let (key, connection) = self
             .find(connection_id)
             .ok_or(WaiterError::ConnectionNotActive)?;
-        if !connection.connected || connection.disconnected || connection.has_failed() {
-            return Err(WaiterError::ConnectionNotActive);
-        }
-        if connection.disconnect.is_some()
-            || connection
-                .rssi
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .gatt
-                .as_ref()
-                .is_some_and(GattReservation::has_pending_discovery)
-            || connection.read.is_some()
-            || connection.write.is_some()
-            || connection
-                .subscriptions
-                .values()
-                .any(|subscription| subscription.active || subscription.transition.is_some())
-        {
-            return Err(WaiterError::GattBusy);
-        }
+        connection.validate_gatt_discovery()?;
         Ok(key)
     }
 
@@ -210,47 +156,21 @@ impl ConnectionReservations {
         let (key, connection) = self
             .find(connection_id)
             .ok_or(WaiterError::ConnectionNotActive)?;
-        if !connection.connected || connection.disconnected || connection.has_failed() {
-            return Err(WaiterError::ConnectionNotActive);
-        }
-        if connection.rssi.is_some()
-            || connection.disconnect.is_some()
-            || connection
-                .gatt
-                .as_ref()
-                .and_then(|gatt| gatt.discovery.as_ref())
-                .is_some_and(|discovery| discovery.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .read
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .write
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection.subscriptions.values().any(|route| {
-                route
-                    .transition
-                    .as_ref()
-                    .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            })
-        {
-            return Err(WaiterError::OperationBusy);
-        }
+        connection.validate_rssi()?;
         Ok(key)
     }
 
-    pub fn validate_gatt_io(
+    pub fn validate_gatt_access(
         &self,
         connection_id: ConnectionId,
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
-        read: bool,
+        access: GattAccess,
     ) -> Result<PeripheralId, WaiterError> {
         let (key, connection) = self
             .find(connection_id)
             .ok_or(WaiterError::ConnectionNotActive)?;
-        connection.validate_gatt_io(session_id, characteristic_id, read)?;
+        connection.validate_gatt_access(session_id, characteristic_id, access)?;
         Ok(key)
     }
 
@@ -260,18 +180,12 @@ impl ConnectionReservations {
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
     ) -> Result<PeripheralId, WaiterError> {
-        let (key, connection) = self
-            .find(connection_id)
-            .ok_or(WaiterError::ConnectionNotActive)?;
-        connection.validate_gatt_io(session_id, characteristic_id, false)?;
-        if connection
-            .subscriptions
-            .values()
-            .any(|route| route.characteristic_id == characteristic_id)
-        {
-            return Err(WaiterError::OperationBusy);
-        }
-        Ok(key)
+        self.validate_gatt_access(
+            connection_id,
+            session_id,
+            characteristic_id,
+            GattAccess::EnableNotifications,
+        )
     }
 
     pub fn validate_notification_disable(
@@ -283,39 +197,8 @@ impl ConnectionReservations {
         let (key, connection) = self
             .find(connection_id)
             .ok_or(WaiterError::ConnectionNotActive)?;
-        let route = connection
-            .subscriptions
-            .get(&subscription_id)
-            .filter(|route| route.session_id == session_id && route.active)
-            .ok_or(WaiterError::SubscriptionNotActive)?;
-        if route.transition.is_some() {
-            return Err(WaiterError::OperationBusy);
-        }
-        let characteristic = route.characteristic_id;
-
-        if !connection.connected || connection.disconnected || connection.has_failed() {
-            return Err(WaiterError::ConnectionNotActive);
-        }
-        if connection.disconnect.is_some()
-            || connection
-                .rssi
-                .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            || connection
-                .gatt
-                .as_ref()
-                .is_some_and(GattReservation::has_pending_discovery)
-            || connection.read.is_some()
-            || connection.write.is_some()
-            || connection.subscriptions.values().any(|route| {
-                route
-                    .transition
-                    .as_ref()
-                    .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
-            })
-        {
-            return Err(WaiterError::OperationBusy);
-        }
+        let characteristic =
+            connection.validate_notification_disable(session_id, subscription_id)?;
         Ok((key, characteristic))
     }
 
@@ -336,9 +219,8 @@ impl ConnectionReservations {
     /// Registers a disconnect transition on an existing connection.
     pub fn reserve_disconnect(&mut self, peripheral_id: PeripheralId, command_id: CommandId) {
         self.connection_mut(peripheral_id).disconnect = Some(DisconnectReservation {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             domain: false,
-            terminal: None,
         });
     }
 
@@ -351,16 +233,14 @@ impl ConnectionReservations {
     ) {
         self.connection_mut(peripheral_id)
             .gatt
-            .get_or_insert_with(GattReservation::default)
             .begin_discovery(command_id, session_id);
     }
 
     /// Registers a pending RSSI read on an existing connection.
     pub fn reserve_rssi(&mut self, peripheral_id: PeripheralId, command_id: CommandId) {
         self.connection_mut(peripheral_id).rssi = Some(RssiReservation {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             value: None,
-            terminal: None,
         });
     }
 
@@ -473,8 +353,10 @@ impl ConnectionReservations {
     }
 
     pub fn record_terminal(&mut self, command_id: CommandId, result: &Result<(), BleEventError>) {
-        if let Some((_, connection)) = self.find_command_mut(command_id) {
-            connection.record_terminal(command_id, result);
+        for connection in self.by_peripheral.values_mut() {
+            if connection.record_terminal(command_id, result) {
+                return;
+            }
         }
     }
 

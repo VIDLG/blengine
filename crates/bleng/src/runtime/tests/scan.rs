@@ -20,14 +20,12 @@ fn scan_state_retains_unsettled_start_and_ignores_stale_rejection() {
     assert!(!state.record_terminal(99.into(), &Ok(())));
 
     state.resolve_dispatch(1.into(), &Ok(())).unwrap();
-    state
-        .record_event(&BleEvent::ScanStopped {
-            scan_id: 10.into(),
-            result: ScanStopResult::Ok {
-                reason: ScanStopReason::SystemSuspended,
-            },
-        })
-        .unwrap();
+    state.record_event(&BleEvent::ScanStopped {
+        scan_id: 10.into(),
+        result: ScanStopResult::Ok {
+            reason: ScanStopReason::SystemSuspended,
+        },
+    });
     assert!(state.record_terminal(1.into(), &Ok(())));
     state.retire_completed();
     assert_eq!(state.waiter_result(1.into()), None);
@@ -38,12 +36,10 @@ fn scan_state_retains_unsettled_start_and_ignores_stale_rejection() {
     );
 
     // Native stop does not release a start whose correlated domain arrives late.
-    state
-        .record_event(&BleEvent::ScanStarted {
-            command_id: 1.into(),
-            scan_id: 10.into(),
-        })
-        .unwrap();
+    state.record_event(&BleEvent::ScanStarted {
+        command_id: 1.into(),
+        scan_id: 10.into(),
+    });
     assert_eq!(
         state.waiter_result(1.into()),
         Some(Ok(WaiterSuccess::ScanStarted(10.into())))
@@ -334,27 +330,26 @@ fn foreign_scan_error_cannot_retire_suspended_stop_awaiting_terminal() {
 }
 
 #[test]
-fn rejected_stop_keeps_scan_active_and_discards_predispatch_events() {
-    for with_callback in [false, true] {
+fn rejected_stop_keeps_scan_active_unless_requested_evidence_contradicts_rejection() {
+    let suspended = BleEvent::ScanStopped {
+        scan_id: 1.into(),
+        result: ScanStopResult::Ok {
+            reason: ScanStopReason::SystemSuspended,
+        },
+    };
+    for callbacks in [
+        vec![],
+        vec![requested_stop(2), command_completed(2, None)],
+        vec![suspended.clone(), requested_stop(2)],
+        vec![requested_stop(2), suspended],
+    ] {
+        let contradictory = !callbacks.is_empty();
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
         let rejection = CommandDispatchError::InvalidState {
             detail: "stop rejected".to_owned(),
         };
-        let scenario = if with_callback {
-            EventScenario::emit_before_reject(
-                stop_command(2),
-                vec![
-                    requested_stop(2),
-                    BleEvent::CommandCompleted {
-                        command_id: CommandId { value: 2 },
-                        error: None,
-                    },
-                ],
-                rejection.clone(),
-            )
-        } else {
-            EventScenario::reject(stop_command(2), rejection.clone())
-        };
+        let scenario =
+            EventScenario::emit_before_reject(stop_command(2), callbacks, rejection.clone());
         let (backend, handle) = FakeBackend::scripted([started_scan(), scenario]);
         owner
             .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -370,13 +365,13 @@ fn rejected_stop_keeps_scan_active_and_discards_predispatch_events() {
                 .unwrap();
             assert_eq!(
                 owner.stop_scan(session, Duration::from_secs(2)).await,
-                if with_callback {
+                if contradictory {
                     Err(WaiterError::TransportFault)
                 } else {
                     Err(WaiterError::DispatchRejected(rejection))
                 }
             );
-            if with_callback {
+            if contradictory {
                 assert!(owner.faulted_for_test());
                 assert_eq!(
                     owner.next_event(Duration::from_secs(2)).await,
@@ -393,6 +388,108 @@ fn rejected_stop_keeps_scan_active_and_discards_predispatch_events() {
             owner.close().await.unwrap();
         });
         assert_eq!(handle.commands().len(), 2);
+        assert_eq!(handle.dispose_count(), 1);
+    }
+}
+
+#[test]
+fn passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart() {
+    for result in [
+        ScanStopResult::Ok {
+            reason: ScanStopReason::SystemSuspended,
+        },
+        ScanStopResult::Err {
+            error: BleEventError {
+                category: BleErrorCategory::AdapterUnavailable,
+                message: "adapter stopped scanning independently".to_owned(),
+                platform_details: None,
+            },
+        },
+    ] {
+        let owner = RuntimeOwner::new_assuming_initialized().unwrap();
+        let rejection = CommandDispatchError::InvalidState {
+            detail: "scan already ended before stop dispatch".to_owned(),
+        };
+        let stopped = BleEvent::ScanStopped {
+            scan_id: 1.into(),
+            result,
+        };
+        let restarted = BleEvent::ScanStarted {
+            command_id: 3.into(),
+            scan_id: 2.into(),
+        };
+        let (backend, handle) = FakeBackend::scripted([
+            started_scan(),
+            EventScenario::emit_before_reject(
+                stop_command(2),
+                vec![stopped.clone()],
+                rejection.clone(),
+            ),
+            EventScenario::emit_before_return(
+                RecordedCommand::StartScan(StartScanCommand {
+                    command_id: 3.into(),
+                    scan_session_id: 2.into(),
+                    options: ScanOptions::default(),
+                }),
+                vec![restarted.clone(), command_completed(3, None)],
+            ),
+        ]);
+        owner
+            .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+            .unwrap();
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        host.block_on(async {
+            let timeout = Duration::from_secs(2);
+            let session = owner
+                .start_scan(ScanOptions::default(), timeout)
+                .await
+                .unwrap();
+            for expected in [
+                BleEvent::ScanStarted {
+                    command_id: 1.into(),
+                    scan_id: session,
+                },
+                command_completed(1, None),
+            ] {
+                assert_eq!(owner.next_event(timeout).await, Ok(Some(expected)));
+            }
+            assert_eq!(
+                owner.stop_scan(session, timeout).await,
+                Err(WaiterError::DispatchRejected(rejection))
+            );
+            assert_eq!(owner.next_event(timeout).await, Ok(Some(stopped.clone())));
+            assert!(!owner.faulted_for_test());
+            assert_eq!(
+                owner.stop_scan(session, timeout).await,
+                Err(WaiterError::ScanNotActive)
+            );
+            assert_eq!(
+                owner.start_scan(ScanOptions::default(), timeout).await,
+                Ok(2.into())
+            );
+            for expected in [restarted, command_completed(3, None)] {
+                assert_eq!(owner.next_event(timeout).await, Ok(Some(expected)));
+            }
+            // Old-session teardown and the rejected command's late terminal cannot
+            // retire the replacement scan or turn its rejection into success.
+            for stale in [stopped, requested_stop(2), command_completed(2, None)] {
+                assert_eq!(handle.emit(stale.clone()), EventIngressStatus::Delivered);
+                assert_eq!(owner.next_event(timeout).await, Ok(Some(stale)));
+            }
+            assert_eq!(
+                owner.start_scan(ScanOptions::default(), timeout).await,
+                Err(WaiterError::ScanBusy)
+            );
+            assert!(!owner.faulted_for_test());
+            tokio::time::timeout(timeout, owner.close())
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        assert_eq!(handle.commands().len(), 3);
         assert_eq!(handle.dispose_count(), 1);
     }
 }

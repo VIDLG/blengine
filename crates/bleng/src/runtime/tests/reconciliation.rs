@@ -49,7 +49,7 @@ fn pre_ack_buffer_is_bounded_and_replays_correlated_evidence_in_order() {
     assert!(matches!(resolution.effect, DispatchEffect::None));
     assert_eq!(resolution.replay, events);
     for event in &resolution.replay {
-        initialization.record_event(event).unwrap();
+        initialization.record_event(event);
     }
     assert_eq!(initialization.waiter_result(1.into()), None);
     assert!(initialization.record_terminal(1.into(), &Ok(())));

@@ -2,10 +2,11 @@ use super::support::{
     Arc, BleErrorCategory, BleEvent, BleEventError, BleHub, CommandDispatchError, CommandId,
     ConnectionId, ConnectionState, ConnectionStateResult, DiscoverGattCommand, Duration,
     EventIngressStatus, EventScenario, FakeBackend, GattDatabase, GattSessionId,
-    NotificationModeRequest, Notify, PeripheralId, RecordedCommand, RuntimeOwner, WaiterError,
+    NotificationAction, NotificationMode, NotificationModeRequest, NotificationState, Notify,
+    PeripheralId, RecordedCommand, RuntimeOwner, SetNotificationsCommand, WaiterError,
     WaiterExpectation, command_completed, connect_scenario, gatt_scenario, init_command, mpsc,
-    notification_discovery, notification_enabled_scenario, oneshot, read_command, read_database,
-    read_discovery, read_value,
+    notification_command, notification_discovery, notification_enabled_scenario,
+    notification_state, oneshot, read_command, read_database, read_discovery, read_value,
 };
 use crate::runtime::{
     RuntimePhase,
@@ -219,6 +220,188 @@ fn rediscovery_keeps_first_success_terminal_until_database_arrives() {
         owner.close().await.unwrap();
     });
     assert_eq!(handle.commands().len(), 3);
+    assert_eq!(handle.dispose_count(), 1);
+}
+
+#[test]
+fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement() {
+    let owner = RuntimeOwner::new_assuming_initialized().unwrap();
+    let (backend, handle) = FakeBackend::scripted([
+        connect_scenario(1, 1, 10),
+        notification_discovery(),
+        notification_enabled_scenario(3, 3),
+        EventScenario::emit_before_return(
+            notification_command(4, 3, NotificationAction::Disable),
+            vec![
+                notification_state(4, 3, NotificationState::Disabled),
+                command_completed(4, None),
+            ],
+        ),
+        EventScenario::accept(RecordedCommand::DiscoverGatt(DiscoverGattCommand {
+            command_id: 5.into(),
+            connection_id: 1.into(),
+            gatt_session_id: 4.into(),
+        })),
+        EventScenario::emit_before_return(
+            RecordedCommand::SetNotifications(SetNotificationsCommand {
+                command_id: 6.into(),
+                connection_id: 1.into(),
+                gatt_session_id: 4.into(),
+                subscription_id: 5.into(),
+                characteristic_id: 30.into(),
+                action: NotificationAction::Enable {
+                    mode: NotificationModeRequest::PlatformDefault,
+                },
+            }),
+            vec![
+                BleEvent::NotificationStateChanged {
+                    command_id: 6.into(),
+                    connection_id: 1.into(),
+                    gatt_session_id: 4.into(),
+                    subscription_id: 5.into(),
+                    characteristic_id: 30.into(),
+                    state: NotificationState::Enabled {
+                        actual_mode: Some(NotificationMode::Notification),
+                    },
+                },
+                command_completed(6, None),
+            ],
+        ),
+    ]);
+    owner
+        .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+        .unwrap();
+    let host = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    host.block_on(async {
+        let deadline = Duration::from_secs(2);
+        let connection = owner.connect(10.into(), deadline).await.unwrap();
+        let database = owner.discover_gatt(connection, deadline).await.unwrap();
+        let session = database.gatt_session_id;
+        let characteristic = database.services[0].characteristics[0].id;
+        let (subscription, _) = owner
+            .enable_notifications(
+                connection,
+                session,
+                characteristic,
+                NotificationModeRequest::PlatformDefault,
+                deadline,
+            )
+            .await
+            .unwrap();
+        owner
+            .disable_notifications(connection, session, subscription, deadline)
+            .await
+            .unwrap();
+        assert_eq!(
+            owner
+                .disable_notifications(connection, session, subscription, deadline)
+                .await,
+            Err(WaiterError::SubscriptionNotActive)
+        );
+
+        let pending = owner.discover_gatt(connection, deadline);
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        assert_eq!(handle.commands().len(), 5, "rediscovery must be admitted");
+        let mut draft = database;
+        draft.gatt_session_id = 4.into();
+        for database_arrived in [false, true] {
+            if database_arrived {
+                assert_eq!(
+                    handle.emit(BleEvent::GattDiscovered {
+                        command_id: 5.into(),
+                        database: draft.clone(),
+                    }),
+                    EventIngressStatus::Delivered
+                );
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(20), &mut pending)
+                        .await
+                        .is_err(),
+                    "a database draft alone must not retire discovery"
+                );
+            }
+            assert_eq!(
+                owner
+                    .enable_notifications(
+                        connection,
+                        session,
+                        characteristic,
+                        NotificationModeRequest::PlatformDefault,
+                        deadline,
+                    )
+                    .await,
+                Err(WaiterError::GattBusy)
+            );
+            assert_eq!(
+                owner
+                    .enable_notifications(
+                        connection,
+                        draft.gatt_session_id,
+                        characteristic,
+                        NotificationModeRequest::PlatformDefault,
+                        deadline,
+                    )
+                    .await,
+                Err(WaiterError::GattNotReady),
+                "the draft session must not be published before completion"
+            );
+            assert_eq!(
+                handle.commands().len(),
+                5,
+                "blocked enable must not dispatch"
+            );
+        }
+        assert_eq!(
+            handle.emit(command_completed(5, None)),
+            EventIngressStatus::Delivered
+        );
+        assert_eq!(pending.await, Ok(draft.clone()));
+        assert_eq!(
+            owner
+                .enable_notifications(
+                    connection,
+                    session,
+                    characteristic,
+                    NotificationModeRequest::PlatformDefault,
+                    deadline,
+                )
+                .await,
+            Err(WaiterError::GattNotReady),
+            "successful rediscovery must invalidate the old GATT session"
+        );
+        assert_eq!(
+            owner
+                .enable_notifications(
+                    connection,
+                    draft.gatt_session_id,
+                    characteristic,
+                    NotificationModeRequest::PlatformDefault,
+                    deadline,
+                )
+                .await,
+            Ok((5.into(), Some(NotificationMode::Notification)))
+        );
+        for invalid_session in [session, draft.gatt_session_id] {
+            assert_eq!(
+                owner
+                    .disable_notifications(connection, invalid_session, subscription, deadline)
+                    .await,
+                Err(WaiterError::SubscriptionNotActive),
+                "enabling a new subscription must not revive the retired route"
+            );
+        }
+        assert!(!owner.faulted_for_test());
+        owner.close().await.unwrap();
+    });
+    assert_eq!(handle.commands().len(), 6);
     assert_eq!(handle.dispose_count(), 1);
 }
 

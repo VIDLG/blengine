@@ -6,7 +6,13 @@ This document describes the current internal waiter implementation in
 [`crates/bleng/src/waiter.rs`](../../crates/bleng/src/waiter.rs) and its runtime
 integration in [`crates/bleng/src/runtime/owner.rs`](../../crates/bleng/src/runtime/owner.rs).
 The predispatch-order simplification, consolidation into one reservation module,
-and three lifecycle review corrections are implemented and validated below.
+and three lifecycle review corrections have their original validation records below.
+The 2026-10-07 reservations refactor is described from the current local worktree:
+shared `CommandProgress`, a concrete GATT owner, private subscription states, and
+connection-local operation admission. It adds no dependency, generic operation
+state machine, or routing index. Source inspection is not a current-candidate
+validation result; the current deterministic rerun is recorded separately below,
+and earlier evidence is not relabeled as a rerun.
 This is an implementation/design record, not a new architecture proposal, a
 separate public BLE protocol, or a native-operation cancellation guarantee.
 The mailbox protocol has a single `runtime/messages.rs` module rather than
@@ -175,8 +181,12 @@ was removed; actual actor command/resource allocation separation remains covered
 Its peripheral-keyed map is private. The collection owns root registration,
 connection/command lookup, terminal/result routing, and completed-root removal.
 It adds no secondary index, synchronization, shared ownership, or scheduling.
-`ConnectionReservation` owns operation-local evidence and `validate_gatt_io()`;
-the moved validator preserves its original error precedence.
+The collection resolves the connection root and peripheral key, then delegates
+operation admission to `ConnectionReservation`: disconnect, discovery, RSSI,
+characteristic I/O, notification enable, and notification disable. The record
+owns operation-local evidence and checks; disable also returns the characteristic
+ID needed for registration. Moving these checks preserves operation-specific
+conditions and error precedence, not just `validate_gatt_access()`.
 
 Registration cannot replace an occupied peripheral slot. Normal duplicate
 connects remain admission errors (`PeripheralBusy`); an internal duplicate install
@@ -248,9 +258,21 @@ routing, and retirement rather than existing only to support delegation. It adds
 no separate Running/Stopping flags or linear state machine over independent
 callback evidence. `reserved()` / `reserved_mut()` serve the actor's internal
 event implementation, not outward actor getters. The actual reserved payload is
-`Box<ScanReservation>`: the current inline reservation is 432 bytes. Boxing keeps
-the idle slot compact at the cost of one allocation per admitted scan session,
-not per callback, without adding shared ownership or synchronization.
+`Box<ScanReservation>`. Boxing keeps the idle slot compact at the cost of one
+allocation per admitted scan session, not per callback, without adding shared
+ownership or synchronization. The earlier inline-size measurement is not a
+current-layout claim.
+
+Rejected stop dispatch distinguishes independent native teardown from requested
+stop evidence. The [contract's `command_id()`](../../crates/blehub/src/contract/events.rs)
+returns no command ID for `SystemSuspended` or `ScanStopResult::Err`. Their
+buffered events are replayed in order after removing the rejected stop slot;
+the actor settles `DispatchRejected` before publishing and recording teardown,
+then retires the scan. Passive teardown cannot turn rejection into stop success,
+and the rejected command's terminal is discarded. Any buffered `Requested`
+stop still faults as contradictory, even when mixed with passive teardown.
+The scan regression covers both passive outcomes, restart, late old-session
+callbacks, and both mixed requested/passive callback orders.
 
 All actor fields are private, including `lifecycle`, `initialization`, `scan`,
 and `connections`. Command and subscription handlers use admission methods
@@ -321,8 +343,8 @@ explicit-disconnect domain evidence are updated through a single lookup.
 The pre-ack order remains initialization, connections, then scan start/stop.
 Connection operation categories are probed globally in the order disconnect,
 discovery, RSSI, read, write, subscription, connect; this is deliberately not
-per-connection traversal or the general `dispatches()` order. Foreign-command
-loss of a known connection remains publicly visible but bypasses buffering and
+per-connection traversal or the general `command_progresses()` / `child_progresses()`
+order. Foreign-command loss of a known connection remains publicly visible but bypasses buffering and
 cannot mutate reservation evidence.
 
 `DispatchResolution` is a transient outcome, not another state registry. It
@@ -334,8 +356,8 @@ rejection retains its broader connection-loss policy. Clean initialization
 rejection requests Hub cleanup without faulting the runtime. No reservation
 holds a lifecycle, waiter registry, event sender, or executor.
 
-`DispatchReservation` owns the existing 64-event bound. Reconciliation faults
-identify overflow, notification-mode mismatch, or contradictory dispatch;
+Each command's `CommandProgress` owns the existing 64-event buffer bound.
+Reconciliation faults identify overflow, notification-mode mismatch, or contradictory dispatch;
 existing tracing records the reason without callback payloads. Regression
 coverage in [`reconciliation.rs`](../../crates/bleng/src/runtime/tests/reconciliation.rs)
 protects the exact bound, foreign-event pass-through, ordered replay, and distinct
@@ -371,11 +393,11 @@ record-field visibility.
 | [`actor.rs`](../../crates/bleng/src/runtime/actor.rs): `BlengActor` | Owns serialized BLE orchestration, `WaiterRegistry`, waiter delivery, `event_tx`, reservation storage, and all state coordination. Retains `Drop` and register/reserve methods, not a prelaunch rollback guard. |
 | [`backend_port.rs`](../../crates/bleng/src/runtime/backend_port.rs) | Backend assembly and non-blocking ingress; imports `IngressEvent` directly from messages. Retains neither owner nor responsibility for interpreting reservation evidence. |
 | [`reservations/mod.rs`](../../crates/bleng/src/runtime/reservations/mod.rs) | Documents ownership and exposes the runtime-facing state facade. No command-index map. |
-| [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | Shared dispatch evidence, bounded pre-ack buffering, and transient reconciliation outcomes. |
+| [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | `CommandProgress`: shared dispatch/first-terminal progress, bounded pre-ack buffering, and transient reconciliation outcomes. |
 | [`initialization.rs`](../../crates/bleng/src/runtime/reservations/initialization.rs) | Initialization evidence and readiness. |
 | [`scan.rs`](../../crates/bleng/src/runtime/reservations/scan.rs) | Scan slot, start/stop evidence, and retirement. |
-| [`connections.rs`](../../crates/bleng/src/runtime/reservations/connections.rs) | Peripheral-keyed collection, admission, operation installation, global routing priority, and completed-root removal. |
-| [`connection.rs`](../../crates/bleng/src/runtime/reservations/connection.rs) | One connection root, disconnect, local correlation/reconciliation, and retirement. |
+| [`connections.rs`](../../crates/bleng/src/runtime/reservations/connections.rs) | Peripheral-keyed roots, peripheral-slot admission, connection/command lookup and key resolution, operation installation, global routing priority, and completed-root removal. |
+| [`connection.rs`](../../crates/bleng/src/runtime/reservations/connection.rs) | One connection root, per-operation admission, disconnect, child-progress traversal, local correlation/reconciliation, and retirement. |
 | [`gatt.rs`](../../crates/bleng/src/runtime/reservations/gatt.rs) | Committed database and pending discovery evidence. |
 | [`io.rs`](../../crates/bleng/src/runtime/reservations/io.rs) | RSSI and characteristic read/write evidence and results. |
 | [`subscription.rs`](../../crates/bleng/src/runtime/reservations/subscription.rs) | Subscription routes, transitions, and mode verification. |
@@ -386,9 +408,9 @@ dispatch reconciliation, result decisions, and retirement rules. They remain
 ordinary actor-confined values, not independently scheduled objects. The actor coordinates across reservations and settles caller waiters;
 reservation methods interpret and retire their own local evidence.
 `ConnectionReservation::retire_completed_operations()` and `is_retirable()`
-localize connection retirement; `take_discovery()` and
-`take_subscription_transition()` localize GATT/subscription rejection and
-removal without discarding previously committed state. These are dispatch
+localize connection retirement; `resolve_pending_slot()` handles ordinary child
+command acknowledgement/rejection, while `reject_subscription_transition()`
+applies subscription disposition without discarding previously committed state. These are dispatch
 rejection/failure handling and evidence retirement, not prelaunch rollback.
 Ingress/dispatch-result coordination belongs to
 [`actor.rs`](../../crates/bleng/src/runtime/actor.rs), with admission and mailbox
@@ -399,28 +421,59 @@ subscription state in reservations/subscription.rs.
 `WaiterRegistry` remains the caller command ledger; callback correlation uses the
 existing reservation hierarchy, not an additional `CommandId` index.
 
-### Dispatch evidence and derived state
+Suggested reading order: `reservations/mod.rs` for the boundary, `dispatch.rs`
+for shared progress, `connections.rs` for root lookup/global routing, then
+`connection.rs` for local admission, settlement, and retirement. Follow with
+`gatt.rs`, `io.rs`, and `subscription.rs` for typed evidence; initialization and
+scan have their own owners. Finally read `messages.rs` admission/handoff and
+`actor.rs` event coordination. Tests physically live under
+[`reservations/tests/`](../../crates/bleng/src/runtime/reservations/tests/):
+`connections.rs` exercises collection-level invariants; `subscription.rs` is
+mounted with `#[path]` as a child of the production subscription module, preserving
+its privacy boundary. Production files contain no inline test bodies and expose
+no additional visibility for tests. End-to-end tests remain under `runtime/tests/`.
 
-The shared `DispatchReservation` retains `command_id`, `dispatch_accepted`, and
-`buffered` (the pre-ack callback buffer). Its `is_awaiting_dispatch_ack()` predicate
-means dispatch acknowledgement is unresolved, not that the caller waiter or the
-native operation is still pending. Accepted dispatch alone is never sufficient
-evidence of BLE completion.
+### Command progress and derived state
 
-`DispatchReservation::waiter_result()` shares only the accepted-dispatch/terminal
-boundary: unresolved dispatch or a missing terminal cannot produce success; a
-terminal error is returned as an operation error; a successful terminal allows
-the concrete reservation to build a result from its domain evidence. It does
-not decide operation-specific precedence. For example, connection failure and
-passive loss are checked by `ConnectionReservation` before invoking this gate.
+[`CommandProgress`](../../crates/bleng/src/runtime/reservations/dispatch.rs)
+replaces `DispatchReservation` plus the separate terminal field on each concrete
+record. Every command's `progress` retains `command_id`, private `buffered`, private
+`dispatch_accepted`, and private `terminal: Option<Result<(), BleEventError>>`.
+Initialization, scan start/stop, connect/disconnect, discovery, RSSI, reads,
+writes, and notification transitions use this same boundary; they no longer
+store a separate `terminal` or `start_terminal`.
+
+`record_terminal()` preserves the first result, including its native error;
+conflicting duplicate terminals cannot overwrite it. Queries use `has_terminal()`,
+`terminal_succeeded()`, and `terminal_failed()`. `is_awaiting_dispatch_ack()` means
+dispatch acknowledgement is unresolved, not that the caller waiter or native
+operation is pending. Accepted dispatch alone is never BLE completion.
+
+`CommandProgress::waiter_result(success)` no longer takes an external terminal:
+unresolved dispatch or a missing terminal returns `None`; a terminal error is
+returned as an operation error; a successful terminal lazily invokes the concrete
+reservation's domain-result closure. `is_complete(domain_ready)` requires accepted
+dispatch plus a terminal, and then either terminal failure or complete domain
+evidence. Completion does not itself decide when native resources are removable.
+Connection failure and passive loss retain their concrete-record precedence.
+Typed snapshots, connection facts/errors, discovery drafts, RSSI/read payloads,
+write evidence, and notification domain state remain local to their reservations,
+not in this helper.
+
+Peer modules cannot mutate `buffered`: only bounded `buffer()` enqueues events.
+`has_buffered_events()` queries retained evidence; `take_buffered_events()`
+transfers it in order without acknowledging dispatch or choosing rejection replay
+policy. Initialization and scan `record_event()` return `()` because they cannot
+fail; the actor retains a fallible reconciliation boundary for connection-side
+notification-mode validation.
 
 Redundant flags are removed rather than maintained beside their source facts:
 
 | Removed flag | Authoritative evidence |
 |---|---|
-| Scan `failed` | `start_terminal` is `Some(Err(_))`. |
+| Scan `failed` | Start `progress.terminal_failed()`. |
 | Connection `failed` | `connect_error` is `Some(_)`. |
-| Discovery `failed` | `terminal` is `Some(Err(_))`. |
+| Discovery `failed` | Discovery `progress.terminal_failed()`. |
 | Discovery `discovered` | `draft_database` is `Some(_)`. |
 
 The active subscription route does not retain another copy of `actual_mode`:
@@ -429,6 +482,36 @@ the enable result reads it from transition evidence before that evidence retires
 The remaining independent domain facts are not collapsed into one status enum.
 In particular, a draft database does not imply successful discovery until
 accepted dispatch and a successful terminal are also accounted for.
+
+### Shared child progress without uniform admission
+
+`ConnectionReservation::child_progresses()` inventories disconnect, discovery,
+RSSI, read, write, and subscription-transition progress.
+`has_pending_child_handoff()` queries only unresolved dispatch acknowledgements.
+`command_progresses()` adds the connect root for command membership, accepted-command
+collection, and root retirement. `command_progresses_mut()` supplies terminal
+recording: find the command ID, then call `progress.record_terminal()`, rather
+than maintaining paired dispatch/terminal references. The collection calls each
+connection's terminal recorder until one matches, without a separate command
+lookup followed by a second traversal. These iterators are not callback routing
+indexes and do not replace the global pre-ack category order.
+
+Shared predicates preserve the following distinct admission rules:
+
+| Operation | Connection-local checks retained |
+|---|---|
+| Disconnect | Accepted connect owns a native lifecycle even before `Connected`. Reject disconnected/connect failure/unresolved connect first, then an existing disconnect or unresolved child handoff. |
+| Discovery | Require active connection, then reject disconnect, unresolved RSSI, pending discovery, read/write, or any subscription route as `GattBusy`. An accepted RSSI is not blanket-blocked by the shared predicate. |
+| RSSI | Require active connection, then reject an existing RSSI, disconnect, or unresolved child handoff as `OperationBusy`. |
+| Read/write | Preserve connection → disconnect/unresolved RSSI → committed session/characteristic → I/O/subscription conflict → discovery precedence. Invalid targets still precede later busy checks. Read additionally rejects a subscription on the same characteristic; write does not. |
+| Enable | Use `GattAccess::EnableNotifications` for shared GATT checks, then reject any route on the same characteristic after the pending-discovery check. |
+| Disable | After collection root lookup, check subscription/session and activity, then transition busy, then connection and sibling-operation checks. `Disabling` remains active, so repeated disable returns `OperationBusy`, not `SubscriptionNotActive`. |
+
+`GattAccess::{Read, Write, EnableNotifications}` replaces `read: bool` and makes
+admission intent explicit in `validate_gatt_access()`. Enable no longer borrows
+the write identity. Read checks same-characteristic subscription conflicts before
+pending discovery; enable checks duplicate routes after it. The enum preserves
+this precedence and does not describe backend capabilities.
 
 ### Begin requests and named replies
 
@@ -655,13 +738,86 @@ also retains incomplete start evidence until its domain/terminal facts can settl
 the start waiter; settlement precedes retirement, including for late callbacks
 and callbacks buffered before dispatch acknowledgement.
 
+### Subscription state and explicit disposition
+
+[`SubscriptionReservation`](../../crates/bleng/src/runtime/reservations/subscription.rs)
+retains session/characteristic identity and a private `state: SubscriptionState`:
+
+```rust
+enum SubscriptionState {
+    Enabling {
+        mode: NotificationModeRequest,
+        transition: NotificationTransition,
+    },
+    Active,
+    Disabling(NotificationTransition),
+}
+```
+
+It no longer combines `active: bool` with an optional transition.
+`NotificationTransition` contains only `progress` and
+`domain: Option<NotificationState>`, not a duplicated action. The transition type
+and `transition()` are private to subscription.rs. Peers use `progress()` /
+`progress_mut()` for shared command accounting and
+`waiter_result(command_id, connection_id, subscription_id)` for typed results,
+without reading transition fields or assembling result identities.
+`is_active()` includes `Active` and
+`Disabling`; `is_transitioning()` includes enable and disable. Keeping a route
+while disabling does not promise continued remote value delivery.
+
+```text
+Enabling -- accepted + terminal success + matching Enabled --> Active (Keep)
+    +-- dispatch rejection / accepted terminal failure --> Remove
+Active -- begin_disable --> Disabling
+Disabling -- accepted + terminal success + matching Disabled --> Remove
+    +-- dispatch rejection / accepted terminal failure --> Active (Keep)
+Incomplete evidence or unresolved dispatch ack --> keep current state (Keep)
+```
+
+`retire_transition()` and `reject_transition()` explicitly return
+`SubscriptionDisposition::Keep` / `Remove`, replacing the implicit bool removal
+contract. The connection immediately removes a route when requested; there is no
+Removed tombstone state. On dispatch rejection, the caller first takes buffered
+events, then calls `reject_subscription_transition()` to apply the disposition.
+Failed enable removes its provisional route;
+failed disable restores `Active`. Successful transitions require their matching
+domain state; terminal failure needs no domain but retirement still waits for
+acknowledgement. Strict mode is checked on every correlated Enabled callback,
+even after the first domain evidence, so duplicates cannot hide a contradictory
+mode. Actual mode is extracted from transition evidence, not duplicated on the
+active route. This is a local subscription-state enum, not a generic BLE operation
+state machine.
+
 ### GATT commit and regression coverage
 
-`GattReservation` keeps the committed `database` separate from the in-flight
-`discovery` and its `draft_database`. After waiter settlement,
-`commit_completed_discovery()` replaces the committed database only for a
-successful, fully accounted discovery; the connection then clears old-session
-subscription routes. Dispatch rejection or terminal failure still removes only
+`ConnectionReservation.gatt` is a concrete `GattReservation`, not an
+`Option<GattReservation>`. Its `database: Option<GattDatabase>` and
+`discovery: Option<GattDiscoveryReservation>` are independent: both empty means
+no committed database or pending discovery; both may coexist during rediscovery.
+They must not become mutually exclusive enum variants. The committed database
+field is private: peers query `committed_database()`, while only the GATT owner
+commits replacements. The draft stays inside the discovery record.
+
+```text
+ConnectionReservation.gatt: GattReservation
+  +-- database: None / Some(committed database)
+  +-- discovery: None / Some(progress + session_id + draft_database)
+       full success -> settle waiter -> replace database -> clear discovery
+       rejection/failure -> clear discovery only -> preserve database
+```
+
+There is no outer `Option`, lazy `get_or_insert_with`, or normalization of empty
+inner slots back to an absent GATT owner. `resolve_pending_slot()` shares command
+matching, acknowledgement, and rejection across discovery, RSSI, read, write, and
+disconnect. Acceptance returns buffered events for replay; rejection removes only
+the pending slot and permits passive connection loss replay. Subscriptions remain
+separate because their rejection also permits commanded connection loss and must
+restore an active route after rejected disable. After waiter settlement,
+`retire_completed_discovery()` retires completed discovery and replaces the
+committed database only on fully accounted success. It returns no bool and does
+not clear subscriptions: discovery admission requires no routes, pending discovery
+blocks enable, and native callbacks cannot create routes. Dispatch rejection or
+terminal failure still removes only
 the provisional discovery, preserving the old session and database. This is
 rejection/failure removal, not prelaunch rollback. Cancellation before handoff
 creates no provisional discovery to remove. Terminal recording retains the
@@ -689,6 +845,9 @@ The [GATT regression coverage](../../crates/bleng/src/runtime/tests/gatt.rs)
 retains the following behavior checks:
 
 - rejection or failure of rediscovery preserves the committed database for reads;
+- completed disable permits rediscovery, but a new draft alone cannot permit
+  enable; only full discovery completion admits a subscription on the new session,
+  without reviving the old session or subscription;
 - conflicting duplicate terminals cannot replace the first success while waiting
   for the database.
 
@@ -730,8 +889,8 @@ all 134 BLeng tests. Workspace strict Clippy, formatting, BLeng Swift/Kotlin
 binding snapshots, and documentation checks also passed at that point; those
 historical gates are not relabeled as current-candidate reruns.
 
-The current refactor validation reports 115 passing runtime actor tests, including
-both new regressions in
+The earlier actor/lifecycle simplification record reported 115 passing runtime
+actor tests, including both new regressions in
 [`runtime/tests/lifecycle.rs`](../../crates/bleng/src/runtime/tests/lifecycle.rs):
 `waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths`
 and `close_waits_for_actor_teardown_after_mailbox_closes`. The former protects both
@@ -739,13 +898,28 @@ deadline paths; the latter blocks Kameo unregister after mailbox closure and
 checks close still waits even when cleanup has completed. This documentation
 update claims neither fresh platform RF evidence nor ABI freeze.
 
-The new API regression
+The API regression recorded in that earlier simplification
 [`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs)
 is also reported passing. It observes private-task entry, drops the outer facade
 future, and waits within a bounded test window for capture release; it does not
-assert immediate destruction or native cancellation. Full main validation of
-the current candidate is still pending; this docs-only update does not relabel
-the historical workspace gates above as current results.
+assert immediate destruction or native cancellation.
+
+The 2026-10-07 current uncommitted reservations worktree passed:
+
+- `pixi run rtk cargo test --locked --offline -p bleng -- --test-threads=1`:
+  156 tests.
+- `pixi run rtk cargo test --locked --offline --workspace -- --test-threads=1`:
+  244 tests across 18 suites.
+- `pixi run just fmt` and `pixi run just lint`, including strict workspace Clippy.
+- `pixi run just binding bleng-snapshot-check`: all 3 reviewed Swift/Kotlin snapshots.
+- `pixi run just docs-check-mermaid`: 21 diagrams across 112 Markdown files.
+- UTF-8, fenced-block balance, trailing-whitespace, conflict-marker checks,
+  and `git diff --check`.
+
+These are local deterministic results, not RF, cross-platform runtime, or ABI
+freeze evidence. No dependency was added: independent callback evidence is not a
+linear state machine or lexical RAII lifetime, and standard enums, iterators,
+and ownership cover the reuse introduced here.
 
 ## Responsibilities of the main structures
 
@@ -763,10 +937,11 @@ session, characteristic, subscription, and generation identity must also match.
 ### Reservation evidence
 
 Each actor-owned reservation is the authoritative evidence record for its
-operation. The common dispatch evidence records the command ID, native
-acceptance, and callbacks that escaped before dispatch acknowledgement. Each
-operation-specific reservation records its own domain payload and terminal
-result, including the native error rather than only a success boolean.
+operation. Common `CommandProgress` records the command ID, native acceptance,
+callbacks that escaped before dispatch acknowledgement, and the private first
+terminal result, including its native error rather than only a success boolean.
+Each operation-specific reservation retains its own typed domain evidence and
+interprets it with the shared progress gate; no separate terminal field remains.
 
 The result decision now lives beside the state it interprets:
 

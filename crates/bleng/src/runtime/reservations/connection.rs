@@ -8,12 +8,10 @@ use blehub::{
 use crate::waiter::{WaiterError, WaiterSuccess};
 
 use super::{
-    dispatch::{
-        DispatchEffect, DispatchReservation, DispatchResolution, ReconcileFault, record_terminal,
-    },
-    gatt::{GattDiscoveryReservation, GattReservation},
+    dispatch::{CommandProgress, DispatchEffect, DispatchResolution, ReconcileFault},
+    gatt::{GattAccess, GattReservation},
     io::{ReadReservation, RssiReservation, WriteReservation},
-    subscription::{NotificationTransition, SubscriptionReservation},
+    subscription::{SubscriptionDisposition, SubscriptionReservation},
 };
 
 #[derive(Clone, Copy)]
@@ -30,14 +28,13 @@ pub(super) enum PreAckRoute {
 /// A connection owns its GATT session, I/O slots, and subscriptions.
 /// Keeping these under one peripheral key prevents cross-device callback routing.
 pub(super) struct ConnectionReservation {
-    pub(super) dispatch: DispatchReservation,
+    pub(super) progress: CommandProgress,
     pub(super) connection_id: ConnectionId,
-    pub(super) connected: bool,
-    pub(super) disconnected: bool,
-    pub(super) terminal: Option<Result<(), BleEventError>>,
+    connected: bool,
+    disconnected: bool,
     connect_error: Option<BleEventError>,
     pub(super) disconnect: Option<DisconnectReservation>,
-    pub(super) gatt: Option<GattReservation>,
+    pub(super) gatt: GattReservation,
     pub(super) read: Option<ReadReservation>,
     pub(super) rssi: Option<RssiReservation>,
     pub(super) write: Option<WriteReservation>,
@@ -49,45 +46,45 @@ impl ConnectionReservation {
         &mut self,
         route: PreAckRoute,
         event: &BleEvent,
-    ) -> Option<&mut DispatchReservation> {
+    ) -> Option<&mut CommandProgress> {
         let connection_id = self.connection_id;
-        let dispatch = match route {
+        let progress = match route {
             PreAckRoute::Disconnect => self
                 .disconnect
                 .as_mut()
                 .filter(|slot| slot.matches_event(event, connection_id))
-                .map(|slot| &mut slot.dispatch),
+                .map(|slot| &mut slot.progress),
             PreAckRoute::Discovery => self
                 .gatt
+                .discovery
                 .as_mut()
-                .and_then(|gatt| gatt.discovery.as_mut())
                 .filter(|slot| slot.matches_event(event, connection_id))
-                .map(|slot| &mut slot.dispatch),
+                .map(|slot| &mut slot.progress),
             PreAckRoute::Rssi => self
                 .rssi
                 .as_mut()
                 .filter(|slot| slot.matches_event(event, connection_id))
-                .map(|slot| &mut slot.dispatch),
+                .map(|slot| &mut slot.progress),
             PreAckRoute::Read => self
                 .read
                 .as_mut()
                 .filter(|slot| slot.matches_event(event, connection_id))
-                .map(|slot| &mut slot.dispatch),
+                .map(|slot| &mut slot.progress),
             PreAckRoute::Write => self
                 .write
                 .as_mut()
                 .filter(|slot| slot.matches_event(event, connection_id))
-                .map(|slot| &mut slot.dispatch),
+                .map(|slot| &mut slot.progress),
             PreAckRoute::Subscription => {
                 self.subscriptions
                     .iter_mut()
                     .find_map(|(subscription_id, route)| {
                         if route.matches_event(event, connection_id, *subscription_id)
-                            && route.transition.as_ref().is_some_and(|transition| {
-                                transition.dispatch.is_awaiting_dispatch_ack()
-                            })
+                            && route
+                                .progress()
+                                .is_some_and(CommandProgress::is_awaiting_dispatch_ack)
                         {
-                            route.transition.as_mut().map(|slot| &mut slot.dispatch)
+                            route.progress_mut()
                         } else {
                             None
                         }
@@ -103,17 +100,17 @@ impl ConnectionReservation {
                         ..
                     } => {
                         *connection_id == self.connection_id
-                            || *command_id == Some(self.dispatch.command_id)
+                            || *command_id == Some(self.progress.command_id)
                     }
                     BleEvent::CommandCompleted { command_id, .. } => {
-                        *command_id == self.dispatch.command_id
+                        *command_id == self.progress.command_id
                     }
                     _ => false,
                 };
-                matches.then_some(&mut self.dispatch)
+                matches.then_some(&mut self.progress)
             }
         };
-        dispatch.filter(|dispatch| dispatch.is_awaiting_dispatch_ack())
+        progress.filter(|progress| progress.is_awaiting_dispatch_ack())
     }
 
     pub(super) fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconcileFault> {
@@ -128,11 +125,11 @@ impl ConnectionReservation {
                         ConnectionStateResult::Ok {
                             state: ConnectionState::Connected,
                         },
-                    ) if *command_id == self.dispatch.command_id => {
+                    ) if *command_id == self.progress.command_id => {
                         self.connected = true;
                     }
                     (Some(command_id), ConnectionStateResult::Err { error })
-                        if *command_id == self.dispatch.command_id =>
+                        if *command_id == self.progress.command_id =>
                     {
                         self.connect_error = Some(error.clone());
                     }
@@ -150,11 +147,11 @@ impl ConnectionReservation {
                         ConnectionStateResult::Ok {
                             state: ConnectionState::Disconnected,
                         },
-                    ) if *command_id == self.dispatch.command_id
+                    ) if *command_id == self.progress.command_id
                         || self
                             .disconnect
                             .as_ref()
-                            .is_some_and(|slot| slot.dispatch.command_id == *command_id) =>
+                            .is_some_and(|slot| slot.progress.command_id == *command_id) =>
                     {
                         self.disconnected = true;
                     }
@@ -169,7 +166,7 @@ impl ConnectionReservation {
                 }
             }
             BleEvent::GattDiscovered { database, .. } => {
-                if let Some(discovery) = self.gatt.as_mut().and_then(|gatt| gatt.discovery.as_mut())
+                if let Some(discovery) = self.gatt.discovery.as_mut()
                     && discovery.matches_event(event, connection_id)
                 {
                     // Discovery deliberately keeps the latest correlated draft.
@@ -217,131 +214,146 @@ impl ConnectionReservation {
         result: &Result<(), CommandDispatchError>,
     ) -> Option<DispatchResolution> {
         let connection_id = self.connection_id;
-        if let Some(discovery) = self
-            .gatt
-            .as_mut()
-            .and_then(|gatt| gatt.discovery.as_mut())
-            .filter(|slot| slot.dispatch.command_id == command_id)
-        {
-            return Some(if result.is_err() {
-                let discovery = self.take_discovery().expect("matching discovery exists");
-                replay_after_rejection(
-                    discovery.dispatch.buffered,
-                    connection_id,
-                    passive_connection_lost,
-                )
-            } else {
-                discovery.dispatch.accepted_resolution()
-            });
+        // Taking the discovery slot never removes its separately committed database.
+        if let Some(resolution) = resolve_pending_slot(
+            &mut self.gatt.discovery,
+            command_id,
+            result,
+            connection_id,
+            |slot| &mut slot.progress,
+        ) {
+            return Some(resolution);
         }
-        if let Some(slot) = self
-            .rssi
-            .as_mut()
-            .filter(|slot| slot.dispatch.command_id == command_id)
+        if let Some(resolution) =
+            resolve_pending_slot(&mut self.rssi, command_id, result, connection_id, |slot| {
+                &mut slot.progress
+            })
         {
-            return Some(if result.is_err() {
-                let buffered = std::mem::take(&mut slot.dispatch.buffered);
-                self.rssi = None;
-                replay_after_rejection(buffered, connection_id, passive_connection_lost)
-            } else {
-                slot.dispatch.accepted_resolution()
-            });
+            return Some(resolution);
         }
-        if let Some(read) = self
-            .read
-            .as_mut()
-            .filter(|slot| slot.dispatch.command_id == command_id)
+        if let Some(resolution) =
+            resolve_pending_slot(&mut self.read, command_id, result, connection_id, |slot| {
+                &mut slot.progress
+            })
         {
-            return Some(if result.is_err() {
-                let buffered = std::mem::take(&mut read.dispatch.buffered);
-                self.read = None;
-                replay_after_rejection(buffered, connection_id, passive_connection_lost)
-            } else {
-                read.dispatch.accepted_resolution()
-            });
+            return Some(resolution);
         }
-        if let Some(write) = self
-            .write
-            .as_mut()
-            .filter(|slot| slot.dispatch.command_id == command_id)
+        if let Some(resolution) =
+            resolve_pending_slot(&mut self.write, command_id, result, connection_id, |slot| {
+                &mut slot.progress
+            })
         {
-            return Some(if result.is_err() {
-                let buffered = std::mem::take(&mut write.dispatch.buffered);
-                self.write = None;
-                replay_after_rejection(buffered, connection_id, passive_connection_lost)
-            } else {
-                write.dispatch.accepted_resolution()
-            });
+            return Some(resolution);
         }
         if let Some(subscription_id) =
             self.subscriptions
                 .iter()
                 .find_map(|(subscription_id, route)| {
                     route
-                        .transition
-                        .as_ref()
-                        .filter(|transition| transition.dispatch.command_id == command_id)
+                        .progress()
+                        .filter(|progress| progress.command_id == command_id)
                         .map(|_| *subscription_id)
                 })
         {
-            let transition = self
+            let progress = self
                 .subscriptions
                 .get_mut(&subscription_id)
-                .and_then(|route| route.transition.as_mut())
+                .and_then(SubscriptionReservation::progress_mut)
                 .expect("matching transition exists");
             return Some(if result.is_err() {
-                let buffered = std::mem::take(&mut transition.dispatch.buffered);
-                self.take_subscription_transition(subscription_id);
+                let buffered = progress.take_buffered_events();
+                self.reject_subscription_transition(subscription_id);
                 // Subscription rejection also permits commanded connection loss.
                 replay_after_rejection(buffered, connection_id, connection_lost)
             } else {
-                transition.dispatch.accepted_resolution()
+                progress.accepted_resolution()
             });
         }
-        if let Some(slot) = self
-            .disconnect
-            .as_mut()
-            .filter(|slot| slot.dispatch.command_id == command_id)
-        {
-            return Some(if result.is_err() {
-                let buffered = std::mem::take(&mut slot.dispatch.buffered);
-                self.disconnect = None;
-                replay_after_rejection(buffered, connection_id, passive_connection_lost)
-            } else {
-                slot.dispatch.accepted_resolution()
-            });
-        }
-        None
+        resolve_pending_slot(
+            &mut self.disconnect,
+            command_id,
+            result,
+            connection_id,
+            |slot| &mut slot.progress,
+        )
     }
 
     pub(super) fn contains_command(&self, command_id: CommandId) -> bool {
-        self.dispatches()
+        self.command_progresses()
             .any(|dispatch| dispatch.command_id == command_id)
     }
 
-    /// Validates operation-local admission after the container resolves its connection.
-    /// Keep error precedence explicit: connection, handoff, target, I/O, discovery.
-    pub(super) fn validate_gatt_io(
-        &self,
-        session_id: GattSessionId,
-        characteristic_id: GattCharacteristicId,
-        read: bool,
-    ) -> Result<(), WaiterError> {
+    fn require_connected(&self) -> Result<(), WaiterError> {
         if !self.connected || self.disconnected || self.has_failed() {
             return Err(WaiterError::ConnectionNotActive);
         }
+        Ok(())
+    }
+
+    fn has_pending_child_handoff(&self) -> bool {
+        self.child_progresses()
+            .any(CommandProgress::is_awaiting_dispatch_ack)
+    }
+
+    fn has_characteristic_io(&self) -> bool {
+        self.read.is_some() || self.write.is_some()
+    }
+
+    pub(super) fn validate_disconnect(&self) -> Result<(), WaiterError> {
+        // An accepted connect owns a native lifecycle even before Connected arrives.
+        if self.disconnected || self.has_failed() || self.progress.is_awaiting_dispatch_ack() {
+            return Err(WaiterError::ConnectionNotActive);
+        }
+        if self.disconnect.is_some() || self.has_pending_child_handoff() {
+            // Pre-dispatch siblings must learn acceptance before passive loss.
+            return Err(WaiterError::OperationBusy);
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_gatt_discovery(&self) -> Result<(), WaiterError> {
+        self.require_connected()?;
         if self.disconnect.is_some()
             || self
                 .rssi
                 .as_ref()
-                .is_some_and(|slot| slot.dispatch.is_awaiting_dispatch_ack())
+                .is_some_and(|slot| slot.progress.is_awaiting_dispatch_ack())
+            || self.gatt.has_pending_discovery()
+            || self.has_characteristic_io()
+            || !self.subscriptions.is_empty()
+        {
+            return Err(WaiterError::GattBusy);
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_rssi(&self) -> Result<(), WaiterError> {
+        self.require_connected()?;
+        if self.rssi.is_some() || self.disconnect.is_some() || self.has_pending_child_handoff() {
+            return Err(WaiterError::OperationBusy);
+        }
+        Ok(())
+    }
+
+    /// Keep error precedence explicit: connection, handoff, target, I/O, discovery.
+    pub(super) fn validate_gatt_access(
+        &self,
+        session_id: GattSessionId,
+        characteristic_id: GattCharacteristicId,
+        access: GattAccess,
+    ) -> Result<(), WaiterError> {
+        self.require_connected()?;
+        if self.disconnect.is_some()
+            || self
+                .rssi
+                .as_ref()
+                .is_some_and(|slot| slot.progress.is_awaiting_dispatch_ack())
         {
             return Err(WaiterError::OperationBusy);
         }
         let database = self
             .gatt
-            .as_ref()
-            .and_then(|gatt| gatt.committed_database(session_id))
+            .committed_database(session_id)
             .ok_or(WaiterError::GattNotReady)?;
         if !database.services.iter().any(|service| {
             service
@@ -351,40 +363,68 @@ impl ConnectionReservation {
         }) {
             return Err(WaiterError::GattNotReady);
         }
-        if self.read.is_some()
-            || self.write.is_some()
+        if self.has_characteristic_io()
             || self
                 .subscriptions
                 .values()
-                .any(|subscription| subscription.transition.is_some())
-            || (read
+                .any(SubscriptionReservation::is_transitioning)
+            || (matches!(access, GattAccess::Read)
                 && self
                     .subscriptions
                     .values()
-                    .any(|subscription| subscription.characteristic_id == characteristic_id))
+                    .any(|route| route.characteristic_id == characteristic_id))
         {
             return Err(WaiterError::OperationBusy);
         }
-        if self
-            .gatt
-            .as_ref()
-            .is_some_and(GattReservation::has_pending_discovery)
-        {
+        if self.gatt.has_pending_discovery() {
             return Err(WaiterError::GattBusy);
+        }
+        // Enable keeps its existing precedence: pending discovery before duplicate route.
+        if matches!(access, GattAccess::EnableNotifications)
+            && self
+                .subscriptions
+                .values()
+                .any(|route| route.characteristic_id == characteristic_id)
+        {
+            return Err(WaiterError::OperationBusy);
         }
         Ok(())
     }
 
+    pub(super) fn validate_notification_disable(
+        &self,
+        session_id: GattSessionId,
+        subscription_id: SubscriptionId,
+    ) -> Result<GattCharacteristicId, WaiterError> {
+        // Subscription identity/activity precedes connection and sibling-busy checks.
+        let route = self
+            .subscriptions
+            .get(&subscription_id)
+            .filter(|route| route.session_id == session_id && route.is_active())
+            .ok_or(WaiterError::SubscriptionNotActive)?;
+        if route.is_transitioning() {
+            return Err(WaiterError::OperationBusy);
+        }
+        self.require_connected()?;
+        if self.disconnect.is_some()
+            || self.gatt.has_pending_discovery()
+            || self.has_characteristic_io()
+            || self.has_pending_child_handoff()
+        {
+            return Err(WaiterError::OperationBusy);
+        }
+        Ok(route.characteristic_id)
+    }
+
     pub(super) fn new(command_id: CommandId, connection_id: ConnectionId) -> Self {
         Self {
-            dispatch: DispatchReservation::new(command_id),
+            progress: CommandProgress::new(command_id),
             connection_id,
             connected: false,
             disconnected: false,
-            terminal: None,
             connect_error: None,
             disconnect: None,
-            gatt: None,
+            gatt: GattReservation::default(),
             read: None,
             rssi: None,
             write: None,
@@ -392,42 +432,27 @@ impl ConnectionReservation {
         }
     }
 
-    /// Remove a provisional discovery without touching the committed database.
-    /// Dispatch rejection preserves the last committed GATT session.
-    fn take_discovery(&mut self) -> Option<GattDiscoveryReservation> {
-        let gatt = self.gatt.as_mut()?;
-        let discovery = gatt.discovery.take();
-        if gatt.database.is_none() {
-            self.gatt = None;
-        }
-        discovery
-    }
-
-    /// Preserve active routes when a disable transition is rejected;
-    /// a provisional enable has no active route to retain.
-    fn take_subscription_transition(
-        &mut self,
-        subscription_id: SubscriptionId,
-    ) -> Option<NotificationTransition> {
-        let route = self.subscriptions.get_mut(&subscription_id)?;
-        let transition = route.transition.take();
-        if !route.active {
+    /// Rejected disable restores Active; rejected enable removes its provisional route.
+    fn reject_subscription_transition(&mut self, subscription_id: SubscriptionId) {
+        let route = self
+            .subscriptions
+            .get_mut(&subscription_id)
+            .expect("matching subscription exists");
+        if matches!(route.reject_transition(), SubscriptionDisposition::Remove) {
             self.subscriptions.remove(&subscription_id);
         }
-        transition
     }
 
-    pub(super) fn has_failed(&self) -> bool {
+    fn has_failed(&self) -> bool {
         self.connect_error.is_some()
     }
 
     /// Called after waiter settlement, even when the caller already retired.
     pub(super) fn retire_completed_operations(&mut self) {
         self.subscriptions
-            .retain(|_, route| route.retire_transition());
+            .retain(|_, route| matches!(route.retire_transition(), SubscriptionDisposition::Keep));
         if self.disconnect.as_ref().is_some_and(|slot| {
-            !slot.dispatch.is_awaiting_dispatch_ack()
-                && slot.terminal.as_ref().is_some_and(Result::is_err)
+            !slot.progress.is_awaiting_dispatch_ack() && slot.progress.terminal_failed()
         }) {
             self.disconnect = None;
         }
@@ -452,34 +477,26 @@ impl ConnectionReservation {
         {
             self.write = None;
         }
-        if let Some(gatt) = self.gatt.as_mut() {
-            if gatt.commit_completed_discovery() {
-                // Successful rediscovery invalidates routes for the old GATT session.
-                self.subscriptions.clear();
-            }
-            if gatt.database.is_none() && gatt.discovery.is_none() {
-                self.gatt = None;
-            }
-        }
+        self.gatt.retire_completed_discovery();
     }
 
     /// A disconnected connection cannot be removed until all dispatch handoffs
     /// have resolved; an explicit disconnect also needs its own terminal/domain.
     pub(super) fn is_retirable(&self) -> bool {
         let pending_disconnect = self.disconnect.as_ref().is_some_and(|slot| {
-            slot.dispatch.is_awaiting_dispatch_ack() || slot.terminal.is_none() || !slot.domain
+            slot.progress.is_awaiting_dispatch_ack()
+                || !slot.progress.has_terminal()
+                || !slot.domain
         });
         !pending_disconnect
             && !self
-                .dispatches()
-                .any(DispatchReservation::is_awaiting_dispatch_ack)
-            && (self.disconnected
-                || self.has_failed()
-                || self.terminal.as_ref().is_some_and(Result::is_err))
+                .command_progresses()
+                .any(CommandProgress::is_awaiting_dispatch_ack)
+            && (self.disconnected || self.has_failed() || self.progress.terminal_failed())
     }
 
     fn connect_result(&self) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if self.dispatch.is_awaiting_dispatch_ack() {
+        if self.progress.is_awaiting_dispatch_ack() {
             return None;
         }
         if let Some(error) = &self.connect_error {
@@ -488,7 +505,7 @@ impl ConnectionReservation {
         if self.disconnected {
             return Some(Err(WaiterError::Disconnected));
         }
-        self.dispatch.waiter_result(&self.terminal, || {
+        self.progress.waiter_result(|| {
             self.connected
                 .then_some(WaiterSuccess::Connected(self.connection_id))
         })
@@ -498,64 +515,50 @@ impl ConnectionReservation {
         &self,
         command_id: CommandId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if self.dispatch.command_id == command_id {
+        if self.progress.command_id == command_id {
             return self.connect_result();
         }
         if let Some(disconnect) = self
             .disconnect
             .as_ref()
-            .filter(|disconnect| disconnect.dispatch.command_id == command_id)
+            .filter(|disconnect| disconnect.progress.command_id == command_id)
         {
             return disconnect.waiter_result(self.connection_id);
         }
         if let Some(gatt) = self
             .gatt
+            .discovery
             .as_ref()
-            .and_then(|gatt| gatt.discovery.as_ref())
-            .filter(|gatt| gatt.dispatch.command_id == command_id)
+            .filter(|gatt| gatt.progress.command_id == command_id)
         {
             return gatt.waiter_result();
         }
         if let Some(rssi) = self
             .rssi
             .as_ref()
-            .filter(|rssi| rssi.dispatch.command_id == command_id)
+            .filter(|rssi| rssi.progress.command_id == command_id)
         {
             return rssi.waiter_result(self.connection_id);
         }
         if let Some(read) = self
             .read
             .as_ref()
-            .filter(|read| read.dispatch.command_id == command_id)
+            .filter(|read| read.progress.command_id == command_id)
         {
             return read.waiter_result(self.connection_id);
         }
         if let Some(write) = self
             .write
             .as_ref()
-            .filter(|write| write.dispatch.command_id == command_id)
+            .filter(|write| write.progress.command_id == command_id)
         {
             return write.waiter_result(self.connection_id);
         }
-        if let Some((subscription_id, route, transition)) =
-            self.subscriptions
-                .iter()
-                .find_map(|(subscription_id, route)| {
-                    route
-                        .transition
-                        .as_ref()
-                        .filter(|transition| transition.dispatch.command_id == command_id)
-                        .map(|transition| (*subscription_id, route, transition))
-                })
-        {
-            return transition.waiter_result(
-                self.connection_id,
-                subscription_id,
-                route.session_id,
-                route.characteristic_id,
-            );
-        }
-        None
+        self.subscriptions
+            .iter()
+            .find_map(|(subscription_id, route)| {
+                route.waiter_result(command_id, self.connection_id, *subscription_id)
+            })
     }
 
     pub(super) fn record_terminal(
@@ -563,74 +566,67 @@ impl ConnectionReservation {
         command_id: CommandId,
         result: &Result<(), BleEventError>,
     ) -> bool {
-        let terminals = [
-            Some((&self.dispatch, &mut self.terminal)),
-            self.disconnect
-                .as_mut()
-                .map(|slot| (&slot.dispatch, &mut slot.terminal)),
-            self.gatt
-                .as_mut()
-                .and_then(|gatt| gatt.discovery.as_mut())
-                .map(|slot| (&slot.dispatch, &mut slot.terminal)),
-            self.rssi
-                .as_mut()
-                .map(|slot| (&slot.dispatch, &mut slot.terminal)),
-            self.read
-                .as_mut()
-                .map(|slot| (&slot.dispatch, &mut slot.terminal)),
-            self.write
-                .as_mut()
-                .map(|slot| (&slot.dispatch, &mut slot.terminal)),
-        ];
-        for (dispatch, terminal) in terminals.into_iter().flatten().chain(
-            self.subscriptions
-                .values_mut()
-                .filter_map(|route| route.transition.as_mut())
-                .map(|slot| (&slot.dispatch, &mut slot.terminal)),
-        ) {
-            if dispatch.command_id == command_id {
-                record_terminal(terminal, result);
-                return true;
-            }
+        if let Some(progress) = self
+            .command_progresses_mut()
+            .find(|progress| progress.command_id == command_id)
+        {
+            progress.record_terminal(result);
+            return true;
         }
         false
     }
 
     pub(super) fn accepted_command_ids(&self) -> Vec<CommandId> {
-        self.dispatches()
+        self.command_progresses()
             .filter(|dispatch| !dispatch.is_awaiting_dispatch_ack())
             .map(|dispatch| dispatch.command_id)
             .collect()
     }
 
-    /// Shared traversal of dispatch metadata, not a second ownership/index map.
-    fn dispatches(&self) -> impl Iterator<Item = &DispatchReservation> {
+    /// One inventory of child commands supports admission and lifecycle accounting.
+    fn child_progresses(&self) -> impl Iterator<Item = &CommandProgress> {
         [
-            Some(&self.dispatch),
-            self.disconnect.as_ref().map(|slot| &slot.dispatch),
-            self.gatt
-                .as_ref()
-                .and_then(|gatt| gatt.discovery.as_ref())
-                .map(|slot| &slot.dispatch),
-            self.rssi.as_ref().map(|slot| &slot.dispatch),
-            self.read.as_ref().map(|slot| &slot.dispatch),
-            self.write.as_ref().map(|slot| &slot.dispatch),
+            self.disconnect.as_ref().map(|slot| &slot.progress),
+            self.gatt.discovery.as_ref().map(|slot| &slot.progress),
+            self.rssi.as_ref().map(|slot| &slot.progress),
+            self.read.as_ref().map(|slot| &slot.progress),
+            self.write.as_ref().map(|slot| &slot.progress),
         ]
         .into_iter()
         .flatten()
         .chain(
             self.subscriptions
                 .values()
-                .filter_map(|route| route.transition.as_ref())
-                .map(|slot| &slot.dispatch),
+                .filter_map(SubscriptionReservation::progress),
+        )
+    }
+
+    fn command_progresses(&self) -> impl Iterator<Item = &CommandProgress> {
+        std::iter::once(&self.progress).chain(self.child_progresses())
+    }
+
+    fn command_progresses_mut(&mut self) -> impl Iterator<Item = &mut CommandProgress> {
+        [
+            Some(&mut self.progress),
+            self.disconnect.as_mut().map(|slot| &mut slot.progress),
+            self.gatt.discovery.as_mut().map(|slot| &mut slot.progress),
+            self.rssi.as_mut().map(|slot| &mut slot.progress),
+            self.read.as_mut().map(|slot| &mut slot.progress),
+            self.write.as_mut().map(|slot| &mut slot.progress),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(
+            self.subscriptions
+                .values_mut()
+                .filter_map(SubscriptionReservation::progress_mut),
         )
     }
 }
 
 pub(super) struct DisconnectReservation {
-    pub(super) dispatch: DispatchReservation,
+    pub(super) progress: CommandProgress,
     pub(super) domain: bool,
-    pub(super) terminal: Option<Result<(), BleEventError>>,
 }
 
 impl DisconnectReservation {
@@ -645,7 +641,7 @@ impl DisconnectReservation {
                     },
             } => {
                 *connection_id == expected
-                    && (command_id.is_none() || *command_id == Some(self.dispatch.command_id))
+                    && (command_id.is_none() || *command_id == Some(self.progress.command_id))
             }
             BleEvent::ConnectionStateChanged {
                 command_id: None,
@@ -653,7 +649,7 @@ impl DisconnectReservation {
                 result: ConnectionStateResult::Err { .. },
             } => *connection_id == expected,
             BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.dispatch.command_id
+                *command_id == self.progress.command_id
             }
             _ => false,
         }
@@ -663,7 +659,7 @@ impl DisconnectReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.dispatch.waiter_result(&self.terminal, || {
+        self.progress.waiter_result(|| {
             self.domain
                 .then_some(WaiterSuccess::Disconnected(connection_id))
         })
@@ -696,6 +692,28 @@ fn passive_connection_lost(event: &BleEvent, expected: ConnectionId) -> bool {
             ..
         }
     ) && connection_lost(event, expected)
+}
+
+/// Ordinary child commands discard only their pending slot on rejection and
+/// permit passive loss replay. Subscriptions deliberately use a different policy.
+fn resolve_pending_slot<T>(
+    slot: &mut Option<T>,
+    command_id: CommandId,
+    result: &Result<(), CommandDispatchError>,
+    connection_id: ConnectionId,
+    progress: impl FnOnce(&mut T) -> &mut CommandProgress,
+) -> Option<DispatchResolution> {
+    let command = progress(slot.as_mut()?);
+    if command.command_id != command_id {
+        return None;
+    }
+    Some(if result.is_err() {
+        let buffered = command.take_buffered_events();
+        *slot = None;
+        replay_after_rejection(buffered, connection_id, passive_connection_lost)
+    } else {
+        command.accepted_resolution()
+    })
 }
 
 fn replay_after_rejection(
