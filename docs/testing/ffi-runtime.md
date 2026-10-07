@@ -91,7 +91,7 @@ The retired desktop Windows Kotlin/JNA lane had a carrier defect for checksum fu
 
 ### 2.3 Still required before production ABI freeze
 
-- The independent macOS production artifact-only consumer now passes; add and pass the corresponding iOS consumer before Phase 3 exit. Repository-owned runtime and package projects are not a substitute for this isolation gate.
+- Independent macOS and iOS production artifact-only consumers now pass staged-package assembly, direct Swift callback ingress, and explicit close on the project Mac and iPhone; see the [2026-09-25 Apple artifact checkpoint](reports/2026-09-25-apple-phase3-artifact-consumers.md). These are local, unfrozen-candidate gates, not RF or a complete Phase 3 exit. Verify candidate-specific manifest/lock metadata and rerun affected gates on the reviewed exit candidate; repository-owned runtime and package projects do not replace consumer isolation.
 - Run the production AAR on Android ART with direct Kotlin backend/sink objects. The AAR assembly/publish and macOS NDK native slices pass, but physical execution did not start because APK installation timed out twice with `ShellCommandUnresponsiveException` while the phone was locked.
 - Rerun the complete event catalog and owned payload boundaries whenever the public contract changes; the current Swift event catalog pass does not waive other applicable language/platform lanes.
 - Complete remaining deterministic catalog cases, including explicit repeated bind, rollback-cleanup secondary diagnostics, broad state-sequence generation, and payload lifetime after the foreign frame returns.

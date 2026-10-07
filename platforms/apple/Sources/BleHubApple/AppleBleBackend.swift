@@ -474,11 +474,30 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
     }
 
 
+
     private func gattFailureEvent(
         command: DiscoverGattCommand,
         error: BleEventError
     ) -> BleEvent {
-        .commandCompleted(commandId: command.commandId, error: error)
+        AppleBackendEventProjection.gattFailureEvent(command: command, error: error)
+    }
+
+    private func rssiEvents(_ completion: AppleRssiCompletion) -> [BleEvent] {
+        AppleBackendEventProjection.rssiEvents(completion)
+    }
+
+    private func gattIoEvents(_ completion: AppleGattIoCompletion) -> [BleEvent] {
+        AppleBackendEventProjection.gattIoEvents(completion)
+    }
+
+    private func gattNotificationEvents(
+        _ completion: AppleGattNotificationCompletion
+    ) -> [BleEvent] {
+        AppleBackendEventProjection.gattNotificationEvents(completion)
+    }
+
+    private func gattRetirementEvents(_ retirement: AppleGattRetirement) -> [BleEvent] {
+        AppleBackendEventProjection.gattRetirementEvents(retirement)
     }
 
     private func resolveGattIoTarget(
@@ -675,102 +694,6 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         peripheral.discoverServices(nil)
     }
 
-    private func rssiEvents(_ completion: AppleRssiCompletion) -> [BleEvent] {
-        switch completion {
-        case .read(let command, let rssi):
-            return [
-                .rssiRead(
-                    commandId: command.commandId,
-                    connectionId: command.connectionId,
-                    rssi: rssi
-                ),
-                .commandCompleted(commandId: command.commandId, error: nil),
-            ]
-        case .failed(let command, let error):
-            return [.commandCompleted(commandId: command.commandId, error: error)]
-        }
-    }
-
-    private func gattIoEvents(_ completion: AppleGattIoCompletion) -> [BleEvent] {
-        switch completion {
-        case .read(let command, let value):
-            return [
-                .characteristicRead(
-                    commandId: command.commandId,
-                    connectionId: command.connectionId,
-                    gattSessionId: command.gattSessionId,
-                    characteristicId: command.characteristicId,
-                    value: Data(value)
-                ),
-                .commandCompleted(commandId: command.commandId, error: nil),
-            ]
-        case .write(let command):
-            return [
-                .characteristicWritten(
-                    commandId: command.commandId,
-                    connectionId: command.connectionId,
-                    gattSessionId: command.gattSessionId,
-                    characteristicId: command.characteristicId
-                ),
-                .commandCompleted(commandId: command.commandId, error: nil),
-            ]
-        case .failed(let command, let error):
-            let commandId: CommandId
-            switch command {
-            case .read(let read):
-                commandId = read.commandId
-            case .write(let write):
-                commandId = write.commandId
-            }
-            return [.commandCompleted(commandId: commandId, error: error)]
-        }
-    }
-
-    private func gattNotificationEvents(
-        _ completion: AppleGattNotificationCompletion
-    ) -> [BleEvent] {
-        switch completion {
-        case .enabled(let command, let actualMode):
-            return [
-                .notificationStateChanged(
-                    commandId: command.commandId,
-                    connectionId: command.connectionId,
-                    gattSessionId: command.gattSessionId,
-                    subscriptionId: command.subscriptionId,
-                    characteristicId: command.characteristicId,
-                    state: .enabled(actualMode: actualMode)
-                ),
-                .commandCompleted(commandId: command.commandId, error: nil),
-            ]
-        case .disabled(let command):
-            return [
-                .notificationStateChanged(
-                    commandId: command.commandId,
-                    connectionId: command.connectionId,
-                    gattSessionId: command.gattSessionId,
-                    subscriptionId: command.subscriptionId,
-                    characteristicId: command.characteristicId,
-                    state: .disabled
-                ),
-                .commandCompleted(commandId: command.commandId, error: nil),
-            ]
-        case .failed(let command, let error):
-            return [.commandCompleted(commandId: command.commandId, error: error)]
-        case .rediscoveryRetired, .rediscoveryFailed:
-            return []
-        }
-    }
-
-    private func gattRetirementEvents(_ retirement: AppleGattRetirement) -> [BleEvent] {
-        retirement.completions.flatMap { completion in
-            switch completion {
-            case .io(let ioCompletion):
-                return gattIoEvents(ioCompletion)
-            case .notification(let notificationCompletion):
-                return gattNotificationEvents(notificationCompletion)
-            }
-        }
-    }
 
     private func performGattAction(
         _ action: AppleGattDiscoveryAction,
@@ -970,10 +893,13 @@ extension AppleBleBackend: CBCentralManagerDelegate {
         }
 
         let commandId: CommandId?
+        let wasReady: Bool
         switch lifecycle {
         case .initializing:
+            wasReady = false
             commandId = lifecycle.consumeInitialStateCallback()
         case .ready:
+            wasReady = true
             commandId = nil
         case .inert, .faulted, .closed:
             return
@@ -999,7 +925,7 @@ extension AppleBleBackend: CBCentralManagerDelegate {
         }
         if let error = AppleEventMapper.connectionAvailabilityError(
             state: central.state,
-            authorization: authorization
+            authorization: CBManager.authorization
         ) {
             for route in connectionController.drain() {
                 let retirement = gattIoController.retireAll(
@@ -1033,6 +959,15 @@ extension AppleBleBackend: CBCentralManagerDelegate {
                 )
             }
             _ = gattController.drain()
+        }
+        // CoreBluetooth's resetting state invalidates the manager's native peripheral
+        // lifecycles. Its later callbacks carry no operation token, so this backend
+        // must not reuse retained CBPeripheral objects after the reset. The caller
+        // must dispose and assemble a fresh backend instead. Powered-off and
+        // authorization transitions remain recoverable within the current backend.
+        if wasReady && central.state == .resetting {
+            lifecycle.markFaulted()
+            scanController.dispose()
         }
         push(events)
         _ = handleGattSafetyFaultIfNeeded()

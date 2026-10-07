@@ -1,0 +1,137 @@
+buildscript {
+  repositories {
+    google()
+    mavenCentral()
+  }
+  dependencies {
+    classpath "com.android.tools.build:gradle:8.10.1"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20"
+  }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "org.jetbrains.kotlin.android"
+apply from: "../nitrogen/generated/android/BleHubReactNative+autolinking.gradle"
+
+// The package is built both from its checkout and from node_modules. Resolve
+// Nitro's Gradle helper from the consuming RN host first, then retain the
+// standalone-module fallback for direct integration builds.
+def nitroPrefabFix = rootProject.file("../node_modules/react-native-nitro-modules/android/fix-prefab.gradle")
+if (!nitroPrefabFix.isFile()) {
+  nitroPrefabFix = file("../node_modules/react-native-nitro-modules/android/fix-prefab.gradle")
+}
+apply from: nitroPrefabFix
+
+def propertyOrRootExt(String propertyName, String rootName, Object fallback) {
+  if (rootProject.ext.has(rootName)) return rootProject.ext.get(rootName)
+  def value = project.findProperty(propertyName)
+  return value != null ? value : fallback
+}
+
+def reactNativeArchitectures() {
+  def value = rootProject.findProperty("reactNativeArchitectures")
+  return value ? value.split(",") : ["arm64-v8a", "x86_64"]
+}
+
+def minSdk = propertyOrRootExt("blehub_minSdkVersion", "minSdkVersion", 24).toInteger()
+def targetSdk = propertyOrRootExt("blehub_targetSdkVersion", "targetSdkVersion", 36).toInteger()
+def compileSdk = propertyOrRootExt("blehub_compileSdkVersion", "compileSdkVersion", 36).toInteger()
+def selectedNdk = propertyOrRootExt("blehub_ndkVersion", "ndkVersion", "28.2.13676358")
+
+if (rootProject == project) {
+  rootProject.ext.minSdkVersion = minSdk
+  rootProject.ext.targetSdkVersion = targetSdk
+  rootProject.ext.compileSdkVersion = compileSdk
+  rootProject.ext.ndkVersion = selectedNdk
+}
+
+android {
+  namespace "com.margelo.nitro.blehubreactnative"
+  compileSdkVersion compileSdk
+  ndkVersion selectedNdk
+
+  defaultConfig {
+    minSdkVersion minSdk
+    targetSdkVersion targetSdk
+    testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    ndk {
+      abiFilters(*reactNativeArchitectures())
+    }
+    externalNativeBuild {
+      cmake {
+        cppFlags "-frtti -fexceptions -Wall -Wextra -fstack-protector-all"
+        arguments "-DANDROID_STL=c++_shared", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+      }
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path "CMakeLists.txt"
+      version "3.22.1"
+    }
+  }
+
+  sourceSets {
+    main {
+      java.srcDir("src/main/java")
+      java.srcDir("../nitrogen/generated/android/kotlin")
+    }
+  }
+
+  buildFeatures {
+    buildConfig true
+    prefab true
+  }
+
+  packaging {
+    jniLibs {
+      pickFirsts += [
+        "**/libc++_shared.so",
+        "**/libfbjni.so",
+        "**/libjsi.so",
+        "**/libreactnative.so",
+      ]
+    }
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_17
+    targetCompatibility JavaVersion.VERSION_17
+  }
+}
+
+kotlin {
+  jvmToolchain(17)
+}
+
+dependencies {
+  implementation "com.facebook.react:react-android:0.87.1"
+  implementation project(":react-native-nitro-modules")
+  implementation "dev.blehub:blehub-uniffi:0.0.0"
+  implementation "dev.blehub:blehub-android:0.0.0"
+  androidTestImplementation "androidx.test:runner:1.7.0"
+  androidTestImplementation "junit:junit:4.13.2"
+}
+
+subprojects {
+  afterEvaluate { project ->
+    if (project.name == "react-native-nitro-modules" && project.extensions.findByName("android") != null) {
+      project.android.compileOptions.sourceCompatibility = JavaVersion.VERSION_17
+      project.android.compileOptions.targetCompatibility = JavaVersion.VERSION_17
+      project.tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        kotlinOptions.jvmTarget = "17"
+      }
+    }
+  }
+}
+
+allprojects {
+  configurations.configureEach {
+    resolutionStrategy.eachDependency { requested ->
+      if (requested.requested.group == "com.facebook.react" && requested.requested.name == "react-native") {
+        requested.useTarget("com.facebook.react:react-android:0.87.1")
+      }
+    }
+  }
+}

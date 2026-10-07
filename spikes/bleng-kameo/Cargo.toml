@@ -1,0 +1,19 @@
+[package]
+name = "blehub-bleng-kameo-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+# Keep this package standalone; it is intentionally not a root-workspace member.
+[workspace]
+
+[dependencies]
+kameo = "=0.22.2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"

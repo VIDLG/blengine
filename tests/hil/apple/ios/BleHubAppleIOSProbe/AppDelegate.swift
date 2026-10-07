@@ -195,7 +195,8 @@ private final class ProbeRunner {
                     allowDuplicates: allowDuplicates,
                     diagnosticTargetPeripheralId: diagnosticTargetPeripheralId,
                     scanDuration: scanDuration,
-                    configuration: configuration
+                    configuration: configuration,
+                    externalProvider: argument(after: "--rf-external-provider")
                 )
                 output.append(contentsOf: rfOutput.map {
                     $0.replacingOccurrences(of: "apple_macos_", with: "apple_ios_")

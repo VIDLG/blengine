@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/blehub",
+    "crates/bleng",
+    "crates/bleng-uniffi",
     "crates/blehub-uniffi",
     "platforms/windows",
     "tests/support/blehub-testkit",
@@ -15,7 +17,11 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
+delegate = "=0.13.5"
+derive_more = { version = "=2.1.1", default-features = false, features = ["from", "into"] }
+kameo = "=0.22.2"
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tracing = "0.1"
 uniffi = "=0.32.0"
 uuid = "1"

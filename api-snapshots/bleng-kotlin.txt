@@ -1,0 +1,65 @@
+# Reviewed BLeng Kotlin API shape; ABI remains unfrozen.
+
+class Bleng : BlengInterface
+
+enum class BlengBusyReason {
+    SCAN,
+    PERIPHERAL,
+    GATT,
+    OPERATION,
+    BACKEND_SLOT_OCCUPIED,
+}
+
+enum class BlengContractFailure {
+    INVALID_COMMAND_ID,
+    DUPLICATE_HUB_OWNERSHIP,
+}
+
+sealed class BlengException {
+    Closed,
+    Cancelled,
+    Disconnected,
+    InvalidTimeout,
+    NotReady(reason: BlengNotReadyReason),
+    Busy(reason: BlengBusyReason),
+    ResourceExhausted(resource: BlengResource),
+    ContractFailure(reason: BlengContractFailure),
+    DispatchRejected(error: CommandDispatchException),
+    Operation(error: BleEventError),
+    Assembly(error: BleHubException),
+    Cleanup(error: BleHubException),
+    Timeout,
+    TransportFault,
+    WorkerStopped,
+}
+
+interface BlengInterface {
+    suspend fun assembleBackend(backend: BleBackend)
+    suspend fun connect(peripheral: PeripheralId, timeoutMs: ULong): ConnectionId
+    suspend fun disableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId, timeoutMs: ULong)
+    suspend fun disconnect(connection: ConnectionId, timeoutMs: ULong)
+    suspend fun discoverGatt(connection: ConnectionId, timeoutMs: ULong): GattDatabase
+    suspend fun enableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeoutMs: ULong): SubscriptionId
+    suspend fun initialize(timeoutMs: ULong): AdapterSnapshot
+    suspend fun nextEvent(timeoutMs: ULong): BleEvent?
+    suspend fun readCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, timeoutMs: ULong): ByteArray
+    suspend fun readRssi(connection: ConnectionId, timeoutMs: ULong): Short
+    suspend fun shutdown()
+    suspend fun startScan(options: ScanOptions, timeoutMs: ULong): ScanSessionId
+    suspend fun stopScan(session: ScanSessionId, timeoutMs: ULong)
+    suspend fun writeCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: ByteArray, writeType: WriteType, timeoutMs: ULong)
+}
+
+enum class BlengNotReadyReason {
+    BACKEND_NOT_ASSEMBLED,
+    NOT_INITIALIZED,
+    SCAN_NOT_ACTIVE,
+    CONNECTION_NOT_ACTIVE,
+    GATT_NOT_READY,
+    SUBSCRIPTION_NOT_ACTIVE,
+}
+
+enum class BlengResource {
+    PENDING_WAITERS,
+    IDENTIFIERS,
+}

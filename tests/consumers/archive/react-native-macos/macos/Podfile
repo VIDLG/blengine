@@ -1,0 +1,83 @@
+require 'fileutils'
+require 'pathname'
+
+ws_dir = Pathname.new(__dir__)
+ws_dir = ws_dir.parent until
+  File.exist?("#{ws_dir}/node_modules/react-native-macos/scripts/react_native_pods.rb") ||
+  ws_dir.expand_path.to_s == '/'
+require "#{ws_dir}/node_modules/react-native-macos/scripts/react_native_pods.rb"
+
+prepare_react_native_project!
+
+target 'BleHubNitroHost-macOS' do
+  platform :macos, '14.0'
+  # The macOS CLI 0.81.9 does not expose dependency autolinking through
+  # `use_native_modules!` for this custom platform, so the internal host declares its
+  # four local/native pod targets explicitly below.
+
+  # Keep the production Apple backend and staged UniFFI bindings as separate
+  # Swift modules. The Nitro pod depends on both and the macOS slice is linked
+  # from the same staged production xcframework used by the iOS host.
+  pod 'NitroModules', :path => '../node_modules/react-native-nitro-modules'
+  pod 'BleHubUniFfi', :path => '../../../../../integrations/react-native/apple-pods/BleHubUniFfi'
+  pod 'BleHubApple', :path => '../../../../../integrations/react-native/apple-pods/BleHubApple'
+  pod 'BleHubReactNative', :path => '../../../../../integrations/react-native'
+
+  # Flags change depending on the env values.
+  flags = get_default_flags()
+
+  use_react_native!(
+    :path => '../node_modules/react-native-macos',
+    :fabric_enabled => ENV['RCT_NEW_ARCH_ENABLED'] == '1',
+    # An absolute path to your application root.
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(installer)
+
+    # Xcode 27's explicit Clang module build rejects the legacy glog umbrella
+    # header because it includes another header inside namespace google. RN's
+    # C++ sources do not require glog as a Swift-importable module, so keep the
+    # workaround scoped to this dependency and leave Nitro/production pods
+    # modular.
+    installer.pods_project.targets.each do |target|
+      next unless target.name == 'glog'
+
+      target.build_configurations.each do |configuration|
+        configuration.build_settings['CLANG_ENABLE_MODULES'] = 'NO'
+        configuration.build_settings['DEFINES_MODULE'] = 'NO'
+        configuration.build_settings.delete('MODULEMAP_FILE')
+      end
+
+      public_module_map = File.join(
+        installer.sandbox.root.to_s,
+        'Headers',
+        'Public',
+        'glog',
+        'glog.modulemap'
+      )
+      FileUtils.rm_f(public_module_map)
+    end
+
+    # CocoaPods also propagates every dependency module map into the Swift
+    # flags of dependent pods. Remove only glog's forced module-map arguments;
+    # React Native's C++ sources continue to use its ordinary header search
+    # path and library, while Swift no longer tries to import the legacy
+    # umbrella module. This edits generated xcconfigs during pod install so
+    # the workaround is reproducible and remains local to this feasibility
+    # host.
+    glog_module_map = '"${PODS_ROOT}/Headers/Public/glog/glog.modulemap"'
+    Dir[File.join(installer.sandbox.root.to_s, 'Target Support Files', '**', '*.xcconfig')].each do |xcconfig_path|
+      contents = File.read(xcconfig_path)
+      updated = contents
+        .gsub(" -Xcc -fmodule-map-file=#{glog_module_map}", '')
+        .gsub(" -fmodule-map-file=#{glog_module_map}", '')
+        .gsub(
+          '$(PODS_ROOT)/../../../../../integrations/react-native/apple-pods',
+          '$(PODS_ROOT)/../../../../../../integrations/react-native/apple-pods'
+        )
+      File.write(xcconfig_path, updated) unless updated == contents
+    end
+  end
+end

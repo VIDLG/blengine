@@ -18,8 +18,8 @@ mod windows "just/windows/mod.just"
 # Production Apple backend development and platform build gates.
 mod apple "just/apple/mod.just"
 
-# Tauri integration and reference-app verification entry points.
-mod tauri "just/tauri/mod.just"
+# Private React Native Nitro integration and internal consumer gates.
+mod react-native "just/react-native/mod.just"
 
 default:
     @just --list --list-submodules
@@ -73,6 +73,19 @@ docs-install:
 # Validate Mermaid syntax in project-authored Markdown.
 docs-check-mermaid:
     npm run check:mermaid
+
+# Report reclaimable generated artifacts without deleting anything.
+work-report:
+    python -m tools.clean_work report
+
+# Remove stale RN artifact runs and generated RN host output, retaining one run.
+work-clean keep_runs="1":
+    python -m tools.clean_work apply --keep-runs {{ quote(keep_runs) }}
+
+# Explicitly remove the local archived copies and rebuildable Cargo target cache too.
+# This is intentionally separate because it makes the next build substantially slower.
+work-clean-all keep_runs="1":
+    python -m tools.clean_work apply --keep-runs {{ quote(keep_runs) }} --include-archive-local --include-cargo-target
 
 toolchain-paths:
     python -m tools.local_config report

@@ -54,13 +54,23 @@ def main() -> int:
     _ = parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     _ = parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     _ = parser.add_argument("--library-name", default=DEFAULT_LIBRARY_NAME)
+    _ = parser.add_argument("--features", help="optional Cargo feature list")
+    _ = parser.add_argument(
+        "--target-dir", type=Path, help="isolated Cargo output root"
+    )
     arguments = parser.parse_args()
     manifest = cast(Path, arguments.manifest)
     output_root = cast(Path, arguments.output_root)
     library_name = cast(str, arguments.library_name)
 
     environment = toolchain_environment()
-    target_dir = Path(environment["CARGO_TARGET_DIR"])
+    target_dir = (
+        cast(Path, arguments.target_dir).resolve()
+        if arguments.target_dir is not None
+        else Path(environment["CARGO_TARGET_DIR"])
+    )
+    if arguments.target_dir is not None:
+        environment["CARGO_TARGET_DIR"] = str(target_dir)
     ndk_root = Path(environment["ANDROID_NDK_HOME"])
     host_tag, executable_suffix = _ndk_host_tag()
     linker_root = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "bin"
@@ -85,6 +95,10 @@ def main() -> int:
             "--target",
             target.triple,
         ]
+        if arguments.features:
+            command.extend(["--features", cast(str, arguments.features)])
+        if arguments.target_dir is not None:
+            command.extend(["--target-dir", str(target_dir)])
         result = subprocess.run(command, env=target_environment, check=False)
         if result.returncode != 0:
             return result.returncode

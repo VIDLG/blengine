@@ -194,6 +194,15 @@ def report() -> None:
         print(f"{name}_root={configured.path}")
         print(f"{name}_root_source={configured.source}")
 
+    for table, key, environment_variable in (
+        ("toolchains", "nrftest_root", "BLEHUB_NRFTEST_ROOT"),
+        ("peripheral_nrf52840", "port", "BLEHUB_NRF52840_PORT"),
+    ):
+        configured = resolve_local_value(table, key, environment_variable, None)
+        value = configured.value if configured.value is not None else "<unset>"
+        print(f"{table}_{key}={value}")
+        print(f"{table}_{key}_source={configured.source}")
+
     for key, environment_variable, default in (
         ("vendor_id", "BLEHUB_PERIPHERAL_USB_VENDOR_ID", None),
         ("product_id", "BLEHUB_PERIPHERAL_USB_PRODUCT_ID", None),

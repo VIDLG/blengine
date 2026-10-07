@@ -1,0 +1,65 @@
+# Reviewed BLeng Swift API shape; ABI remains unfrozen.
+
+class Bleng : BlengProtocol
+
+enum BlengBusyReason {
+    case scan
+    case peripheral
+    case gatt
+    case operation
+    case backendSlotOccupied
+}
+
+enum BlengContractFailure {
+    case invalidCommandId
+    case duplicateHubOwnership
+}
+
+enum BlengError {
+    case Closed
+    case Cancelled
+    case Disconnected
+    case InvalidTimeout
+    case NotReady(reason: BlengNotReadyReason)
+    case Busy(reason: BlengBusyReason)
+    case ResourceExhausted(resource: BlengResource)
+    case ContractFailure(reason: BlengContractFailure)
+    case DispatchRejected(error: CommandDispatchError)
+    case Operation(error: BleEventError)
+    case Assembly(error: BleHubError)
+    case Cleanup(error: BleHubError)
+    case Timeout
+    case TransportFault
+    case WorkerStopped
+}
+
+enum BlengNotReadyReason {
+    case backendNotAssembled
+    case notInitialized
+    case scanNotActive
+    case connectionNotActive
+    case gattNotReady
+    case subscriptionNotActive
+}
+
+protocol BlengProtocol {
+    func assembleBackend(backend: BleBackend) async throws
+    func connect(peripheral: PeripheralId, timeoutMs: UInt64) async throws -> ConnectionId
+    func disableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId, timeoutMs: UInt64) async throws
+    func disconnect(connection: ConnectionId, timeoutMs: UInt64) async throws
+    func discoverGatt(connection: ConnectionId, timeoutMs: UInt64) async throws -> GattDatabase
+    func enableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeoutMs: UInt64) async throws -> SubscriptionId
+    func initialize(timeoutMs: UInt64) async throws -> AdapterSnapshot
+    func nextEvent(timeoutMs: UInt64) async throws -> BleEvent?
+    func readCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, timeoutMs: UInt64) async throws -> Data
+    func readRssi(connection: ConnectionId, timeoutMs: UInt64) async throws -> Int16
+    func shutdown() async throws
+    func startScan(options: ScanOptions, timeoutMs: UInt64) async throws -> ScanSessionId
+    func stopScan(session: ScanSessionId, timeoutMs: UInt64) async throws
+    func writeCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Data, writeType: WriteType, timeoutMs: UInt64) async throws
+}
+
+enum BlengResource {
+    case pendingWaiters
+    case identifiers
+}

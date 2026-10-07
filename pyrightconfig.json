@@ -2,5 +2,22 @@
   "venvPath": ".pixi/envs",
   "venv": "default",
   "pythonVersion": "3.13",
-  "include": ["tools"]
+  "include": ["tools"],
+  "exclude": [
+    "**/node_modules",
+    "**/Pods",
+    "**/.cxx",
+    "**/target",
+    "**/build",
+    ".work",
+    ".pixi",
+    "contrib/react-native-ble-manager",
+    "contrib/react-native-ble-nitro",
+    "contrib/react-native-ble-plx",
+    "integrations/archive",
+    "examples/archive",
+    "spikes/archive",
+    "tests/consumers/archive",
+    "tests/hil/apple/ios/archive"
+  ]
 }

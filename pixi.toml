@@ -23,6 +23,7 @@ rust-src = "1.95.*"
 [feature.jvm.dependencies]
 openjdk = "17.*"
 gradle = "8.11.*"
+kotlin = "2.1.20.*"
 
 
 [feature.android.dependencies]

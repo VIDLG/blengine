@@ -521,6 +521,7 @@ def _launch_app(
     ]
     if fixture is not None:
         launch_arguments.extend(fixture.app_arguments())
+        launch_arguments.extend(["--rf-external-provider", "nrf52840"])
     if rf_service_uuid is not None:
         launch_arguments.extend(["--rf-service-uuid", rf_service_uuid])
         if rf_scenario is not None:
@@ -728,7 +729,7 @@ def doctor() -> None:
 def _copy_marker_to_device(
     xcrun: str, device: IOSDevice, bundle_id: str, run_id: str, marker: str
 ) -> None:
-    local_marker = WORK_ROOT / f"{run_id}-{marker.replace('/', '-') }"
+    local_marker = WORK_ROOT / f"{run_id}-{marker.replace('/', '-')}"
     local_marker.write_text("ready\n", encoding="ascii")
     destination = f"Documents/blehub-rf-{run_id}/{marker}"
     _ = _devicectl_json(
@@ -763,12 +764,144 @@ def _wait_for_device_marker(
     timeout: int,
 ) -> None:
     source = f"Documents/blehub-rf-{run_id}/{marker}"
+    result_source = f"Documents/blehub-rf-{run_id}/result.txt"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if _try_pull_result(xcrun, device, bundle_id, source) is not None:
             return
+        result = _try_pull_result(xcrun, device, bundle_id, result_source)
+        if result is not None and "apple_ios_corebluetooth_rf=failed" in result:
+            raise RuntimeError(
+                f"iOS RF probe failed while waiting for marker {marker}: {result.strip()}"
+            )
         time.sleep(1)
     raise TimeoutError(f"timed out waiting for iOS RF marker: {marker}")
+
+
+def _wait_for_host_marker(path: Path, marker: str, *, timeout: int) -> None:
+    marker_path = path / marker
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if marker_path.is_file():
+            return
+        time.sleep(0.2)
+    raise TimeoutError(f"timed out waiting for nRF host marker: {marker_path}")
+
+
+def _write_host_marker(path: Path, marker: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / marker).write_text("ready\n", encoding="ascii")
+
+
+def _run_ios_nrf_host_scenario(
+    xcrun: str,
+    device: IOSDevice,
+    bundle_id: str,
+    run_id: str,
+    scenario: str,
+    coordination_path: Path,
+) -> None:
+    """Bridge iOS app-container markers to the single nRF BTP serial owner."""
+    if scenario in {"notification", "indication"}:
+        _wait_for_device_marker(
+            xcrun, device, bundle_id, run_id, "notification-enabled", timeout=240
+        )
+        _write_host_marker(coordination_path, "subscription-enabled")
+        _wait_for_host_marker(coordination_path, "value-applied", timeout=60)
+        _wait_for_device_marker(
+            xcrun, device, bundle_id, run_id, "notification-disabled", timeout=60
+        )
+        _write_host_marker(coordination_path, "post-disable-triggered")
+        _copy_marker_to_device(
+            xcrun, device, bundle_id, run_id, "post-disable-triggered"
+        )
+        return
+
+    if scenario == "passive-disconnect":
+        _wait_for_device_marker(
+            xcrun, device, bundle_id, run_id, "notification-enabled", timeout=240
+        )
+        _write_host_marker(coordination_path, "subscription-enabled")
+        _wait_for_host_marker(coordination_path, "value-applied", timeout=60)
+        _wait_for_device_marker(
+            xcrun, device, bundle_id, run_id, "radio-off-ready", timeout=60
+        )
+        _write_host_marker(coordination_path, "connected")
+        _wait_for_host_marker(coordination_path, "fault-triggered", timeout=60)
+        _copy_marker_to_device(xcrun, device, bundle_id, run_id, "radio-off-confirmed")
+        _wait_for_device_marker(
+            xcrun, device, bundle_id, run_id, "passive-disconnected", timeout=90
+        )
+        _write_host_marker(coordination_path, "passive-disconnected")
+        _wait_for_host_marker(coordination_path, "recovery-ready", timeout=60)
+        _copy_marker_to_device(xcrun, device, bundle_id, run_id, "radio-restored")
+        return
+
+    if scenario == "recovery":
+        for cycle in range(1, 4):
+            cycle_root = coordination_path / f"cycle-{cycle}"
+            _wait_for_device_marker(
+                xcrun,
+                device,
+                bundle_id,
+                run_id,
+                f"cycle-{cycle}/cycle-ready",
+                timeout=120,
+            )
+            _wait_for_host_marker(cycle_root, "fixture-ready", timeout=90)
+            _copy_marker_to_device(
+                xcrun, device, bundle_id, run_id, f"cycle-{cycle}/fixture-ready"
+            )
+            _wait_for_device_marker(
+                xcrun,
+                device,
+                bundle_id,
+                run_id,
+                f"cycle-{cycle}/notification-enabled",
+                timeout=180,
+            )
+            _write_host_marker(cycle_root, "subscription-enabled")
+            _wait_for_host_marker(cycle_root, "value-applied", timeout=60)
+            _wait_for_device_marker(
+                xcrun,
+                device,
+                bundle_id,
+                run_id,
+                f"cycle-{cycle}/connected",
+                timeout=60,
+            )
+            _write_host_marker(cycle_root, "connected")
+            _wait_for_host_marker(cycle_root, "fault-triggered", timeout=60)
+            _copy_marker_to_device(
+                xcrun, device, bundle_id, run_id, f"cycle-{cycle}/fault-triggered"
+            )
+            _wait_for_device_marker(
+                xcrun,
+                device,
+                bundle_id,
+                run_id,
+                f"cycle-{cycle}/passive-disconnected",
+                timeout=90,
+            )
+            _write_host_marker(cycle_root, "passive-disconnected")
+            _wait_for_host_marker(cycle_root, "recovery-ready", timeout=60)
+            _copy_marker_to_device(
+                xcrun, device, bundle_id, run_id, f"cycle-{cycle}/recovery-ready"
+            )
+            _wait_for_device_marker(
+                xcrun,
+                device,
+                bundle_id,
+                run_id,
+                f"cycle-{cycle}/cycle-passed",
+                timeout=120,
+            )
+            _write_host_marker(cycle_root, "cycle-passed")
+        return
+
+    raise RuntimeError(
+        f"external nRF iOS coordination does not yet support scenario {scenario!r}"
+    )
 
 
 def _run_ios_android_host_scenario(
@@ -880,11 +1013,17 @@ def runtime(
     rf_service_uuid: str | None = None,
     scenario: str = "io",
     fixture: RfFixtureConfig | None = None,
+    coordination_path: Path | None = None,
 ) -> None:
     if fixture is not None:
-        if scenario != "io":
+        if scenario not in RF_SCENARIOS:
+            raise RuntimeError(f"unsupported external iOS RF scenario: {scenario}")
+        if (
+            scenario in {"notification", "indication", "passive-disconnect", "recovery"}
+            and coordination_path is None
+        ):
             raise RuntimeError(
-                "external iPhone RF currently supports only io; no provider control is available"
+                f"external iOS {scenario} requires --coordination-path for provider marker bridging"
             )
         if os.environ.get("BLEHUB_APPLE_RF_UNFILTERED") == "1" or os.environ.get(
             "BLEHUB_APPLE_RF_TARGET_IDENTIFIER"
@@ -912,6 +1051,15 @@ def runtime(
     )
     if fixture is None:
         _run_ios_android_host_scenario(xcrun, device, bundle_id, run_id, scenario)
+    elif coordination_path is not None:
+        _run_ios_nrf_host_scenario(
+            xcrun,
+            device,
+            bundle_id,
+            run_id,
+            scenario,
+            coordination_path,
+        )
     result = _wait_for_runtime_result(
         xcrun,
         device,
@@ -938,8 +1086,8 @@ def runtime(
             required.extend(
                 [
                     f"apple_ios_probe_run_id={run_id}",
-                    "apple_ios_rf_scenario=io",
-                    "apple_ios_rf_io=passed",
+                    f"apple_ios_rf_scenario={scenario}",
+                    f"apple_ios_rf_{scenario}=passed",
                     "apple_ios_rf_ledger=passed",
                     "apple_ios_rf_post_dispose_silence=passed",
                 ]
@@ -969,14 +1117,20 @@ def main() -> int:
     )
     _ = parser.add_argument("scenario", nargs="?", choices=sorted(RF_SCENARIOS))
     add_profile_arguments(parser)
+    _ = parser.add_argument(
+        "--coordination-path",
+        type=Path,
+        help="host-side nRF coordination directory for external RF scenarios",
+    )
     args = parser.parse_args()
     command = getattr(args, "command", None)
     if command != "runtime-rf-external" and (
         args.profile is not None
         or args.write_with_response != "102030"
         or args.write_without_response != "abcd"
+        or args.coordination_path is not None
     ):
-        parser.error("profile and payload overrides require runtime-rf-external")
+        parser.error("external RF options require runtime-rf-external")
     try:
         if command == "build-unsigned":
             build_unsigned()
@@ -1002,7 +1156,11 @@ def main() -> int:
                 )
             runtime(rf_service_uuid=service_uuid)
         elif command == "runtime-rf-external":
-            runtime(scenario=args.scenario or "io", fixture=fixture_from_arguments(args))
+            runtime(
+                scenario=args.scenario or "io",
+                fixture=fixture_from_arguments(args),
+                coordination_path=args.coordination_path,
+            )
         elif command == "runtime-rf-android":
             scenario = args.scenario or os.environ.get("BLEHUB_APPLE_RF_SCENARIO", "io")
             if scenario not in RF_SCENARIOS:

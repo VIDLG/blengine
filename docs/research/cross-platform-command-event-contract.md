@@ -286,6 +286,8 @@ Rust trait约定也分层：
 | Apple | `cancelPeripheralConnection(): Void` 且 nonblocking；终态 `didDisconnectPeripheral(error)`；其他 app 可继续持有链路。 | 本 `ConnectionId` 的 local lifecycle 已断开。 | pending GATT command可能不再完成；不保证物理链路立即消失。 |
 | BlueZ | `Device1.Disconnect()` 断开所有 connected profiles并终止 ACL；可取消 pending Connect。 | D-Bus operation成功且本 BleHub logical connection结束。 | 不是 per-client release，可能影响其他 profile/process；必须显式记录这种平台影响。 |
 
+`ConnectionState.Disconnecting`是可选的backend进度事件，不是跨平台必需的中间序列。Android backend可以在调用`BluetoothGatt.disconnect()`前发出该事件；Apple `cancelPeripheralConnection`是nonblocking，可靠终态来自`didDisconnectPeripheral`，因此Apple backend只需要交付最终`Disconnected`或带连接错误的终态。共享caller/test必须以最终逻辑生命周期结果和`CommandCompleted`为边界，不能因为Apple没有`Disconnecting`而判失败。
+
 BlueZ 的设备级 disconnect 语义比其他平台更强且更具系统副作用，不能被公共“logical disconnect”措辞掩盖；Linux backend 文档必须单独提示。pending connect的取消语义必须服从平台因果证据：只有证明disconnect导致原connect被取消时才可为原command尝试`Cancelled`；独立connect failure仍是`Failed`。Windows等缺少该因果证据的平台可完成logical disconnect，但原connect仍按既有completion evidence/liveness和caller deadline处理，任何晚到结果保留原connect IDs。
 
 证据：

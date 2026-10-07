@@ -317,7 +317,7 @@ final class AppleCoreBluetoothRfScenarioTests: XCTestCase {
                                           state: .enabled(actualMode: scenario == .indication ? .indication : .notification)),
                 terminal(6), notification(ids: ids, characteristic: char.value),
             ]
-            if scenario != .passiveDisconnect {
+            if scenario != .passiveDisconnect && scenario != .recovery {
                 events += [.notificationStateChanged(commandId: ids.command(7), connectionId: ids.connection, gattSessionId: ids.gatt,
                                                      subscriptionId: ids.subscription, characteristicId: char, state: .disabled), terminal(7)]
             }
@@ -337,7 +337,7 @@ final class AppleCoreBluetoothRfScenarioTests: XCTestCase {
                 events.append(terminal(local))
             }
         }
-        if scenario == .passiveDisconnect {
+        if scenario == .passiveDisconnect || scenario == .recovery {
             events.append(.connectionStateChanged(commandId: nil, connectionId: ids.connection, result: .err(error: failure(.connection))))
         } else {
             let local: UInt64 = scenario == .io ? 11 : (scenario.usesNotifications ? 8 : 6)

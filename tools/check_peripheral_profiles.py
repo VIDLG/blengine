@@ -11,6 +11,8 @@ ARCHIVED_PROFILE_PATHS = (
     SCENARIO_ROOT / "archive" / "bless" / "qemu-basic-gatt-peripheral.json",
 )
 NRF_PROFILE_PATH = SCENARIO_ROOT / "blehub-nrf-indication-v2.json"
+NRF_PROFILE_B_PATH = SCENARIO_ROOT / "blehub-nrf-indication-v2-b.json"
+NRF_ATT_HOLD_PATH = SCENARIO_ROOT / "blehub-nrf-att-read-hold-v1.json"
 
 
 class CharacteristicDefinition(TypedDict):
@@ -18,6 +20,7 @@ class CharacteristicDefinition(TypedDict):
     uuid: str
     properties: list[str]
     initial_value_hex: NotRequired[str]
+    read_authorization: NotRequired[bool]
 
 
 class ServiceDefinition(TypedDict):
@@ -86,7 +89,14 @@ def require_distinct(values: list[str], label: str) -> None:
 def main() -> int:
     archived_profiles = [load_profile(path) for path in ARCHIVED_PROFILE_PATHS]
     nrf_profile = load_profile(NRF_PROFILE_PATH)
-    all_profiles = [*archived_profiles, nrf_profile]
+    nrf_profile_b = load_profile(NRF_PROFILE_B_PATH)
+    diagnostic_profile = load_profile(NRF_ATT_HOLD_PATH)
+    all_profiles = [
+        *archived_profiles,
+        nrf_profile,
+        nrf_profile_b,
+        diagnostic_profile,
+    ]
     require_distinct(
         [profile["profile_id"] for profile in all_profiles],
         "profile_id",
@@ -146,11 +156,49 @@ def main() -> int:
         for characteristic in nrf_profile["services"][0]["characteristics"]
     }
     if nrf_roles != {"read-write", "updates", "indications", "read-only", "write-only"}:
-        raise ValueError(
-            "nRF52840 profile must contain exactly the five v2 GATT roles"
-        )
+        raise ValueError("nRF52840 profile must contain exactly the five v2 GATT roles")
     print(
         f"profile={nrf_profile['profile_id']} file={NRF_PROFILE_PATH.name} status=valid"
+    )
+    if semantic_signature(nrf_profile_b) != semantic_signature(nrf_profile):
+        raise ValueError("nRF multi-DK profiles must preserve GATT semantics")
+    if (
+        nrf_profile_b["profile_id"] != "blehub-nrf52840-indication-v2-b"
+        or nrf_profile_b["advertising"]["local_name"] != "BleHubNrf52840B"
+        or nrf_profile_b["services"][0]["uuid"]
+        != "fd200000-0000-4000-8000-000000000000"
+    ):
+        raise ValueError("nRF multi-DK profile B identity drift")
+    print(
+        f"profile={nrf_profile_b['profile_id']} file={NRF_PROFILE_B_PATH.name} status=valid"
+    )
+    if (
+        diagnostic_profile["profile_id"] != "blehub-nrf52840-att-read-hold-v1"
+        or diagnostic_profile["advertising"]["local_name"] != "BleHubAttHoldDK"
+        or diagnostic_profile["services"][0]["uuid"]
+        != "fd100000-0000-4000-8000-000000000000"
+        or len(
+            [
+                char
+                for char in diagnostic_profile["services"][0]["characteristics"]
+                if char.get("read_authorization") is True
+            ]
+        )
+        != 1
+        or not next(
+            (
+                char.get("read_authorization") is True
+                for char in diagnostic_profile["services"][0]["characteristics"]
+                if char["role"] == "read-write"
+            ),
+            False,
+        )
+    ):
+        raise ValueError(
+            "ATT hold diagnostic profile identity or read authorization drift"
+        )
+    print(
+        f"profile={diagnostic_profile['profile_id']} file={NRF_ATT_HOLD_PATH.name} status=valid"
     )
     print("provider_profile_isolation=passed")
     return 0

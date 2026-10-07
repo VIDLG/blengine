@@ -21,9 +21,7 @@ class ExternalFixtureTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.path = self.root / "external profile.json"
-        self.document = json.loads(
-            macos.NRF_PROFILE_PATH.read_text(encoding="utf-8")
-        )
+        self.document = json.loads(macos.NRF_PROFILE_PATH.read_text(encoding="utf-8"))
         self.document["profile_id"] = "external-basic-v1"
         service = "fd000000-0000-4000-8000-000000000000"
         self.document["advertising"]["service_uuids"] = [service]

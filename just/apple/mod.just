@@ -69,7 +69,7 @@ test: prepare
     {{apple_run}} python -m tools.apple.test_backend test
     {{apple_run}} python tests/hil/apple/support/test_rf_scenario.py
 
-# Compile the Apple backend and current candidate for generic iOS destinations.
+# Compile the Apple backend and current BLeng package for generic iOS destinations.
 [macos]
 build-ios: prepare
     {{apple_run}} python -m tools.apple.test_backend build-ios
@@ -106,6 +106,31 @@ rf-ios-external profile write_with_response="102030" write_without_response="abc
 [macos]
 rf-ios-nrf52840 profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" write_with_response="10" write_without_response="ab": prepare-ios-device
     set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.test_ios_runtime runtime-rf-external io --profile {{quote(profile)}} --write-with-response {{quote(write_with_response)}} --write-without-response {{quote(write_without_response)}}
+
+# Run iPhone-to-nRF52840 Notification with explicit host/device marker bridging.
+[macos]
+rf-ios-nrf52840-notification profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" write_with_response="10" write_without_response="ab": prepare-ios-device
+    set -eu; coordination="$PWD/.work/peripheral/nrf52840/ios-notification-coordination"; rm -rf "$coordination"; mkdir -p "$coordination"; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run python -m tests.peripherals.nrf52840.provider direct-start --coordination-path "$coordination" --coordination-mode notification; {{apple_run}} python -m tools.apple.test_ios_runtime runtime-rf-external notification --profile {{quote(profile)}} --write-with-response {{quote(write_with_response)}} --write-without-response {{quote(write_without_response)}} --coordination-path "$coordination"
+
+# Run strict iPhone-to-nRF52840 Indication on the indication-only characteristic.
+[macos]
+rf-ios-nrf52840-indication profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" write_with_response="10" write_without_response="ab": prepare-ios-device
+    set -eu; coordination="$PWD/.work/peripheral/nrf52840/ios-indication-coordination"; rm -rf "$coordination"; mkdir -p "$coordination"; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run python -m tests.peripherals.nrf52840.provider direct-start --coordination-path "$coordination" --coordination-mode indication; {{apple_run}} python -m tools.apple.test_ios_runtime runtime-rf-external indication --profile {{quote(profile)}} --write-with-response {{quote(write_with_response)}} --write-without-response {{quote(write_without_response)}} --coordination-path "$coordination"
+
+# Run connected RSSI on iPhone-to-nRF52840 without provider coordination.
+[macos]
+rf-ios-nrf52840-rssi profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" write_with_response="10" write_without_response="ab": prepare-ios-device
+    set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.test_ios_runtime runtime-rf-external rssi --profile {{quote(profile)}} --write-with-response {{quote(write_with_response)}} --write-without-response {{quote(write_without_response)}}
+
+# Trigger a real nRF52840 Peripheral-initiated disconnect and verify iOS recovery markers.
+[macos]
+rf-ios-nrf52840-passive-disconnect profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" write_with_response="10" write_without_response="ab": prepare-ios-device
+    set -eu; coordination="$PWD/.work/peripheral/nrf52840/ios-passive-disconnect-coordination"; rm -rf "$coordination"; mkdir -p "$coordination"; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run python -m tests.peripherals.nrf52840.provider direct-start --coordination-path "$coordination" --coordination-mode passive-disconnect; {{apple_run}} python -m tools.apple.test_ios_runtime runtime-rf-external passive-disconnect --profile {{quote(profile)}} --write-with-response {{quote(write_with_response)}} --write-without-response {{quote(write_without_response)}} --coordination-path "$coordination"
+
+# Run the three-cycle Peripheral-loss/recovery contract on iPhone and nRF52840.
+[macos]
+rf-ios-nrf52840-recovery profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" write_with_response="10" write_without_response="ab": prepare-ios-device
+    set -eu; coordination="$PWD/.work/peripheral/nrf52840/ios-recovery-coordination"; rm -rf "$coordination"; mkdir -p "$coordination"; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run python -m tests.peripherals.nrf52840.provider direct-start --coordination-path "$coordination" --coordination-mode recovery-ios; {{apple_run}} python -m tools.apple.test_ios_runtime runtime-rf-external recovery --profile {{quote(profile)}} --write-with-response {{quote(write_with_response)}} --write-without-response {{quote(write_without_response)}} --coordination-path "$coordination"
 
 # Start the project-managed external nRF52840 fixture and run the macOS IO RF gate.
 [macos]
@@ -161,6 +186,112 @@ test-rf-host:
 [macos]
 consumer-macos: prepare
     {{apple_run}} swift run --quiet --package-path tests/consumers/apple/macos --configuration release BleHubAppleArtifactConsumer
+
+# Build the two-component BLeng image and run an artifact-only macOS lifecycle consumer.
+# This does not modify the default apple-production package or require Bluetooth hardware.
+[macos]
+consumer-bleng-macos:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} swift run --quiet --scratch-path .work/apple-bleng-consumer --package-path tests/consumers/apple/bleng-macos --configuration release BlengArtifactConsumer
+
+# Independently link BLeng in unsigned iOS device + Simulator apps.
+# No keychain, connected device, CoreBluetooth runtime, or RF access.
+[macos]
+consumer-bleng-ios-unsigned:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.consumer_bleng_ios build-unsigned
+
+# Sign/install/run the BLeng fake-backend lifecycle on a connected iPhone.
+# Keychain preparation is a human-only step; this recipe never reads or accepts a password.
+[macos]
+consumer-bleng-ios-device:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.consumer_bleng_ios device
+
+# Build BLeng + the production CoreBluetooth Swift backend in an
+# isolated iOS HIL app. Initialization only; no scan, Peripheral, DK or RF.
+[macos]
+bleng-ios-apple-init-build:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.bleng_ios_backend build-unsigned
+
+# Explicitly sign/install/launch the same initialization-only HIL on iPhone.
+[macos]
+bleng-ios-apple-init-device:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.bleng_ios_backend device
+
+# Explicit BLeng + production CoreBluetooth iPhone scan RF against the
+# managed standalone DK. The provider owns the BTP port and is always stopped.
+[macos]
+bleng-ios-rf-scan:
+    pixi run just ffi apple-bleng-package
+    set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.bleng_ios_backend rf-scan
+
+# Extend the BLeng RF scan to connect and actively disconnect the DK.
+# The same provider owns the only BTP port and is stopped on every exit path.
+[macos]
+bleng-ios-rf-connection:
+    pixi run just ffi apple-bleng-package
+    set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.bleng_ios_backend rf-connection
+
+# Validate the BLeng-discovered nRF service, GATT instance IDs, characteristic
+# properties and subscription descriptors before active disconnect and cleanup.
+[macos]
+bleng-ios-rf-gatt:
+    pixi run just ffi apple-bleng-package
+    set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.bleng_ios_backend rf-gatt
+
+# Verify BLeng characteristic reads, both write modes, and delayed readback.
+# No-response success remains local submission, not remote acknowledgement.
+[macos]
+bleng-ios-rf-io:
+    pixi run just ffi apple-bleng-package
+    set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.bleng_ios_backend rf-io
+
+# Compare the BLeng readRssi result to the event for the active DK connection.
+[macos]
+bleng-ios-rf-rssi:
+    pixi run just ffi apple-bleng-package
+    set -eu; trap 'pixi run just peripheral nrf52840-stop >/dev/null 2>&1 || true' EXIT; pixi run just peripheral nrf52840-direct-start; {{apple_run}} python -m tools.apple.bleng_ios_backend rf-rssi
+
+# Coordinated BLeng/CoreBluetooth notification RF against the standalone DK.
+# The runner installs the app before starting the fixture and owns its PID cleanup.
+[macos]
+bleng-ios-rf-notification:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.bleng_ios_backend rf-notification
+
+# Coordinated strict Indication on FFF5, with FFF2 strict-mode rejection.
+# Explicit opt-in only; the runner owns fixture startup and PID cleanup.
+[macos]
+bleng-ios-rf-indication:
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.bleng_ios_backend rf-indication
+
+# Peripheral-triggered loss with an active EF Notification, stale-handle rejection,
+# reconnect/discovery/readback. Build/install precedes owned provider startup.
+[macos]
+bleng-ios-rf-passive-disconnect profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" notification_value_hex="ef" initial_hex="00":
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.bleng_ios_backend rf-passive-disconnect --profile {{quote(profile)}} --notification-value-hex {{quote(notification_value_hex)}} --initial-hex {{quote(initial_hex)}}
+
+# Three recovery-ios cycles on one BLeng owner; the recovered connection remains
+# live into the next cycle. Explicit RF opt-in, PID-scoped fixture cleanup.
+[macos]
+bleng-ios-rf-recovery profile="tests/conformance/scenarios/blehub-nrf-indication-v2.json" notification_value_hex="ef" initial_hex="00":
+    pixi run just ffi apple-bleng-package
+    {{apple_run}} python -m tools.apple.bleng_ios_backend rf-recovery --profile {{quote(profile)}} --notification-value-hex {{quote(notification_value_hex)}} --initial-hex {{quote(initial_hex)}}
+
+# Independently compile the staged production package from an iOS-only consumer graph.
+[macos]
+consumer-ios: prepare
+    {{apple_run}} python -m tools.apple.consumer_ios build-unsigned
+
+# Explicit opt-in: development-sign, install, launch, and verify the artifact-only iPhone app.
+[macos]
+consumer-ios-device: prepare
+    {{apple_run}} python -m tools.apple.consumer_ios device
 
 # Run all non-RF checks for the current Apple backend slice.
 [macos]

@@ -1,0 +1,40 @@
+name: BleHubIOSArtifactConsumer
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "26.2"
+packages:
+  BleHubUniFfi:
+    path: ../../../../.work/staged/apple-production
+targets:
+  BleHubIOSArtifactConsumer:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Sources
+      - path: Info.plist
+        buildPhase: none
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+        MARKETING_VERSION: 0.1.0
+        PRODUCT_BUNDLE_IDENTIFIER: dev.blehub.ios-artifact-consumer
+        PRODUCT_NAME: BleHubIOSArtifactConsumer
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SUPPORTS_MACCATALYST: NO
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: 1
+    dependencies:
+      - package: BleHubUniFfi
+        product: BleHubUniFfi
+schemes:
+  BleHubIOSArtifactConsumer:
+    build:
+      targets:
+        BleHubIOSArtifactConsumer: all
+    run:
+      config: Debug

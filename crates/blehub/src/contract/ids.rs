@@ -1,3 +1,13 @@
+//! Typed identities use the full `u64` wire range, including zero. They are not
+//! collection indices or native ATT handles; narrowing them would shorten the
+//! non-reusing allocator's lifetime, and `usize` would make the wire width
+//! platform-dependent.
+//!
+//! Rust callers use `From<u64>` and `Into<u64>` at allocator/projection boundaries.
+//! These conversions preserve numbers only, not identity scope or lifecycle validity.
+
+use derive_more::{From, Into};
+
 const BLUETOOTH_BASE_UUID_SUFFIX: &str = "-0000-1000-8000-00805f9b34fb";
 
 /// FFI-safe textual Bluetooth UUID.
@@ -33,70 +43,51 @@ impl BluetoothUuid {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct CommandId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct ScanSessionId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct PeripheralId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct ConnectionId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct GattSessionId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct GattServiceId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct GattCharacteristicId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct GattDescriptorId {
     pub value: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, uniffi::Record)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, From, Into, uniffi::Record)]
 pub struct SubscriptionId {
     pub value: u64,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn canonicalizes_supported_bluetooth_uuid_forms() {
-        let expected = Some(BluetoothUuid {
-            value: "0000180d-0000-1000-8000-00805f9b34fb".to_owned(),
-        });
-        for value in [
-            "180D",
-            "0000180d",
-            "0000180D00001000800000805F9B34FB",
-            "0000180D-0000-1000-8000-00805F9B34FB",
-        ] {
-            assert_eq!(BluetoothUuid::canonicalize(value), expected);
-        }
-        for value in ["", "0x180D", "180", "not-a-uuid"] {
-            assert_eq!(BluetoothUuid::canonicalize(value), None);
-        }
-    }
-}
+#[path = "../tests/ids_tests.rs"]
+mod tests;

@@ -1,0 +1,18 @@
+pluginManagement {
+  repositories {
+    maven { url = uri("https://mirrors.huaweicloud.com/repository/maven/") }
+    gradlePluginPortal()
+  }
+}
+
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+  repositories {
+    maven { url = uri("../../../.work/staged/android-maven") }
+    maven { url = uri("https://mirrors.huaweicloud.com/repository/maven/") }
+  }
+}
+
+rootProject.name = "blehub-react-native-internal"
+include(":react-native-nitro-modules")
+project(":react-native-nitro-modules").projectDir = file("../node_modules/react-native-nitro-modules/android")

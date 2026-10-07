@@ -1,0 +1,24 @@
+{
+  "cxxNamespace": ["blehubreactnative"],
+  "ios": {
+    "iosModuleName": "BleHubReactNative"
+  },
+  "android": {
+    "androidNamespace": ["blehubreactnative"],
+    "androidCxxLibName": "BleHubReactNative"
+  },
+  "autolinking": {
+    "BleHubProbe": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridBleHubProbe"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridBleHubProbe"
+      }
+    }
+  },
+  "ignorePaths": ["**/node_modules"],
+  "gitAttributesGeneratedFlag": false
+}

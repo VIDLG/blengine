@@ -29,8 +29,19 @@
 # nrftest_root = "/path/to/nrftest"
 
 [peripheral_nrf52840]
-# Optional when nrftest.local.toml already selects the unique application device.
+# Single-DK recipes may use this legacy selection when nrftest.local.toml
+# already selects the unique application device.
 # port = "/dev/cu.usbmodem..."
+# Multi-DK RF uses the explicit mappings below. probe_serial is the full
+# USB/CDC serial identity, including leading zeroes; port is the matching BTP CDC.
+# [peripheral_nrf52840.devices.dk_a]
+# probe_serial = "001050252028"
+# port = "/dev/cu.usbmodem0010502520281"
+# profile = "tests/conformance/scenarios/blehub-nrf-indication-v2.json"
+# [peripheral_nrf52840.devices.dk_b]
+# probe_serial = "001050251479"
+# port = "/dev/cu.usbmodem0010502514791"
+# profile = "tests/conformance/scenarios/blehub-nrf-indication-v2-b.json"
 
 [peripheral_usb]
 # Configure only after the physical controller and its firmware mode are known.

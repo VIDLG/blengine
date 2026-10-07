@@ -3,10 +3,14 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.peripherals.nrf52840.gatt_commands import GattAttribute, GattAttributeValue
 from tests.peripherals.nrf52840.profile import ProfileError, load_profile, provision
 
 PROFILE = (
-    Path(__file__).parents[2] / "conformance" / "scenarios" / "blehub-nrf-indication-v2.json"
+    Path(__file__).parents[2]
+    / "conformance"
+    / "scenarios"
+    / "blehub-nrf-indication-v2.json"
 )
 INDICATION_PROFILE = (
     Path(__file__).parents[2]
@@ -60,6 +64,26 @@ class FakeGatt:
         )
 
 
+class DirtyGatt(FakeGatt):
+    def __init__(self, attributes: tuple[GattAttribute, ...]) -> None:
+        super().__init__()
+        self.attributes = attributes
+        self.service_values = {
+            attribute.handle: bytes.fromhex(PROFILE_SERVICE_UUID.replace("-", ""))[::-1]
+            for attribute in attributes
+            if attribute.uuid == "2800"
+        }
+
+    def get_attributes(self) -> tuple[GattAttribute, ...]:
+        return self.attributes
+
+    def get_attribute_value(self, handle: int) -> GattAttributeValue:
+        return GattAttributeValue(0, self.service_values[handle])
+
+
+PROFILE_SERVICE_UUID = "fd000000-0000-4000-8000-000000000000"
+
+
 class ProfileTests(unittest.TestCase):
     def test_loads_canonical_profile_and_maps_roles(self) -> None:
         profile = load_profile(PROFILE)
@@ -98,6 +122,35 @@ class ProfileTests(unittest.TestCase):
     def test_missing_profile_is_rejected(self) -> None:
         with self.assertRaises(ProfileError):
             load_profile(Path("/does/not/exist.json"))
+
+    def test_duplicate_root_service_fails_closed_before_append(self) -> None:
+        profile = load_profile(PROFILE)
+        gatt = DirtyGatt(
+            (
+                GattAttribute(39, 0, "2800"),
+                GattAttribute(40, 0, "2803"),
+                GattAttribute(41, 0, profile.characteristics[0].uuid),
+                GattAttribute(49, 0, "2800"),
+                GattAttribute(50, 0, "2803"),
+                GattAttribute(51, 0, profile.characteristics[0].uuid),
+            )
+        )
+        with self.assertRaisesRegex(ProfileError, "appears 2 times"):
+            provision(gatt, profile)
+        self.assertEqual(gatt.calls, [])
+
+    def test_incomplete_existing_root_service_fails_closed_before_append(self) -> None:
+        profile = load_profile(PROFILE)
+        gatt = DirtyGatt(
+            (
+                GattAttribute(39, 0, "2800"),
+                GattAttribute(40, 0, "2803"),
+                GattAttribute(41, 0, profile.characteristics[0].uuid),
+            )
+        )
+        with self.assertRaisesRegex(ProfileError, "incomplete characteristic topology"):
+            provision(gatt, profile)
+        self.assertEqual(gatt.calls, [])
 
 
 if __name__ == "__main__":

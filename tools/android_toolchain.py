@@ -11,7 +11,7 @@ from pathlib import Path
 
 from tools.local_config import ConfiguredPath, resolve_android_sdk_root
 
-ANDROID_CLI_VERSION = "1.0.15985488"
+ANDROID_CLI_VERSION_POLICY = "official-current"
 AVD_NAME = "medium_phone"
 AVD_PROFILE = "medium_phone"
 
@@ -166,10 +166,12 @@ def verify_android_cli() -> Path:
         raise RuntimeError(
             f"Android CLI version check failed with exit code {returncode}: {output}"
         )
-    if ANDROID_CLI_VERSION not in output.splitlines():
+    # The official CLI is intentionally rolling; validate that it runs rather
+    # than pinning a build number that would block routine SDK maintenance.
+    if not any(line[:1].isdigit() for line in output.splitlines()):
         raise RuntimeError(
             f"unexpected Android CLI version output {output.strip()!r}; "
-            f"expected a line containing {ANDROID_CLI_VERSION}"
+            "expected a numeric version line"
         )
     return executable
 
@@ -552,7 +554,7 @@ def report(*, require_complete: bool) -> None:
     returncode, version = _run_output([str(executable), "--version"])
 
     print(f"android_cli={executable}")
-    print(f"android_cli_expected_version={ANDROID_CLI_VERSION}")
+    print(f"android_cli_version_policy={ANDROID_CLI_VERSION_POLICY}")
     print(f"android_cli_version={version}")
     print(f"android_cli_version_exit_code={returncode}")
     print(f"android_sdk_root={root}")

@@ -32,7 +32,7 @@ kotlin {
 }
 
 dependencies {
-    implementation("dev.blehub:blehub-uniffi:0.0.0")
+    implementation("dev.blehub:blehub-android:0.0.0")
     androidTestImplementation("androidx.test.ext:junit-ktx:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
 }

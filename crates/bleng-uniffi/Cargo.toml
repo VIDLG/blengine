@@ -1,0 +1,24 @@
+[package]
+name = "bleng-uniffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "bleng_uniffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi_bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+default = []
+bindgen = ["dep:uniffi", "uniffi/cli"]
+
+[dependencies]
+blehub = { path = "../blehub" }
+bleng = { path = "../bleng" }
+uniffi = { workspace = true, optional = true }

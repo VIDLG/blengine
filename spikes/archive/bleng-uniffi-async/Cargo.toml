@@ -1,0 +1,28 @@
+[package]
+name = "blehub-bleng-uniffi-async-spike"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+# This is an isolated mechanism probe, never a production BleHub image.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/uniffi_bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+default = []
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+blehub = { path = "../../crates/blehub" }
+bleng = { path = "../../crates/bleng", features = ["foreign-probe"] }
+uniffi = "=0.32.0"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+thiserror = "2"

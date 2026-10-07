@@ -1,0 +1,66 @@
+# Reviewed BLeng public API shape; ABI remains unfrozen.
+
+pub struct Bleng;
+
+impl Bleng {
+    pub fn new() -> Result<Arc<Self>, BlengError>;
+    pub async fn assemble_backend(&self, backend: Arc<dyn BleBackend>) -> Result<(), BlengError>;
+    pub async fn initialize(&self, timeout_ms: u64) -> Result<AdapterSnapshot, BlengError>;
+    pub async fn start_scan(&self, options: ScanOptions, timeout_ms: u64,) -> Result<ScanSessionId, BlengError>;
+    pub async fn stop_scan(&self, session: ScanSessionId, timeout_ms: u64,) -> Result<(), BlengError>;
+    pub async fn connect(&self, peripheral: PeripheralId, timeout_ms: u64,) -> Result<ConnectionId, BlengError>;
+    pub async fn disconnect(&self, connection: ConnectionId, timeout_ms: u64,) -> Result<(), BlengError>;
+    pub async fn discover_gatt(&self, connection: ConnectionId, timeout_ms: u64,) -> Result<GattDatabase, BlengError>;
+    pub async fn read_characteristic(&self, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, timeout_ms: u64,) -> Result<Vec<u8>, BlengError>;
+    pub async fn write_characteristic(&self, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Vec<u8>, write_type: WriteType, timeout_ms: u64,) -> Result<(), BlengError>;
+    pub async fn enable_notifications(&self, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeout_ms: u64,) -> Result<SubscriptionId, BlengError>;
+    pub async fn disable_notifications(&self, connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId, timeout_ms: u64,) -> Result<(), BlengError>;
+    pub async fn read_rssi(&self, connection: ConnectionId, timeout_ms: u64,) -> Result<i16, BlengError>;
+    pub async fn next_event(&self, timeout_ms: u64) -> Result<Option<BleEvent>, BlengError>;
+    pub async fn shutdown(&self) -> Result<(), BlengError>;
+}
+
+pub enum BlengBusyReason {
+    Scan,
+    Peripheral,
+    Gatt,
+    Operation,
+    BackendSlotOccupied,
+}
+
+pub enum BlengContractFailure {
+    InvalidCommandId,
+    DuplicateHubOwnership,
+}
+
+pub enum BlengError {
+    Closed,
+    Cancelled,
+    Disconnected,
+    InvalidTimeout,
+    NotReady {reason: BlengNotReadyReason},
+    Busy {reason: BlengBusyReason},
+    ResourceExhausted {resource: BlengResource},
+    ContractFailure {reason: BlengContractFailure},
+    DispatchRejected {error: CommandDispatchError},
+    Operation {error: BleEventError},
+    Assembly {error: BleHubError},
+    Cleanup {error: BleHubError},
+    Timeout,
+    TransportFault,
+    WorkerStopped,
+}
+
+pub enum BlengNotReadyReason {
+    BackendNotAssembled,
+    NotInitialized,
+    ScanNotActive,
+    ConnectionNotActive,
+    GattNotReady,
+    SubscriptionNotActive,
+}
+
+pub enum BlengResource {
+    PendingWaiters,
+    Identifiers,
+}

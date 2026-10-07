@@ -1,0 +1,74 @@
+# React Native iOS SwiftPM replacement spike — 2026-09-25
+
+## Question and result
+
+Can the internal RN 0.87.1 + Nitro 0.37.1 iOS host replace CocoaPods with React Native's experimental Swift Package Manager (SwiftPM) pipeline without changing the native integration architecture?
+
+**Result: no drop-in replacement on this candidate.** An isolated run of the installed RN CLI's `spm scaffold` generated RN/Nitro codegen successfully but failed with exit code 2 during SPM autolinking: both `@blehub/react-native-internal` and `react-native-nitro-modules` contain Swift and C-family sources. No SPM iOS build, final link, single-image gate, device runtime, or RF test ran. This is a toolchain/integration limitation, not a failure of the BleHub Apple backend.
+
+This result does **not** prove that a deliberately redesigned or prebuilt Nitro integration can never use SwiftPM. It only rules out the current RN 0.87.1 automatic CocoaPods-to-SPM/scaffold path as a direct replacement.
+
+## Inputs and isolation
+
+- Mobile host: [`tests/consumers/react-native-internal/package.json`](../../tests/consumers/react-native-internal/package.json) pins RN 0.87.1 and Nitro 0.37.1. The current CocoaPods topology is defined in its [iOS Podfile](../../tests/consumers/react-native-internal/ios/Podfile), the [Nitro podspec](../../integrations/react-native-internal/BleHubReactNative.podspec), and separate [Apple backend](../../integrations/react-native-internal/apple-pods/BleHubApple/BleHubApple.podspec) and [UniFFI](../../integrations/react-native-internal/apple-pods/BleHubUniFfi/BleHubUniFfi.podspec) podspecs. The Apple backend also has a [standalone SwiftPM manifest](../../platforms/apple/Package.swift), which does not assemble the entire RN/Nitro host.
+- Host: Apple Mac, Xcode 27.0; installed `react-native` CLI resolved from the pinned host dependencies. RN's local implementation at `tests/consumers/react-native-internal/node_modules/react-native/scripts/setup-apple-spm.js` states that `spm --deintegrate` edits the existing `.xcodeproj`/Podfile in place. The current worktree was dirty, including untracked RN integration and host files, so no `git pull --ff-only` or in-place conversion was attempted.
+- A copy-on-write clone of the RN host and the integration was made under the gitignored `.work/react-native-spm-spike/` with the same relative layout. Its `node_modules` symlinks were checked to resolve inside the clone (zero links out of the clone). No original Podfile, `.xcodeproj`, generated glue, or project dependency was changed. The large throwaway copy was removed after the probe.
+
+## Executed probe
+
+From `.work/react-native-spm-spike/tests/consumers/react-native-internal`:
+
+```text
+./node_modules/.bin/react-native spm --help
+./node_modules/.bin/react-native spm scaffold --help
+./node_modules/.bin/react-native spm scaffold
+```
+
+The CLI recognized `spm`, selected the cloned `ios` app, wrote cloned `ios/build/generated/autolinking/autolinking.json`, and ran RN codegen for Nitro (`NitroModulesSpec`) successfully. Generating the autolinking `Package.swift` then failed with exit code 2. The two actionable error headers were:
+
+```text
+error: "@blehub/react-native-internal" has mixed Swift + Objective-C/C++ sources, which Swift Package Manager cannot compile in a single target
+error: "react-native-nitro-modules" has mixed Swift + Objective-C/C++ sources, which Swift Package Manager cannot compile in a single target
+```
+
+The installed RN generator at `tests/consumers/react-native-internal/node_modules/react-native/scripts/spm/generate-spm-autolinking.js` checks for Swift and C-family files below each dependency root and explicitly rejects an automatically scaffolded single-target package when both occur; its sibling `scaffold-package-swift.js` documents the corresponding scaffolder restriction. These are installed dependency files (not tracked project evidence); pin their version when reproducing the experiment.
+
+The mixed-language detection is corroborated by project and installed dependency files, not merely an empty manifest: the integration has [`ios/HybridBleHubProbe.swift`](../../integrations/react-native-internal/ios/HybridBleHubProbe.swift) alongside generated iOS `BleHubReactNativeAutolinking.mm` and C++ bridge sources under ignored `nitrogen/generated/ios/`; upstream Nitro has Swift classes and C++/ObjC++ files in its `ios/` subtree. The RN detector scans the dependency root, so the integration's Android `cpp-adapter.cpp` is *also* visible to the heuristic; removing it would not eliminate the actual generated iOS mixed-language bridge. No claim is made about the feasibility of a hand-designed multi-target layout: that would require checking Swift↔C++ dependencies, linking, generation, and lifecycle against the real app.
+
+## Follow-up: pinned Nitro packaging audit
+
+The installed `react-native-nitro-modules@0.37.1` and `nitrogen@0.37.1` have no shipped `Package.swift` or Nitro XCFramework. Their npm default release versions were also `0.37.1` when checked on 2026-09-25; that is not a claim about unreleased upstream work. Nitro's installed `NitroModules.podspec` gathers shared C++, iOS C++/ObjC++, and Swift into a single pod target and depends on `React-jsi` and `React-callinvoker` (lines 24–33, 68–94). The installed Nitrogen generator at `integrations/react-native-internal/node_modules/nitrogen/src/autolinking/ios/createPodspecRubyExtension.ts` adds all generated iOS Swift/C++/ObjC++ glue to the same pod target (lines 29–68). Generated `BleHubReactNativeAutolinking.mm` registers `BleHubProbe` in Nitro's registry via Objective-C `+load`. The generated C++ adapter includes a Swift umbrella header tied to the `BleHubReactNative` module name. Naively splitting generated Swift and C++ into two SwiftPM targets or omitting the ObjC registration file is therefore not a valid conversion; a real alternative needs explicit interop/module and link-retention design.
+
+Nitro's public documentation indexed in Context7 currently demonstrates podspec + `pod install`, not a documented SPM migration procedure. This corroborates the pinned-package audit but cannot establish that a future upstream release will not support SPM. The minimum meaningful *next* iOS experiment is to investigate a full prebuilt Nitro-and-generated-bridge XCFramework or a reviewed hand-designed multi-target package with an explicit React/JSI module graph. A small manifest added only to BleHub or a `platforms.ios: null` exclusion is insufficient. Such packaging must demonstrate registration, exact one production UniFFI image, actual JS→Nitro→BleHub events, close/reload, and the relevant platform gates before replacing CocoaPods.
+
+### React Native 0.87 extension seam (not Nitro support)
+
+The installed RN source at `tests/consumers/react-native-internal/node_modules/react-native/scripts/spm/autolinking-plugins.js` (lines 11–84, 106–159) defines a **preview/unstable** `spm.autolinkingPlugin` seam. A dependency's own `react-native.config.js` may declare a plugin returning package/product dependencies, generated app sources, or flavor-specific dynamic framework artifacts. The generator's `generate-spm-autolinking.js` (lines 1329–1405) then skips that plugin-owning dependency's usual source-target generation and missing-manifest check. This provides a concrete possible **injection mechanism**, not an existing Nitro package or a successful replacement: the plugin still needs reproducible RN-version-compatible Nitro runtime and BleHub generated-bridge binaries, the production UniFFI package, correct ObjC registration/link retention, and an app that runs. RN's `spm.modules` (same generator, lines 1413–1445) only synthesizes source targets; it does not solve Nitro's mixed-language bridge by itself. One-shot edits of RN's generated autolinking `Package.swift` would be overwritten on sync, per the plugin source.
+
+A bounded next probe should (1) exercise plugin discovery/autolinking in an isolated copy, without passing an empty plugin as a success; (2) independently prove an actual version-pinned Nitro binary/package can build and register its hybrid objects against the RN 0.87 host; (3) assemble BleHub's existing staged production image exactly once and run the iOS host lifecycle and symbol gates. Since steps 2–3 require a new, nontrivial binary/packaging owner and Nitro's locked release ships none, do not edit the maintained CocoaPods host or claim SwiftPM readiness from step 1 alone. The plugin seam is unstable, so preserving a reproducible pinned toolchain and a CocoaPods fallback remains important.
+
+### Ecosystem follow-up: RN RFC and Nitro PR (2026-09-25)
+
+[React Native 0.87's release notes](https://reactnative.dev/blog/2026/08/11/react-native-0.87) call iOS SwiftPM opt-in and experimental, CocoaPods the default supported path, and explicitly say not to use SwiftPM in production yet. The [open RFC #0994](https://github.com/react-native-community/discussions-and-proposals/pull/994) proposes a staged CocoaPods-to-SPM migration and a preview `spm.autolinkingPlugin` for frameworks with mixed-language sources. Its illustrated third-party `spm` metadata and prebuild tooling are proposals, not a shipped Nitro conversion. The RFC notes that some native libraries need restructuring and the framework plugin contract is unstable while Expo validates it; Expo's prospective integration is not proof of Nitro compatibility.
+
+The upstream [Nitro PR #1474](https://github.com/margelo/nitro/pull/1474), titled `(WIP)feat: support react native 0.87`, says `Prep experimental SwiftPM` in its description. At review time it was open, draft, unmerged, with one commit and no submitted reviews. Inspection of its [11 changed files](https://api.github.com/repos/margelo/nitro/pulls/1474/files?per_page=100) shows RN 0.87 dependency/example updates, a CocoaPods `Podfile.lock` update, and `Package.swift` added to **publish-file lists** for the Nitro test packages; the diff adds **no actual `Package.swift`**, runtime-package autolinking plugin, or prebuilt Nitro framework. Its example still uses `NitroModules` as a pod. This is evidence of exploratory RN 0.87 compatibility work, **not** an upstream-supported or published Nitro SwiftPM solution. Indexed [Nitro setup instructions](https://github.com/mrousavy/nitro/blob/main/docs/docs/resources/for-library-users.md) still direct iOS users to `pod install`.
+
+For the pinned BleHub mobile host, retain CocoaPods rather than taking ownership of an unproven Nitro packaging fork. Reassess when Nitro ships a consumable SwiftPM runtime and generated-module integration with RN's supported path, then rerun the isolated scaffold/build, link/single-image, on-device lifecycle, and RF gates. PR activity alone does not satisfy those gates.
+
+## macOS RN scope (separate decision)
+
+The [RN plan](../../.plan/PLAN.md#561-react-native-到-rust-的桥接选择) makes iOS/Android the first formal RN gates and macOS/Windows separate desktop feasibility gates. The macOS host uses `react-native-macos@0.81.9` with `react-native@0.81.6`, not the mobile host's RN 0.87.1. Installed `react-native-macos` implements native AppKit views; it is an actual RN macOS host, not a WebView wrapper. The [2026-09-21 feasibility report](../testing/reports/2026-09-21-react-native-nitro-apple-feasibility.md) records an independent signed macOS Nitro/production-ABI runtime and lifecycle pass, not macOS BLE RF or an up-to-date visible UI gate. The [2026-09-25 review](react-native-internal-integration-review.md) records a later signed Release UI accessibility pass before the host was archived; neither result is BLE RF evidence.
+
+Recommendation, pending plan review: keep that host only as an optional, non-blocking feasibility gate while mobile iOS/Android are prioritized; do not require its version line, Podfile workarounds, signing or TCC setup for routine mobile development or for this SwiftPM experiment. If RN macOS is explicitly removed from product scope, revise the single approved plan first and review removal of the RN-only host/recipes. The macOS production CoreBluetooth backend, SwiftPM consumers, and native macOS HIL are independent and must remain. This report makes no architectural plan change and removes no host.
+
+**Tauri is not an active RN macOS replacement.** The [approved plan](../../.plan/PLAN.md) explicitly archives/pauses Tauri plugin and reference app maintenance and says past Tauri results cannot stand for RN/Nitro, native Apple, or current-provider gates (§1.2, §5.5.1, §5.6.1). [`just/archive/tauri/mod.just`](../../just/archive/tauri/mod.just) preserves historical macOS assembly, WebView E2E, and RF recipes but is not imported by the root Justfile; the retired Tauri-only nRF coordination means its RF recipes cannot be assumed runnable. Tauri is a WKWebView + Rust plugin host, not an AppKit React Native host. If desktop React Native is removed, keep active native macOS Swift/Apple HIL and artifact-only consumers for CoreBluetooth/package coverage; Tauri may remain archived for optional historical comparison, not as an automatic substitute. Reinstating Tauri as a maintained optional test would be a separate explicit plan decision and maintenance commitment.
+
+**Later scope update (2026-09-25):** The user chose not to maintain the independent RN macOS host. Its hand-authored source moved to [`tests/consumers/archive/react-native-macos/`](../../tests/consumers/archive/react-native-macos/), its active Just recipes and macOS platform advertisement were removed, and Tauri sources/recipes were physically archived. The earlier recommendation and evidence above remain historical, not a current RN macOS gate. The production macOS CoreBluetooth backend and native Apple validation are unaffected.
+
+## Decision boundary and next experiment
+
+- Retain the working CocoaPods-based iOS host gates for now. RN 0.87's official SwiftPM announcement calls this path experimental and CocoaPods the default supported path. The RN macOS host uses a different RN/React Native macOS version pair and was **not** tested in this iOS probe.
+- Merely giving the BleHub Apple backend a `Package.swift` does not solve the two missing/mixed Nitro modules. Opting either module out of SPM autolinking without supplying an equivalent native binary would omit required Nitro functionality and is **not** a passing workaround.
+- If the team wants to pursue full SwiftPM, first investigate upstream Nitro's supported SPM packaging or a maintained binary XCFramework/hand-designed target split. Then prove the actual iOS host builds, a single production UniFFI image links, Nitro callbacks/lifecycle work on-device, and the applicable RF gates pass. That is a separate architecture/packaging proposal, not a mechanical replacement of `pod install`.
+
+Official RN 0.87 release notes: <https://reactnative.dev/blog/2026/08/11/react-native-0.87>.

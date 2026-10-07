@@ -14,6 +14,12 @@ pub struct CharacteristicProperties {
     pub indicatable: bool,
 }
 
+/// The complete GATT discovery snapshot for one connection and session.
+///
+/// The service topology may look static to a caller, but it is not a global
+/// device schema: reconnects create a new connection identity, and service
+/// invalidation or rediscovery creates a new GATT session. Attribute IDs are
+/// therefore only meaningful with both IDs carried by this record.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct GattDatabase {
     pub connection_id: ConnectionId,

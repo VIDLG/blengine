@@ -1,0 +1,365 @@
+diff --git a/tests/bluetooth/tester/Kconfig b/tests/bluetooth/tester/Kconfig
+index 000000000000..000000000000 100644
+--- a/tests/bluetooth/tester/Kconfig
++++ b/tests/bluetooth/tester/Kconfig
+@@ -16,5 +16,24 @@ config BTTESTER_BTP_CMD_THREAD_STACK_SIZE
+ 	  Stack size in byte used by the BTP CMD thread.
+ 
++config BTTESTER_GATT_READ_HOLD
++	bool "Enable private bounded GATT authorization-read hold"
++	depends on BT
++	default n
++	help
++	  Add private BTP commands that can arm one authorization-protected
++	  GATT attribute read for a bounded interval. This is test-only support
++	  and is disabled by default.
++
++config BTTESTER_GATT_READ_HOLD_TIMEOUT_MS
++	int "GATT read hold timeout in milliseconds"
++	depends on BTTESTER_GATT_READ_HOLD
++	default 5000
++	range 1 60000
++	help
++	  Maximum time that an armed authorization-protected GATT read may wait
++	  for the matching remote read and release or abort command. A timeout
++	  fails the read closed with ATT authorization error.
++
+ config BTTESTER_L2CAP_DATA_POOL_COUNT
+ 	int "L2CAP Service data pool count"
+ 	depends on BT_CLASSIC
+diff --git a/tests/bluetooth/tester/src/btp_gatt.c b/tests/bluetooth/tester/src/btp_gatt.c
+index 000000000000..000000000000 100644
+--- a/tests/bluetooth/tester/src/btp_gatt.c
++++ b/tests/bluetooth/tester/src/btp_gatt.c
+@@ -37,4 +37,32 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME, CONFIG_BTTESTER_LOG_LEVEL);
+ #define MAX_BUFFER_SIZE 2048
+ #define MAX_UUID_LEN 16
+ 
++#if defined(CONFIG_BTTESTER_GATT_READ_HOLD)
++/* Private BTP opcodes; the public GATT command range currently ends at 0x23. */
++#define BTP_GATT_READ_HOLD_ARM     0x24
++#define BTP_GATT_READ_HOLD_RELEASE 0x25
++#define BTP_GATT_READ_HOLD_ABORT   0x26
++#define BTP_GATT_READ_HOLD_STATUS  0x27
++
++struct btp_gatt_read_hold_arm_cmd {
++	uint16_t handle;
++} __packed;
++
++struct btp_gatt_read_hold_arm_rp {
++	uint32_t sequence;
++	uint16_t handle;
++} __packed;
++
++struct btp_gatt_read_hold_control_cmd {
++	uint32_t sequence;
++	uint16_t handle;
++} __packed;
++
++struct btp_gatt_read_hold_status_rp {
++	uint8_t state;
++	uint32_t sequence;
++	uint16_t handle;
++} __packed;
++#endif
++
+ #define MAX_SUBSCRIPTIONS 2
+@@ -318,6 +346,244 @@ enum {
+ 	GATT_VALUE_WRITE_AUTHOR_FLAG,
+ };
+ 
++#if defined(CONFIG_BTTESTER_GATT_READ_HOLD)
++enum read_hold_state {
++	READ_HOLD_IDLE = 0,
++	READ_HOLD_ARMED,
++	READ_HOLD_WAITING,
++	READ_HOLD_RELEASE_REQUESTED,
++	READ_HOLD_ABORT_REQUESTED,
++	READ_HOLD_RELEASED,
++	READ_HOLD_ABORTED,
++	READ_HOLD_EXPIRED,
++	READ_HOLD_PREPARING,
++};
++
++static K_SEM_DEFINE(read_hold_sem, 0, 1);
++static struct k_spinlock read_hold_lock;
++static enum read_hold_state read_hold_state;
++static uint32_t read_hold_sequence;
++static uint16_t read_hold_handle;
++
++static uint8_t read_hold_arm(const void *cmd, uint16_t cmd_len,
++				    void *rsp, uint16_t *rsp_len)
++{
++	const struct btp_gatt_read_hold_arm_cmd *cp = cmd;
++	struct btp_gatt_read_hold_arm_rp *rp = rsp;
++	k_spinlock_key_t key;
++	uint32_t next;
++	uint16_t handle;
++
++	if (cmd_len != sizeof(*cp)) {
++		return BTP_STATUS_FAILED;
++	}
++
++	handle = sys_le16_to_cpu(cp->handle);
++	if (handle == 0U) {
++		return BTP_STATUS_FAILED;
++	}
++
++	key = k_spin_lock(&read_hold_lock);
++	switch (read_hold_state) {
++	case READ_HOLD_IDLE:
++	case READ_HOLD_RELEASED:
++	case READ_HOLD_ABORTED:
++	case READ_HOLD_EXPIRED:
++		break;
++	default:
++		/* Do not replace an armed or active one-shot hold. */
++		k_spin_unlock(&read_hold_lock, key);
++		return BTP_STATUS_FAILED;
++	}
++
++	next = read_hold_sequence + 1U;
++	if (next == 0U) {
++		next = 1U;
++	}
++
++	read_hold_sequence = next;
++	read_hold_handle = handle;
++	read_hold_state = READ_HOLD_PREPARING;
++	k_spin_unlock(&read_hold_lock, key);
++
++	/* Clear any late give before making this generation claimable. */
++	k_sem_reset(&read_hold_sem);
++
++	key = k_spin_lock(&read_hold_lock);
++	if (read_hold_state != READ_HOLD_PREPARING ||
++	    read_hold_sequence != next || read_hold_handle != handle) {
++		k_spin_unlock(&read_hold_lock, key);
++		return BTP_STATUS_FAILED;
++	}
++
++	read_hold_state = READ_HOLD_ARMED;
++	k_spin_unlock(&read_hold_lock, key);
++
++	rp->sequence = sys_cpu_to_le32(next);
++	rp->handle = sys_cpu_to_le16(handle);
++	*rsp_len = sizeof(*rp);
++
++	return BTP_STATUS_SUCCESS;
++}
++
++static bool read_hold_local_read_rejected(uint16_t handle)
++{
++	k_spinlock_key_t key;
++	bool rejected;
++
++	key = k_spin_lock(&read_hold_lock);
++	rejected = (read_hold_handle == handle) &&
++			   (read_hold_state == READ_HOLD_PREPARING ||
++			    read_hold_state == READ_HOLD_ARMED ||
++			    read_hold_state == READ_HOLD_WAITING ||
++			    read_hold_state == READ_HOLD_RELEASE_REQUESTED ||
++			    read_hold_state == READ_HOLD_ABORT_REQUESTED);
++	k_spin_unlock(&read_hold_lock, key);
++
++	return rejected;
++}
++
++/* Claim the arm exactly once, before waiting for release or abort. */
++static bool read_hold_claim(uint16_t handle, uint32_t *sequence)
++{
++	k_spinlock_key_t key;
++
++	key = k_spin_lock(&read_hold_lock);
++	if (read_hold_state != READ_HOLD_ARMED || read_hold_handle != handle) {
++		k_spin_unlock(&read_hold_lock, key);
++		return false;
++	}
++
++	read_hold_state = READ_HOLD_WAITING;
++	*sequence = read_hold_sequence;
++	k_spin_unlock(&read_hold_lock, key);
++
++	return true;
++}
++
++static bool read_hold_wait(uint32_t sequence)
++{
++	k_spinlock_key_t key;
++	bool release = false;
++	int err;
++
++	/* A timed-out wait always wins a release race and fails the read closed. */
++	err = k_sem_take(&read_hold_sem,
++			K_MSEC(CONFIG_BTTESTER_GATT_READ_HOLD_TIMEOUT_MS));
++
++	key = k_spin_lock(&read_hold_lock);
++	if (read_hold_sequence != sequence) {
++		k_spin_unlock(&read_hold_lock, key);
++		return false;
++	}
++
++	if (err != 0) {
++		read_hold_state = READ_HOLD_EXPIRED;
++		k_spin_unlock(&read_hold_lock, key);
++
++		/* Consume a give that raced after the finite wait expired. */
++		(void)k_sem_take(&read_hold_sem, K_NO_WAIT);
++		return false;
++	}
++
++	switch (read_hold_state) {
++	case READ_HOLD_RELEASE_REQUESTED:
++		read_hold_state = READ_HOLD_RELEASED;
++		release = true;
++		break;
++	case READ_HOLD_ABORT_REQUESTED:
++		read_hold_state = READ_HOLD_ABORTED;
++		break;
++	case READ_HOLD_WAITING:
++		read_hold_state = READ_HOLD_EXPIRED;
++		break;
++	default:
++		/* Any unexpected transition fails closed. */
++		break;
++	}
++
++	k_spin_unlock(&read_hold_lock, key);
++
++	return release;
++}
++
++static uint8_t read_hold_status(const void *cmd, uint16_t cmd_len,
++				       void *rsp, uint16_t *rsp_len)
++{
++	struct btp_gatt_read_hold_status_rp *rp = rsp;
++	k_spinlock_key_t key;
++
++	ARG_UNUSED(cmd);
++	ARG_UNUSED(cmd_len);
++
++	key = k_spin_lock(&read_hold_lock);
++	rp->state = read_hold_state;
++	rp->sequence = sys_cpu_to_le32(read_hold_sequence);
++	rp->handle = sys_cpu_to_le16(read_hold_handle);
++	k_spin_unlock(&read_hold_lock, key);
++
++	*rsp_len = sizeof(*rp);
++	return BTP_STATUS_SUCCESS;
++}
++
++static uint8_t read_hold_control(const void *cmd, uint16_t cmd_len,
++					void *rsp, uint16_t *rsp_len, bool abort)
++{
++	const struct btp_gatt_read_hold_control_cmd *cp = cmd;
++	k_spinlock_key_t key;
++	uint32_t sequence;
++	uint16_t handle;
++
++	ARG_UNUSED(rsp);
++	ARG_UNUSED(rsp_len);
++
++	if (cmd_len != sizeof(*cp)) {
++		return BTP_STATUS_FAILED;
++	}
++
++	sequence = sys_le32_to_cpu(cp->sequence);
++	handle = sys_le16_to_cpu(cp->handle);
++
++	key = k_spin_lock(&read_hold_lock);
++	if (read_hold_sequence != sequence || read_hold_handle != handle) {
++		k_spin_unlock(&read_hold_lock, key);
++		return BTP_STATUS_FAILED;
++	}
++
++	if (abort && read_hold_state == READ_HOLD_ARMED) {
++		read_hold_state = READ_HOLD_ABORTED;
++		k_spin_unlock(&read_hold_lock, key);
++		return BTP_STATUS_SUCCESS;
++	}
++
++	if (read_hold_state != READ_HOLD_WAITING) {
++		k_spin_unlock(&read_hold_lock, key);
++		return BTP_STATUS_FAILED;
++	}
++
++	read_hold_state = abort ? READ_HOLD_ABORT_REQUESTED :
++				 READ_HOLD_RELEASE_REQUESTED;
++	k_spin_unlock(&read_hold_lock, key);
++
++	/* Give only after publishing the request so the callback cannot miss it. */
++	k_sem_give(&read_hold_sem);
++
++	return BTP_STATUS_SUCCESS;
++}
++
++static uint8_t read_hold_release(const void *cmd, uint16_t cmd_len,
++					 void *rsp, uint16_t *rsp_len)
++{
++	return read_hold_control(cmd, cmd_len, rsp, rsp_len, false);
++}
++
++static uint8_t read_hold_abort(const void *cmd, uint16_t cmd_len,
++				       void *rsp, uint16_t *rsp_len)
++{
++	return read_hold_control(cmd, cmd_len, rsp, rsp_len, true);
++}
++#endif
++
+ static ssize_t read_value(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+ 			  void *buf, uint16_t len, uint16_t offset)
+ {
+@@ -330,4 +543,14 @@ static ssize_t read_value(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+ 
+ 	if (tester_test_bit(value->flags, GATT_VALUE_READ_AUTHOR_FLAG)) {
++#if defined(CONFIG_BTTESTER_GATT_READ_HOLD)
++		uint32_t sequence;
++
++		if (conn == NULL || offset != 0U ||
++		    !read_hold_claim(attr->handle, &sequence) ||
++		    !read_hold_wait(sequence)) {
++			return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
++		}
++#else
+ 		return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
++#endif
+ 	}
+@@ -2470,4 +2746,11 @@ static uint8_t get_attr_val_rp(const struct bt_gatt_attr *attr, uint16_t handle,
+ 	do {
+ 		to_read = net_buf_simple_tailroom(buf);
+ 
++#if defined(CONFIG_BTTESTER_GATT_READ_HOLD)
++		if (read_hold_local_read_rejected(attr->handle)) {
++			rp->att_response = BT_ATT_ERR_AUTHORIZATION;
++			break;
++		}
++#endif
++
+ 		if (!attr->read) {
+@@ -2798,4 +3081,26 @@ static const struct btp_handler handlers[] = {
+ 		.expect_len = sizeof(struct btp_gatt_remove_handle_from_db_cmd),
+ 		.func = remove_by_handle_from_db,
+ 	},
++#if defined(CONFIG_BTTESTER_GATT_READ_HOLD)
++	{
++		.opcode = BTP_GATT_READ_HOLD_ARM,
++		.expect_len = sizeof(struct btp_gatt_read_hold_arm_cmd),
++		.func = read_hold_arm,
++	},
++	{
++		.opcode = BTP_GATT_READ_HOLD_RELEASE,
++		.expect_len = sizeof(struct btp_gatt_read_hold_control_cmd),
++		.func = read_hold_release,
++	},
++	{
++		.opcode = BTP_GATT_READ_HOLD_ABORT,
++		.expect_len = sizeof(struct btp_gatt_read_hold_control_cmd),
++		.func = read_hold_abort,
++	},
++	{
++		.opcode = BTP_GATT_READ_HOLD_STATUS,
++		.expect_len = 0,
++		.func = read_hold_status,
++	},
++#endif
+ };

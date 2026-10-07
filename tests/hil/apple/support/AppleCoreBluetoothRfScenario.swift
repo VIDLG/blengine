@@ -259,10 +259,17 @@ func validateRfCycleLedger(_ events: [BleEvent], ids: RfCycleIds, scenario: Appl
             throw ProbeError.invalidGattDatabase("missing \(uuid)")
         }
         let mode: NotificationMode = scenario == .indication ? .indication : .notification
-        try validateNotificationEventLedger(events, database: database, subscriptionId: ids.subscription,
-                                            characteristicId: characteristic.id, expectedValue: Data([0xDE, 0xAD, 0xBE, 0xEF]),
-                                            ids: ids, expectedMode: mode, expectDisable: scenario != .passiveDisconnect)
-        for local: UInt64 in scenario == .passiveDisconnect ? [6] : [6, 7] {
+        try validateNotificationEventLedger(
+            events,
+            database: database,
+            subscriptionId: ids.subscription,
+            characteristicId: characteristic.id,
+            expectedValue: try configuration.notificationValue,
+            ids: ids,
+            expectedMode: mode,
+            expectDisable: scenario != .passiveDisconnect && scenario != .recovery
+        )
+        for local: UInt64 in (scenario == .passiveDisconnect || scenario == .recovery) ? [6] : [6, 7] {
             try claim(local, [{
                 guard case .notificationStateChanged(_, let connection, let gatt, let sub, let char, let state) = $0 else { return false }
                 return connection == ids.connection && gatt == ids.gatt && sub == ids.subscription && char == characteristic.id &&
@@ -291,7 +298,7 @@ func validateRfCycleLedger(_ events: [BleEvent], ids: RfCycleIds, scenario: Appl
         }
     }
     let disconnectIndex: Int
-    if scenario == .passiveDisconnect {
+    if scenario == .passiveDisconnect || scenario == .recovery {
         let indices = events.indices.filter { isRfPassiveDisconnect(events[$0], connectionId: ids.connection) }
         guard indices.count == 1 else { throw ProbeError.disconnectTimeout(events) }
         disconnectIndex = indices[0]
@@ -337,7 +344,8 @@ func runIOSRfScenario(
     runId: String, coordinationPath: String, unfiltered: Bool = false,
     allowDuplicates: Bool = true, diagnosticTargetPeripheralId: (() -> PeripheralId?)? = nil,
     scanDuration: TimeInterval = 30,
-    configuration: RfFixtureConfiguration = .android
+    configuration: RfFixtureConfiguration = .android,
+    externalProvider: String? = nil
 ) throws -> [String] {
     var output = configuration.evidence
     var cycles: [RfCycleEvidence] = []
@@ -370,8 +378,11 @@ func runIOSRfScenario(
             fixture: fixture, peripheralId: scan.advertisement.peripheralId,
             discoverGattServiceUuid: serviceUuid, runGattIoAfterDiscovery: scenario == .io,
             runNotificationsAfterDiscovery: scenario.usesNotifications,
-            fixtureCoordinationPath: scenario.needsHost ? path : nil, ids: ids, rfScenario: scenario,
-                        configuration: configuration
+            fixtureCoordinationPath: scenario.needsHost ? path : nil,
+            ids: ids,
+            rfScenario: scenario,
+            configuration: configuration,
+            externalProvider: externalProvider
         ))
         cycles.append(RfCycleEvidence(ids: ids, range: start ..< fixture.snapshot().events.count))
         try validateRfHistory(fixture.snapshot().events, cycles: cycles, scenario: scenario, configuration: configuration)
@@ -1073,7 +1084,8 @@ func runNotifications(
     fixtureCoordinationPath: String?,
     ids: RfCycleIds = RfCycleIds(),
     strictIndication: Bool = false,
-    leaveActive: Bool = false
+    leaveActive: Bool = false,
+    configuration: RfFixtureConfiguration = .android
 ) throws -> (
     output: [String],
     ledgerOffset: Int,
@@ -1165,13 +1177,13 @@ func runNotifications(
         throw ProbeError.notificationTimeout("enable", enabledEvents)
     }
 
+    let expectedValue = try configuration.notificationValue
     try validateNotificationEventLedger(
         enabledEvents, database: database, subscriptionId: subscriptionId,
-        characteristicId: characteristic.id, expectedValue: Data([0xDE, 0xAD, 0xBE, 0xEF]),
+        characteristicId: characteristic.id, expectedValue: expectedValue,
         ids: ids, expectedMode: expectedMode, expectDisable: false, expectValue: false
     )
     try signalProbeHost(path: fixtureCoordinationPath, marker: "notification-enabled")
-    let expectedValue = Data([0xDE, 0xAD, 0xBE, 0xEF])
     let valueDeadline = Date().addingTimeInterval(45)
     while Date() < valueDeadline {
         let events = Array(fixture.snapshot().events.dropFirst(ledgerOffset))
@@ -1218,7 +1230,7 @@ func runNotifications(
     try validateNotificationEventLedger(
         valueEvents, database: database, subscriptionId: subscriptionId,
         characteristicId: characteristic.id, expectedValue: expectedValue,
-        ids: ids, expectedMode: expectedMode, expectDisable: false
+        ids: ids, expectedMode: expectedMode, expectDisable: !leaveActive
     )
     if leaveActive {
         return ([
@@ -1564,7 +1576,8 @@ func runConnection(
     fixtureCoordinationPath: String?,
     ids: RfCycleIds = RfCycleIds(),
     rfScenario: AppleRfScenario? = nil,
-    configuration: RfFixtureConfiguration = .android
+    configuration: RfFixtureConfiguration = .android,
+    externalProvider: String? = nil
 ) throws -> [String] {
     let connect = ConnectCommand(
         commandId: ids.command(4),
@@ -1673,7 +1686,9 @@ func runConnection(
                 fixtureCoordinationPath: fixtureCoordinationPath,
                 ids: ids,
                 strictIndication: rfScenario == .indication,
-                leaveActive: rfScenario == .passiveDisconnect
+                leaveActive: rfScenario == .passiveDisconnect ||
+                    (rfScenario == .recovery && externalProvider == "nrf52840"),
+                configuration: configuration
             )
             output.append(contentsOf: notification.output)
             notificationLedgerOffset = notification.ledgerOffset
@@ -1682,6 +1697,32 @@ func runConnection(
             notificationCharacteristicId = notification.characteristicId
             notificationExpectedValue = notification.expectedValue
         }
+    }
+
+    if rfScenario == .recovery && externalProvider == "nrf52840" {
+        try signalProbeHost(path: fixtureCoordinationPath, marker: "connected")
+        try waitForProbeHost(path: fixtureCoordinationPath, marker: "fault-triggered", timeout: 60)
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline {
+            if fixture.snapshot().events.contains(where: {
+                isRfPassiveDisconnect($0, connectionId: ids.connection)
+            }) {
+                break
+            }
+            waitForCallbacks()
+        }
+        guard fixture.snapshot().events.contains(where: {
+            isRfPassiveDisconnect($0, connectionId: ids.connection)
+        }) else {
+            throw ProbeError.disconnectTimeout(fixture.snapshot().events)
+        }
+        try signalProbeHost(path: fixtureCoordinationPath, marker: "passive-disconnected")
+        try waitForProbeHost(path: fixtureCoordinationPath, marker: "recovery-ready", timeout: 90)
+        Thread.sleep(forTimeInterval: 2)
+        return output + [
+            "apple_macos_corebluetooth_passive_disconnect=passed",
+            "apple_macos_corebluetooth_passive_disconnect_silence=passed",
+        ]
     }
 
     if rfScenario == .rssi {

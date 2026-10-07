@@ -39,6 +39,13 @@ apple-package:
     {{apple_run}} python -m tools.swift_toolchain verify
     {{apple_run}} python -m tools.apple.package_uniffi
 
+# Formal two-component BLeng package. It is a separate package line from
+# apple-package and does not make blehub-uniffi depend on BLeng.
+[macos]
+apple-bleng-package:
+    {{apple_run}} python -m tools.swift_toolchain verify
+    {{apple_run}} python -m tools.apple.package_uniffi --bleng
+
 [private]
 generate-android-kotlin: build
     rm -rf {{generated_root}}/android-kotlin
@@ -57,7 +64,49 @@ publish-android: generate-android-kotlin build-android-native
 android-build: publish-android
     {{android_run}} python -m tools.run_android -- rtk gradle -p tests/ffi/runtime/android :bindings:assembleDebugAndroidTest --no-daemon
 
+# Build the production Android Central backend library against the generated
+# production binding and the same staged native image. This is host-only: it
+# does not install, start, or claim Android RF.
+android-backend-build: android-build
+    {{android_run}} python -m tools.run_android -- rtk gradle -p platforms/android :library:assembleDebug --no-daemon
+
+android-backend-publish: android-build
+    {{android_run}} python -m tools.run_android -- rtk gradle -p platforms/android :library:assembleRelease :library:publishReleasePublicationToFixtureRepository --no-daemon
+
+# Build the clean Android consumer against the published backend AAR. The
+# consumer still resolves the canonical UniFFI/native-image AAR transitively.
+android-backend-consumer-build: android-backend-publish
+    {{android_run}} python -m tools.run_android -- rtk gradle -p tests/consumers/android :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+
+# Run only the backend-AAR consumer lifecycle test through the project-owned
+# adb push + pm install instrumentation runner.
+android-backend-consumer device="physical": android-backend-consumer-build
+    {{android_run}} python -m tools.android.run_instrumentation --device {{device}} --app-apk tests/consumers/android/app/build/outputs/apk/debug/app-debug.apk --test-apk tests/consumers/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component dev.blehub.ffi.runtime.consumer.test/androidx.test.runner.AndroidJUnitRunner --test-class dev.blehub.ffi.runtime.consumer.PublishedArtifactConsumerTest --log .work/android-instrumentation/android-backend-consumer.log
+
+[private]
+android-consumer-build: publish-android
+    {{android_run}} python -m tools.run_android -- rtk gradle -p tests/consumers/android :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
+
 # Run the Stable UniFFI Android ART and published-AAR production ABI runtime gates.
-android device="auto": publish-android
-    {{android_run}} python -m tools.run_android --device {{device}} -- rtk gradle -p tests/ffi/runtime/android :bindings:connectedDebugAndroidTest --no-daemon
-    {{android_run}} python -m tools.run_android --device {{device}} -- rtk gradle -p tests/consumers/android :app:connectedDebugAndroidTest --no-daemon
+# The project-owned runner uses adb push + pm install, avoiding Gradle UTP streamed-install hangs.
+android device="auto": android-build android-consumer-build
+    {{android_run}} python -m tools.android.run_instrumentation --device {{device}} --test-apk tests/ffi/runtime/android/bindings/build/outputs/apk/androidTest/debug/bindings-debug-androidTest.apk --test-component dev.blehub.ffi.runtime.android.test/androidx.test.runner.AndroidJUnitRunner --test-class dev.blehub.ffi.runtime.UniFfiAndroidRuntimeTest --log .work/android-instrumentation/production-bindings.log
+    {{android_run}} python -m tools.android.run_instrumentation --device {{device}} --app-apk tests/consumers/android/app/build/outputs/apk/debug/app-debug.apk --test-apk tests/consumers/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component dev.blehub.ffi.runtime.consumer.test/androidx.test.runner.AndroidJUnitRunner --test-class dev.blehub.ffi.runtime.consumer.PublishedArtifactConsumerTest --log .work/android-instrumentation/production-consumer.log
+
+# Host-only checks for the formal BLeng package export and native-image audit.
+android-bleng-test-tools:
+    {{android_run}} python -m unittest tools.test_package_bleng_android
+
+# Formal blehub+bleng AAR and artifact-only APK build.
+# Static only: never selects, installs on, or starts an Android device.
+android-bleng-build:
+    {{android_run}} python -m tools.package_bleng_android
+
+# Re-audit the staged BLeng AAR ELFs with NDK llvm-nm, without rebuilding.
+android-bleng-audit:
+    {{android_run}} python -m tools.package_bleng_android --audit-only
+
+# Explicit BLeng ART gate. Installs through adb push + pm install, so no UI
+# confirmation or Gradle streamed install is required.
+android-bleng device="physical": android-bleng-build
+    {{android_run}} python -m tools.android.run_instrumentation --device {{device}} --app-apk .work/android-bleng/consumer/app/outputs/apk/debug/app-debug.apk --test-apk .work/android-bleng/consumer/app/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component dev.blehub.bleng.consumer.test/androidx.test.runner.AndroidJUnitRunner --test-class dev.blehub.bleng.PublishedBlengTest --log .work/android-bleng/logs/art-instrumentation.log

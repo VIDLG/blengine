@@ -37,6 +37,13 @@ final class AppleBackendLifecycleTests: XCTestCase {
                 return XCTFail("unexpected error: \(error)")
             }
         }
+        XCTAssertThrowsError(
+            try lifecycle.beginInitialization(commandId: CommandId(value: 7))
+        ) { error in
+            guard case CommandDispatchError.InvalidState = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
 
         lifecycle = .closed
         lifecycle.markFaulted()

@@ -1,0 +1,26 @@
+{
+  "name": "@blehub/react-native-internal-macos-host",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Internal React Native macOS host for the private BleHub Nitro integration",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "start": "react-native-macos start",
+    "macos": "react-native-macos run-macos"
+  },
+  "dependencies": {
+    "@blehub/react-native-internal": "file:../../../../integrations/react-native",
+    "react": "19.1.4",
+    "react-native": "0.81.6",
+    "react-native-macos": "0.81.9",
+    "react-native-nitro-modules": "0.37.1"
+  },
+  "devDependencies": {
+    "@react-native-community/cli": "20.0.2",
+    "@react-native-community/cli-platform-apple": "20.2.0",
+    "@react-native/metro-config": "0.81.6",
+    "@react-native/babel-preset": "0.81.6",
+    "@types/react": "19.1.4",
+    "typescript": "6.0.3"
+  }
+}

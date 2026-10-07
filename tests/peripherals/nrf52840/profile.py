@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ PROPERTY_BITS = {
 }
 PERMISSION_READ = 1 << 0
 PERMISSION_WRITE = 1 << 1
+PERMISSION_READ_AUTHORIZATION = 1 << 6
 PRIMARY_SERVICE = 0
 CCC_UUID = "2902"
 
@@ -55,7 +57,7 @@ def _hex(value: Any, *, field: str) -> bytes:
         raise ProfileError(f"{field} is not valid hexadecimal") from error
 
 
-def load_profile(path: Path) -> ProfilePlan:
+def load_profile(path: Path, *, allow_read_authorization: bool = False) -> ProfilePlan:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -109,6 +111,16 @@ def load_profile(path: Path) -> ProfilePlan:
             permissions |= PERMISSION_READ
         if "write" in properties or "write_without_response" in properties:
             permissions |= PERMISSION_WRITE
+        if "read_authorization" in item:
+            if (
+                not allow_read_authorization
+                or item["read_authorization"] is not True
+                or "read" not in properties
+            ):
+                raise ProfileError(
+                    "read authorization requires an opt-in readable diagnostic"
+                )
+            permissions |= PERMISSION_READ_AUTHORIZATION
         initial_value = _hex(
             item.get("initial_value_hex", ""), field=f"{role}.initial_value_hex"
         )
@@ -128,19 +140,61 @@ def load_profile(path: Path) -> ProfilePlan:
     )
 
 
+def _canonical_attribute_uuid(value: bytes) -> str:
+    if len(value) == 2:
+        return f"0000{value[::-1].hex()}-0000-1000-8000-00805f9b34fb"
+    if len(value) == 16:
+        return str(uuid.UUID(bytes=value[::-1]))
+    raise ProfileError(f"unsupported service declaration UUID length: {len(value)}")
+
+
+def _target_service_handles(
+    commands: GattCommands, attributes: tuple[Any, ...], service_uuid: str
+) -> tuple[int, ...]:
+    handles: list[int] = []
+    for attribute in attributes:
+        if attribute.uuid.casefold() not in {"2800", "2801"}:
+            continue
+        try:
+            value = commands.get_attribute_value(attribute.handle).value
+        except BtpCommandError as error:
+            raise ProfileError(
+                f"cannot inspect existing service declaration at handle {attribute.handle}"
+            ) from error
+        if _canonical_attribute_uuid(value) == service_uuid.casefold():
+            handles.append(attribute.handle)
+    return tuple(handles)
+
+
 def provision(commands: GattCommands, profile: ProfilePlan) -> dict[str, int]:
-    """Provision or attach one fixed profile and return role-to-handle mappings."""
+    """Provision or attach one fixed profile and return role-to-handle mappings.
+
+    A resident nRF GATT database survives the host process. Never append a profile
+    when its root service already exists with a different or incomplete topology.
+    """
     try:
         existing = commands.get_attributes()
     except BtpCommandError:
         existing = ()
+    target_services = _target_service_handles(commands, existing, profile.service_uuid)
+    if len(target_services) > 1:
+        raise ProfileError(
+            f"profile root service {profile.service_uuid} appears {len(target_services)} times; "
+            """remove stale services or reset the dynamic GATT database before retrying"""
+        )
     normalized_existing = {
         attribute.uuid.casefold(): attribute.handle for attribute in existing
     }
-    if all(
+    complete_characteristics = all(
         characteristic.uuid.casefold() in normalized_existing
         for characteristic in profile.characteristics
-    ):
+    )
+    if target_services and not complete_characteristics:
+        raise ProfileError(
+            f"profile root service {profile.service_uuid} has an incomplete characteristic topology; "
+            """refusing to append a duplicate service"""
+        )
+    if complete_characteristics:
         role_handles = {
             characteristic.role: normalized_existing[characteristic.uuid.casefold()]
             for characteristic in profile.characteristics

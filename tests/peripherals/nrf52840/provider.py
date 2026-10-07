@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -18,7 +19,11 @@ from .serial_transport import open_serial
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROFILE = (
-    PROJECT_ROOT / "tests" / "conformance" / "scenarios" / "blehub-nrf-indication-v2.json"
+    PROJECT_ROOT
+    / "tests"
+    / "conformance"
+    / "scenarios"
+    / "blehub-nrf-indication-v2.json"
 )
 WORK_ROOT = PROJECT_ROOT / ".work" / "peripheral" / "nrf52840"
 PID_FILE = WORK_ROOT / "fixture.pid"
@@ -56,14 +61,84 @@ def _port() -> str | None:
     return configured.value
 
 
-def _pid() -> int | None:
+_PROCESS_RUNNING = "running"
+_PROCESS_EXITED = "exited"
+_PROCESS_MISMATCH = "mismatch"
+_PROCESS_UNKNOWN = "unknown"
+
+
+def _process_identity() -> tuple[int, int] | None:
     if not PID_FILE.is_file():
         return None
     try:
-        pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        fields = PID_FILE.read_text(encoding="utf-8").split()
+        if len(fields) not in (1, 2):
+            raise ValueError("expected PID and optional PGID")
+        pid = int(fields[0])
+        pgid = int(fields[1]) if len(fields) == 2 else pid
+        if pid <= 0 or pgid <= 0:
+            raise ValueError("PID and PGID must be positive")
     except (OSError, ValueError) as error:
         raise Nrf52840Error(f"invalid nRF52840 fixture pid file: {PID_FILE}") from error
-    return pid
+    return pid, pgid
+
+
+def _pid() -> int | None:
+    identity = _process_identity()
+    return None if identity is None else identity[0]
+
+
+def _fixture_state(pid: int, pgid: int) -> str:
+    try:
+        actual_pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return _PROCESS_EXITED
+        except PermissionError:
+            return _PROCESS_UNKNOWN
+        return _PROCESS_UNKNOWN
+    except PermissionError:
+        return _PROCESS_UNKNOWN
+    except OSError as error:
+        raise Nrf52840Error(
+            f"cannot inspect nRF52840 fixture process group {pgid}"
+        ) from error
+    if actual_pgid != pgid:
+        return _PROCESS_MISMATCH
+    return _PROCESS_RUNNING
+
+
+def _write_process_identity(pid: int) -> tuple[int, int]:
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError as error:
+        raise Nrf52840Error(
+            f"nRF52840 fixture exited before its pid marker could be written: {pid}"
+        ) from error
+    except OSError as error:
+        raise Nrf52840Error(
+            f"could not inspect nRF52840 fixture process group: {pid}"
+        ) from error
+    if pgid != pid:
+        raise Nrf52840Error(
+            f"nRF52840 fixture did not create its own process group: pid={pid} pgid={pgid}"
+        )
+    identity = (pid, pgid)
+    PID_FILE.write_text(f"{pid} {pgid}\n", encoding="utf-8")
+    return identity
+
+
+def _wait_for_exit(pid: int, pgid: int, timeout: int) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        state = _fixture_state(pid, pgid)
+        if state == _PROCESS_EXITED:
+            return True
+        if state == _PROCESS_MISMATCH or time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
 
 
 def _alive(pid: int) -> bool:
@@ -127,11 +202,18 @@ def _wait_ready(pid: int, timeout: int, marker: str = READY_MARKER) -> None:
 
 
 def start(*, ready_timeout: int, rf_timeout: int) -> None:
-    if PID_FILE.is_file():
-        pid = _pid()
-        if pid is not None and _alive(pid):
+    identity = _process_identity()
+    if identity is not None:
+        pid, pgid = identity
+        state = _fixture_state(pid, pgid)
+        if state == _PROCESS_RUNNING:
             _wait_ready(pid, ready_timeout)
             return
+        if state != _PROCESS_EXITED:
+            raise Nrf52840Error(
+                f"cannot safely reuse nRF52840 fixture pid={pid} pgid={pgid}: {state}; "
+                f"retaining {PID_FILE}"
+            )
         PID_FILE.unlink(missing_ok=True)
 
     nrftest_root = _nrftest_root()
@@ -151,7 +233,7 @@ def start(*, ready_timeout: int, rf_timeout: int) -> None:
         )
     finally:
         log.close()
-    PID_FILE.write_text(str(process.pid), encoding="utf-8")
+    _write_process_identity(process.pid)
     print(f"nrf52840_fixture_pid={process.pid}")
     print(f"nrf52840_fixture_log={LOG_FILE}")
     _wait_ready(process.pid, ready_timeout)
@@ -179,11 +261,18 @@ def direct_start(
     coordination_path: str | None = None,
     coordination_mode: str = "notification",
 ) -> None:
-    if PID_FILE.is_file():
-        pid = _pid()
-        if pid is not None and _alive(pid):
+    identity = _process_identity()
+    if identity is not None:
+        pid, pgid = identity
+        state = _fixture_state(pid, pgid)
+        if state == _PROCESS_RUNNING:
             _wait_ready(pid, DEFAULT_READY_TIMEOUT)
             return
+        if state != _PROCESS_EXITED:
+            raise Nrf52840Error(
+                f"cannot safely reuse nRF52840 fixture pid={pid} pgid={pgid}: {state}; "
+                f"retaining {PID_FILE}"
+            )
         PID_FILE.unlink(missing_ok=True)
     if _port() is None:
         raise Nrf52840Error("nRF52840 serial port is not configured")
@@ -193,7 +282,7 @@ def direct_start(
     try:
         process = subprocess.Popen(
             [
-                os.sys.executable,
+                sys.executable,
                 "-m",
                 "tests.peripherals.nrf52840.provider",
                 "direct-serve",
@@ -216,8 +305,19 @@ def direct_start(
         )
     finally:
         log.close()
-    PID_FILE.write_text(str(process.pid), encoding="utf-8")
-    _wait_ready(process.pid, DEFAULT_READY_TIMEOUT, "NRF52840_DIRECT_READY")
+    spawned_identity = _write_process_identity(process.pid)
+    try:
+        _wait_ready(process.pid, DEFAULT_READY_TIMEOUT, "NRF52840_DIRECT_READY")
+    except Exception as error:
+        try:
+            stop(expected_identity=spawned_identity)
+        except Nrf52840Error as cleanup_error:
+            raise Nrf52840Error(
+                f"direct nRF fixture readiness failed and cleanup failed: {cleanup_error}"
+            ) from error
+        raise
+    print(f"nrf52840_fixture_pid={spawned_identity[0]}")
+    print(f"nrf52840_fixture_pgid={spawned_identity[1]}")
 
 
 def doctor() -> None:
@@ -247,16 +347,18 @@ def doctor() -> None:
 
 
 def status() -> None:
-    pid = _pid()
-    if pid is None:
+    identity = _process_identity()
+    if identity is None:
         print("nrf52840_fixture=stopped")
         return
+    pid, pgid = identity
     if not _alive(pid):
         print("nrf52840_fixture=exited")
         print(f"nrf52840_fixture_log={LOG_FILE}")
         return
     print("nrf52840_fixture=running")
     print(f"nrf52840_fixture_pid={pid}")
+    print(f"nrf52840_fixture_pgid={pgid}")
     ready = LOG_FILE.is_file() and READY_MARKER in LOG_FILE.read_text(
         encoding="utf-8", errors="replace"
     )
@@ -264,24 +366,80 @@ def status() -> None:
     print(f"nrf52840_fixture_log={LOG_FILE}")
 
 
-def stop() -> None:
-    pid = _pid()
-    if pid is None:
+def stop(expected_identity: tuple[int, int] | None = None) -> None:
+    identity = _process_identity()
+    if identity is None:
+        if expected_identity is not None:
+            raise Nrf52840Error(
+                "cannot safely stop spawned nRF52840 fixture: identity marker is missing"
+            )
         print("nrf52840_fixture=stopped")
         return
-    if _alive(pid):
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline and _alive(pid):
-            time.sleep(0.2)
-        if _alive(pid):
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    if expected_identity is not None and identity != expected_identity:
+        raise Nrf52840Error(
+            "cannot safely stop spawned nRF52840 fixture: identity changed; "
+            f"expected={expected_identity[0]} {expected_identity[1]} "
+            f"found={identity[0]} {identity[1]}"
+        )
+    pid, pgid = identity
+    state = _fixture_state(pid, pgid)
+    if state == _PROCESS_EXITED:
+        PID_FILE.unlink(missing_ok=True)
+        print("nrf52840_fixture=stopped")
+        return
+    if state != _PROCESS_RUNNING:
+        raise Nrf52840Error(
+            f"cannot safely stop nRF52840 fixture pid={pid} pgid={pgid}: {state}; "
+            f"retaining {PID_FILE}"
+        )
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        if _fixture_state(pid, pgid) != _PROCESS_EXITED:
+            raise Nrf52840Error(
+                f"cannot signal nRF52840 fixture process group {pgid}; retaining "
+                f"{PID_FILE}"
+            ) from error
+    except OSError as error:
+        raise Nrf52840Error(
+            f"could not terminate nRF52840 fixture process group {pgid}; retaining "
+            f"{PID_FILE}"
+        ) from error
+
+    if _wait_for_exit(pid, pgid, 15):
+        PID_FILE.unlink(missing_ok=True)
+        print("nrf52840_fixture=stopped")
+        return
+
+    state = _fixture_state(pid, pgid)
+    if state != _PROCESS_RUNNING:
+        raise Nrf52840Error(
+            f"nRF52840 fixture identity changed while stopping: pid={pid} pgid={pgid} "
+            f"state={state}; retaining {PID_FILE}"
+        )
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        if _fixture_state(pid, pgid) != _PROCESS_EXITED:
+            raise Nrf52840Error(
+                f"cannot kill nRF52840 fixture process group {pgid}; retaining "
+                f"{PID_FILE}"
+            ) from error
+    except OSError as error:
+        raise Nrf52840Error(
+            f"could not kill nRF52840 fixture process group {pgid}; retaining "
+            f"{PID_FILE}"
+        ) from error
+
+    if not _wait_for_exit(pid, pgid, 15):
+        raise Nrf52840Error(
+            f"nRF52840 fixture process group {pgid} did not exit; retaining {PID_FILE}"
+        )
     PID_FILE.unlink(missing_ok=True)
     print("nrf52840_fixture=stopped")
 
@@ -302,18 +460,37 @@ def parse_args() -> argparse.Namespace:
     _ = direct_start_parser.add_argument("--coordination-path")
     _ = direct_start_parser.add_argument(
         "--coordination-mode",
-        choices=("notification", "indication", "passive-disconnect", "tauri", "ios-tauri"),
+        choices=(
+            "notification",
+            "indication",
+            "passive-disconnect",
+            "host-close",
+            "recovery",
+            "recovery-ios",
+            "recovery-ten",
+        ),
         default="notification",
     )
     direct_serve_parser = subparsers.add_parser("direct-serve")
     _ = direct_serve_parser.add_argument("--coordination-path")
     _ = direct_serve_parser.add_argument(
         "--coordination-mode",
-        choices=("notification", "indication", "passive-disconnect", "tauri", "ios-tauri"),
+        choices=(
+            "notification",
+            "indication",
+            "passive-disconnect",
+            "host-close",
+            "recovery",
+            "recovery-ios",
+            "recovery-ten",
+        ),
         default="notification",
     )
     _ = subparsers.add_parser("ready")
     _ = subparsers.add_parser("stop")
+    stop_owned_parser = subparsers.add_parser("stop-owned")
+    _ = stop_owned_parser.add_argument("--pid", type=int, required=True)
+    _ = stop_owned_parser.add_argument("--pgid", type=int, required=True)
     return parser.parse_args()
 
 
@@ -335,10 +512,12 @@ def main() -> int:
             direct_start(args.coordination_path, args.coordination_mode)
         elif args.command == "direct-serve":
             direct_serve(args.coordination_path, args.coordination_mode)
+        elif args.command == "stop-owned":
+            stop(expected_identity=(args.pid, args.pgid))
         else:
             stop()
     except Nrf52840Error as error:
-        print(f"nRF52840 fixture error: {error}", file=os.sys.stderr)
+        print(f"nRF52840 fixture error: {error}", file=sys.stderr)
         return 2
     return 0
 

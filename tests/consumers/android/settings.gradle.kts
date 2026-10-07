@@ -1,8 +1,7 @@
 pluginManagement {
     repositories {
-        maven("https://maven.aliyun.com/repository/google")
-        maven("https://maven.aliyun.com/repository/gradle-plugin")
-        maven("https://maven.aliyun.com/repository/public")
+        maven("https://mirrors.huaweicloud.com/repository/maven/")
+        gradlePluginPortal()
     }
 }
 
@@ -10,8 +9,7 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         maven(url = uri(file("../../../.work/staged/android-maven")))
-        maven("https://maven.aliyun.com/repository/google")
-        maven("https://maven.aliyun.com/repository/public")
+        maven("https://mirrors.huaweicloud.com/repository/maven/")
     }
 }
 

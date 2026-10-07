@@ -14,7 +14,9 @@ pub enum ScanStopReason {
 pub enum ConnectionState {
     Connecting,
     Connected,
+    /// Optional backend progress; callers must not require it cross-platform.
     Disconnecting,
+    /// The logical connection lifecycle has ended successfully.
     Disconnected,
 }
 
@@ -107,6 +109,36 @@ pub enum BleEvent {
 }
 
 impl BleEvent {
+    /// Returns the command ID carried by this event, when the canonical event
+    /// has one. This is only a structural projection: consumers may still
+    /// apply their own routing policy when an event can affect multiple
+    /// waiters, such as connection-state or scan-stop events.
+    pub fn command_id(&self) -> Option<CommandId> {
+        match self {
+            Self::AdapterSnapshotChanged { command_id, .. }
+            | Self::ConnectionStateChanged { command_id, .. } => *command_id,
+            Self::ScanStarted { command_id, .. }
+            | Self::GattDiscovered { command_id, .. }
+            | Self::CharacteristicRead { command_id, .. }
+            | Self::CharacteristicWritten { command_id, .. }
+            | Self::NotificationStateChanged { command_id, .. }
+            | Self::RssiRead { command_id, .. }
+            | Self::CommandCompleted { command_id, .. } => Some(*command_id),
+            Self::ScanStopped { result, .. } => match result {
+                ScanStopResult::Ok {
+                    reason: ScanStopReason::Requested { command_id },
+                } => Some(*command_id),
+                ScanStopResult::Ok {
+                    reason: ScanStopReason::SystemSuspended,
+                }
+                | ScanStopResult::Err { .. } => None,
+            },
+            Self::AdvertisementObserved { .. }
+            | Self::NotificationReceived { .. }
+            | Self::BackendError { .. } => None,
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
             Self::AdvertisementObserved { advertisement } => advertisement.validate(),
