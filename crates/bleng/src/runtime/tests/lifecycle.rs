@@ -1,35 +1,10 @@
 use super::support::{
     Arc, AssemblyAdmissionError, BleEvent, BleHub, CommandDispatchError, CommandId, Duration,
-    EventIngressStatus, EventReadError, EventScenario, FakeBackend, RecordedCommand, RuntimeOwner,
-    ScanOptions, ScanSessionId, StartScanCommand, WaiterError, WaiterExpectation,
-    command_completed, event,
+    EventIngressStatus, EventReadError, EventScenario, FakeBackend, Notify, RecordedCommand,
+    RuntimeOwner, ScanOptions, ScanSessionId, StartScanCommand, WaiterError, WaiterExpectation,
+    command_completed, event, mpsc, oneshot,
 };
-
-#[test]
-fn event_publication_rejects_a_closed_or_faulted_gate_before_enqueueing() {
-    use crate::runtime::{BlengActor, RuntimeLifecycle};
-    use tokio::sync::mpsc::{channel, error::TryRecvError};
-
-    for faulted in [false, true] {
-        let lifecycle = Arc::new(RuntimeLifecycle::new());
-        let (event_tx, mut event_rx) = channel(1);
-        let actor = BlengActor::new(event_tx, Arc::clone(&lifecycle));
-        if faulted {
-            lifecycle.fault();
-        } else {
-            lifecycle.close();
-        }
-        assert_eq!(
-            actor.publish_event(&command_completed(1, None)),
-            Err(if faulted {
-                WaiterError::TransportFault
-            } else {
-                WaiterError::Closed
-            })
-        );
-        assert_eq!(event_rx.try_recv(), Err(TryRecvError::Empty));
-    }
-}
+use crate::runtime::actor::HoldActor;
 
 #[test]
 fn real_hub_scan_waiter_requires_domain_even_after_successful_terminal() {
@@ -143,6 +118,105 @@ fn rejection_cancellation_timeout_and_close_settle_distinct_waiters() {
             Err(WaiterError::Closed)
         ));
     });
+}
+
+#[test]
+fn waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths() {
+    use crate::runtime::messages::DispatchResolved;
+    use kameo::error::SendError;
+    use std::{future::Future, task::Poll};
+
+    struct ReleaseActorOnDrop(Arc<Notify>);
+
+    impl Drop for ReleaseActorOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    let host = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    // Exercise the timer branch first so the old pre-expired failure cannot skip it.
+    for pre_expired in [false, true] {
+        let owner = RuntimeOwner::new().unwrap();
+        host.block_on(async {
+            let ticket = tokio::time::timeout(
+                Duration::from_secs(2),
+                owner.register_waiter(CommandId { value: 1 }, WaiterExpectation::TerminalOnly),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let entered = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let release_actor = ReleaseActorOnDrop(Arc::clone(&release));
+            owner
+                .actor
+                .tell(HoldActor {
+                    entered: Arc::clone(&entered),
+                    release,
+                })
+                .try_send()
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), entered.notified())
+                .await
+                .expect("actor must enter the hold before filling its mailbox");
+
+            let mut full = false;
+            for _ in 0..256 {
+                match owner
+                    .actor
+                    .tell(DispatchResolved {
+                        id: CommandId { value: u64::MAX },
+                        result: Ok(()),
+                    })
+                    .try_send()
+                {
+                    Ok(()) => {}
+                    Err(SendError::MailboxFull(_)) => {
+                        full = true;
+                        break;
+                    }
+                    Err(error) => panic!("unexpected mailbox error: {error:?}"),
+                }
+            }
+            assert!(full, "held actor mailbox must be full");
+            assert!(
+                !owner.faulted_for_test(),
+                "raw tell must not fault lifecycle"
+            );
+
+            let deadline = if pre_expired {
+                tokio::time::Instant::now() - Duration::from_millis(1)
+            } else {
+                tokio::time::Instant::now() + Duration::from_millis(100)
+            };
+            let mut wait = Box::pin(ticket.wait_until(deadline));
+            if !pre_expired {
+                let initial = std::future::poll_fn(|cx| Poll::Ready(wait.as_mut().poll(cx))).await;
+                assert!(
+                    initial.is_pending(),
+                    "future deadline must enter timer wait"
+                );
+            }
+            let result = tokio::time::timeout(Duration::from_secs(2), wait).await;
+            let faulted = owner.faulted_for_test();
+            drop(release_actor);
+            tokio::time::timeout(Duration::from_secs(2), owner.close())
+                .await
+                .expect("released actor must close")
+                .unwrap();
+
+            assert!(faulted, "failed retirement must fault lifecycle");
+            assert_eq!(
+                result.expect("waiter deadline must settle"),
+                Err(WaiterError::TransportFault),
+                "pre_expired={pre_expired}"
+            );
+        });
+    }
 }
 
 #[test]
@@ -345,6 +419,85 @@ fn drop_inside_an_async_host_does_not_block_on_runtime_drop() {
         let owner = RuntimeOwner::new().unwrap();
         owner.close().await.unwrap();
         drop(owner);
+    });
+}
+
+#[test]
+fn close_waits_for_actor_teardown_after_mailbox_closes() {
+    struct ReleaseRegistryOnDrop {
+        release: mpsc::Sender<()>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for ReleaseRegistryOnDrop {
+        fn drop(&mut self) {
+            let _ = self.release.send(());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    let owner = Arc::new(RuntimeOwner::new().unwrap());
+    let host = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    host.block_on(async {
+        let _ticket = tokio::time::timeout(
+            Duration::from_secs(2),
+            owner.register_waiter(CommandId { value: 1 }, WaiterExpectation::TerminalOnly),
+        )
+        .await
+        .expect("actor must start before the registry is locked")
+        .unwrap();
+        let (acquired_tx, acquired_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let registry_thread = std::thread::spawn(move || {
+            let registry = kameo::registry::ACTOR_REGISTRY
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = acquired_tx.send(());
+            // Sender drop and a bounded fallback both release this process-global lock.
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            drop(registry);
+        });
+        let release_registry = ReleaseRegistryOnDrop {
+            release: release_tx,
+            thread: Some(registry_thread),
+        };
+        tokio::time::timeout(Duration::from_secs(2), acquired_rx)
+            .await
+            .expect("registry thread must acquire the lock")
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), owner.actor.stop_gracefully())
+            .await
+            .expect("normal actor stop must be accepted")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), owner.actor.wait_for_shutdown())
+            .await
+            .expect("mailbox must close even while actor unregister is blocked");
+        // Start close with the mailbox already closed: an old coordinator must not
+        // look pending merely because its wake-up is on the blocked actor worker.
+        let close_owner = Arc::clone(&owner);
+        let mut close = tokio::spawn(async move { close_owner.close().await });
+        tokio::time::timeout(Duration::from_secs(2), owner.lifecycle.wait_for_cleanup())
+            .await
+            .expect("cleanup without a Hub must already finish")
+            .unwrap();
+        let before_release = tokio::time::timeout(Duration::from_millis(50), &mut close).await;
+        drop(release_registry);
+
+        assert!(
+            before_release.is_err(),
+            "close completed before actor teardown, with registry still locked: {before_release:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(2), close)
+            .await
+            .expect("close must finish after actor unregister is released")
+            .unwrap()
+            .unwrap();
     });
 }
 

@@ -976,57 +976,78 @@ fn test_waiter_registration_advances_only_command_ids() {
 }
 
 #[test]
-fn synchronous_events_cannot_turn_a_rejected_dispatch_into_success() {
-    let owner = RuntimeOwner::new_assuming_initialized().unwrap();
-    let id = CommandId { value: 1 };
-    let scan = ScanSessionId { value: 1 };
-    let options = ScanOptions::default();
-    let error = CommandDispatchError::InvalidState {
-        detail: "rejected after callback".to_owned(),
-    };
-    let (backend, handle) = FakeBackend::scripted([EventScenario::emit_before_reject(
-        RecordedCommand::StartScan(StartScanCommand {
+fn rejected_scan_start_faults_on_buffered_events_but_plain_rejection_does_not() {
+    for with_callback in [false, true] {
+        let owner = RuntimeOwner::new_assuming_initialized().unwrap();
+        let id = CommandId { value: 1 };
+        let scan = ScanSessionId { value: 1 };
+        let options = ScanOptions::default();
+        let error = CommandDispatchError::InvalidState {
+            detail: "scan start rejected".to_owned(),
+        };
+        let command = RecordedCommand::StartScan(StartScanCommand {
             command_id: id,
             scan_session_id: scan,
             options: options.clone(),
-        }),
-        vec![
-            BleEvent::ScanStarted {
-                command_id: id,
-                scan_id: scan,
-            },
-            BleEvent::CommandCompleted {
-                command_id: id,
-                error: None,
-            },
-        ],
-        error.clone(),
-    )]);
-    owner
-        .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
-        .unwrap();
-    let host = tokio::runtime::Builder::new_multi_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    host.block_on(async {
-        assert_eq!(
-            tokio::time::timeout(
-                Duration::from_secs(2),
-                owner.start_scan(options, Duration::from_secs(1))
+        });
+        let scenario = if with_callback {
+            EventScenario::emit_before_reject(
+                command,
+                vec![
+                    BleEvent::ScanStarted {
+                        command_id: id,
+                        scan_id: scan,
+                    },
+                    BleEvent::CommandCompleted {
+                        command_id: id,
+                        error: None,
+                    },
+                ],
+                error.clone(),
             )
-            .await
-            .unwrap(),
-            Err(WaiterError::DispatchRejected(error))
-        );
-        assert_eq!(
-            owner.next_event(Duration::from_millis(30)).await,
-            Err(EventReadError::Timeout),
-            "rejected scan must not publish buffered success events"
-        );
-        owner.close().await.unwrap();
-    });
-    assert_eq!(handle.dispose_count(), 1);
+        } else {
+            EventScenario::reject(command, error.clone())
+        };
+        let (backend, handle) = FakeBackend::scripted([scenario]);
+        owner
+            .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+            .unwrap();
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        host.block_on(async {
+            assert_eq!(
+                tokio::time::timeout(
+                    Duration::from_secs(2),
+                    owner.start_scan(options, Duration::from_secs(1))
+                )
+                .await
+                .unwrap(),
+                if with_callback {
+                    Err(WaiterError::TransportFault)
+                } else {
+                    Err(WaiterError::DispatchRejected(error))
+                }
+            );
+            if with_callback {
+                assert!(owner.faulted_for_test());
+                assert_eq!(
+                    owner.next_event(Duration::from_secs(2)).await,
+                    Err(EventReadError::Fault),
+                    "rejected scan must not publish buffered success events"
+                );
+            } else {
+                assert!(!owner.faulted_for_test());
+                assert_eq!(
+                    owner.next_event(Duration::from_millis(30)).await,
+                    Err(EventReadError::Timeout)
+                );
+            }
+            owner.close().await.unwrap();
+        });
+        assert_eq!(handle.dispose_count(), 1);
+    }
 }
 
 #[test]

@@ -70,6 +70,8 @@ cleanup 模块负责 **Hub 的接纳、清理所有权、dispose 调度和清理
 
 这里使用标准互斥锁，是因为临界区只做短小、同步的状态操作。它不代表“获取锁绝不阻塞”：其他线程持锁时，调用方仍可能短暂等待。真正重要的约束是：**锁内不执行原生耗时工作，不跨 `.await` 持锁。**
 
+另有跨锁约束：`record_disposal_result()` 与 `release_admission()` 在持有 state 时发布通知，实际锁序是 **state Mutex → watch 写锁**。`watch::Receiver::wait_for` 在 watch 读锁内执行 predicate，因此 predicate 不能再获取 ledger mutex，否则会形成反向锁序与死锁。下文完成等待有意保留显式循环。
+
 ### 为什么外层传闭包，内层传 bool
 
 runtime 的 `RuntimePhase::Open` 表示 runtime 仍接受工作，不表示蓝牙已开启、连接已建立，也不表示 backend slot 空闲。定义见 [`runtime/lifecycle.rs`](../../crates/bleng/src/runtime/lifecycle.rs)。
@@ -86,7 +88,7 @@ runtime 的 `RuntimePhase::Open` 表示 runtime 仍接受工作，不表示蓝�
 
 直到 commit 完成所有权登记，并尝试调度必要的 rejected 清理之后，admission guard 才释放名额。
 
-`BackendPort` 合并了原来的 assembly port 和 event bridge，因为它们都只需要 actor handle 与共享 lifecycle。assembly 将同一个 `Arc<BackendPort>` 的克隆作为 `Arc<dyn BleEventSink>` 交给 Hub，不再构造第二个 bridge 对象。backend 回调只获得 sink 接口。端口不持有 `RuntimeOwner`；事件协调仍归 `runtime/actor/events.rs`，admission 与 disposal 记账仍归 cleanup。
+`BackendPort` 合并了原来的 assembly port 和 event bridge，因为它们都只需要 actor handle 与共享 lifecycle。assembly 将同一个 `Arc<BackendPort>` 的克隆作为 `Arc<dyn BleEventSink>` 交给 Hub，不再构造第二个 bridge 对象。backend 回调只获得 sink 接口。端口不持有 `RuntimeOwner`。[`runtime/messages.rs`](../../crates/bleng/src/runtime/messages.rs) 统一 mailbox 协议，BackendPort 直接从中导入 `IngressEvent`；其中两个 ingress/派发结果 handler 只转交 actor 的受限处理入口，Begin handler 仍通过 actor 方法显式编排准入；状态协调封装在 [`runtime/actor.rs`](../../crates/bleng/src/runtime/actor.rs) 中，字段与 helper 保持私有。admission 与 disposal 记账仍归 cleanup；这种源码职责划分不改变公共 ABI 或处理顺序。
 
 ```mermaid
 sequenceDiagram
@@ -233,6 +235,18 @@ flowchart TD
 
 取消某个等待方，只会丢弃它的 receiver，不会取消 admission、正在运行的 worker 或已经保存的结果。
 
+**`wait_for_completion()` 必须保留：先 subscribe → 获取 Mutex 检查 ledger → 解锁 → `changed().await` → 重新检查。** `CleanupSignal` 只负责唤醒，不承载最终结果；不能改成 `watch.wait_for(获取 ledger 锁的 predicate)`。已核对 [`cleanup.rs`](../../crates/bleng/src/cleanup.rs) 的真实 producer 顺序：
+
+```text
+producer：record_disposal_result / release_admission
+  持有 state Mutex -> send_replace 等待 watch 写锁
+假设改用 wait_for predicate：
+  持有 watch 读锁 -> 等待 state Mutex
+=> 两者重叠时死锁
+```
+
+本地缓存 `tokio-1.53.1/src/sync/watch.rs` 确认 `wait_for` 在 watch 值的读锁内执行 predicate；cleanup 源码现已注释这一约束。owner close 可以使用 `shutdown_result_rx.wait_for(Option::is_some)`，因为 predicate 仅检查通道内的值，不获取这个外部 ledger 锁。
+
 最终完成条件是：
 
 ```text
@@ -276,7 +290,7 @@ AND 每个 rejected_hub.result 都已存在
 
 ```text
 调用方执行器（Tokio 或 foreign async 集成）
-  poll facade future，await 对应 JoinHandle
+  poll facade future，await 包装 JoinHandle 的 AbortOnDropHandle
                        |
                        | 明确调用 owner.handle().spawn(operation)
                        v
@@ -294,23 +308,42 @@ BLeng 私有 Tokio runtime
 - 不应引入嵌套阻塞的 `block_on()` 或同步跨 runtime 等待。自定义 backend 若同步等待调用方 runtime 的工作，而调用方又被阻塞着等待 backend，就可能死锁。正常集成方式是异步等待。
 - 这里不保证可以随意迁移已经绑定某个 runtime 的 timer/socket future。BLeng 的私有包装只接收自身的操作 future，不是向外暴露的执行器注入 API；自定义 backend 必须管理自己依赖的执行设施、资源和生命周期。
 - `shutdown()` 等待的是 actor/Hub 的逻辑关闭；runtime 对象仍由 owner 持有，直到最后一个 `Arc<RuntimeOwner>` 释放。其 `Drop` 使用 `shutdown_background()`，避免在 async 调用方执行阻塞的 runtime 析构，但不表示分离的原生清理瞬间完成。
-- 每个 facade 操作任务都会保留一份 owner 引用。外层 future 被丢弃时，`AbortOnDrop` 请求取消这个任务，因为仅丢弃 JoinHandle 默认会使任务分离继续执行。它仍不等于取消已经 dispatch 的原生 BLE 工作，也不会中断已经执行中的同步 foreign 调用。
+- 每个 facade 操作任务都会保留一份 owner 引用。自定义 `AbortOnDrop` 类型已移除；`spawn_on_runtime()` 改为 await `tokio_util::task::AbortOnDropHandle::new(private_handle.spawn(future))`。释放外层 future 会请求 abort 本地 facade task，因为仅丢弃裸 JoinHandle 默认会使任务分离继续执行；这不保证 task/捕获立即析构，不取消已经 dispatch 的原生 BLE 工作，也不中断已经开始的 blocking task 或执行中的同步 foreign 调用。
 
 API 回归测试 [`private_runtime_timers_work_with_timerless_caller_runtimes`](../../crates/bleng/src/tests/api_tests.rs) 使用**未启用 timer 的单线程和多线程调用方 runtime**：验证 BLeng 的 `next_event()` 仍能超时，shutdown 成功，在 async 调用方中释放 BLeng 不会 panic，调用方随后仍能继续执行任务。这是确定性的 Rust 共存证据，不是新增 Swift/Kotlin 或平台 RF 验证。
 
+新增 API 回归 [`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs) 已报告通过：确认私有 task 开始后丢弃 facade future，并在有界测试窗口内等待捕获释放；不证明立即析构或原生取消。精确依赖版本、最小 features、离线 lock 解析与本地缓存源码 `Future` / `Drop` 审计见[英文 waiter 复用记录](bleng-waiter-design-2026-10-06.md#simplification-and-ecosystem-assessment)。
+
 ### 逻辑关闭与 cleanup 集成
 
-[`RuntimeOwner::close()`](../../crates/bleng/src/runtime/owner.rs) 关闭 runtime gate、启动 cleanup，并协调 actor 关闭，然后发布共享 close 结果。cleanup 的完成等待只是其中一环，它本身不等待 actor 终止，也不逐项等待 BLE 操作。
+[`RuntimeOwner::new()`](../../crates/bleng/src/runtime/owner.rs) 通过 Kameo `PreparedActor` 取得 `ActorRef` 并在私有 runtime 上 spawn；返回的实际 actor task `JoinHandle` 保留在 `new()` 的 `runtime.handle().spawn` 块中的唯一内联 shutdown task 内。该块克隆捕获 `actor`、`lifecycle` 和 `shutdown_result_tx`，不持有 `RuntimeOwner`。不再使用 first-close atomic 或两套 shutdown watcher，也不让任一 close 调用方持有 shutdown future。
 
-`RuntimeOwner::Drop` 会启动 cleanup 并执行不能 await 的 runtime 关闭，因此显式异步 close 才是调用方可观察完成与错误的边界。
+```text
+new 中的内联 shutdown task：select actor task 完成 / lifecycle 离开 Open
+  lifecycle 分支 -> start_cleanup -> stop_gracefully -> join 实际 actor task
+  消费 task 结果 -> 成功时显式 drop 返回的 BlengActor
+  -> start_cleanup -> wait_for_cleanup -> 发布共享 shutdown result
+close -> 订阅共享结果 -> 关闭 runtime gate + start_cleanup
+  -> shutdown_result_rx.wait_for(Option::is_some) -> clone 保留结果
+```
 
-[`RuntimeLifecycle`](../../crates/bleng/src/runtime/lifecycle.rs) 是共享的生命周期控制对象，而不只是状态快照。它拥有 phase gate、phase 变化通知和唯一的私有 `HubCleanup`。`fault()` 会直接启动 cleanup，即使 actor 或 mailbox 已不可用也不依赖它们完成清理触发。ingress、actor、assembly 和分离的 dispatch 路径持有同一个 lifecycle，而不是各自创建 cleanup owner。
+actor task 在 Open 时意外完成也会被消费；丢弃返回的 actor 会通过 `BlengActor::Drop` fault lifecycle 并退休剩余 waiter，避免 gate 仍 Open 却已无 actor。task join/Kameo lifecycle 错误会 fault lifecycle，但先等待 cleanup，再发布 `CleanupError::WorkerStopped`。task 成功完成且 actor 已释放时，返回 cleanup 自身结果；runtime `Faulted` 不自动表示 disposal 失败，也不强制 close 返回 `WorkerStopped`。
 
-runtime 调用方通过 lifecycle 的方法执行 admission、取得可派发 Hub、启动 cleanup 和 `wait_for_cleanup()`，不再通过 getter 取得 cleanup 的 `Arc`。其中 `with_admission()` 自己绑定 Open-phase 策略，不接受调用方提供门禁判断；它仍将检查作为闭包传给 cleanup，保证取得锁后再读取 phase。其余生产 cleanup 操作直接代理转发。assembly commit 仍需再次检查 phase，因为 admission 之后的 foreign 工作可能与 close 或 fault 并发。shutdown coordinator 持有 lifecycle 来等待清理。`phase_tx` 用于唤醒应该停止工作的操作/事件读取方；cleanup 内部的通知则唤醒 disposal 完成等待方。runtime gate 已关闭不表示原生清理已经完成。disposal 调度与结果记账仍由 `HubCleanup` 负责。
+mailbox closure 只是更早的边界，不是 actor teardown。本地锁定的 Kameo 0.22.2 源码中，`kameo-0.22.2/src/actor/actor_ref.rs` 的 `ActorRef::wait_for_shutdown()` 只等待 `mailbox_sender.closed()`；`kameo-0.22.2/src/actor/spawn.rs` 在 shutdown hook 和 unregister 之后，才通过 `PreparedActor::spawn()` 的 task handle 按值返回 actor。因此必须 join 实际 task，并显式 drop 返回的 actor，释放状态及执行 BLeng Drop 策略之后，才能等待 cleanup 并发布共享结果。
+
+[`RuntimeOwner::close()`](../../crates/bleng/src/runtime/owner.rs) 先订阅共享结果，再关闭 gate、启动 cleanup，以 `shutdown_result_rx.wait_for(Option::is_some)` 替代手写 watch loop，等待所有调用方共用的保留结果并克隆它；通道关闭错误映射为 `CleanupError::WorkerStopped`。predicate 只检查通道内的 `Option`，不获取外部 ledger 锁，不能作为替换 cleanup `wait_for_completion()` 循环的模板。取消某次 close 等待不会取消 coordinator，重复 close 仍能观察清理错误。cleanup 的完成等待本身不等待 actor teardown，也不逐项等待 BLE 操作；原生 disposal 可与 actor 停止重叠。
+
+`RuntimeOwner::Drop` 仍是不能 await 的 fallback：关闭 gate、启动 cleanup、`actor.kill()`，然后 `runtime.shutdown_background()`。独立 cleanup 线程不依赖执行器，仍可在该 runtime 结束后运行；Drop 不承诺可观察完成，显式异步 close 才是调用方的完成与错误边界。
+
+[`RuntimeLifecycle`](../../crates/bleng/src/runtime/lifecycle.rs) 是共享的生命周期控制对象，而不只是状态快照。它拥有 phase gate、phase 变化通知和唯一的私有 `HubCleanup`。`fault()` 会直接启动 cleanup，即使 actor 或 mailbox 已不可用也不依赖它们完成清理触发。ingress、actor、assembly 和分离的 dispatch 路径持有同一个 lifecycle，而不是各自创建 cleanup owner。`is_open()` 查询既有原子 phase；快照不保留 admission，也不阻止并发 close/fault。需要区分 `Faulted` 与 `Closed` 的路径仍读取 phase。
+
+runtime 调用方通过 lifecycle 的方法执行 admission、取得可派发 Hub、启动 cleanup 和 `wait_for_cleanup()`，不再通过 getter 取得 cleanup 的 `Arc`。其中 `with_admission()` 自己绑定 Open-phase 策略，不接受调用方提供门禁判断；它仍将检查作为闭包传给 cleanup，保证取得锁后再读取 phase。其余生产 cleanup 操作直接代理转发。assembly commit 仍需再次检查 phase，因为 admission 之后的 foreign 工作可能与 close 或 fault 并发。shutdown coordinator 持有 lifecycle 来等待清理。`phase_tx` 用于唤醒应该停止工作的操作/事件读取方；cleanup 内部的通知则唤醒 disposal 完成等待方。runtime gate 已关闭不表示原生清理已经完成。disposal 调度与结果记账仍由 `HubCleanup` 负责。`CancellationToken` 不能替代携带错误语义的 `Closed` / `Faulted` phase 或保留的成功/错误结果，也不能为 runtime shutdown 后的晚到 Hub 调度清理；独立 OS cleanup worker 保留，不迁入 owner 的 Tokio runtime。
 
 操作状态仍由 actor 串行持有。`WaiterRegistry` 留在 actor 中，使登记和结果交付无需额外锁即可串行完成，不放进共享的 `RuntimeLifecycle`。actor 的 `event_tx` 向 owner 的 FIFO 发布 BLE 事件，供 `next_event()` 读取；它与 lifecycle phase 通知、单命令 oneshot 结果是三条不同的通道。初始化统一由 `InitializationState` 表示 `NotStarted`、`Pending`、`Ready`：超时/取消保留 Pending 来处理晚到回调；成功时先结算 waiter，再释放完成证据。详细说明见 [waiter 设计](bleng-waiter-design-2026-10-06.md)。
 
-cleanup 不会把 runtime fault 变成成功的 BLE 命令，也不保证取消已经 dispatch 的操作。
+owner 中的 `Duration` 参数称为 `timeout`；私有 `run_operation(timeout, make_message)` 执行 Hub 预检查并计算一次绝对 deadline。`make_message: FnOnce(BeginHandoff) -> M` 是同步消息工厂，不是 ask future：owner 调用它构造消息，在 Kameo 消费消息前通过 `message.correlation()` 保存轻量的 `M::Correlation` ID，再统一执行 `timeout_at(deadline, actor.ask(message))`。ticket 的 `wait_until(deadline)` 使用同一个 deadline；等待成功后调用 `M::decode_success(correlation, reply.resource, success)`，错误路径不进入成功解码。全部 11 个 `Begin*` 类型实现 [`messages.rs`](../../crates/bleng/src/runtime/messages.rs) 的私有 `OperationResult` 接口，定义 `Resource`、`Output`、`Correlation`、`correlation(&self)` 与 `decode_success`。原有 variant 与 ID 检查全部保留；不匹配返回 `None`，由 owner 触发 lifecycle fault 并返回 `TransportFault`，解码本身不依赖 lifecycle。
+
+测试 fixture 也实现相同接口，不再传入结果映射闭包；不克隆消息或 payload，不增加 boxing 或执行层，`WaiterSuccess` 仍是数据 enum。`From` 无法表达这种可能失败、且需要请求与 reply 中预期 ID 的解码。逐操作检查见[中文操作流程](bleng-actor-reservations-design-2026-10-07.zh-CN.md#owner-操作与绝对-deadline)。Begin 保护改用 `scopeguard::guard`，不再保留自定义 guard/armed bool；闭包只捕获 lifecycle，放弃原子 token 时仅在已 claimed 的情况下 fault。超时先显式 drop guard 再分类 phase/错误；收到 `BeginReply` 则用 `drop(ScopeGuard::into_inner(handoff))`，在证据等待前释放 lifecycle/token。`WaiterTicket` 仍负责领域退休，不改为通用 guard。调用方 deadline 不限制原生 disposal 时长，也不替代 shutdown coordinator。cleanup 不会把 runtime fault 变成成功的 BLE 命令，也不保证取消已经 dispatch 的操作。
 
 本地回归证据位于 [`cleanup_tests.rs`](../../crates/bleng/src/tests/cleanup_tests.rs) 和 [runtime assembly 测试](../../crates/bleng/src/runtime/tests/assembly.rs)，覆盖：
 
@@ -321,5 +354,7 @@ cleanup 不会把 runtime fault 变成成功的 BLE 命令，也不保证取消�
 - attach 与 close 竞争，以及等待方取消，不会丢失清理记账。
 - 丢弃未执行 worker 时保留根引用，不在当前线程隐式 dispose；记录失败后，重复完成等待均能返回错误。
 - runtime assembly/close 测试覆盖 admission 在 foreign 工作期间持续保留的情况。
+- [`runtime/tests/lifecycle.rs`](../../crates/bleng/src/runtime/tests/lifecycle.rs) 的 `close_waits_for_actor_teardown_after_mailbox_closes` 阻塞 Kameo unregister，在 mailbox 已关闭、cleanup 已完成时验证 close 仍保持 pending，直到实际 actor teardown 可以完成。
+- 同文件的 `waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths` 覆盖已过期与 timer 两条路径：mailbox 满导致 waiter 退休失败时均返回 `TransportFault`；释放 actor 后，因 disposal 本身没有失败，faulted runtime 仍可成功 close。
 
-未执行 worker 的回归测试主动丢弃真正的 worker 闭包，不会耗尽 OS 线程资源，也没有强制触发真实 `Builder::spawn` 失败。这些是确定性的 Rust 生命周期测试，不是新增的平台 RF 证据。
+未执行 worker 的回归测试主动丢弃真正的 worker 闭包，不会耗尽 OS 线程资源，也没有强制触发真实 `Builder::spawn` 失败。本轮 refactor 已报告上述两个新回归通过、runtime actor 测试 115 项通过，新增 facade-drop API 回归也已报告通过。当前 candidate 的完整主验证仍待完成；这些是已报告的实现结果，不是本次仅文档更新重新执行的测试，不声称新增平台 RF 验证或 ABI freeze。

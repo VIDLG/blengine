@@ -10,7 +10,7 @@ use kameo::prelude::ActorRef;
 
 use crate::cleanup::AssemblyAdmissionError;
 
-use super::{BlengActor, RuntimeLifecycle, RuntimePhase};
+use super::{BlengActor, RuntimeLifecycle, messages::IngressEvent};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AssemblyError {
@@ -30,7 +30,7 @@ impl From<AssemblyAdmissionError> for AssemblyError {
 /// receives no assembly interface and the port never retains the runtime owner.
 pub(crate) struct BackendPort {
     actor: ActorRef<BlengActor>,
-    pub(super) lifecycle: Arc<RuntimeLifecycle>,
+    lifecycle: Arc<RuntimeLifecycle>,
 }
 
 impl BackendPort {
@@ -50,20 +50,15 @@ impl BackendPort {
             attach_backend(assembly.ticket(), backend).map_err(AssemblyError::Backend)?;
             let hub = assembly.finish().map_err(AssemblyError::Backend)?;
             admission
-                .commit(hub, || self.lifecycle.phase() == RuntimePhase::Open)
+                .commit(hub, || self.lifecycle.is_open())
                 .map_err(AssemblyError::from)
         })
     }
 }
 
-/// Actor-mailbox message for one event arriving from native/backend ingress.
-/// This wrapper distinguishes callback ingress from other actor message paths
-/// without changing the shared BleEvent contract.
-pub(crate) struct IngressEvent(pub(crate) BleEvent);
-
 impl BleEventSink for BackendPort {
     fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError> {
-        if self.lifecycle.phase() != RuntimePhase::Open {
+        if !self.lifecycle.is_open() {
             return Err(EventSinkError::Rejected {
                 detail: "BLeng ingress is closed or faulted".to_owned(),
             });

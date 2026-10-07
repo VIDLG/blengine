@@ -214,6 +214,10 @@ impl WaiterRegistry {
         Ok(result_rx)
     }
 
+    pub(crate) fn contains(&self, command_id: CommandId) -> bool {
+        self.pending.contains_key(&command_id)
+    }
+
     /// Settles one waiter exactly once. Removing the entry before sending the
     /// result makes late or duplicate actor attempts harmless.
     pub(crate) fn finish(

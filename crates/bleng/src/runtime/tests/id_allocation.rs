@@ -1,74 +1,9 @@
 use super::support::{
-    Arc, BleHub, CommandId, ConnectCommand, ConnectionId, Duration, EventIngressStatus,
-    EventScenario, FakeBackend, RecordedCommand, RuntimeOwner, WaiterError, WaiterExpectation,
-    command_completed, connect_scenario, connected_event,
+    Arc, BleHub, ConnectCommand, ConnectionId, Duration, EventIngressStatus, EventScenario,
+    FakeBackend, RecordedCommand, RuntimeOwner, command_completed, connect_scenario,
+    connected_event,
 };
-use crate::runtime::{BlengActor, actor::IdGenerator};
-use kameo::prelude::{Context, Message};
-
-#[test]
-fn maximum_id_is_issued_once_and_exhaustion_never_wraps_or_mutates_sequence() {
-    let mut sequence = IdGenerator {
-        last_issued: u64::MAX - 1,
-    };
-    assert_eq!(sequence.allocate(), Ok(u64::MAX));
-    for _ in 0..3 {
-        assert_eq!(sequence.allocate(), Err(WaiterError::IdExhausted));
-        assert_eq!(sequence.last_issued, u64::MAX);
-    }
-}
-
-struct CheckConsumedIds;
-
-impl Message<CheckConsumedIds> for BlengActor {
-    type Reply = Result<(), WaiterError>;
-
-    async fn handle(
-        &mut self,
-        _: CheckConsumedIds,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        let mut receivers = Vec::new();
-        for expected in 1..=64 {
-            assert_eq!(self.allocate_resource_id()?, expected);
-            let (command, receiver) = self.register_waiter(WaiterExpectation::TerminalOnly)?;
-            assert_eq!(command, CommandId { value: expected });
-            receivers.push(receiver);
-        }
-
-        // Resource-creating commands allocate their resource before registering a waiter.
-        assert_eq!(self.allocate_resource_id()?, 65);
-        assert!(matches!(
-            self.register_waiter(WaiterExpectation::TerminalOnly),
-            Err(WaiterError::CapacityExceeded)
-        ));
-        self.cancel_waiter(1.into());
-        assert_eq!(receivers[0].try_recv(), Ok(Err(WaiterError::Cancelled)));
-
-        assert_eq!(self.allocate_resource_id()?, 66);
-        let (command, mut receiver) = self.register_waiter(WaiterExpectation::TerminalOnly)?;
-        assert_eq!(
-            command,
-            66.into(),
-            "failed registration must consume its command ID"
-        );
-        self.cancel_waiter(command);
-        assert_eq!(receiver.try_recv(), Ok(Err(WaiterError::Cancelled)));
-
-        let (next_command, _receiver) = self.register_waiter(WaiterExpectation::TerminalOnly)?;
-        assert_eq!(next_command, 67.into(), "cancellation must not reuse an ID");
-        assert_eq!(self.allocate_resource_id()?, 67);
-        assert_eq!(self.allocate_resource_id()?, 68);
-        self.cancel_waiter(next_command);
-        let (next_command, _receiver) = self.register_waiter(WaiterExpectation::TerminalOnly)?;
-        assert_eq!(
-            next_command,
-            68.into(),
-            "resource allocation must not advance commands"
-        );
-        Ok(())
-    }
-}
+use crate::runtime::actor::CheckConsumedIds;
 
 #[test]
 fn failed_waiter_registration_and_cancellation_consume_ids_without_reuse() {

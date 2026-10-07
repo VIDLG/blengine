@@ -672,6 +672,9 @@ impl HubCleanup {
     /// `HubCleanup::start_cleanup()` during `RuntimeOwner::close()`.
     pub(crate) async fn wait_for_completion(&self) -> Result<(), CleanupError> {
         let mut cleanup_signal_rx = self.shared.cleanup_signal_tx.subscribe();
+        // Do not move the ledger check into watch::Receiver::wait_for: its
+        // predicate holds the watch read lock, whereas producers lock state
+        // before publishing to watch. That would invert the lock order.
         loop {
             {
                 let state = self

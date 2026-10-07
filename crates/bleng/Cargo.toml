@@ -11,7 +11,9 @@ blehub = { path = "../blehub" }
 delegate.workspace = true
 derive_more.workspace = true
 kameo.workspace = true
+scopeguard.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 uniffi.workspace = true

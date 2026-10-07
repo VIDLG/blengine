@@ -66,6 +66,11 @@ impl RuntimeLifecycle {
         }
     }
 
+    /// Reads the shared gate; this snapshot does not reserve admission or prevent closure.
+    pub(super) fn is_open(&self) -> bool {
+        self.phase() == RuntimePhase::Open
+    }
+
     /// Maps the shared runtime gate to command admission without exposing phase storage.
     pub(super) fn require_open(&self) -> Result<(), WaiterError> {
         match self.phase() {
@@ -93,8 +98,7 @@ impl RuntimeLifecycle {
     where
         E: From<AssemblyAdmissionError>,
     {
-        self.cleanup
-            .with_admission(|| self.phase() == RuntimePhase::Open, operation)
+        self.cleanup.with_admission(|| self.is_open(), operation)
     }
 
     delegate::delegate! {

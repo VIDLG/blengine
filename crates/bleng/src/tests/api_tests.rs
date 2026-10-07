@@ -59,6 +59,44 @@ fn private_runtime_timers_work_with_timerless_caller_runtimes() {
 }
 
 #[test]
+fn dropping_facade_waiter_aborts_private_task_and_releases_its_capture() {
+    use std::{future::pending, time::Duration};
+    use tokio::sync::oneshot;
+
+    let caller = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    caller.block_on(async {
+        let bleng = super::Bleng::new().unwrap();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (released_tx, released_rx) = oneshot::channel();
+        let mut operation = Box::pin(bleng.spawn_on_runtime(async move {
+            let _release = scopeguard::guard(released_tx, |signal| {
+                let _ = signal.send(());
+            });
+            started_tx.send(()).unwrap();
+            pending::<()>().await;
+        }));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::select! {
+                started = started_rx => started.expect("private task must start"),
+                outcome = &mut operation => panic!("operation completed before cancellation: {outcome:?}"),
+            }
+        })
+        .await
+        .expect("private task must enter before dropping its facade waiter");
+
+        drop(operation);
+        tokio::time::timeout(Duration::from_secs(2), released_rx)
+            .await
+            .expect("facade cancellation must release the private task's capture")
+            .unwrap();
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
 fn event_reader_errors_preserve_timeout_and_transport_categories() {
     assert!(matches!(
         BlengError::from(runtime::EventReadError::Timeout),

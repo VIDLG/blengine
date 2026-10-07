@@ -1,14 +1,93 @@
 use crate::{
-    runtime::{BlengActor, EventReadError, RuntimeOwner, RuntimePhase, owner::BeginHandoff},
-    waiter::{WaiterError, WaiterExpectation},
+    runtime::{
+        BlengActor, EventReadError, RuntimeOwner, RuntimePhase,
+        actor::BeginInitializeAfterCleanup,
+        messages::{BeginConnect, BeginReply, OperationResult},
+        owner::BeginHandoff,
+    },
+    waiter::{WaiterError, WaiterSuccess},
 };
 use blehub::{
-    AdapterSnapshot, AdapterState, AuthorizationState, BleEvent, CommandId, EventIngressStatus,
-    InitializeCommand, ScanOptions, ScanSessionId, StartScanCommand,
+    AdapterSnapshot, AdapterState, AuthorizationState, BleEvent, CommandId, ConnectionId,
+    EventIngressStatus, InitializeCommand, ScanOptions, ScanSessionId, StartScanCommand,
 };
 use blehub_testkit::{EventScenario, FakeBackend, RecordedCommand};
+
 use kameo::prelude::{Context, Message};
 use std::{sync::Arc, time::Duration};
+use tokio::sync::oneshot;
+
+// Bypass reservation reconciliation to exercise the owner's last result boundary.
+struct BeginWithUnexpectedSuccess {
+    handoff: BeginHandoff,
+    success: WaiterSuccess,
+}
+
+impl OperationResult for BeginWithUnexpectedSuccess {
+    type Resource = ConnectionId;
+    type Output = ConnectionId;
+    type Correlation = ();
+
+    fn correlation(&self) -> Self::Correlation {}
+
+    fn decode_success(
+        correlation: (),
+        resource: ConnectionId,
+        success: WaiterSuccess,
+    ) -> Option<ConnectionId> {
+        BeginConnect::decode_success(correlation, resource, success)
+    }
+}
+
+impl Message<BeginWithUnexpectedSuccess> for BlengActor {
+    type Reply = Result<BeginReply<ConnectionId>, WaiterError>;
+
+    async fn handle(
+        &mut self,
+        message: BeginWithUnexpectedSuccess,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        assert!(message.handoff.try_claim());
+        let (result_tx, result_rx) = oneshot::channel();
+        result_tx.send(Ok(message.success)).unwrap();
+        Ok(BeginReply {
+            command_id: 1.into(),
+            result_rx,
+            resource: 1.into(),
+        })
+    }
+}
+
+#[test]
+fn unexpected_success_variant_or_resource_faults_owner_and_disposes_hub() {
+    for success in [
+        WaiterSuccess::ScanStarted(1.into()),
+        WaiterSuccess::Connected(2.into()),
+    ] {
+        let owner = RuntimeOwner::new().unwrap();
+        let (backend, handle) = FakeBackend::scripted([]);
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        host.block_on(async {
+            owner.assemble_backend(Arc::new(backend)).await.unwrap();
+            let result = owner
+                .run_operation(Duration::from_secs(2), |handoff| {
+                    BeginWithUnexpectedSuccess { handoff, success }
+                })
+                .await;
+            assert_eq!(result, Err(WaiterError::TransportFault));
+            assert_eq!(owner.lifecycle.phase(), RuntimePhase::Faulted);
+            tokio::time::timeout(Duration::from_secs(2), owner.close())
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        assert!(handle.commands().is_empty());
+        assert_eq!(handle.dispose_count(), 1);
+    }
+}
 
 fn snapshot() -> AdapterSnapshot {
     AdapterSnapshot {
@@ -16,49 +95,6 @@ fn snapshot() -> AdapterSnapshot {
         scan_authorization: AuthorizationState::Authorized,
         connection_authorization: AuthorizationState::Authorized,
         name: None,
-    }
-}
-
-struct BeginInitializeAfterCleanup {
-    handoff: BeginHandoff,
-    phase: RuntimePhase,
-    expected_error: WaiterError,
-}
-
-impl Message<BeginInitializeAfterCleanup> for BlengActor {
-    type Reply = Result<(), WaiterError>;
-
-    async fn handle(
-        &mut self,
-        message: BeginInitializeAfterCleanup,
-        ctx: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        self.require_open()?;
-        self.initialization.require_not_started()?;
-        let (command_id, mut result_rx) = self.register_waiter(WaiterExpectation::Initialized)?;
-        match message.phase {
-            RuntimePhase::Open => self.lifecycle.start_cleanup(),
-            RuntimePhase::Closed => {
-                self.lifecycle.close();
-                self.lifecycle.start_cleanup();
-            }
-            RuntimePhase::Faulted => self.lifecycle.fault(),
-        }
-        let error = self
-            .launch_dispatch(
-                ctx,
-                &message.handoff,
-                command_id,
-                |_| panic!("cleanup before launch must not reserve initialization"),
-                |_| panic!("cleanup before launch must not dispatch a backend command"),
-            )
-            .expect_err("cleanup before launch must reject dispatch");
-        assert_eq!(error, message.expected_error);
-        assert_eq!(result_rx.try_recv(), Ok(Err(error.clone())));
-        assert_eq!(self.initialization.require_not_started(), Ok(()));
-        assert_eq!(self.lifecycle.phase(), message.phase);
-        // A handler error leaves guard retirement to begin_operation, without acknowledging launch.
-        Err(error)
     }
 }
 
@@ -83,13 +119,10 @@ fn cleanup_before_launch_finishes_registered_waiter_without_reserving_or_false_f
                 .unwrap();
             let result = tokio::time::timeout(
                 deadline,
-                owner.begin_operation(deadline, |actor, handoff| {
-                    let message = BeginInitializeAfterCleanup {
-                        handoff,
-                        phase,
-                        expected_error: expected_error.clone(),
-                    };
-                    async move { actor.ask(message).await }
+                owner.run_operation(deadline, |handoff| BeginInitializeAfterCleanup {
+                    handoff,
+                    phase,
+                    expected_error: expected_error.clone(),
                 }),
             )
             .await

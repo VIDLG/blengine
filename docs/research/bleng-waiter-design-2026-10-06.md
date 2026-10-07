@@ -9,6 +9,9 @@ The predispatch-order simplification, consolidation into one reservation module,
 and three lifecycle review corrections are implemented and validated below.
 This is an implementation/design record, not a new architecture proposal, a
 separate public BLE protocol, or a native-operation cancellation guarantee.
+The mailbox protocol has a single `runtime/messages.rs` module rather than
+separate command/event protocol modules. Actor state and coordination remain
+private, while owner retains caller waiting and deadlines.
 
 For a concise Chinese account of the actor/reservation boundaries, see
 [BLeng actor 与 reservation 设计](bleng-actor-reservations-design-2026-10-07.zh-CN.md).
@@ -25,11 +28,13 @@ underlying native operation can be interrupted.
 Public BLeng API
       |
       v
-RuntimeOwner::begin_operation
+RuntimeOwner::run_operation(timeout, make_message)
       |
-      +-- check owner lifecycle
-      +-- acquire the dispatchable primary Hub
-      +-- ask the BLeng actor to begin the operation
+      +-- one Hub/lifecycle preflight; release the temporary Hub
+      +-- compute one absolute deadline; scopeguard::guard(BeginHandoff, ...)
+      +-- message = make_message(handoff.clone()): synchronous factory, not an ask
+      +-- correlation = message.correlation(): snapshot lightweight IDs
+      +-- timeout_at(deadline, actor.ask(message)): owner sends and awaits handoff
       |
       v
 Actor checks the operation, then registers waiter + IDs
@@ -37,9 +42,10 @@ Actor checks the operation, then registers waiter + IDs
       +-- complete all fallible operation checks before registration
       +-- allocate a typed resource ID separately, if creating a resource
       +-- register_waiter: allocate CommandId, expectation, and oneshot channel
-      +-- launch_dispatch: try_launch caller/dispatch handoff
+      +-- launch_dispatch: try_claim caller/dispatch handoff
       |     +-- cancelled: remove only waiter; no reservation exists
       |     +-- won: synchronously/infallibly reserve, then spawn_blocking
+      +-- return BeginReply: owner defuses handoff guard, then waits on ticket
       +-- backend command cannot start before its reservation exists
       |
       +-----------------------------+
@@ -53,20 +59,80 @@ accepted/rejected             domain + terminal events
              Reservation facts
                     |
                     v
-             reservation waiter_result()
+             settle_waiter: registry contains command?
+                    |
+                    v
+             reservation waiter_result() (only for a live waiter)
                     |
                     v
              WaiterRegistry::finish exactly once
                     |
                     v
-             oneshot receiver
+             oneshot receiver -> WaiterTicket::wait_until(same deadline)
                     |
+                    +-- errors propagate through ?; skip success decoding
                     v
-             WaiterTicket::wait
-                    |
-                    v
-             typed operation result
+             M::decode_success(correlation, reply.resource, success)
+                    +-- Some(output): move out typed result
+                    +-- None: owner faults lifecycle, returns TransportFault
 ```
+
+The private `RuntimeOwner::run_operation(timeout, make_message)` directly performs one
+Hub preflight, computes one absolute `Instant` from `timeout`, and creates the
+handoff scope guard. `make_message: FnOnce(BeginHandoff) -> M` is a synchronous message
+factory: it only constructs a Begin message, not a future, an actor ask, or a wait
+for handoff or native BLE completion. Owner calls `make_message(handoff.clone())`,
+snapshots lightweight `M::Correlation` IDs with `message.correlation()` before
+Kameo consumes the message, then centrally awaits
+`timeout_at(deadline, async { self.actor.ask(message).await })`. The factory has
+no separate timer; ask and ticket waiting share the already computed deadline.
+Receiving `BeginReply` defuses the guard with
+`drop(ScopeGuard::into_inner(handoff))`, releasing its captured lifecycle and
+returned token before evidence waiting. The reply is handoff metadata, not BLE
+completion; ticket waiting uses that same deadline, not a fresh relative timeout.
+
+All 11 `Begin*` types implement the private
+[`OperationResult`](../../crates/bleng/src/runtime/messages.rs) trait. Each defines:
+
+- `Resource`: the newly allocated typed ID returned by `BeginReply`, or `()`;
+- `Output`: the operation's typed return value;
+- `Correlation`: only the original request IDs needed to validate success, or `()`;
+- `correlation(&self) -> Self::Correlation`: snapshot those lightweight IDs; and
+- `decode_success(correlation, resource, success) -> Option<Self::Output>`:
+  validate the success variant and IDs, then move out the result.
+
+After `WaiterTicket::wait_until(deadline).await?`, owner calls
+`M::decode_success(correlation, reply.resource, success)`. All existing variant
+and identity checks remain intact:
+
+| Request | Required success variant and identities |
+|---|---|
+| `BeginInitialize` | `Initialized`; move out the snapshot. |
+| `BeginScan` | `ScanStarted`; scan matches the allocated `resource`. |
+| `BeginStop` | `ScanStopped`; scan matches the requested session. |
+| `BeginConnect` | `Connected`; connection matches the allocated `resource`. |
+| `BeginDisconnect` | `Disconnected`; connection matches the request. |
+| `BeginDiscoverGatt` | `GattDiscovered`; database connection matches the request and GATT session matches the allocated `resource`. |
+| `BeginRssi` | `RssiRead`; connection matches the request. |
+| `BeginRead` | `CharacteristicRead`; connection, GATT session, and characteristic all match the request. |
+| `BeginWrite` | `CharacteristicWritten`; connection, GATT session, and characteristic all match the request. |
+| `BeginEnableNotifications` | `NotificationsEnabled`; connection, GATT session, and characteristic match the request; subscription matches the allocated `resource`. Return subscription and actual mode. |
+| `BeginDisableNotifications` | `NotificationsDisabled`; connection, GATT session, and subscription match the request. No new characteristic comparison is added. |
+
+`Some(output)` returns the extracted result. `None` signals an internal invariant
+mismatch: owner faults the lifecycle and returns `TransportFault`, not an ordinary
+BLE operation failure. Decoding itself has no lifecycle dependency. Begin errors
+return through the existing error paths, and BLE/dispatch errors propagate through
+the wait result's `?`; neither enters success decoding.
+
+This replaces per-call result-mapping closures with request-owned decoding, not
+BLE evidence interpretation or a new execution layer. The integration clones
+neither message nor payload and adds no boxing: owner retains only correlation
+IDs while Kameo consumes the request, including a write payload, and decoding
+moves out read bytes or database
+data. `handoff.clone()` only clones the shared handoff token. `WaiterSuccess`
+remains a data enum. `From` is unsuitable because conversion is fallible and needs
+expected IDs from the request and reply, not just the success value.
 
 The dispatch result, domain event, and terminal event are separate facts. Their
 order is not assumed. For example, a GATT operation may observe its database
@@ -96,8 +162,9 @@ Each sequence issues `u64::MAX` once and then remains exhausted with
 
 Regression coverage lives in
 [`runtime/tests/id_allocation.rs`](../../crates/bleng/src/runtime/tests/id_allocation.rs):
-equal-valued command/resource callback correlation, failed admission and
-cancellation without reuse, and issuing the maximum ID only once without wraparound.
+equal-valued command/resource callback correlation and failed admission/cancellation
+without reuse. The actor-private maximum-ID exhaustion regression lives in
+[`runtime/tests/actor.rs`](../../crates/bleng/src/runtime/tests/actor.rs).
 The former test proving two standalone local generator values are independent
 was removed; actual actor command/resource allocation separation remains covered.
 
@@ -136,14 +203,20 @@ reconnecting the same peripheral.
 implement actor handlers; it is not a public crate API. The actor now keeps
 `event_tx` and its waiter registry private. Event coordination uses
 `publish_event()`, which checks the open gate, enqueues locally, and faults on
-outward queue failure. Success means local enqueue only. The event coordinator
-`deliver()` rechecks the lifecycle before processing evidence; publication
+outward queue failure. Success means local enqueue only. The private event
+coordinator `process_event()` rechecks the lifecycle before processing evidence; publication
 admission and continued processing are separate responsibilities, not duplicate
 `require_open()` calls inside one helper. The post-send check cannot retract a
 queued event or make publication atomic with concurrent shutdown. It is a policy method, not a raw sender delegation.
-Cancellation, timeout, and explicit result delivery use semantic actor methods
-whose pure forwarding is generated with `delegate!`.
+Command-side cancellation and timeout share
+`retire_waiter(command_id, timed_out)`: it calls `waiters.timeout` when timed out,
+otherwise `waiters.cancel`, preserving the previous behavior without two separate
+delegates. Actor-local result delivery accesses the private registry directly;
+a lost handoff in `launch_dispatch()` also calls `waiters.cancel` directly.
 
+`RuntimeLifecycle::is_open()` queries the existing atomic phase without reserving
+admission or preventing concurrent close/fault. Paths that distinguish `Faulted`
+from `Closed` still use phase; no duplicate state is introduced.
 The lifecycle owns phase-to-admission-error mapping (`require_open()`), and
 `InitializationState` owns readiness-to-admission-error mapping
 (`require_initialized()`). Only `Ready` passes the initialization gate;
@@ -158,7 +231,8 @@ command entries forward directly to `self.scan`, without actor-side optional-roo
 checks or unwrapping. Reservation installation uses the same names at both layers
 (`reserve_initialize`, `reserve_connection`, `reserve_scan_stop`), eliminating
 unnecessary `#[call]` name mappings. Context-specific forwarding names such as
-`cancel_waiter()` to registry `cancel()` remain intentional.
+`allocate_resource_id()` to generator `allocate()` remain intentional; waiter
+cancellation/timeout instead use the one explicit retirement entry above.
 The actor retains ID allocation, cross-reservation settlement, and transport
 policy. The connection collection needs no `Option`: its empty map already
 represents zero connections. `ScanState` explicitly owns the single scan slot:
@@ -186,27 +260,49 @@ The owning reservation validates its local conditions with the same error
 precedence as before. `ScanState` owns slot availability and release, while
 `ScanReservation` owns session-local stop validation.
 
-`launch_dispatch()` now belongs to the actor root, which clones its private
-lifecycle internally for detached blocking work. Commands do not acquire the
-actor's lifecycle Arc. Event reconciliation, including subscription-state
-observation, is the private child module `actor::events`, with its conventional
-`runtime/actor/events.rs` path and a plain `mod events;` declaration. It is part of the actor
-implementation and may mutate actor-private evidence without exposing that
-state to sibling consumers. Event publication, terminal routing, waiter
-settlement, and passive-loss propagation are private actor methods. Delegation
-still replaces pure forwarding, not execution order or lifecycle handoff.
+`launch_dispatch()` belongs to the actor root, which clones its private
+lifecycle internally for detached blocking work. Messages do not acquire the
+actor's lifecycle Arc. The sibling `runtime/messages.rs` unifies the mailbox
+protocol. Its two asynchronous-input `Message` handlers only call
+`self.handle_ingress_event(event)` and
+`self.handle_dispatch_result(message.id, message.result)`, respectively;
+these entry names remain unchanged. These synchronous entries are `pub(super)`
+methods in actor.rs, not public crate APIs. All state coordination stays in
+actor.rs behind those two entries: early-callback buffering, foreign-disconnect
+exclusion, publication, evidence recording, settlement, retirement,
+`DispatchEffect` execution, and replay. The remaining coordination helpers are
+private. Messages cannot access actor fields or obtain state through new getters.
+This is source organization within the existing runtime, not a new boundary;
+it adds no actor, lock, queue, index, or state machine and changes neither ABI
+nor processing order. Delegation still replaces pure forwarding, not execution
+order or lifecycle handoff.
 
 Runtime production files and tests use explicit imports instead of parent or
 prelude globs. `runtime/mod.rs` no longer acts as a shared external-import bag.
-The test files stay under `runtime/tests/` and compile inside the actor's test
-module for private-invariant assertions. Production visibility follows actual
-system dependencies, not test access; no production fields or mutable getters
-are opened for tests.
+The test files stay under `runtime/tests/`, but their logical parents follow the
+state owner. `owner.rs` mounts `tests/mod.rs` for owner and end-to-end flow tests;
+`actor.rs` mounts `tests/actor.rs` for private-invariant assertions and
+`tests/actor_support.rs` for fixture message handlers. Only the fixture messages
+are re-exported under `#[cfg(test)]`, not actor fields. Custom fixture tests run
+the production `run_operation(timeout, make_message)` with synchronous message
+factories and typed `BeginReply` fixture replies. Fixture messages implement the
+same `OperationResult` interface rather than passing result-mapping closures or
+using a test-only begin helper.
+
+All `RuntimeOwner` fields are private, including `actor`, `lifecycle`, and
+`shutdown_result_tx`; `BackendPort.lifecycle` is private too. `WaiterTicket`, its
+receiver/wait method, `run_operation()`, and `ticket()` are owner-private
+implementation details, with no runtime-level ticket re-export. Production
+visibility follows actual system dependencies, not test access. No production
+getters, generic actor-access interfaces, or test-only production methods are
+added to accommodate white-box assertions.
 
 ## Event reconciliation boundaries
 
-`actor/events.rs` coordinates routing and side effects rather than unpacking
-reservation fields. Initialization, scan, and connection owners provide:
+Private methods in `actor.rs` coordinate routing and side effects rather than
+unpacking reservation fields; the two asynchronous-input handlers in
+`runtime/messages.rs` only forward through the restricted actor entries.
+Initialization, scan, and connection owners provide:
 
 - `buffer_before_dispatch(event)`: correlate and consume an early callback into
   its existing bounded buffer. `Ok(None)` means consumed, `Ok(Some(event))` means
@@ -271,8 +367,9 @@ record-field visibility.
 | Owner / source | Responsibility |
 |---|---|
 | [`owner.rs`](../../crates/bleng/src/runtime/owner.rs): `RuntimeOwner` | Owns the executor, `ActorRef`, outward `event_rx`, caller deadline/waiting policy, and shutdown coordination. It does not interpret BLE reservation evidence. |
-| [`commands.rs`](../../crates/bleng/src/runtime/commands.rs) | Defines every `Begin*` request, named reply, and actor-side admission handler, including notification enable/disable. Caller deadlines and waiting remain in owner.rs. |
-| [`actor.rs`](../../crates/bleng/src/runtime/actor.rs): `BlengActor` | Owns serialized BLE orchestration, `WaiterRegistry`, waiter delivery, `event_tx`, and reservation storage. The actor root retains `Drop` and register/reserve methods, not a prelaunch rollback guard. |
+| [`messages.rs`](../../crates/bleng/src/runtime/messages.rs) | Unified mailbox protocol: 11 `Begin*` requests with `OperationResult` success decoding, `BeginReply`, and admission handlers; `IngressEvent`/`DispatchResolved` and two forwarding handlers; `RetireWaiter` and its handler. Owns no state, caller deadlines, or waiting. |
+| [`actor.rs`](../../crates/bleng/src/runtime/actor.rs): `BlengActor` | Owns serialized BLE orchestration, `WaiterRegistry`, waiter delivery, `event_tx`, reservation storage, and all state coordination. Retains `Drop` and register/reserve methods, not a prelaunch rollback guard. |
+| [`backend_port.rs`](../../crates/bleng/src/runtime/backend_port.rs) | Backend assembly and non-blocking ingress; imports `IngressEvent` directly from messages. Retains neither owner nor responsibility for interpreting reservation evidence. |
 | [`reservations/mod.rs`](../../crates/bleng/src/runtime/reservations/mod.rs) | Documents ownership and exposes the runtime-facing state facade. No command-index map. |
 | [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | Shared dispatch evidence, bounded pre-ack buffering, and transient reconciliation outcomes. |
 | [`initialization.rs`](../../crates/bleng/src/runtime/reservations/initialization.rs) | Initialization evidence and readiness. |
@@ -293,11 +390,11 @@ localize connection retirement; `take_discovery()` and
 `take_subscription_transition()` localize GATT/subscription rejection and
 removal without discarding previously committed state. These are dispatch
 rejection/failure handling and evidence retirement, not prelaunch rollback.
-Ingress/dispatch-result coordination and command admission remain integrated
-through [`actor/events.rs`](../../crates/bleng/src/runtime/actor/events.rs) and
-[`commands.rs`](../../crates/bleng/src/runtime/commands.rs), respectively.
-Notification requests follow the same split as other commands: actor-side
-handlers live in commands.rs, caller-facing operations in owner.rs, and
+Ingress/dispatch-result coordination belongs to
+[`actor.rs`](../../crates/bleng/src/runtime/actor.rs), with admission and mailbox
+handlers unified in [`messages.rs`](../../crates/bleng/src/runtime/messages.rs).
+Notification requests follow the same split as other commands: admission
+handlers live in messages.rs, caller-facing operations in owner.rs, and
 subscription state in reservations/subscription.rs.
 `WaiterRegistry` remains the caller command ledger; callback correlation uses the
 existing reservation hierarchy, not an additional `CommandId` index.
@@ -342,7 +439,7 @@ reservation installation, and native-dispatch submission precede the reply.
 Backend acceptance is reported separately by `DispatchResolved`; BLE completion
 still requires reservation evidence and waiter settlement.
 
-[`commands.rs`](../../crates/bleng/src/runtime/commands.rs) defines one runtime-only
+[`messages.rs`](../../crates/bleng/src/runtime/messages.rs) defines one runtime-only
 `BeginReply<Resource = ()>` with named `command_id`, `result_rx`, and `resource`
 fields. Scan, connection, discovery, and notification-enable replies carry their
 new typed resource IDs; commands creating no resource use `()`, not an `Option`
@@ -356,27 +453,61 @@ is transient handoff metadata, not another mutable operation state or a guard.
 The generic representation adds no allocation or synchronization and does not
 change the public ABI, dispatch ordering, deadlines, or cancellation behavior.
 
-### Command boundaries and admission order
+### Unified mailbox protocol and admission order
 
-Command messages are runtime-private (`pub(super)`) and imported directly by
-owner.rs rather than re-exported through the runtime root. `DispatchResolved`
-is defined beside its handler in actor/events.rs and exposed only to the actor
-parent; it reports a dispatch outcome, not a new admission request.
+`messages.rs` organizes protocol types and their handlers in three groups.
+All protocol types use `pub(super)` for runtime-only visibility:
 
-Handlers validate lifecycle/readiness and operation-specific conditions before
-allocating resource IDs and registering a waiter. Actor-owned `launch_dispatch`
-then acquires a dispatchable Hub, claims the handoff, installs the reservation,
+1. The 11 requests `BeginInitialize`, `BeginScan`, `BeginStop`, `BeginConnect`,
+   `BeginDisconnect`, `BeginDiscoverGatt`, `BeginRssi`, `BeginRead`, `BeginWrite`,
+   `BeginEnableNotifications`, and `BeginDisableNotifications`, plus `BeginReply`
+   and the command-admission handlers.
+2. `IngressEvent` and `DispatchResolved`, with two asynchronous-input handlers
+   that only call the restricted actor entries. `DispatchResolved` reports a
+   dispatch outcome, not a new admission request.
+3. `RetireWaiter` and its handler calling actor `retire_waiter(id, timed_out)`;
+   it retires caller delivery, not the native reservation.
+
+Owner imports requests and waiter-retirement messages directly from messages
+rather than through runtime-root re-exports, receives the named reply, and owns
+caller waiting and deadlines. Backend_port imports `IngressEvent` from messages; actor imports
+`DispatchResolved` from the same module. Subscription APIs remain in owner.rs
+and subscription state in reservations/subscription.rs.
+
+Begin handlers retain explicit operation-specific orchestration through
+restricted actor methods: lifecycle/readiness and operation validation, resource
+ID allocation, and waiter registration. They are not one-line forwarders.
+Actor-owned `launch_dispatch` then acquires a dispatchable Hub, claims the
+handoff, installs the reservation,
 and submits native dispatch. There is no await or normal-error branch between
 installation and submission. Validation cannot install native reservations;
 pre-handoff cancellation retires only the waiter. Issued ID gaps are allowed,
 not rolled back or reused.
 
-Handlers are grouped by initialization, scan start/stop, connection, GATT, I/O,
-subscriptions, and waiter retirement, with explicit command/resource/peripheral
-ID names. Their validation, expectation, reservation, and native command remain
-visible together; no generic command trait or handler-generating macro hides
-that correspondence. Dispatch coordination remains inside the actor privacy
-boundary rather than exposing its fields to commands.rs.
+The first group orders Begin handlers by initialization, scan start/stop,
+connection, GATT, I/O, and subscriptions, followed by the asynchronous-input and
+waiter-retirement groups. Command/resource/peripheral ID names remain explicit.
+Validation, expectation, reservation, and native command remain visible together;
+`OperationResult` only associates success decoding with a request, not admission
+or dispatch execution. No mega message enum, generic execution-trait framework,
+handler-generating macro, queue, or additional state machine hides that
+correspondence. Dispatch coordination remains inside the actor privacy boundary
+rather than exposing its fields to
+messages.rs. Command comments point to actor.rs for that coordination implementation.
+
+### Success semantics by `Result` layer
+
+Keep each layer's `Result<(), E>`: unit means no additional success payload at
+that layer, not absence of errors or result accounting. Do not add information-free
+success markers or merge the layers' Error types.
+
+| Layer | Meaning of success |
+|---|---|
+| Validation | Checks passed, not handoff, backend acceptance, or BLE completion. Validations returning IDs or other data retain those values. |
+| `launch_dispatch()` / `BeginReply` | Handoff won, reservation installed, and dispatch task submitted; not proof of backend entry or acceptance. |
+| Synchronous backend `Result<(), CommandDispatchError>` | `Ok(())` means dispatch acceptance; `Err` means rejection. The complete result returns to actor through `DispatchResolved`, never ignored or treated as asynchronous completion. |
+| Asynchronous operation / `WaiterSuccess` | Settled from dispatch, domain, and terminal evidence. Read bytes, RSSI, database, IDs/mode, and other data-bearing results retain their values. Platform write-without-response local submission/progress is not upgraded to a remote-processing guarantee. |
+| Cleanup | `Ok(())` means accounting completed without a reported disposal error. Result slots retain success/errors; all slots settling can still produce `Err`, so settlement alone does not mean cleanup succeeded. |
 
 ### Cancellation before mutation and evidence lifetime
 
@@ -387,7 +518,7 @@ all fallible operation checks
   -> register waiter + command/operation IDs
   -> launch_dispatch: acquire Hub and check lifecycle
        failed    -> finish the waiter with that error; no reservation or dispatch
-       ready     -> BeginHandoff::try_launch
+       ready     -> BeginHandoff::try_claim
                       cancelled -> cancel only the waiter; no reservation
                       won       -> synchronous, infallible reserve closure
                                   -> spawn_blocking native dispatch
@@ -397,19 +528,21 @@ Waiter/ID registration must succeed before handoff. There is no `await` between
 the successful handoff, reservation registration, and blocking-task launch, and
 no fallible operation check is deferred into the reserve closure. The native
 command cannot start before its reservation exists. A cancellation that wins
-`try_launch` therefore needs only waiter removal, not restoration of a previous
+`try_claim` therefore needs only waiter removal, not restoration of a previous
 reservation or session. `ReservationRollback`, local prelaunch rollback methods,
 and `RollbackOutcome` are removed by this change.
 
-The owner-side `BeginHandoffGuard` remains. It handles the atomic
-caller-versus-dispatch race; it is not the removed actor-local rollback guard.
+Owner-side handoff protection remains, but `scopeguard::guard` replaces the
+custom `BeginHandoffGuard` type and its local `armed` bool (the old name describes
+only the superseded implementation). `BeginHandoff` still arbitrates the atomic
+caller-versus-dispatch race; this is not actor-local reservation rollback.
 `BeginHandoff` replaces both `BeginState` and the Hub-carrying `BeginContext`.
 It is one cloneable atomic token, with no Hub or lifecycle payload. It remains
 in `owner.rs` because the owner creates it and owns acknowledgement/cancellation;
-the actor only consumes `try_launch()`. Consumption in `launch_dispatch()` does
+the actor only consumes `try_claim()`. Consumption in `launch_dispatch()` does
 not make the token actor-owned state.
 
-Shared and local state are deliberately separate:
+Shared atomic state and generic RAII protection are deliberately separate:
 
 ```text
 BeginHandoff atomic: Pending -> Claimed
@@ -417,20 +550,29 @@ BeginHandoff atomic: Pending -> Claimed
                       +-------> Cancelled
                                   (claimed cancellation requests a lifecycle fault)
 
-BeginHandoffGuard: armed -> acknowledge(self) -> disarmed and consumed
-                    |
-                    +-- Drop -> cancel the shared token
+scopeguard::guard(BeginHandoff::new(), closure)
+  +-- un-defused Drop -> abandon() -> lifecycle.fault() if was_claimed
+  +-- receive BeginReply -> drop(ScopeGuard::into_inner(handoff))
+                           do not run closure; release lifecycle capture and token
 ```
 
 `Claimed` means the actor won dispatch ownership, not that native entry occurred.
-The shared token has no `Acknowledged` phase: the actor does not need to observe
-owner acknowledgement. On a successful begin reply, consuming `acknowledge(self)`
-only clears the guard's task-local `armed` flag. Its ensuing Drop performs no
-atomic write. An armed Drop still atomically cancels the token and requests a
-lifecycle fault if the actor had already claimed it. Invalid atomic values retain
-the same fail-closed policy. This replaces the former `BeginOperationGuard`
-without changing the cancellation boundary or adding another synchronization
-primitive.
+The atomic `Pending` / `Claimed` / `Cancelled` protocol is unchanged and has no
+`Acknowledged` phase. `run_operation()` uses
+`scopeguard::guard(BeginHandoff::new(), move |handoff| { ... })`; the closure
+captures only `Arc<RuntimeLifecycle>`, never `RuntimeOwner` or a Hub. On an
+un-defused Drop it calls `handoff.abandon()` and calls `lifecycle.fault()` only
+if `was_claimed`. That return value reports prior actor ownership, not successful
+native cancellation. Invalid atomic values retain the same fail-closed policy.
+
+The begin-timeout branch explicitly drops the guard **before** classifying the
+phase, preserving `Closed` / `TransportFault` precedence over ordinary `Timeout`.
+Classifying first would hide a fault caused by abandonment. Receiving `BeginReply`
+instead executes `drop(ScopeGuard::into_inner(handoff))`: `into_inner` does not
+run the abandonment closure, drops its captured lifecycle, and returns the token
+for explicit release, all before operation-evidence waiting. No custom
+`acknowledge(self)` or local armed flag remains, and this defusal makes no atomic
+write or native-cancellation promise.
 
 The owner retains its backend-availability preflight to preserve existing error
 precedence, but releases that temporary Hub reference before waiting for the
@@ -450,9 +592,12 @@ accessors or duplicate the error mapping. Owner and actor checks occur at distin
 times: preflight preserves admission error precedence, while actor preparation
 revalidates after mailbox waiting.
 
-`try_launch()` is an ownership-changing CAS, not a read-only cancellation probe.
+`try_claim()` only atomically claims the handoff: it neither installs a reservation
+nor submits a dispatch task or proves native entry. The actor's `launch_dispatch()`
+coordinates those later steps. The claim is an ownership-changing CAS, not a
+read-only cancellation probe.
 All fallible Hub/lifecycle preparation must precede it. Moving it first would
-leave the token `Claimed` on ordinary preparation failure, causing the armed
+leave the token `Claimed` on ordinary preparation failure, causing the un-defused
 caller guard to fault rather than return a clean rejection. The early-return
 order is preparation error, lost handoff, then infallible reserve and task launch.
 
@@ -465,10 +610,10 @@ registry access inside the actor privacy boundary.
 The cancellation boundary has three distinct outcomes:
 
 ```text
-begin_operation waiting for actor reply
-  +-- caller cancellation wins before try_launch
+owner's centralized ask within run_operation waiting for actor reply
+  +-- caller cancellation wins before try_claim
   |     -> skip reservation and native dispatch; remove only waiter
-  +-- try_launch wins -> synchronous reserve -> blocking-task launch
+  +-- try_claim wins -> synchronous reserve -> blocking-task launch
         +-- cancellation before owner acknowledges the begin reply
         |     -> owner Faulted -> close/cleanup; no rollback or native cancellation
         +-- owner acknowledges begin reply -> WaiterTicket
@@ -478,7 +623,7 @@ begin_operation waiting for actor reply
 Here acknowledgement means the owner accepting the actor's begin reply, not the
 backend's dispatch acknowledgement or a BLE terminal event. Cancellation after
 handoff but before that owner acknowledgement fails the owner closed through
-`BeginHandoffGuard`; it is not ordinary waiter-only retirement. The handoff
+the handoff scope guard; it is not ordinary waiter-only retirement. The handoff
 establishes dispatch ownership, not proof that the native command has entered.
 Cleanup may race native dispatch, so no native-entry or native-cancellation
 guarantee follows from the fault.
@@ -580,10 +725,27 @@ cover active-subscription rejection before rediscovery, failed disable, and
 partial late completion stays busy; full disable permits rediscovery; other
 connections remain independent.
 
-The final locked workspace test run passed all 222 tests, including all 134 BLeng tests.
-Workspace strict Clippy, formatting, BLeng Swift/Kotlin binding snapshots, and
-documentation checks also passed. These deterministic Rust results are not
-platform RF evidence.
+The previously recorded locked workspace run passed all 222 tests, including
+all 134 BLeng tests. Workspace strict Clippy, formatting, BLeng Swift/Kotlin
+binding snapshots, and documentation checks also passed at that point; those
+historical gates are not relabeled as current-candidate reruns.
+
+The current refactor validation reports 115 passing runtime actor tests, including
+both new regressions in
+[`runtime/tests/lifecycle.rs`](../../crates/bleng/src/runtime/tests/lifecycle.rs):
+`waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths`
+and `close_waits_for_actor_teardown_after_mailbox_closes`. The former protects both
+deadline paths; the latter blocks Kameo unregister after mailbox closure and
+checks close still waits even when cleanup has completed. This documentation
+update claims neither fresh platform RF evidence nor ABI freeze.
+
+The new API regression
+[`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs)
+is also reported passing. It observes private-task entry, drops the outer facade
+future, and waits within a bounded test window for capture release; it does not
+assert immediate destruction or native cancellation. Full main validation of
+the current candidate is still pending; this docs-only update does not relabel
+the historical workspace gates above as current results.
 
 ## Responsibilities of the main structures
 
@@ -683,6 +845,12 @@ It does not parse `BleEvent`, correlate native callbacks, or decide whether an
 operation is complete. Those responsibilities belong to the matching actor
 reservation.
 
+`settle_waiter()` first checks `WaiterRegistry::contains(command_id)` before
+calling reservation `waiter_result()`. A retired caller therefore does not cause
+unused results (such as cloned databases or read bytes) to be materialized.
+This check skips only caller settlement: late evidence recording and subsequent
+reservation retirement/commit still proceed in `process_event()`.
+
 `finish()` is the only exactly-once settlement path. The registry is accessed
 through the actor rather than a shared concurrent map, so it does not need a
 `Mutex`, `DashMap`, or a second routing registry. It stays on `BlengActor`, not
@@ -699,11 +867,22 @@ the registry and releases its remaining senders.
 - the operation deadline; and
 - the owner ingress lifecycle signal.
 
-When the caller times out or drops the ticket, it sends `RetireWaiter` to the
-actor on a best-effort basis. Retiring a waiter means that the caller no longer
+`wait_until(deadline)` accepts the absolute deadline shared with begin admission.
+When the caller times out or drops the ticket, it attempts a non-blocking
+`RetireWaiter` send. Failure on a full/closed mailbox while the lifecycle is Open
+faults the runtime rather than silently losing retirement. Both an already-expired
+deadline and the timer branch call `finish_timeout()`: retire, disarm the Drop
+fallback, then recheck `require_open()`. Only a still-open gate returns `Timeout`;
+a retirement-send fault consistently returns `TransportFault`, and a concurrent
+close returns `Closed`. Retiring a waiter means that the caller no longer
 receives a result. It does **not** claim that an already-dispatched native BLE
 operation was cancelled. Native state and late callbacks remain governed by
 the backend and actor correlation rules.
+
+`WaiterTicket` retains this domain-specific retirement responsibility and its
+Drop fallback; it is not replaced with a generic scope guard. A generic guard
+alone cannot express command identity, deadline/gate precedence, or failed
+mailbox-retirement handling.
 
 The ticket also detects a closed or faulted ingress before returning an ordinary
 operation result. This prevents a result racing with owner shutdown from being
@@ -713,8 +892,9 @@ reported as a successful operation after the runtime has already failed closed.
 
 These are internal orchestration results. They preserve typed data such as
 `GattDatabase`, `ConnectionId`, RSSI, characteristic values, subscription IDs,
-and notification mode until the BLeng API layer maps them to public errors and
-return values.
+and notification mode. `WaiterSuccess` remains a data enum: the Begin message's
+`OperationResult` implementation validates and extracts a successful typed return
+value, while the BLeng API layer maps errors to the public boundary.
 
 `WaiterError` deliberately includes both local orchestration outcomes and
 canonical BLE/dispatch errors. The conversion in `error.rs` is the public
@@ -725,15 +905,16 @@ boundary; the waiter must not duplicate the canonical `blehub` error taxonomy.
 The operation deadline covers both phases:
 
 ```text
-begin_operation deadline
-├── actor admission and command dispatch
-└── remaining duration passed to WaiterTicket::wait
+run_operation(timeout, make_message): compute one absolute deadline after Hub preflight
+├── synchronous make_message factory -> snapshot correlation IDs
+├── timeout_at(deadline, actor.ask(message)): admission / dispatch handoff
+└── WaiterTicket::wait_until(deadline) -> decode_success: no relative-timeout reset
 ```
 
-Before dispatch handoff, a timeout or caller cancellation that wins `try_launch`
+Before dispatch handoff, a timeout or caller cancellation that wins `try_claim`
 removes only the waiter: no reservation or native command has been created.
 If handoff wins but the owner has not acknowledged the begin reply,
-`BeginHandoffGuard` faults the owner and starts cleanup; it does not roll back
+the handoff scope guard faults the owner and starts cleanup; it does not roll back
 the reservation or promise native cancellation. After owner begin
 acknowledgement, timeout/cancellation is caller-only waiter retirement: it retains
 reservation evidence and does not forcibly stop native work. CoreBluetooth,
@@ -745,7 +926,7 @@ After retirement of a waiter for an already-dispatched operation:
 ```text
 late callback
     -> actor correlation and reservation evidence
-    -> settlement is a no-op for the retired waiter
+    -> contains check skips result materialization for the retired waiter
     -> retire/commit when native evidence permits
     -> no stale caller result
 ```
@@ -804,15 +985,46 @@ The current implementation already uses the relevant ecosystem primitives:
 - `tokio::sync::oneshot` for one waiter result;
 - `tokio::sync::watch` for owner lifecycle wakeups;
 - `tokio::sync::mpsc` for the bounded event stream;
-- `tokio::time` for deadlines; and
+- `tokio::time` for deadlines;
+- `scopeguard` for Begin handoff RAII;
+- `tokio_util::task::AbortOnDropHandle` for the local facade task lifetime;
 - `HashMap<CommandId, WaiterEntry>` for stable caller command identity; and
 - concrete actor reservations for operation evidence and native retirement.
+
+The focused reuse boundary is:
+
+| Mechanism | Reuse or retained domain responsibility |
+|---|---|
+| Shared shutdown result | `watch::Receiver::wait_for(Option::is_some)` inspects only the channel value; clone the result. |
+| Begin handoff RAII | `scopeguard::guard` / `ScopeGuard::into_inner` replace the custom guard, not atomic `BeginHandoff` arbitration or claimed-abandonment fault policy. |
+| Facade task lifetime | [`api.rs`](../../crates/bleng/src/api.rs) awaits `AbortOnDropHandle::new(private_handle.spawn(future))`, replacing local `AbortOnDrop`; outer-future release requests local task abort, not native cancellation or immediate destruction. |
+| Waiter retirement | Retain `WaiterTicket` for command identity, deadlines, `RetireWaiter`, send-failure fault precedence, and Drop fallback. |
+| Cleanup completion | Retain subscribe/check Mutex ledger/unlock/`changed().await`; signals are wakeups, and a ledger-locking `wait_for` predicate would invert producer lock order. |
+| Cleanup execution and phases | Retain executor-independent OS workers for late cleanup after runtime shutdown and error-bearing phases/results, not a boolean cancellation token. |
+
+The root [workspace dependencies](../../Cargo.toml) pin `scopeguard = "=1.2.0"`
+with `default-features = false`, and `tokio-util = "=0.7.19"` with
+`default-features = false` and only `features = ["rt"]`; [BLeng](../../crates/bleng/Cargo.toml)
+uses those workspace dependencies. [Cargo.lock](../../Cargo.lock) adds exactly
+these two packages; all other required packages already existed. Resolution was
+offline. This reuse adds no network access, extra runtime, thread, or ABI change;
+existing independent cleanup workers remain.
+
+Local cached source was audited: `scopeguard-1.2.0/src/lib.rs` (`guard`, `Drop`,
+`ScopeGuard::into_inner`), `tokio-util-0.7.19/src/task/abort_on_drop.rs` (`Future`
+forwarding to the JoinHandle and `Drop` calling abort), and
+`tokio-1.53.1/src/sync/watch.rs` (`wait_for` executes its predicate under the watch
+read lock). These source facts support the reuse and the explicit
+[cleanup lock-order constraint](bleng-cleanup-design-2026-10-07.md#6-notifications-completion-and-retained-results);
+they do not establish immediate task destruction or stronger native semantics.
 
 No additional actor, promise, cancellation, slot-map, or concurrent-map crate
 would replace the BLE-specific correlation policy. In particular,
 `CancellationToken` could signal caller interest being withdrawn, but it could
 not remove a `CommandId` from the registry, validate event identity, preserve
-dispatch-rejection precedence, or cancel native BLE work.
+dispatch-rejection precedence, or cancel native BLE work. Nor can it replace
+error-bearing lifecycle phases (`Closed` versus `Faulted`) or retained cleanup
+results.
 
 The high-value simplification is now complete: the former `Pending` event
 state machine was removed rather than duplicated beside reservations. Further
@@ -834,6 +1046,26 @@ correlation layer. Its invariants are:
 5. late callbacks cannot resolve a retired command into a stale caller result.
 
 ### Cleanup and event-delivery boundaries
+
+`RuntimeOwner::new()` uses Kameo `PreparedActor` and retains its spawn
+`JoinHandle` in one inline shutdown task in the `runtime.handle().spawn` block,
+replacing the first-close atomic/two-watcher model. That block clones `actor`,
+`lifecycle`, and `shutdown_result_tx` without retaining `RuntimeOwner`.
+The coordinator selects actual actor-task completion versus lifecycle leaving
+Open; the lifecycle branch starts cleanup, calls `stop_gracefully()`, then joins
+the task. A successful task returns the actor by value, which is explicitly
+dropped before cleanup waiting and shared-result publication. Unexpected task
+completion while Open is also consumed/dropped, faulting lifecycle through actor
+Drop. Mailbox closure / `ActorRef::wait_for_shutdown()` alone is not teardown.
+Task-join or Kameo lifecycle errors map to `CleanupError::WorkerStopped` only
+after cleanup waiting; successful task teardown returns cleanup's result, so a
+runtime fault does not itself imply disposal failure. `close()` subscribes to the
+shared result, closes the gate, starts cleanup, and awaits
+`shutdown_result_rx.wait_for(Option::is_some)`, then clones the retained result;
+channel closure errors map to `CleanupError::WorkerStopped`. The predicate needs
+no external ledger lock. Cancelling one close does not cancel the coordinator. Owner Drop remains non-awaiting kill plus
+`shutdown_background()`. See the [cleanup shutdown protocol](bleng-cleanup-design-2026-10-07.md#logical-shutdown-and-cleanup-integration)
+for the locked local Kameo evidence and independent cleanup-thread boundary.
 
 `HubCleanup` is a separate ownership/disposal coordinator. `AssemblyAdmission`
 reserves the single primary Hub slot while foreign backend assembly is in

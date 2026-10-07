@@ -1,5 +1,5 @@
-//! Per-Hub actor state and facade. Command dispatch and event reconciliation
-//! live in sibling submodules so they share this private ownership model.
+//! Per-Hub actor state and facade. The mailbox protocol in messages.rs adapts
+//! requests and asynchronous inputs to actor methods; state and reconciliation stay private.
 //!
 //! The runtime state is intentionally layered so multi-device operations remain
 //! independent while each device's native operations stay serialized:
@@ -20,14 +20,12 @@
 
 mod actor;
 mod backend_port;
-mod commands;
 mod lifecycle;
+mod messages;
 mod owner;
 mod reservations;
 
 use actor::BlengActor;
-pub(super) use backend_port::{AssemblyError, BackendPort, IngressEvent};
+pub(super) use backend_port::{AssemblyError, BackendPort};
 pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
-#[cfg(test)]
-pub(super) use owner::WaiterTicket;
 pub(super) use owner::{EventReadError, RuntimeOwner};

@@ -1,10 +1,15 @@
+//! Owner-local fixtures and shared scenario data. These helpers are compiled
+//! only inside owner tests; they do not add production methods or field access.
+
 use crate::runtime::{
-    BlengActor, RuntimePhase, actor::DispatchResolved, reservations::InitializationState,
+    RuntimePhase,
+    actor::{AssumeInitialized, RegisterWaiter},
+    messages::DispatchResolved,
+    owner::WaiterTicket,
 };
-use kameo::{
-    error::SendError,
-    prelude::{Context, Message},
-};
+use kameo::error::SendError;
+
+pub(super) use crate::runtime::actor::HoldActor;
 
 pub(super) use crate::runtime::{EventReadError, RuntimeOwner};
 pub(super) use crate::{
@@ -31,59 +36,8 @@ pub(super) use std::{
 };
 pub(super) use tokio::sync::{Notify, oneshot};
 
-struct AssumeInitialized;
-
-impl Message<AssumeInitialized> for BlengActor {
-    type Reply = ();
-
-    async fn handle(&mut self, _: AssumeInitialized, _: &mut Context<Self, Self::Reply>) {
-        self.initialization = InitializationState::Ready;
-    }
-}
-
-struct RegisterWaiter {
-    id: CommandId,
-    expectation: WaiterExpectation,
-}
-
-impl Message<RegisterWaiter> for BlengActor {
-    type Reply = Result<oneshot::Receiver<Result<WaiterSuccess, WaiterError>>, WaiterError>;
-
-    async fn handle(
-        &mut self,
-        message: RegisterWaiter,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> Self::Reply {
-        match self.lifecycle.phase() {
-            RuntimePhase::Closed => return Err(WaiterError::Closed),
-            RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
-            _ => {}
-        }
-        let (allocated, result_rx) = self.register_waiter(message.expectation)?;
-        assert_eq!(
-            allocated, message.id,
-            "fixture command IDs must be sequential"
-        );
-        Ok(result_rx)
-    }
-}
-
-pub(super) struct HoldActor {
-    pub(super) entered: Arc<Notify>,
-    pub(super) release: Arc<Notify>,
-}
-
-impl Message<HoldActor> for BlengActor {
-    type Reply = ();
-
-    async fn handle(&mut self, message: HoldActor, _: &mut Context<Self, Self::Reply>) {
-        message.entered.notify_one();
-        message.release.notified().await;
-    }
-}
-
 impl RuntimeOwner {
-    pub(crate) fn new_assuming_initialized() -> std::io::Result<Self> {
+    pub(super) fn new_assuming_initialized() -> std::io::Result<Self> {
         let owner = Self::new()?;
         owner
             .actor
@@ -93,11 +47,11 @@ impl RuntimeOwner {
         Ok(owner)
     }
 
-    pub(crate) async fn register_waiter(
+    pub(super) async fn register_waiter(
         &self,
         id: CommandId,
         expectation: WaiterExpectation,
-    ) -> Result<crate::runtime::WaiterTicket, WaiterError> {
+    ) -> Result<WaiterTicket, WaiterError> {
         match self.lifecycle.phase() {
             RuntimePhase::Closed => return Err(WaiterError::Closed),
             RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
@@ -117,7 +71,7 @@ impl RuntimeOwner {
         Ok(self.ticket(id, result_rx))
     }
 
-    pub(crate) fn resolve_dispatch(&self, id: CommandId, result: Result<(), CommandDispatchError>) {
+    pub(super) fn resolve_dispatch(&self, id: CommandId, result: Result<(), CommandDispatchError>) {
         if self
             .actor
             .tell(DispatchResolved { id, result })
@@ -129,7 +83,7 @@ impl RuntimeOwner {
         }
     }
 
-    pub(crate) async fn discover_gatt_session(
+    pub(super) async fn discover_gatt_session(
         &self,
         connection: ConnectionId,
         deadline: Duration,
@@ -139,26 +93,26 @@ impl RuntimeOwner {
             .map(|database| database.gatt_session_id)
     }
 
-    pub(crate) fn is_closed(&self) -> bool {
+    pub(super) fn is_closed(&self) -> bool {
         self.lifecycle.phase() == RuntimePhase::Closed
     }
 
-    pub(crate) fn attach_hub(&self, hub: Arc<BleHub>) -> Result<(), AssemblyAdmissionError> {
+    pub(super) fn attach_hub(&self, hub: Arc<BleHub>) -> Result<(), AssemblyAdmissionError> {
         if self.lifecycle.phase() != RuntimePhase::Open {
             self.lifecycle.start_cleanup();
         }
         self.lifecycle.attach_hub(hub)
     }
 
-    pub(crate) fn event_sink(&self) -> Arc<dyn BleEventSink> {
+    pub(super) fn event_sink(&self) -> Arc<dyn BleEventSink> {
         self.backend_port()
     }
 
-    pub(crate) fn faulted_for_test(&self) -> bool {
+    pub(super) fn faulted_for_test(&self) -> bool {
         self.lifecycle.phase() == RuntimePhase::Faulted
     }
 
-    pub(crate) async fn wait_for_actor_stop_for_test(&self) {
+    pub(super) async fn wait_for_actor_stop_for_test(&self) {
         self.actor.wait_for_shutdown().await;
     }
 }

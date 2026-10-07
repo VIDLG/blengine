@@ -56,8 +56,17 @@ impl ScanState {
         let scan = self.reserved_mut()?;
         if scan.dispatch.command_id == command_id {
             return Some(if result.is_err() {
+                // A rejected start with correlated callbacks may already own a native scan.
+                let contradictory = !scan.dispatch.buffered.is_empty();
                 self.reject_start(command_id);
-                DispatchResolution::default()
+                DispatchResolution {
+                    effect: if contradictory {
+                        DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
+                    } else {
+                        DispatchEffect::None
+                    },
+                    ..Default::default()
+                }
             } else {
                 scan.dispatch.accepted_resolution()
             });

@@ -10,7 +10,7 @@ use blehub::{
     GattSessionId, NotificationModeRequest, PeripheralId, ScanOptions, ScanSessionId,
     SubscriptionId, WriteType,
 };
-use tokio::task::AbortHandle;
+use tokio_util::task::AbortOnDropHandle;
 
 use crate::{error::BlengError, runtime};
 
@@ -21,14 +21,6 @@ fn validate_timeout(milliseconds: u64) -> Result<Duration, BlengError> {
         return Err(BlengError::InvalidTimeout);
     }
     Ok(Duration::from_millis(milliseconds))
-}
-
-struct AbortOnDrop(AbortHandle);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
 }
 
 #[derive(uniffi::Object)]
@@ -53,11 +45,11 @@ impl Bleng {
         &self,
         future: impl Future<Output = T> + Send + 'static,
     ) -> Result<T, BlengError> {
-        let task = self.owner.handle().spawn(future);
         // Foreign future release retires the BLeng waiter. It does not promise
         // cancellation of an already-dispatched native BLE command.
-        let _abort = AbortOnDrop(task.abort_handle());
-        task.await.map_err(|_| BlengError::WorkerStopped)
+        AbortOnDropHandle::new(self.owner.handle().spawn(future))
+            .await
+            .map_err(|_| BlengError::WorkerStopped)
     }
 }
 

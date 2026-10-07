@@ -243,7 +243,7 @@ fn assembly_rejects_hub_when_phase_closes_before_cleanup_starts() {
         }))
     });
     entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    port.lifecycle.close();
+    owner.lifecycle.close();
     release_tx.send(()).unwrap();
     assert_eq!(
         attach.join().unwrap(),
@@ -281,7 +281,7 @@ fn transport_fault_waits_for_admitted_foreign_attach() {
         }))
     });
     entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    port.lifecycle.fault();
+    owner.lifecycle.fault();
     let (late_backend, late_handle) = FakeBackend::scripted([]);
     assert_eq!(
         port.assemble_backend(Arc::new(late_backend)),
@@ -346,14 +346,15 @@ fn cancelled_close_waiter_does_not_cancel_owner_shutdown() {
     assert_eq!(handle.dispose_count(), 0);
     release_tx.send(()).unwrap();
     host.block_on(async {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            while shutdown_result_rx.borrow_and_update().is_none() {
-                shutdown_result_rx.changed().await.unwrap();
-            }
-        })
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            shutdown_result_rx.wait_for(Option::is_some),
+        )
         .await
-        .unwrap();
-        assert_eq!(shutdown_result_rx.borrow().clone(), Some(Ok(())));
+        .unwrap()
+        .unwrap()
+        .clone();
+        assert_eq!(outcome, Some(Ok(())));
         assert_eq!(owner.close().await, Ok(()));
     });
     assert!(owner.is_closed());

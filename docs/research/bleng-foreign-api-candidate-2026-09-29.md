@@ -75,22 +75,59 @@ it waits for actor state and native callback evidence. Releasing the foreign
 Swift/Kotlin/RN object must not destroy the runtime, actor, waiter registry, or
 cleanup coordinator underneath an operation that is still running.
 
-`AbortOnDrop` binds the foreign waiter lifetime to the spawned facade task:
+[`api.rs`](../../crates/bleng/src/api.rs) removes the local `AbortOnDrop` type
+in favor of `tokio_util::task::AbortOnDropHandle`. `spawn_on_runtime()` awaits
+`AbortOnDropHandle::new(private_handle.spawn(future))`, binding the outer
+foreign-waiter future's lifetime to the spawned local facade task:
 
 ```text
 foreign waiter released
-    → AbortOnDrop aborts the facade waiter task
+    → AbortOnDropHandle Drop requests abort of the local facade task
     → its RuntimeOwner Arc clone is eventually released
     → normal RuntimeOwner/Hub cleanup remains responsible for native state
 ```
 
-This cancellation only retires the BLeng waiter task. It does not promise that
-an already-dispatched native BLE command is cancelled, and it does not interrupt
+This requests cancellation of the local facade task; it does not guarantee
+immediate task destruction or capture release. It does not promise that an
+already-dispatched native BLE command is cancelled, and it does not interrupt
 a foreign synchronous attach or a started `spawn_blocking` operation. Native
 late callbacks must still be handled by the BLeng actor, correlation and cleanup
 rules. The `Arc` is therefore required for Rust async lifetime and shared
 ownership; it is not what makes the UniFFI object opaque, and it does not expose
 Tokio or Kameo to foreign callers.
+
+The owner-side Begin protection also reuses a generic primitive:
+`scopeguard::guard(BeginHandoff::new(), ...)` replaces the custom
+`BeginHandoffGuard`/local armed bool, not the atomic `Pending` / `Claimed` /
+`Cancelled` protocol. Its closure captures only `Arc<RuntimeLifecycle>`, calls
+`abandon()`, and faults only if the actor had claimed the handoff. The timeout
+branch drops the guard before classifying phase/errors; receiving `BeginReply`
+defuses it with `drop(ScopeGuard::into_inner(handoff))`, releasing the lifecycle
+capture and token before evidence waiting. `WaiterTicket` still owns domain
+retirement after that reply. See the [waiter cancellation boundary](bleng-waiter-design-2026-10-06.md#cancellation-before-mutation-and-evidence-lifetime).
+
+Owner `close()` now awaits `shutdown_result_rx.wait_for(Option::is_some)`, clones
+the retained result, and maps channel closure errors to `CleanupError::WorkerStopped`.
+This channel-only predicate must not be copied to cleanup's external Mutex-ledger
+wait: [cleanup's explicit loop and lock-order constraint](bleng-cleanup-design-2026-10-07.md#6-notifications-completion-and-retained-results)
+remain. Independent OS cleanup workers still support late disposal after runtime
+shutdown; `CancellationToken` cannot replace error-bearing phases/results.
+
+The root workspace pins `scopeguard` exactly to 1.2.0 without default features,
+and `tokio-util` exactly to 0.7.19 without default features and with only `rt`.
+Offline resolution adds exactly those two packages to `Cargo.lock`; the other
+required packages already existed. The local cached source audit and concise
+reuse/retained-domain table are in the [waiter design](bleng-waiter-design-2026-10-06.md#simplification-and-ecosystem-assessment).
+This internal reuse introduces no network access, extra runtime, thread, or ABI
+change.
+
+The new API regression
+[`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs)
+is reported passing: it observes private-task entry, releases the outer future,
+and waits within a bounded test window for capture release. The reported runtime
+suite has 115 passing tests. Full main validation of the current candidate
+remains pending; this docs-only update does not rerun those implementation tests
+or claim new RF, foreign-binding, packaging, or ABI-freeze evidence.
 
 The BLeng component may receive `blehub::BleBackend` and return or accept
 canonical `blehub` DTOs. It must not define copies of `CommandId`, `BleEvent`,

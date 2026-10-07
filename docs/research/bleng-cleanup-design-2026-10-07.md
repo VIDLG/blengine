@@ -103,6 +103,13 @@ It does not make lock acquisition nonblocking: another thread can briefly hold
 it. The important property is that the protected section does not perform native
 work or suspend across `.await`.
 
+There is also a cross-lock constraint: `record_disposal_result()` and
+`release_admission()` publish while holding state, so their actual order is
+**state Mutex → watch write lock**. A `watch::Receiver::wait_for` predicate must
+not acquire the ledger mutex: Tokio invokes that predicate under the watch read
+lock, producing the inverse order and a possible deadlock. The completion wait
+below deliberately keeps its explicit loop.
+
 ### Why `is_open` is a closure outside, but a bool inside
 
 The runtime's `RuntimePhase::Open` means the runtime still accepts work. It does
@@ -137,9 +144,15 @@ registered ownership and attempted any required rejected disposal scheduling.
 need only the actor handle and shared lifecycle controller. Assembly passes a
 clone of the same `Arc<BackendPort>` to the Hub as `Arc<dyn BleEventSink>`; no
 second bridge object is constructed. Backend callbacks receive only the sink
-interface. The port never retains `RuntimeOwner`, and event reconciliation
-remains in `runtime/actor/events.rs`; admission and disposal accounting remain in
-cleanup.
+interface. The port never retains `RuntimeOwner`.
+[`runtime/messages.rs`](../../crates/bleng/src/runtime/messages.rs) unifies the
+mailbox protocol; BackendPort imports `IngressEvent` directly from it. Its two
+ingress/dispatch-result handlers only forward to the actor's restricted processing
+entries, while Begin handlers retain explicit admission through actor methods.
+State coordination remains encapsulated in
+[`runtime/actor.rs`](../../crates/bleng/src/runtime/actor.rs), with private fields
+and helpers; admission and disposal accounting remain in cleanup. This source
+organization changes neither the public ABI nor processing order.
 
 ```mermaid
 sequenceDiagram
@@ -308,6 +321,26 @@ sent while the waiter checks or is about to await remain observable through the
 receiver's change tracking. Cancelling one waiter drops only its receiver, not
 admission, a running disposal worker, or the retained result.
 
+**Keep `wait_for_completion()` as subscribe → check the Mutex ledger → unlock →
+`changed().await` → recheck.** `CleanupSignal` carries wakeups, not the terminal
+result. Replacing this with `watch.wait_for(predicate_that_locks_the_ledger)`
+would invert the producer lock order verified in
+[`cleanup.rs`](../../crates/bleng/src/cleanup.rs):
+
+```text
+producer: record_disposal_result / release_admission
+  holds state Mutex -> send_replace waits for watch write lock
+hypothetical wait_for predicate:
+  holds watch read lock -> waits for state Mutex
+=> deadlock when both overlap
+```
+
+The locally cached `tokio-1.53.1/src/sync/watch.rs` confirms that `wait_for`
+executes the predicate while holding the watch value's read lock. The source
+now comments this constraint. In contrast, owner close can use
+`shutdown_result_rx.wait_for(Option::is_some)` because its predicate inspects
+only the channel value, not this external ledger.
+
 The terminal conjunction is:
 
 ```text
@@ -380,7 +413,7 @@ not supply Tokio; a Rust caller may already have its own Tokio runtime.
 
 ```text
 caller executor (Tokio or foreign async integration)
-  polls the facade future and awaits its JoinHandle
+  polls the facade future and awaits AbortOnDropHandle wrapping its JoinHandle
                          |
                          | explicit owner.handle().spawn(operation)
                          v
@@ -412,10 +445,13 @@ The boundary still has costs and limits:
   owned until the last `Arc<RuntimeOwner>` is released. Its `Drop` uses
   `shutdown_background()`, avoiding blocking runtime destruction in an async
   caller. This does not make detached native cleanup instantly complete.
-- Each spawned facade operation retains an owner clone. `AbortOnDrop` requests
-  cancellation if the outer future is dropped, because dropping a JoinHandle
-  alone would detach the task. This still does not cancel dispatched native BLE
-  work or a synchronous foreign call already executing.
+- Each spawned facade operation retains an owner clone. The former local
+  `AbortOnDrop` type is removed; `spawn_on_runtime()` now awaits
+  `tokio_util::task::AbortOnDropHandle::new(private_handle.spawn(future))`.
+  Releasing the outer future requests abort of this local facade task, because
+  dropping a bare JoinHandle would detach it. It neither guarantees immediate
+  task/capture destruction nor cancels dispatched native BLE work, a started
+  blocking task, or a synchronous foreign call already executing.
 
 The API regression
 [`private_runtime_timers_work_with_timerless_caller_runtimes`](../../crates/bleng/src/tests/api_tests.rs)
@@ -425,21 +461,72 @@ async caller does not panic, and that caller can still run a task afterward.
 This is deterministic Rust coexistence evidence, not an additional Swift/Kotlin
 or platform RF gate.
 
+The new API regression
+[`dropping_facade_waiter_aborts_private_task_and_releases_its_capture`](../../crates/bleng/src/tests/api_tests.rs)
+is reported passing: after observing private-task entry, it drops the facade
+future and waits within a bounded test window for capture release. This is not
+an immediate-destruction or native-cancellation guarantee. Exact dependency pins,
+minimal features, offline lock resolution, and the local cached `Future`/`Drop`
+audit are recorded in the [waiter reuse table](bleng-waiter-design-2026-10-06.md#simplification-and-ecosystem-assessment).
+
 ### Logical shutdown and cleanup integration
 
-[`RuntimeOwner::close()`](../../crates/bleng/src/runtime/owner.rs) closes the
-runtime gate, starts cleanup, and coordinates actor shutdown before publishing
-its shared close result. Cleanup's completion wait is one part of that protocol;
-it does not itself wait for actor termination or individual BLE operations.
-`RuntimeOwner::Drop` starts cleanup and performs non-awaiting runtime shutdown,
-so explicit async close is the observable completion/error boundary.
+[`RuntimeOwner::new()`](../../crates/bleng/src/runtime/owner.rs) constructs a Kameo
+`PreparedActor`, clones its `ActorRef`, and spawns it on the private runtime.
+The returned actor-task `JoinHandle` is retained by one inline shutdown task in
+`new()`'s `runtime.handle().spawn` block. That block clones `actor`, `lifecycle`,
+and `shutdown_result_tx` without retaining `RuntimeOwner`. There is no first-close
+atomic or pair of shutdown watchers, and no close caller owns the shutdown future.
+
+```text
+inline shutdown task in new: select actor task completion / lifecycle leaves Open
+  lifecycle branch -> start_cleanup -> stop_gracefully -> join actual actor task
+  consume task outcome -> explicitly drop returned actor on success
+  -> start_cleanup -> wait_for_cleanup -> publish shared shutdown result
+close -> subscribe -> close runtime gate + start_cleanup
+  -> shutdown_result_rx.wait_for(Option::is_some) -> clone retained result
+```
+
+The coordinator consumes an actor task even if it unexpectedly completes while
+the lifecycle is Open. Dropping the returned `BlengActor` then faults the lifecycle
+and retires remaining waiters rather than leaving a live gate with no actor.
+On task-join or Kameo lifecycle error, it faults lifecycle, waits for cleanup,
+and only then publishes `CleanupError::WorkerStopped`. Successful actor-task
+teardown returns the cleanup result itself: runtime `Faulted` does not by itself
+mean disposal failed or force close to return `WorkerStopped`.
+
+Mailbox closure is an earlier boundary, not actor teardown. Verified against the
+locally locked Kameo 0.22.2 source: `kameo-0.22.2/src/actor/actor_ref.rs`
+implements `ActorRef::wait_for_shutdown()` as `mailbox_sender.closed().await`;
+`kameo-0.22.2/src/actor/spawn.rs` runs shutdown hooks and unregisters the actor
+before returning it by value through `PreparedActor::spawn()`'s task handle.
+Joining that task is therefore necessary, but the returned actor must also be
+explicitly dropped to release its state and run BLeng's Drop policy before
+cleanup waiting and shared-result publication.
+
+[`RuntimeOwner::close()`](../../crates/bleng/src/runtime/owner.rs) subscribes to the
+shared result, closes the runtime gate, starts cleanup, and awaits the same
+retained outcome through `shutdown_result_rx.wait_for(Option::is_some)`, replacing
+the manual watch loop. The returned result is cloned; channel closure errors map
+to `CleanupError::WorkerStopped`. This predicate checks only the channel's
+`Option`, with no external ledger lock; it is not a template for cleanup's
+`wait_for_completion()` loop. Cancelling a close wait does not cancel the
+coordinator; repeated close can still observe cleanup errors. Cleanup's completion
+wait alone does not wait for actor teardown or individual BLE operations, and
+native disposal may already be running while the actor stops.
+`RuntimeOwner::Drop` remains a non-awaiting fallback: close the gate, start cleanup,
+`actor.kill()`, then `runtime.shutdown_background()`. Independent cleanup threads
+remain executor-independent and may outlive that runtime; Drop does not promise
+observable completion. Explicit async close is the completion/error boundary.
 
 [`RuntimeLifecycle`](../../crates/bleng/src/runtime/lifecycle.rs) is the shared
 lifecycle controller, not merely a status snapshot. It owns the phase gate,
 phase-change notification, and one private `HubCleanup`. Its `fault()` starts
 cleanup directly even when the actor or mailbox is unavailable. Ingress, actor,
 assembly, and detached dispatch paths retain the same controller rather than
-separate cleanup owners.
+separate cleanup owners. `is_open()` queries its existing atomic phase; the
+snapshot neither reserves admission nor prevents concurrent close/fault. Paths
+that distinguish `Faulted` from `Closed` still use phase.
 
 Runtime callers use the lifecycle controller's admission, dispatch-Hub lookup,
 cleanup start, and `wait_for_cleanup()` operations; no cleanup `Arc` getter is
@@ -452,7 +539,10 @@ The shutdown coordinator retains the lifecycle controller while awaiting cleanup
 `phase_tx` wakes operation/event readers when work must stop, whereas the
 cleanup module's notifier wakes disposal-completion waiters. A closed runtime
 gate does not mean native cleanup has finished. Disposal scheduling and result
-accounting remain responsibilities of `HubCleanup`.
+accounting remain responsibilities of `HubCleanup`. `CancellationToken` cannot
+replace the error-bearing `Closed` / `Faulted` phases or retained success/error
+results, and cannot schedule late disposal after runtime shutdown. Independent
+OS cleanup workers are retained, not moved to the owner's Tokio runtime.
 
 Operation-local state remains actor-confined. `WaiterRegistry` stays on the
 actor so admission and settlement are serialized without another lock; it is
@@ -464,8 +554,35 @@ retains Pending for late callbacks, and success releases completed evidence only
 after waiter settlement. These boundaries are detailed in the
 [waiter design](bleng-waiter-design-2026-10-06.md).
 
-The cleanup module does not turn a runtime fault into a successful BLE command
-or promise cancellation of already dispatched work.
+Operation durations in owner are named `timeout`. Its private
+`run_operation(timeout, make_message)` performs Hub preflight and creates one absolute
+deadline. `make_message: FnOnce(BeginHandoff) -> M` is a synchronous message factory,
+not an ask future: owner invokes it, snapshots lightweight `M::Correlation` IDs
+through `message.correlation()` before Kameo consumes the message, and centrally
+performs `actor.ask(message)` under `timeout_at(deadline, ...)`. Ticket
+`wait_until(deadline)` uses that same deadline. After a successful wait, owner
+calls `M::decode_success(correlation, reply.resource, success)`; errors skip
+success decoding. All 11 `Begin*` types implement the private
+[`OperationResult`](../../crates/bleng/src/runtime/messages.rs) interface with
+`Resource`, `Output`, `Correlation`, `correlation(&self)`, and `decode_success`.
+The existing variant and ID checks are preserved. A mismatch returns `None`;
+owner faults the lifecycle and returns `TransportFault`, while decoding itself
+has no lifecycle dependency.
+
+This replaces per-call result-mapping closures, including in test fixtures,
+which implement the same interface. It clones neither message nor payload,
+adds no boxing or execution layer, and leaves `WaiterSuccess` a data enum.
+`From` cannot express this fallible decoding with expected IDs supplied by the
+request and reply. See the [operation flow](bleng-waiter-design-2026-10-06.md#end-to-end-flow)
+for the per-operation checks. Begin protection uses `scopeguard::guard`, not
+the superseded custom guard/armed bool: its closure captures only lifecycle,
+abandons the atomic token, and faults on a prior claim. Timeout explicitly drops
+the guard before phase/error classification; receiving `BeginReply` uses
+`drop(ScopeGuard::into_inner(handoff))` to release lifecycle/token before evidence
+waiting. `WaiterTicket` retains domain-specific retirement, not a generic guard.
+These caller deadlines neither bound native disposal nor replace the shutdown
+coordinator. The cleanup module does not turn a runtime fault into a successful
+BLE command or promise cancellation of already dispatched work.
 
 Local regression evidence is in
 [`cleanup_tests.rs`](../../crates/bleng/src/tests/cleanup_tests.rs) and the
@@ -479,7 +596,20 @@ Local regression evidence is in
 - Discarding an unstarted worker preserves the Hub root rather than disposing
   inline; recording failure then settles repeated completion waits.
 - Runtime assembly/close tests cover admission retained across foreign work.
+- [`runtime/tests/lifecycle.rs`](../../crates/bleng/src/runtime/tests/lifecycle.rs)
+  adds `close_waits_for_actor_teardown_after_mailbox_closes`: it blocks Kameo
+  unregister, observes mailbox closure and completed cleanup, and verifies close
+  stays pending until actual actor teardown can finish.
+- The same file's
+  `waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths`
+  verifies full-mailbox waiter retirement returns `TransportFault` for both
+  preexpired and timer deadlines; its faulted runtime can still close successfully
+  after actor release because disposal itself did not fail.
 
 The unstarted-worker regression drops the real worker closure deliberately; it
 does not exhaust OS thread resources or force a real `Builder::spawn` failure.
-These are deterministic Rust lifecycle tests, not new platform RF evidence.
+Current refactor validation reports both new lifecycle regressions passing and
+115 runtime actor tests passing; the new facade-drop API regression is also
+reported passing. Full main validation of the current candidate remains pending.
+These are reported implementation results, not tests rerun by this docs-only
+update, and claim neither fresh platform RF evidence nor ABI freeze.
