@@ -101,8 +101,8 @@ fn close_fails_all_waiters_and_rejects_future_registration() {
         .register(id(2), WaiterExpectation::Initialized)
         .unwrap();
 
-    registry.close(CloseReason::TransportFault);
-    registry.close(CloseReason::Closed);
+    registry.close(WaiterCloseReason::TransportFault);
+    registry.close(WaiterCloseReason::Closed);
 
     assert_eq!(first.try_recv(), Ok(Err(WaiterError::TransportFault)));
     assert_eq!(second.try_recv(), Ok(Err(WaiterError::TransportFault)));

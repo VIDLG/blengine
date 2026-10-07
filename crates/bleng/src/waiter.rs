@@ -138,17 +138,24 @@ pub(crate) enum WaiterError {
 }
 
 /// The only reasons that can permanently close a `WaiterRegistry`.
+///
+/// Unlike `WaiterError`, this is a registry-wide lifecycle decision: it fails
+/// all pending waiters and rejects future registrations with the same reason.
+/// Keeping this type separate prevents per-operation errors such as timeout,
+/// cancellation, or GATT busy from permanently closing the entire registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CloseReason {
+pub(crate) enum WaiterCloseReason {
+    /// The owner explicitly closed the runtime.
     Closed,
+    /// A runtime fault made further operation dispatch or delivery unsafe.
     TransportFault,
 }
 
-impl From<CloseReason> for WaiterError {
-    fn from(reason: CloseReason) -> Self {
+impl From<WaiterCloseReason> for WaiterError {
+    fn from(reason: WaiterCloseReason) -> Self {
         match reason {
-            CloseReason::Closed => Self::Closed,
-            CloseReason::TransportFault => Self::TransportFault,
+            WaiterCloseReason::Closed => Self::Closed,
+            WaiterCloseReason::TransportFault => Self::TransportFault,
         }
     }
 }
@@ -169,7 +176,7 @@ struct WaiterEntry {
 pub(crate) struct WaiterRegistry {
     pending: HashMap<CommandId, WaiterEntry>,
     last_id: Option<u64>,
-    closed: Option<CloseReason>,
+    closed: Option<WaiterCloseReason>,
 }
 
 impl WaiterRegistry {
@@ -244,7 +251,10 @@ impl WaiterRegistry {
         self.finish(command_id, Err(WaiterError::Timeout));
     }
 
-    pub(crate) fn close(&mut self, reason: CloseReason) {
+    /// Permanently closes the registry and fails every pending waiter.
+    /// The first reason is retained for both existing and future callers;
+    /// repeated closes cannot replace it or reopen admission.
+    pub(crate) fn close(&mut self, reason: WaiterCloseReason) {
         if self.closed.is_some() {
             return;
         }

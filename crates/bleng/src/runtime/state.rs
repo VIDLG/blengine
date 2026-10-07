@@ -10,7 +10,9 @@ use blehub::{
 use kameo::prelude::*;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::waiter::{CloseReason, WaiterError, WaiterExpectation, WaiterRegistry, WaiterSuccess};
+use crate::waiter::{
+    WaiterCloseReason, WaiterError, WaiterExpectation, WaiterRegistry, WaiterSuccess,
+};
 
 use super::{RuntimePhase, RuntimeStatus};
 
@@ -39,9 +41,9 @@ impl Drop for BlengActor {
             self.status.fault();
         }
         let reason = if self.status.phase() == RuntimePhase::Faulted {
-            CloseReason::TransportFault
+            WaiterCloseReason::TransportFault
         } else {
-            CloseReason::Closed
+            WaiterCloseReason::Closed
         };
         self.waiters.close(reason);
     }
