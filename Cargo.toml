@@ -18,7 +18,7 @@ publish = false
 
 [workspace.dependencies]
 delegate = "=0.13.5"
-derive_more = { version = "=2.1.1", default-features = false, features = ["from", "into"] }
+derive_more = { version = "=2.1.1", default-features = false, features = ["from", "into", "try_from"] }
 kameo = "=0.22.2"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

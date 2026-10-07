@@ -14,7 +14,7 @@ use crate::waiter::{
     WaiterCloseReason, WaiterError, WaiterExpectation, WaiterRegistry, WaiterSuccess,
 };
 
-use super::{RuntimePhase, RuntimeStatus};
+use super::{RuntimeLifecycle, RuntimePhase};
 
 /// Single serialized owner of BLeng orchestration state.
 ///
@@ -24,7 +24,7 @@ use super::{RuntimePhase, RuntimeStatus};
 #[derive(Actor)]
 pub(crate) struct BlengActor {
     pub(super) events: mpsc::Sender<BleEvent>,
-    pub(super) status: Arc<RuntimeStatus>,
+    pub(super) lifecycle: Arc<RuntimeLifecycle>,
     pub(super) waiters: WaiterRegistry,
     pub(super) next_id: u64,
     pub(super) initialized: bool,
@@ -35,12 +35,12 @@ pub(crate) struct BlengActor {
 
 impl Drop for BlengActor {
     fn drop(&mut self) {
-        if self.status.phase() == RuntimePhase::Open {
+        if self.lifecycle.phase() == RuntimePhase::Open {
             // An unexpected actor stop must retire the Hub, not restart it
             // with stale native state or leave accepted waiters hanging.
-            self.status.fault();
+            self.lifecycle.fault();
         }
-        let reason = if self.status.phase() == RuntimePhase::Faulted {
+        let reason = if self.lifecycle.phase() == RuntimePhase::Faulted {
             WaiterCloseReason::TransportFault
         } else {
             WaiterCloseReason::Closed
@@ -85,11 +85,11 @@ impl<'actor> ReservationRollback<'actor> {
         self.command_id
     }
 
-    /// Commits the reservation and returns the shared lifecycle status needed
+    /// Commits the reservation and returns the shared lifecycle needed
     /// by the detached native-dispatch task.
-    pub(crate) fn commit(mut self) -> Arc<RuntimeStatus> {
+    pub(crate) fn commit(mut self) -> Arc<RuntimeLifecycle> {
         self.armed = false;
-        Arc::clone(&self.actor.status)
+        Arc::clone(&self.actor.lifecycle)
     }
 }
 
@@ -109,7 +109,7 @@ pub(crate) type WaiterReceiver = oneshot::Receiver<Result<WaiterSuccess, WaiterE
 
 impl BlengActor {
     pub(super) fn require_open(&self) -> Result<(), WaiterError> {
-        match self.status.phase() {
+        match self.lifecycle.phase() {
             RuntimePhase::Closed => Err(WaiterError::Closed),
             RuntimePhase::Faulted => Err(WaiterError::TransportFault),
             RuntimePhase::Open => Ok(()),

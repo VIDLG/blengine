@@ -5,16 +5,19 @@ use std::sync::{
     atomic::{AtomicU8, Ordering},
 };
 
-use crate::cleanup::HubCleanup;
+use blehub::BleHub;
+
+use crate::cleanup::{AssemblyAdmission, AssemblyAdmissionError, CleanupError, HubCleanup};
 use tokio::sync::watch;
 
 /// Internal lifecycle phase for ingress, actor delivery, and backend cleanup.
 ///
-/// The enum is the semantic representation. `RuntimeStatus` stores it in an
+/// The enum is the semantic representation. `RuntimeLifecycle` stores it in an
 /// `AtomicU8` so phase transitions can use compare-and-exchange without a
 /// mutex.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, derive_more::TryFrom)]
+#[try_from(repr)]
 pub(crate) enum RuntimePhase {
     /// Runtime accepts commands and ingress events.
     Open = 0,
@@ -30,37 +33,77 @@ impl From<RuntimePhase> for u8 {
     }
 }
 
-impl TryFrom<u8> for RuntimePhase {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            value if value == u8::from(Self::Open) => Ok(Self::Open),
-            value if value == u8::from(Self::Faulted) => Ok(Self::Faulted),
-            value if value == u8::from(Self::Closed) => Ok(Self::Closed),
-            _ => Err(()),
-        }
-    }
-}
-
-/// Shared lifecycle gate for ingress, actor delivery, and backend cleanup.
+/// Shared lifecycle controller for ingress, actor delivery, and backend cleanup.
+///
+/// This is not just a status snapshot: it controls phase transitions and starts
+/// cleanup on faults even when the actor or its mailbox is unavailable.
+/// HubCleanup owns disposal mechanics; callers use this controller's operations
+/// rather than accessing or replacing its cleanup owner.
 ///
 /// `RuntimePhase::Open` is the only dispatchable state. A fault or explicit
 /// close is monotonic, so late callbacks cannot reopen the runtime or reuse
 /// native state.
 ///
-/// The `Arc` is intentional: the actor, owner facade, ingress bridge,
-/// assembly port, and detached native-dispatch task can outlive one another.
+/// The `Arc` is intentional: the actor, owner facade, backend port, and
+/// detached native-dispatch task can outlive one another.
 /// They all observe the same gate, but none of them borrows the owner or actor.
-pub(crate) struct RuntimeStatus {
-    pub(super) phase: AtomicU8,
-    pub(crate) changed: watch::Sender<RuntimePhase>,
-    pub(crate) cleanup: Arc<HubCleanup>,
+pub(crate) struct RuntimeLifecycle {
+    phase: AtomicU8,
+    phase_changed: watch::Sender<RuntimePhase>,
+    cleanup: Arc<HubCleanup>,
 }
 
-impl RuntimeStatus {
+impl RuntimeLifecycle {
+    pub(crate) fn new() -> Self {
+        let (phase_changed, _) = watch::channel(RuntimePhase::Open);
+        Self {
+            phase: AtomicU8::new(RuntimePhase::Open.into()),
+            phase_changed,
+            cleanup: Arc::new(HubCleanup::new()),
+        }
+    }
+
+    /// Reserves assembly admission only while this lifecycle is open.
+    /// Cleanup evaluates the phase under its lock, not before acquiring it.
+    pub(super) fn with_admission<T, E>(
+        &self,
+        operation: impl FnOnce(AssemblyAdmission) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<AssemblyAdmissionError>,
+    {
+        self.cleanup
+            .with_admission(|| self.phase() == RuntimePhase::Open, operation)
+    }
+
+    delegate::delegate! {
+        to self.cleanup {
+            pub(super) fn hub_for_dispatch(&self) -> Option<Arc<BleHub>>;
+
+            pub(super) fn start_cleanup(&self);
+
+            /// Waits for native Hub cleanup, not actor or executor shutdown.
+            #[call(wait_for_completion)]
+            pub(super) async fn wait_for_cleanup(&self) -> Result<(), CleanupError>;
+
+            // Direct attachment bypasses production assembly only in fixtures.
+            #[cfg(test)]
+            #[call(attach)]
+            pub(super) fn attach_hub(&self, hub: Arc<BleHub>) -> Result<(), AssemblyAdmissionError>;
+        }
+    }
+
+    /// Subscribes to lifecycle changes, not native cleanup completion.
+    /// The atomic phase remains authoritative; notifications wake async readers.
+    pub(crate) fn subscribe_phase(&self) -> watch::Receiver<RuntimePhase> {
+        self.phase_changed.subscribe()
+    }
+
     pub(crate) fn phase(&self) -> RuntimePhase {
-        RuntimePhase::try_from(self.phase.load(Ordering::Acquire)).unwrap_or(RuntimePhase::Faulted)
+        self.phase
+            .load(Ordering::Acquire)
+            .try_into()
+            .unwrap_or(RuntimePhase::Faulted)
     }
 
     pub(crate) fn fault(&self) {
@@ -74,7 +117,7 @@ impl RuntimeStatus {
             )
             .is_ok()
         {
-            self.changed.send_replace(RuntimePhase::Faulted);
+            self.phase_changed.send_replace(RuntimePhase::Faulted);
             self.cleanup.start_cleanup();
         }
     }
@@ -90,7 +133,7 @@ impl RuntimeStatus {
             )
             .is_ok()
         {
-            self.changed.send_replace(RuntimePhase::Closed);
+            self.phase_changed.send_replace(RuntimePhase::Closed);
         }
     }
 }

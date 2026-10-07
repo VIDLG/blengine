@@ -63,9 +63,10 @@ Arc<RuntimeOwner>
         │
         ├── Tokio runtime
         ├── BlengActor
-        ├── RuntimeStatus
-        ├── event FIFO
-        └── cleanup coordinator
+        ├── RuntimeLifecycle
+        │     ├── phase gate + notification
+        │     └── HubCleanup → cleanup coordinator
+        └── event FIFO
 ```
 
 Each facade method clones `Arc<RuntimeOwner>` before spawning its `'static`

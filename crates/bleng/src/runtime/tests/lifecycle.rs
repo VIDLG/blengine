@@ -137,7 +137,7 @@ fn overflow_wakes_all_pending_waiters_without_success() {
             .register_waiter(CommandId { value: 2 }, WaiterExpectation::TerminalOnly)
             .await
             .unwrap();
-        owner.status.fault();
+        owner.lifecycle.fault();
         assert_eq!(
             first
                 .wait_until(tokio::time::Instant::now() + Duration::from_secs(2))
@@ -223,13 +223,10 @@ fn overflow_disposes_the_owned_hub_without_explicit_close() {
         tokio::time::timeout(Duration::from_secs(2), owner.wait_for_actor_stop_for_test())
             .await
             .expect("overflow must stop the actor without explicit close");
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            owner.status.cleanup.wait_for_completion(),
-        )
-        .await
-        .expect("fault must schedule native cleanup")
-        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), owner.lifecycle.wait_for_cleanup())
+            .await
+            .expect("fault must schedule native cleanup")
+            .unwrap();
         assert_eq!(owner.close().await, Ok(()));
         assert_eq!(owner.close().await, Ok(()));
     });
@@ -240,7 +237,7 @@ fn overflow_disposes_the_owned_hub_without_explicit_close() {
 #[test]
 fn attachment_after_fault_is_rejected_and_retired_before_close_returns() {
     let owner = RuntimeOwner::new().unwrap();
-    owner.status.fault();
+    owner.lifecycle.fault();
     let (backend, handle) = FakeBackend::scripted([]);
     let hub = BleHub::new(Arc::new(backend), owner.event_sink()).unwrap();
     assert_eq!(owner.attach_hub(hub), Err(AssemblyAdmissionError::Closed));
@@ -298,7 +295,7 @@ fn unexpected_actor_stop_fails_pending_waiter_and_disposes_hub() {
 #[test]
 fn waiting_receiver_is_woken_on_transport_fault() {
     let owner = RuntimeOwner::new().unwrap();
-    let status = Arc::clone(&owner.status);
+    let lifecycle = Arc::clone(&owner.lifecycle);
     let host = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .build()
@@ -306,7 +303,7 @@ fn waiting_receiver_is_woken_on_transport_fault() {
     host.block_on(async {
         let (result, ()) = tokio::join!(owner.next_event(Duration::from_secs(2)), async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            status.fault();
+            lifecycle.fault();
         });
         assert_eq!(result, Err(EventReadError::Fault));
     });

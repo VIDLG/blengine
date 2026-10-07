@@ -128,10 +128,18 @@ the runtime will remain open afterward.
 ## 3. Assembly, registration, and immediate rejected cleanup
 
 The caller path is implemented by
-[`AssemblyPort::assemble_backend()`](../../crates/bleng/src/runtime/assembly.rs):
+[`BackendPort::assemble_backend()`](../../crates/bleng/src/runtime/backend_port.rs):
 reserve admission, perform foreign assembly without the cleanup lock, then commit
 the resulting canonical Hub. Admission remains held until the commit path has
 registered ownership and attempted any required rejected disposal scheduling.
+
+`BackendPort` combines the former assembly port and event bridge because both
+need only the actor handle and shared lifecycle controller. Assembly passes a
+clone of the same `Arc<BackendPort>` to the Hub as `Arc<dyn BleEventSink>`; no
+second bridge object is constructed. Backend callbacks receive only the sink
+interface. The port never retains `RuntimeOwner`, and event reconciliation
+remains in `runtime/events.rs`; admission and disposal accounting remain in
+cleanup.
 
 ```mermaid
 sequenceDiagram
@@ -426,9 +434,28 @@ it does not itself wait for actor termination or individual BLE operations.
 `RuntimeOwner::Drop` starts cleanup and performs non-awaiting runtime shutdown,
 so explicit async close is the observable completion/error boundary.
 
-[`RuntimeStatus::fault()`](../../crates/bleng/src/runtime/lifecycle.rs) also
-starts cleanup. The cleanup module does not turn a runtime fault into a successful
-BLE command or promise cancellation of already dispatched work.
+[`RuntimeLifecycle`](../../crates/bleng/src/runtime/lifecycle.rs) is the shared
+lifecycle controller, not merely a status snapshot. It owns the phase gate,
+phase-change notification, and one private `HubCleanup`. Its `fault()` starts
+cleanup directly even when the actor or mailbox is unavailable. Ingress, actor,
+assembly, and detached dispatch paths retain the same controller rather than
+separate cleanup owners.
+
+Runtime callers use the lifecycle controller's admission, dispatch-Hub lookup,
+cleanup start, and `wait_for_cleanup()` operations; no cleanup `Arc` getter is
+exposed. `with_admission()` binds the Open-phase policy itself rather than
+accepting a caller-supplied predicate. It passes that check as a closure so
+cleanup evaluates the phase after acquiring its lock. The other production
+cleanup operations are direct delegates. Assembly commit still rechecks the
+phase because foreign work may overlap a close or fault after admission.
+The shutdown coordinator retains the lifecycle controller while awaiting cleanup.
+`phase_changed` wakes operation/event readers when work must stop, whereas the
+cleanup module's notifier wakes disposal-completion waiters. A closed runtime
+gate does not mean native cleanup has finished. Disposal scheduling and result
+accounting remain responsibilities of `HubCleanup`.
+
+The cleanup module does not turn a runtime fault into a successful BLE command
+or promise cancellation of already dispatched work.
 
 Local regression evidence is in
 [`cleanup_tests.rs`](../../crates/bleng/src/tests/cleanup_tests.rs) and the

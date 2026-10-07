@@ -82,9 +82,11 @@ runtime 的 `RuntimePhase::Open` 表示 runtime 仍接受工作，不表示蓝�
 
 ## 3. Assembly、注册与 rejected 的立即清理
 
-调用路径见 [`AssemblyPort::assemble_backend()`](../../crates/bleng/src/runtime/assembly.rs)：先保留 admission 名额，再在不持 cleanup 锁的情况下执行 foreign assembly，最后提交得到的 canonical Hub。
+调用路径见 [`BackendPort::assemble_backend()`](../../crates/bleng/src/runtime/backend_port.rs)：先保留 admission 名额，再在不持 cleanup 锁的情况下执行 foreign assembly，最后提交得到的 canonical Hub。
 
 直到 commit 完成所有权登记，并尝试调度必要的 rejected 清理之后，admission guard 才释放名额。
+
+`BackendPort` 合并了原来的 assembly port 和 event bridge，因为它们都只需要 actor handle 与共享 lifecycle。assembly 将同一个 `Arc<BackendPort>` 的克隆作为 `Arc<dyn BleEventSink>` 交给 Hub，不再构造第二个 bridge 对象。backend 回调只获得 sink 接口。端口不持有 `RuntimeOwner`；事件协调仍归 `runtime/events.rs`，admission 与 disposal 记账仍归 cleanup。
 
 ```mermaid
 sequenceDiagram
@@ -302,7 +304,11 @@ API 回归测试 [`private_runtime_timers_work_with_timerless_caller_runtimes`](
 
 `RuntimeOwner::Drop` 会启动 cleanup 并执行不能 await 的 runtime 关闭，因此显式异步 close 才是调用方可观察完成与错误的边界。
 
-[`RuntimeStatus::fault()`](../../crates/bleng/src/runtime/lifecycle.rs) 同样会启动 cleanup。cleanup 不会把 runtime fault 变成成功的 BLE 命令，也不保证取消已经 dispatch 的操作。
+[`RuntimeLifecycle`](../../crates/bleng/src/runtime/lifecycle.rs) 是共享的生命周期控制对象，而不只是状态快照。它拥有 phase gate、phase 变化通知和唯一的私有 `HubCleanup`。`fault()` 会直接启动 cleanup，即使 actor 或 mailbox 已不可用也不依赖它们完成清理触发。ingress、actor、assembly 和分离的 dispatch 路径持有同一个 lifecycle，而不是各自创建 cleanup owner。
+
+runtime 调用方通过 lifecycle 的方法执行 admission、取得可派发 Hub、启动 cleanup 和 `wait_for_cleanup()`，不再通过 getter 取得 cleanup 的 `Arc`。其中 `with_admission()` 自己绑定 Open-phase 策略，不接受调用方提供门禁判断；它仍将检查作为闭包传给 cleanup，保证取得锁后再读取 phase。其余生产 cleanup 操作直接代理转发。assembly commit 仍需再次检查 phase，因为 admission 之后的 foreign 工作可能与 close 或 fault 并发。shutdown coordinator 持有 lifecycle 来等待清理。`phase_changed` 用于唤醒应该停止工作的操作/事件读取方；cleanup 内部的通知则唤醒 disposal 完成等待方。runtime gate 已关闭不表示原生清理已经完成。disposal 调度与结果记账仍由 `HubCleanup` 负责。
+
+cleanup 不会把 runtime fault 变成成功的 BLE 命令，也不保证取消已经 dispatch 的操作。
 
 本地回归证据位于 [`cleanup_tests.rs`](../../crates/bleng/src/tests/cleanup_tests.rs) 和 [runtime assembly 测试](../../crates/bleng/src/runtime/tests/assembly.rs)，覆盖：
 

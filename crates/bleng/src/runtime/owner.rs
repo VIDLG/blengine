@@ -12,7 +12,7 @@ use std::{
 };
 
 use crate::{
-    cleanup::{CleanupError, HubCleanup},
+    cleanup::CleanupError,
     waiter::{WaiterError, WaiterRegistry, WaiterSuccess},
 };
 use blehub::{
@@ -29,9 +29,9 @@ use tokio::{
 };
 
 use super::{
-    AssemblyError, AssemblyPort, BeginConnect, BeginDisconnect, BeginDiscoverGatt, BeginInitialize,
-    BeginRead, BeginRssi, BeginScan, BeginStop, BeginWrite, BlengActor, RetireWaiter, RuntimePhase,
-    RuntimeStatus,
+    AssemblyError, BackendPort, BeginConnect, BeginDisconnect, BeginDiscoverGatt, BeginInitialize,
+    BeginRead, BeginRssi, BeginScan, BeginStop, BeginWrite, BlengActor, RetireWaiter,
+    RuntimeLifecycle, RuntimePhase,
 };
 
 /// Bounded mailbox for commands, ingress events, and lifecycle messages.
@@ -51,7 +51,8 @@ pub(crate) enum EventReadError {
 /// ownership. The integer representation is an implementation detail of the
 /// atomic; callers use this enum and its transition methods instead.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, derive_more::TryFrom)]
+#[try_from(repr)]
 enum BeginPhase {
     /// The actor has not yet claimed the dispatch handoff.
     Pending = 0,
@@ -66,20 +67,6 @@ enum BeginPhase {
 impl From<BeginPhase> for u8 {
     fn from(phase: BeginPhase) -> Self {
         phase as u8
-    }
-}
-
-impl TryFrom<u8> for BeginPhase {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            value if value == u8::from(Self::Pending) => Ok(Self::Pending),
-            value if value == u8::from(Self::Launched) => Ok(Self::Launched),
-            value if value == u8::from(Self::Acknowledged) => Ok(Self::Acknowledged),
-            value if value == u8::from(Self::Cancelled) => Ok(Self::Cancelled),
-            _ => Err(()),
-        }
     }
 }
 
@@ -138,14 +125,14 @@ impl BeginContext {
 
 struct BeginOperationGuard {
     state: BeginState,
-    status: Arc<RuntimeStatus>,
+    lifecycle: Arc<RuntimeLifecycle>,
 }
 
 impl BeginOperationGuard {
-    fn new(status: Arc<RuntimeStatus>) -> Self {
+    fn new(lifecycle: Arc<RuntimeLifecycle>) -> Self {
         Self {
             state: BeginState::new(),
-            status,
+            lifecycle,
         }
     }
 
@@ -162,7 +149,7 @@ impl Drop for BeginOperationGuard {
     fn drop(&mut self) {
         if self.state.cancel() {
             // Native dispatch may have begun but its ownership has not reached the caller.
-            self.status.fault();
+            self.lifecycle.fault();
         }
     }
 }
@@ -175,7 +162,7 @@ pub(crate) struct WaiterTicket {
     id: CommandId,
     pub(crate) receiver: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
     actor: ActorRef<BlengActor>,
-    status: Arc<RuntimeStatus>,
+    lifecycle: Arc<RuntimeLifecycle>,
     retire_on_drop: bool,
 }
 
@@ -189,9 +176,9 @@ impl WaiterTicket {
             })
             .try_send()
             .is_err()
-            && self.status.phase() == RuntimePhase::Open
+            && self.lifecycle.phase() == RuntimePhase::Open
         {
-            self.status.fault();
+            self.lifecycle.fault();
         }
     }
 
@@ -203,11 +190,11 @@ impl WaiterTicket {
         mut self,
         deadline: Instant,
     ) -> Result<WaiterSuccess, WaiterError> {
-        let mut changed = self.status.changed.subscribe();
+        let mut changed = self.lifecycle.subscribe_phase();
         let timer = sleep_until(deadline);
         tokio::pin!(timer);
         loop {
-            match self.status.phase() {
+            match self.lifecycle.phase() {
                 RuntimePhase::Closed => return Err(WaiterError::Closed),
                 RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
                 _ => {}
@@ -221,7 +208,7 @@ impl WaiterTicket {
                 biased;
                 result = &mut self.receiver => {
                     self.disarm();
-                    return match self.status.phase() {
+                    return match self.lifecycle.phase() {
                         RuntimePhase::Closed => Err(WaiterError::Closed),
                         RuntimePhase::Faulted => Err(WaiterError::TransportFault),
                         _ => result.unwrap_or(Err(WaiterError::TransportFault)),
@@ -230,7 +217,7 @@ impl WaiterTicket {
                 _ = &mut timer => {
                     self.retire_waiter(true);
                     self.disarm();
-                    return match self.status.phase() {
+                    return match self.lifecycle.phase() {
                         RuntimePhase::Closed => Err(WaiterError::Closed),
                         RuntimePhase::Faulted => Err(WaiterError::TransportFault),
                         _ => Err(WaiterError::Timeout),
@@ -247,7 +234,7 @@ impl WaiterTicket {
 
 impl Drop for WaiterTicket {
     fn drop(&mut self) {
-        if self.retire_on_drop && self.status.phase() == RuntimePhase::Open {
+        if self.retire_on_drop && self.lifecycle.phase() == RuntimePhase::Open {
             self.retire_waiter(false);
         }
     }
@@ -265,7 +252,7 @@ pub(crate) struct RuntimeOwner {
     // Runtime ownership keeps the actor executor alive for this BLeng instance.
     runtime: Option<Runtime>,
     pub(crate) actor: ActorRef<BlengActor>,
-    pub(crate) status: Arc<RuntimeStatus>,
+    pub(crate) lifecycle: Arc<RuntimeLifecycle>,
     // One bounded FIFO is intentionally single-consumer. Concurrent next_event
     // calls serialize on this guard and divide the stream; they do not broadcast.
     events: Mutex<mpsc::Receiver<BleEvent>>,
@@ -318,19 +305,14 @@ impl RuntimeOwner {
     pub(crate) fn new() -> io::Result<Self> {
         let runtime = Builder::new_multi_thread().enable_time().build()?;
         let (sender, events) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let (changed, _) = watch::channel(RuntimePhase::Open);
         let (shutdown_result, _) = watch::channel(None);
-        let status = Arc::new(RuntimeStatus {
-            phase: AtomicU8::new(RuntimePhase::Open.into()),
-            changed,
-            cleanup: Arc::new(HubCleanup::new()),
-        });
+        let lifecycle = Arc::new(RuntimeLifecycle::new());
         let actor = {
             let _runtime_guard = runtime.enter();
             BlengActor::spawn_with_mailbox(
                 BlengActor {
                     events: sender,
-                    status: Arc::clone(&status),
+                    lifecycle: Arc::clone(&lifecycle),
                     waiters: WaiterRegistry::new(),
                     next_id: 1,
                     initialized: false,
@@ -345,11 +327,11 @@ impl RuntimeOwner {
         // must also stop without requiring a later explicit close. Otherwise
         // its reservations and waiter registry can remain alive indefinitely
         // while the foreign owner is still retained.
-        spawn_fault_shutdown(runtime.handle(), actor.clone(), status.changed.subscribe());
+        spawn_fault_shutdown(runtime.handle(), actor.clone(), lifecycle.subscribe_phase());
         Ok(Self {
             runtime: Some(runtime),
             actor,
-            status,
+            lifecycle,
             events: Mutex::new(events),
             shutdown_started: AtomicBool::new(false),
             shutdown_result,
@@ -358,8 +340,8 @@ impl RuntimeOwner {
 
     pub(crate) async fn close(&self) -> Result<(), CleanupError> {
         let result = self.shutdown_result.subscribe();
-        self.status.close();
-        self.status.cleanup.start_cleanup();
+        self.lifecycle.close();
+        self.lifecycle.start_cleanup();
         if !self.shutdown_started.swap(true, Ordering::AcqRel) {
             self.spawn_shutdown_coordinator();
         }
@@ -373,7 +355,7 @@ impl RuntimeOwner {
     /// strand actor shutdown or native Hub disposal.
     fn spawn_shutdown_coordinator(&self) {
         let actor = self.actor.clone();
-        let cleanup = Arc::clone(&self.status.cleanup);
+        let lifecycle = Arc::clone(&self.lifecycle);
         let completed = self.shutdown_result.clone();
         let handle = self
             .runtime
@@ -384,7 +366,7 @@ impl RuntimeOwner {
         handle.spawn(async move {
             let _ = actor.stop_gracefully().await;
             actor.wait_for_shutdown().await;
-            let cleanup_result = cleanup.wait_for_completion().await;
+            let cleanup_result = lifecycle.wait_for_cleanup().await;
             completed.send_replace(Some(cleanup_result));
         });
     }
@@ -398,32 +380,31 @@ impl RuntimeOwner {
         F: FnOnce(ActorRef<BlengActor>, BeginContext) -> Fut,
         Fut: Future<Output = Result<T, SendError<M, WaiterError>>>,
     {
-        match self.status.phase() {
+        match self.lifecycle.phase() {
             RuntimePhase::Closed => return Err(WaiterError::Closed),
             RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
             _ => {}
         }
         let hub = self
-            .status
-            .cleanup
+            .lifecycle
             .hub_for_dispatch()
             .ok_or(WaiterError::BackendNotAssembled)?;
         let deadline = Instant::now() + timeout;
-        let guard = BeginOperationGuard::new(Arc::clone(&self.status));
+        let guard = BeginOperationGuard::new(Arc::clone(&self.lifecycle));
         let request = request(self.actor.clone(), guard.context(hub));
         let reply = match timeout_at(deadline, request).await {
             Ok(Ok(result)) => result,
             Ok(Err(SendError::HandlerError(error))) => return Err(error),
             Ok(Err(_)) => {
-                self.status.fault();
-                return Err(match self.status.phase() {
+                self.lifecycle.fault();
+                return Err(match self.lifecycle.phase() {
                     RuntimePhase::Closed => WaiterError::Closed,
                     _ => WaiterError::TransportFault,
                 });
             }
             Err(_) => {
                 drop(guard);
-                return Err(match self.status.phase() {
+                return Err(match self.lifecycle.phase() {
                     RuntimePhase::Closed => WaiterError::Closed,
                     RuntimePhase::Faulted => WaiterError::TransportFault,
                     _ => WaiterError::Timeout,
@@ -443,7 +424,7 @@ impl RuntimeOwner {
             id,
             receiver,
             actor: self.actor.clone(),
-            status: Arc::clone(&self.status),
+            lifecycle: Arc::clone(&self.lifecycle),
             retire_on_drop: true,
         }
     }
@@ -457,7 +438,7 @@ impl RuntimeOwner {
     ) -> Result<T, WaiterError> {
         let success = self.ticket(id, receiver).wait_until(deadline).await?;
         accept(success).ok_or_else(|| {
-            self.status.fault();
+            self.lifecycle.fault();
             WaiterError::TransportFault
         })
     }
@@ -681,15 +662,18 @@ impl RuntimeOwner {
         .await
     }
 
-    pub(crate) fn assembly_port(&self) -> AssemblyPort {
-        AssemblyPort::new(self.actor.clone(), Arc::clone(&self.status))
+    pub(crate) fn backend_port(&self) -> Arc<BackendPort> {
+        Arc::new(BackendPort::new(
+            self.actor.clone(),
+            Arc::clone(&self.lifecycle),
+        ))
     }
 
     pub(crate) async fn assemble_backend(
         &self,
         backend: Arc<dyn BleBackend>,
     ) -> Result<(), AssemblyError> {
-        let port = self.assembly_port();
+        let port = self.backend_port();
         let handle = self.runtime.as_ref().expect("runtime is open").handle();
         match handle
             .spawn_blocking(move || port.assemble_backend(backend))
@@ -697,7 +681,7 @@ impl RuntimeOwner {
         {
             Ok(result) => result,
             Err(_) => {
-                self.status.fault();
+                self.lifecycle.fault();
                 Err(AssemblyError::WorkerStopped)
             }
         }
@@ -709,16 +693,16 @@ impl RuntimeOwner {
     ) -> Result<Option<BleEvent>, EventReadError> {
         tokio::time::timeout(timeout, async {
             let mut events = self.events.lock().await;
-            let mut changed = self.status.changed.subscribe();
+            let mut changed = self.lifecycle.subscribe_phase();
             loop {
-                match self.status.phase() {
+                match self.lifecycle.phase() {
                     RuntimePhase::Faulted => return Err(EventReadError::Fault),
                     RuntimePhase::Closed => return Ok(None),
                     RuntimePhase::Open => {}
                 }
                 tokio::select! {
                     event = events.recv() => {
-                        match self.status.phase() {
+                        match self.lifecycle.phase() {
                             RuntimePhase::Faulted => return Err(EventReadError::Fault),
                             RuntimePhase::Closed => return Ok(None),
                             RuntimePhase::Open => {}
@@ -744,8 +728,8 @@ impl RuntimeOwner {
 
 impl Drop for RuntimeOwner {
     fn drop(&mut self) {
-        self.status.close();
-        self.status.cleanup.start_cleanup();
+        self.lifecycle.close();
+        self.lifecycle.start_cleanup();
         // `Drop` cannot await Kameo shutdown; kill is the non-blocking final
         // fallback. It is harmless if the actor already stopped normally.
         self.actor.kill();

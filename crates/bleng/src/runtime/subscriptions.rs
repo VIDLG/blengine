@@ -213,7 +213,7 @@ impl BlengActor {
                     }
                 };
                 if !valid {
-                    self.status.fault();
+                    self.lifecycle.fault();
                     return;
                 }
             }

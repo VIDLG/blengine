@@ -1,7 +1,24 @@
 use super::support::*;
-use crate::runtime::AssemblyError;
+use crate::runtime::{AssemblyError, RuntimeLifecycle};
 use blehub::{BLEHUB_CONTRACT_VERSION, Platform};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+
+#[test]
+fn lifecycle_rejects_admission_after_close_or_fault_without_running_foreign_work() {
+    for faulted in [false, true] {
+        let lifecycle = RuntimeLifecycle::new();
+        if faulted {
+            lifecycle.fault();
+        } else {
+            // Exercise the phase gate before cleanup itself has started.
+            lifecycle.close();
+        }
+        let result: Result<(), AssemblyAdmissionError> = lifecycle.with_admission(|_| {
+            panic!("foreign assembly must not run after close or fault");
+        });
+        assert_eq!(result, Err(AssemblyAdmissionError::Closed));
+    }
+}
 
 #[test]
 fn owned_assembly_routes_production_hub_events_into_the_runtime() {
@@ -27,7 +44,7 @@ fn owned_assembly_routes_production_hub_events_into_the_runtime() {
         ),
     ]);
     owner
-        .assembly_port()
+        .backend_port()
         .assemble_backend(Arc::new(backend))
         .unwrap();
     let late = handle.ingress_for_callback().unwrap();
@@ -67,7 +84,7 @@ fn rejected_owned_assembly_rolls_back_without_attaching_a_half_hub() {
         [],
     );
     assert!(matches!(
-        owner.assembly_port().assemble_backend(Arc::new(backend)),
+        owner.backend_port().assemble_backend(Arc::new(backend)),
         Err(AssemblyError::Backend(BleHubError::FfiContract { .. }))
     ));
     assert!(handle.ingress_for_callback().is_none());
@@ -143,7 +160,7 @@ impl BleBackend for GatedAssemblyBackend {
 #[test]
 fn close_waits_for_admitted_foreign_attach_and_rejects_late_assembly() {
     let owner = RuntimeOwner::new().unwrap();
-    let port = owner.assembly_port();
+    let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted([]);
     let (entered, observed) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
@@ -202,7 +219,7 @@ fn close_waits_for_admitted_foreign_attach_and_rejects_late_assembly() {
 #[test]
 fn assembly_rejects_hub_when_phase_closes_before_cleanup_starts() {
     let owner = RuntimeOwner::new().unwrap();
-    let port = owner.assembly_port();
+    let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted([]);
     let (entered, observed) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
@@ -218,7 +235,7 @@ fn assembly_rejects_hub_when_phase_closes_before_cleanup_starts() {
         }))
     });
     observed.recv_timeout(Duration::from_secs(2)).unwrap();
-    port.status.close();
+    port.lifecycle.close();
     release.send(()).unwrap();
     assert_eq!(
         attach.join().unwrap(),
@@ -240,7 +257,7 @@ fn assembly_rejects_hub_when_phase_closes_before_cleanup_starts() {
 #[test]
 fn transport_fault_waits_for_admitted_foreign_attach() {
     let owner = RuntimeOwner::new().unwrap();
-    let port = owner.assembly_port();
+    let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted([]);
     let (entered, observed) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
@@ -256,7 +273,7 @@ fn transport_fault_waits_for_admitted_foreign_attach() {
         }))
     });
     observed.recv_timeout(Duration::from_secs(2)).unwrap();
-    port.status.fault();
+    port.lifecycle.fault();
     let (late_backend, late_handle) = FakeBackend::scripted([]);
     assert_eq!(
         port.assemble_backend(Arc::new(late_backend)),
@@ -295,7 +312,7 @@ fn cancelled_close_waiter_does_not_cancel_owner_shutdown() {
     let (entered, observed) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(1);
     owner
-        .assembly_port()
+        .backend_port()
         .assemble_backend(Arc::new(GatedAssemblyBackend {
             inner: backend,
             capabilities_gate: None,
@@ -391,7 +408,7 @@ fn cancelled_assembly_waiter_leaves_admitted_attach_owned_by_close() {
 #[test]
 fn close_waits_for_foreign_assembly_failure_rollback() {
     let owner = RuntimeOwner::new().unwrap();
-    let port = owner.assembly_port();
+    let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted_with_capabilities(
         BackendCapabilities {
             contract_version: BLEHUB_CONTRACT_VERSION + 1,

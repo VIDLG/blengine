@@ -132,6 +132,7 @@ dependencies = [
  "blehub",
  "blehub-testkit",
  "delegate",
+ "derive_more",
  "kameo",
  "thiserror",
  "tokio",

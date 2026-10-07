@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 blehub = { path = "../blehub" }
 delegate.workspace = true
+derive_more.workspace = true
 kameo.workspace = true
 tokio.workspace = true
 tracing.workspace = true

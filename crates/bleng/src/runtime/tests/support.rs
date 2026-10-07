@@ -49,7 +49,7 @@ impl Message<RegisterWaiter> for BlengActor {
         message: RegisterWaiter,
         _: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        match self.status.phase() {
+        match self.lifecycle.phase() {
             RuntimePhase::Closed => return Err(WaiterError::Closed),
             RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
             _ => {}
@@ -92,7 +92,7 @@ impl RuntimeOwner {
         id: CommandId,
         expectation: WaiterExpectation,
     ) -> Result<super::super::WaiterTicket, WaiterError> {
-        match self.status.phase() {
+        match self.lifecycle.phase() {
             RuntimePhase::Closed => return Err(WaiterError::Closed),
             RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
             _ => {}
@@ -101,8 +101,8 @@ impl RuntimeOwner {
             Ok(receiver) => receiver,
             Err(SendError::HandlerError(error)) => return Err(error),
             Err(_) => {
-                self.status.fault();
-                return Err(match self.status.phase() {
+                self.lifecycle.fault();
+                return Err(match self.lifecycle.phase() {
                     RuntimePhase::Closed => WaiterError::Closed,
                     _ => WaiterError::TransportFault,
                 });
@@ -117,9 +117,9 @@ impl RuntimeOwner {
             .tell(DispatchResolved { id, result })
             .try_send()
             .is_err()
-            && self.status.phase() == RuntimePhase::Open
+            && self.lifecycle.phase() == RuntimePhase::Open
         {
-            self.status.fault();
+            self.lifecycle.fault();
         }
     }
 
@@ -134,22 +134,22 @@ impl RuntimeOwner {
     }
 
     pub(crate) fn is_closed(&self) -> bool {
-        self.status.phase() == RuntimePhase::Closed
+        self.lifecycle.phase() == RuntimePhase::Closed
     }
 
     pub(crate) fn attach_hub(&self, hub: Arc<BleHub>) -> Result<(), AssemblyAdmissionError> {
-        if self.status.phase() != RuntimePhase::Open {
-            self.status.cleanup.start_cleanup();
+        if self.lifecycle.phase() != RuntimePhase::Open {
+            self.lifecycle.start_cleanup();
         }
-        self.status.cleanup.attach(hub)
+        self.lifecycle.attach_hub(hub)
     }
 
     pub(crate) fn event_sink(&self) -> Arc<dyn BleEventSink> {
-        self.assembly_port().event_sink()
+        self.backend_port()
     }
 
     pub(crate) fn faulted_for_test(&self) -> bool {
-        self.status.phase() == RuntimePhase::Faulted
+        self.lifecycle.phase() == RuntimePhase::Faulted
     }
 
     pub(crate) async fn wait_for_actor_stop_for_test(&self) {

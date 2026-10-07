@@ -41,7 +41,7 @@ fn passive_connection_lost(event: &BleEvent, expected: ConnectionId) -> bool {
 }
 
 fn replay_after_rejection(
-    status: &RuntimeStatus,
+    lifecycle: &RuntimeLifecycle,
     buffered: Vec<BleEvent>,
     connection_id: ConnectionId,
 ) -> Vec<BleEvent> {
@@ -49,7 +49,7 @@ fn replay_after_rejection(
         .iter()
         .any(|event| !passive_connection_lost(event, connection_id))
     {
-        status.fault();
+        lifecycle.fault();
     }
     buffered
         .into_iter()
@@ -57,9 +57,13 @@ fn replay_after_rejection(
         .collect()
 }
 
-fn buffer_before_dispatch(status: &RuntimeStatus, buffered: &mut Vec<BleEvent>, event: BleEvent) {
+fn buffer_before_dispatch(
+    lifecycle: &RuntimeLifecycle,
+    buffered: &mut Vec<BleEvent>,
+    event: BleEvent,
+) {
     if buffered.len() >= PREDISPATCH_EVENTS {
-        status.fault();
+        lifecycle.fault();
     } else {
         buffered.push(event);
     }
@@ -68,10 +72,10 @@ fn buffer_before_dispatch(status: &RuntimeStatus, buffered: &mut Vec<BleEvent>, 
 impl BlengActor {
     fn deliver(&mut self, event: BleEvent) {
         if self.events.try_send(event.clone()).is_err() {
-            self.status.fault();
+            self.lifecycle.fault();
             return;
         }
-        if self.status.phase() != RuntimePhase::Open {
+        if self.lifecycle.phase() != RuntimePhase::Open {
             return;
         }
         // A commanded disconnect must belong to this connection's live
@@ -97,7 +101,7 @@ impl BlengActor {
             return;
         }
         self.record_event_evidence(&event);
-        if self.status.phase() != RuntimePhase::Open {
+        if self.lifecycle.phase() != RuntimePhase::Open {
             return;
         }
         // Settle from the recorded evidence before releasing native/session
@@ -283,7 +287,7 @@ impl BlengActor {
             self.record_terminal(*command_id, error.clone());
         }
         self.observe_subscription(event);
-        if self.status.phase() != RuntimePhase::Open {
+        if self.lifecycle.phase() != RuntimePhase::Open {
             return;
         }
         if let Some(scan) = &mut self.scan {
@@ -371,7 +375,7 @@ impl BlengActor {
         }) {
             // Accepted setup failure invalidates the Hub even if its caller
             // already timed out or dropped the waiter.
-            self.status.fault();
+            self.lifecycle.fault();
             return;
         }
         self.retire_subscriptions();
@@ -516,9 +520,9 @@ impl Message<DispatchResolved> for BlengActor {
                 if init.dispatch.buffered.is_empty() {
                     // No native setup callback escaped. Preserve the exact
                     // rejection, but retire this one-attempt Hub.
-                    self.status.cleanup.start_cleanup();
+                    self.lifecycle.start_cleanup();
                 } else {
-                    self.status.fault();
+                    self.lifecycle.fault();
                 }
                 Vec::new()
             } else {
@@ -565,7 +569,7 @@ impl Message<DispatchResolved> for BlengActor {
                 if remove_gatt {
                     connection.gatt = None;
                 }
-                replay_after_rejection(&self.status, buffered, connection_id)
+                replay_after_rejection(&self.lifecycle, buffered, connection_id)
             } else {
                 let gatt = connection.gatt.as_mut().expect("matching GATT exists");
                 let discovery = gatt.discovery.as_mut().expect("matching discovery exists");
@@ -587,7 +591,7 @@ impl Message<DispatchResolved> for BlengActor {
                 let buffered = std::mem::take(&mut slot.dispatch.buffered);
                 let connection_id = connection.connection_id;
                 connection.rssi = None;
-                replay_after_rejection(&self.status, buffered, connection_id)
+                replay_after_rejection(&self.lifecycle, buffered, connection_id)
             } else {
                 slot.dispatch.accept()
             }
@@ -611,7 +615,7 @@ impl Message<DispatchResolved> for BlengActor {
                 let buffered = std::mem::take(&mut read.dispatch.buffered);
                 let connection_id = connection.connection_id;
                 connection.read = None;
-                replay_after_rejection(&self.status, buffered, connection_id)
+                replay_after_rejection(&self.lifecycle, buffered, connection_id)
             } else {
                 read.dispatch.accept()
             }
@@ -635,7 +639,7 @@ impl Message<DispatchResolved> for BlengActor {
                 let buffered = std::mem::take(&mut write.dispatch.buffered);
                 let connection_id = connection.connection_id;
                 connection.write = None;
-                replay_after_rejection(&self.status, buffered, connection_id)
+                replay_after_rejection(&self.lifecycle, buffered, connection_id)
             } else {
                 write.dispatch.accept()
             }
@@ -684,7 +688,7 @@ impl Message<DispatchResolved> for BlengActor {
                         .remove(&subscription_id);
                 }
                 if ambiguous {
-                    self.status.fault();
+                    self.lifecycle.fault();
                 }
                 // The dispatch rejection wins for the command, but an unrelated
                 // passive loss still retires the connection after that decision.
@@ -717,7 +721,7 @@ impl Message<DispatchResolved> for BlengActor {
                     BleEvent::ConnectionStateChanged { command_id: None, .. } if connection_lost(event, connection_id)));
                 connection.disconnect = None;
                 if ambiguous {
-                    self.status.fault();
+                    self.lifecycle.fault();
                 }
                 // Rejection wins, but a concurrent passive loss still retires
                 // the old connection after the waiter receives the rejection.
@@ -751,7 +755,7 @@ impl Message<DispatchResolved> for BlengActor {
                 let ambiguous = !connection.dispatch.buffered.is_empty();
                 self.connections.remove(&peripheral_id);
                 if ambiguous {
-                    self.status.fault();
+                    self.lifecycle.fault();
                 }
                 Vec::new()
             } else {
@@ -774,7 +778,7 @@ impl Message<DispatchResolved> for BlengActor {
                 {
                     // A rejected stop with an already-observed stop callback
                     // leaves native scan ownership ambiguous; fail closed.
-                    self.status.fault();
+                    self.lifecycle.fault();
                 }
                 scan.stop = None;
                 Vec::new()
@@ -789,7 +793,7 @@ impl Message<DispatchResolved> for BlengActor {
                 .finish(message.id, Err(WaiterError::DispatchRejected(error)));
         }
         for event in buffered {
-            if self.status.phase() != RuntimePhase::Open {
+            if self.lifecycle.phase() != RuntimePhase::Open {
                 break;
             }
             self.deliver(event);
@@ -805,7 +809,7 @@ impl Message<IngressEvent> for BlengActor {
         IngressEvent(event): IngressEvent,
         _: &mut Context<Self, Self::Reply>,
     ) {
-        if self.status.phase() != RuntimePhase::Open {
+        if self.lifecycle.phase() != RuntimePhase::Open {
             return;
         }
         if let BleEvent::ConnectionStateChanged {
@@ -842,7 +846,7 @@ impl Message<IngressEvent> for BlengActor {
                 _ => false,
             }
         {
-            buffer_before_dispatch(&self.status, &mut init.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut init.dispatch.buffered, event);
             return;
         }
         if let Some(connection) = self.connections.values_mut().find(|connection| {
@@ -877,7 +881,7 @@ impl Message<IngressEvent> for BlengActor {
                 .disconnect
                 .as_mut()
                 .expect("matching disconnect exists");
-            buffer_before_dispatch(&self.status, &mut slot.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut slot.dispatch.buffered, event);
             return;
         }
         if let Some(connection) = self.connections.values_mut().find(|connection| {
@@ -905,7 +909,7 @@ impl Message<IngressEvent> for BlengActor {
         }) {
             let gatt = connection.gatt.as_mut().expect("matching GATT exists");
             let discovery = gatt.discovery.as_mut().expect("matching discovery exists");
-            buffer_before_dispatch(&self.status, &mut discovery.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut discovery.dispatch.buffered, event);
             return;
         }
         if let Some(connection) = self.connections.values_mut().find(|connection| {
@@ -928,7 +932,7 @@ impl Message<IngressEvent> for BlengActor {
             })
         }) {
             let slot = connection.rssi.as_mut().expect("matching RSSI exists");
-            buffer_before_dispatch(&self.status, &mut slot.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut slot.dispatch.buffered, event);
             return;
         }
         if let Some(connection) = self.connections.values_mut().find(|connection| {
@@ -955,7 +959,7 @@ impl Message<IngressEvent> for BlengActor {
             })
         }) {
             let read = connection.read.as_mut().expect("matching read exists");
-            buffer_before_dispatch(&self.status, &mut read.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut read.dispatch.buffered, event);
             return;
         }
         if let Some(connection) = self.connections.values_mut().find(|connection| {
@@ -981,7 +985,7 @@ impl Message<IngressEvent> for BlengActor {
             })
         }) {
             let write = connection.write.as_mut().expect("matching write exists");
-            buffer_before_dispatch(&self.status, &mut write.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut write.dispatch.buffered, event);
             return;
         }
         if let Some((connection, subscription)) =
@@ -1020,7 +1024,7 @@ impl Message<IngressEvent> for BlengActor {
         {
             let _ = connection;
             buffer_before_dispatch(
-                &self.status,
+                &self.lifecycle,
                 &mut subscription
                     .transition
                     .as_mut()
@@ -1048,7 +1052,7 @@ impl Message<IngressEvent> for BlengActor {
                     _ => false,
                 }
         }) {
-            buffer_before_dispatch(&self.status, &mut connection.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut connection.dispatch.buffered, event);
             return;
         }
         if let Some(scan) = &mut self.scan
@@ -1065,7 +1069,7 @@ impl Message<IngressEvent> for BlengActor {
                 _ => false,
             }
         {
-            buffer_before_dispatch(&self.status, &mut scan.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut scan.dispatch.buffered, event);
             return;
         }
         if let Some(scan) = &mut self.scan
@@ -1079,7 +1083,7 @@ impl Message<IngressEvent> for BlengActor {
                 _ => false,
             }
         {
-            buffer_before_dispatch(&self.status, &mut stop.dispatch.buffered, event);
+            buffer_before_dispatch(&self.lifecycle, &mut stop.dispatch.buffered, event);
             return;
         }
         self.deliver(event);

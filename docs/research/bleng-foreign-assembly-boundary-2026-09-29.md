@@ -4,7 +4,7 @@
 
 - `crates/bleng/src/runtime/tests/assembly.rs` uses the existing exported
   `blehub::attach_backend(ticket, backend)` path with a Rust fake backend.
-  BLeng's crate-private `AssemblyPort::assemble_backend` now keeps
+  BLeng's crate-private `BackendPort::assemble_backend` now keeps
   the `BackendAssembly` ticket inside one synchronous, owner-admitted call:
   admission, foreign attach, `finish`, and Hub registration share one cleanup
   owner. The resulting Hub permits real actor `initialize` and `start_scan`,
@@ -66,8 +66,8 @@
 
 The earlier ownership gap was a raw ticket escaping to the host: an in-flight
 foreign `attach_backend` could outlive BLeng `close()` before any Hub was
-registered. The crate-private `AssemblyPort` in
-`crates/bleng/src/runtime/assembly.rs` and `AssemblyAdmission` in
+registered. The crate-private `BackendPort` in
+`crates/bleng/src/runtime/backend_port.rs` and `AssemblyAdmission` in
 `crates/bleng/src/cleanup.rs` now avoid exporting a ticket. Admission and
 cleanup registration share `HubCleanup`'s state lock; final registration also
 checks the owner's open phase under that lock. Close/fault starts cleanup and

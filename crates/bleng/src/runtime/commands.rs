@@ -96,7 +96,7 @@ impl ReservationRollback<'_> {
             return Err(WaiterError::Cancelled);
         }
         let command_id = self.command_id();
-        let status = self.commit();
+        let lifecycle = self.commit();
         let actor = actor_context.actor_ref().clone();
         tokio::task::spawn_blocking(move || {
             match catch_unwind(AssertUnwindSafe(|| dispatch(hub))) {
@@ -108,12 +108,12 @@ impl ReservationRollback<'_> {
                         })
                         .try_send()
                         .is_err()
-                        && status.phase() == RuntimePhase::Open
+                        && lifecycle.phase() == RuntimePhase::Open
                     {
-                        status.fault();
+                        lifecycle.fault();
                     }
                 }
-                Err(_) => status.fault(),
+                Err(_) => lifecycle.fault(),
             }
         });
         Ok(())

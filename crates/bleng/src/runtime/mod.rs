@@ -38,23 +38,23 @@ use kameo::prelude::*;
 
 use tokio::sync::oneshot;
 
-mod assembly;
+mod backend_port;
 mod commands;
 mod events;
-mod ingress;
+
 mod lifecycle;
 mod owner;
 mod state;
 mod subscriptions;
 
-pub(super) use assembly::{AssemblyError, AssemblyPort};
+pub(super) use backend_port::{AssemblyError, BackendPort, IngressEvent};
 pub(super) use commands::{
     BeginConnect, BeginDisconnect, BeginDiscoverGatt, BeginInitialize, BeginRead, BeginRssi,
     BeginScan, BeginStop, BeginWrite, RetireWaiter,
 };
 pub(super) use events::DispatchResolved;
-pub(super) use ingress::IngressEvent;
-pub(super) use lifecycle::{RuntimePhase, RuntimeStatus};
+
+pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
 #[cfg(test)]
 pub(super) use owner::WaiterTicket;
 pub(super) use owner::{BeginContext, EventReadError, RuntimeOwner};
