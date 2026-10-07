@@ -1,4 +1,12 @@
-use super::support::*;
+use super::support::{
+    Arc, AssemblyAdmissionError, BackendCapabilities, BackendEventIngressHandle, BleBackend,
+    BleEvent, BleHubError, CommandDispatchError, CommandId, ConnectCommand, DisconnectCommand,
+    DiscoverGattCommand, Duration, EventIngressStatus, EventScenario, FakeBackend,
+    InitializeCommand, Mutex, ReadCharacteristicCommand, ReadRssiCommand, RecordedCommand,
+    RuntimeOwner, ScanOptions, ScanSessionId, SetNotificationsCommand, StartScanCommand,
+    StopScanCommand, WaiterError, WriteCharacteristicCommand, command_completed, init_command,
+    init_snapshot, init_snapshot_event,
+};
 use crate::runtime::{AssemblyError, RuntimeLifecycle};
 use blehub::{BLEHUB_CONTRACT_VERSION, Platform};
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -31,13 +39,13 @@ fn owned_assembly_routes_production_hub_events_into_the_runtime() {
         EventScenario::emit_before_return(
             RecordedCommand::StartScan(StartScanCommand {
                 command_id: CommandId { value: 2 },
-                scan_session_id: ScanSessionId { value: 3 },
+                scan_session_id: ScanSessionId { value: 1 },
                 options: ScanOptions::default(),
             }),
             vec![
                 BleEvent::ScanStarted {
                     command_id: CommandId { value: 2 },
-                    scan_id: ScanSessionId { value: 3 },
+                    scan_id: ScanSessionId { value: 1 },
                 },
                 command_completed(2, None),
             ],
@@ -61,7 +69,7 @@ fn owned_assembly_routes_production_hub_events_into_the_runtime() {
             owner
                 .start_scan(ScanOptions::default(), Duration::from_secs(2))
                 .await,
-            Ok(ScanSessionId { value: 3 })
+            Ok(ScanSessionId { value: 1 })
         );
         owner.close().await.unwrap();
     });
@@ -104,14 +112,14 @@ fn rejected_owned_assembly_rolls_back_without_attaching_a_half_hub() {
 }
 
 struct Gate {
-    entered: SyncSender<()>,
-    release: Mutex<Receiver<()>>,
+    entered_tx: SyncSender<()>,
+    release_rx: Mutex<Receiver<()>>,
 }
 
 impl Gate {
     fn wait(&self) {
-        self.entered.send(()).unwrap();
-        self.release
+        self.entered_tx.send(()).unwrap();
+        self.release_rx
             .lock()
             .unwrap()
             .recv_timeout(Duration::from_secs(3))
@@ -162,20 +170,20 @@ fn close_waits_for_admitted_foreign_attach_and_rejects_late_assembly() {
     let owner = RuntimeOwner::new().unwrap();
     let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted([]);
-    let (entered, observed) = mpsc::sync_channel(1);
-    let (release, resume) = mpsc::sync_channel(1);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let assembling = port.clone();
     let attach = std::thread::spawn(move || {
         assembling.assemble_backend(Arc::new(GatedAssemblyBackend {
             inner: backend,
             capabilities_gate: Some(Gate {
-                entered,
-                release: Mutex::new(resume),
+                entered_tx,
+                release_rx: Mutex::new(release_rx),
             }),
             dispose_gate: None,
         }))
     });
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
 
     let (duplicate, _) = FakeBackend::scripted([]);
     assert_eq!(
@@ -201,7 +209,7 @@ fn close_waits_for_admitted_foreign_attach_and_rejects_late_assembly() {
         Err(AssemblyError::Admission(AssemblyAdmissionError::Closed))
     );
     assert!(late_handle.ingress_for_callback().is_none());
-    release.send(()).unwrap();
+    release_tx.send(()).unwrap();
     host.block_on(async {
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), owner.close()).await,
@@ -221,22 +229,22 @@ fn assembly_rejects_hub_when_phase_closes_before_cleanup_starts() {
     let owner = RuntimeOwner::new().unwrap();
     let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted([]);
-    let (entered, observed) = mpsc::sync_channel(1);
-    let (release, resume) = mpsc::sync_channel(1);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let assembling = port.clone();
     let attach = std::thread::spawn(move || {
         assembling.assemble_backend(Arc::new(GatedAssemblyBackend {
             inner: backend,
             capabilities_gate: Some(Gate {
-                entered,
-                release: Mutex::new(resume),
+                entered_tx,
+                release_rx: Mutex::new(release_rx),
             }),
             dispose_gate: None,
         }))
     });
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     port.lifecycle.close();
-    release.send(()).unwrap();
+    release_tx.send(()).unwrap();
     assert_eq!(
         attach.join().unwrap(),
         Err(AssemblyError::Admission(AssemblyAdmissionError::Closed))
@@ -259,20 +267,20 @@ fn transport_fault_waits_for_admitted_foreign_attach() {
     let owner = RuntimeOwner::new().unwrap();
     let port = owner.backend_port();
     let (backend, handle) = FakeBackend::scripted([]);
-    let (entered, observed) = mpsc::sync_channel(1);
-    let (release, resume) = mpsc::sync_channel(1);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let assembling = port.clone();
     let attach = std::thread::spawn(move || {
         assembling.assemble_backend(Arc::new(GatedAssemblyBackend {
             inner: backend,
             capabilities_gate: Some(Gate {
-                entered,
-                release: Mutex::new(resume),
+                entered_tx,
+                release_rx: Mutex::new(release_rx),
             }),
             dispose_gate: None,
         }))
     });
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     port.lifecycle.fault();
     let (late_backend, late_handle) = FakeBackend::scripted([]);
     assert_eq!(
@@ -290,7 +298,7 @@ fn transport_fault_waits_for_admitted_foreign_attach() {
                 .is_err()
         );
     });
-    release.send(()).unwrap();
+    release_tx.send(()).unwrap();
     host.block_on(async {
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), owner.close()).await,
@@ -309,20 +317,20 @@ fn transport_fault_waits_for_admitted_foreign_attach() {
 fn cancelled_close_waiter_does_not_cancel_owner_shutdown() {
     let owner = RuntimeOwner::new().unwrap();
     let (backend, handle) = FakeBackend::scripted([]);
-    let (entered, observed) = mpsc::sync_channel(1);
-    let (release, resume) = mpsc::sync_channel(1);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     owner
         .backend_port()
         .assemble_backend(Arc::new(GatedAssemblyBackend {
             inner: backend,
             capabilities_gate: None,
             dispose_gate: Some(Gate {
-                entered,
-                release: Mutex::new(resume),
+                entered_tx,
+                release_rx: Mutex::new(release_rx),
             }),
         }))
         .unwrap();
-    let mut completed = owner.shutdown_result.subscribe();
+    let mut shutdown_result_rx = owner.shutdown_result_tx.subscribe();
     let host = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .build()
@@ -334,18 +342,18 @@ fn cancelled_close_waiter_does_not_cancel_owner_shutdown() {
                 .is_err()
         );
     });
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(handle.dispose_count(), 0);
-    release.send(()).unwrap();
+    release_tx.send(()).unwrap();
     host.block_on(async {
         tokio::time::timeout(Duration::from_secs(2), async {
-            while completed.borrow_and_update().is_none() {
-                completed.changed().await.unwrap();
+            while shutdown_result_rx.borrow_and_update().is_none() {
+                shutdown_result_rx.changed().await.unwrap();
             }
         })
         .await
         .unwrap();
-        assert_eq!(completed.borrow().clone(), Some(Ok(())));
+        assert_eq!(shutdown_result_rx.borrow().clone(), Some(Ok(())));
         assert_eq!(owner.close().await, Ok(()));
     });
     assert!(owner.is_closed());
@@ -356,8 +364,8 @@ fn cancelled_close_waiter_does_not_cancel_owner_shutdown() {
 fn cancelled_assembly_waiter_leaves_admitted_attach_owned_by_close() {
     let owner = RuntimeOwner::new().unwrap();
     let (backend, handle) = FakeBackend::scripted([]);
-    let (entered, observed) = mpsc::sync_channel(1);
-    let (release, resume) = mpsc::sync_channel(1);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let host = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .build()
@@ -369,8 +377,8 @@ fn cancelled_assembly_waiter_leaves_admitted_attach_owned_by_close() {
                 owner.assemble_backend(Arc::new(GatedAssemblyBackend {
                     inner: backend,
                     capabilities_gate: Some(Gate {
-                        entered,
-                        release: Mutex::new(resume),
+                        entered_tx,
+                        release_rx: Mutex::new(release_rx),
                     }),
                     dispose_gate: None,
                 }))
@@ -379,7 +387,7 @@ fn cancelled_assembly_waiter_leaves_admitted_attach_owned_by_close() {
             .is_err()
         );
     });
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     let (duplicate, duplicate_handle) = FakeBackend::scripted([]);
     host.block_on(async {
         assert_eq!(
@@ -394,7 +402,7 @@ fn cancelled_assembly_waiter_leaves_admitted_attach_owned_by_close() {
                 .is_err()
         );
     });
-    release.send(()).unwrap();
+    release_tx.send(()).unwrap();
     host.block_on(async {
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), owner.close()).await,
@@ -416,19 +424,19 @@ fn close_waits_for_foreign_assembly_failure_rollback() {
         },
         [],
     );
-    let (entered, observed) = mpsc::sync_channel(1);
-    let (release, resume) = mpsc::sync_channel(1);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
     let attach = std::thread::spawn(move || {
         port.assemble_backend(Arc::new(GatedAssemblyBackend {
             inner: backend,
             capabilities_gate: None,
             dispose_gate: Some(Gate {
-                entered,
-                release: Mutex::new(resume),
+                entered_tx,
+                release_rx: Mutex::new(release_rx),
             }),
         }))
     });
-    observed.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     let host = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .build()
@@ -441,7 +449,7 @@ fn close_waits_for_foreign_assembly_failure_rollback() {
         );
     });
     assert_eq!(handle.dispose_count(), 0);
-    release.send(()).unwrap();
+    release_tx.send(()).unwrap();
     host.block_on(async {
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(2), owner.close()).await,

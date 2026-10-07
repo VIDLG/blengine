@@ -18,49 +18,24 @@
 //! GATT discovery, I/O, disconnect, and subscription transitions compete for
 //! explicit slots and are correlated by connection/session generation state.
 
-use std::{
-    collections::HashMap,
-    panic::{AssertUnwindSafe, catch_unwind},
-    sync::Arc,
-};
-
-use blehub::{
-    BleEvent, CommandDispatchError, CommandId, ConnectCommand, ConnectionId, DisconnectCommand,
-    DiscoverGattCommand, GattCharacteristicId, GattSessionId, InitializeCommand,
-    NotificationAction, NotificationMode, NotificationModeRequest, NotificationState, PeripheralId,
-    ReadCharacteristicCommand, ReadRssiCommand, ScanOptions, ScanSessionId,
-    SetNotificationsCommand, StartScanCommand, StopScanCommand, SubscriptionId,
-    WriteCharacteristicCommand, WriteType,
-};
-
-use crate::waiter::{WaiterError, WaiterSuccess};
-use kameo::prelude::*;
-
-use tokio::sync::oneshot;
-
+mod actor;
 mod backend_port;
 mod commands;
-mod events;
 
 mod lifecycle;
 mod owner;
-mod state;
+mod reservations;
 mod subscriptions;
 
+use actor::{BlengActor, WaiterReceiver};
 pub(super) use backend_port::{AssemblyError, BackendPort, IngressEvent};
 pub(super) use commands::{
     BeginConnect, BeginDisconnect, BeginDiscoverGatt, BeginInitialize, BeginRead, BeginRssi,
     BeginScan, BeginStop, BeginWrite, RetireWaiter,
 };
-pub(super) use events::DispatchResolved;
 
 pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
+use owner::BeginHandoff;
 #[cfg(test)]
 pub(super) use owner::WaiterTicket;
-pub(super) use owner::{BeginContext, EventReadError, RuntimeOwner};
-pub(super) use state::{
-    BlengActor, ConnectionReservation, GattReservation, ReservationRollback, WaiterReceiver,
-};
-
-#[cfg(test)]
-mod tests;
+pub(super) use owner::{EventReadError, RuntimeOwner};

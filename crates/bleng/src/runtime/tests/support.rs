@@ -1,7 +1,12 @@
-use super::super::{BlengActor, DispatchResolved, RuntimePhase};
-use kameo::{error::SendError, prelude::*};
+use crate::runtime::{
+    BlengActor, RuntimePhase, actor::DispatchResolved, reservations::InitializationState,
+};
+use kameo::{
+    error::SendError,
+    prelude::{Context, Message},
+};
 
-pub(super) use super::super::{EventReadError, RuntimeOwner};
+pub(super) use crate::runtime::{EventReadError, RuntimeOwner};
 pub(super) use crate::{
     cleanup::AssemblyAdmissionError,
     waiter::{WaiterError, WaiterExpectation, WaiterSuccess},
@@ -32,7 +37,7 @@ impl Message<AssumeInitialized> for BlengActor {
     type Reply = ();
 
     async fn handle(&mut self, _: AssumeInitialized, _: &mut Context<Self, Self::Reply>) {
-        self.initialized = true;
+        self.initialization = InitializationState::Ready;
     }
 }
 
@@ -54,11 +59,12 @@ impl Message<RegisterWaiter> for BlengActor {
             RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
             _ => {}
         }
-        let value: u64 = message.id.into();
-        let next_id = value.checked_add(1).ok_or(WaiterError::IdExhausted)?;
-        let receiver = self.waiters.register(message.id, message.expectation)?;
-        self.next_id = self.next_id.max(next_id);
-        Ok(receiver)
+        let (allocated, result_rx) = self.register_waiter(message.expectation)?;
+        assert_eq!(
+            allocated, message.id,
+            "fixture command IDs must be sequential"
+        );
+        Ok(result_rx)
     }
 }
 
@@ -91,14 +97,14 @@ impl RuntimeOwner {
         &self,
         id: CommandId,
         expectation: WaiterExpectation,
-    ) -> Result<super::super::WaiterTicket, WaiterError> {
+    ) -> Result<crate::runtime::WaiterTicket, WaiterError> {
         match self.lifecycle.phase() {
             RuntimePhase::Closed => return Err(WaiterError::Closed),
             RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
             _ => {}
         }
-        let receiver = match self.actor.ask(RegisterWaiter { id, expectation }).await {
-            Ok(receiver) => receiver,
+        let result_rx = match self.actor.ask(RegisterWaiter { id, expectation }).await {
+            Ok(result_rx) => result_rx,
             Err(SendError::HandlerError(error)) => return Err(error),
             Err(_) => {
                 self.lifecycle.fault();
@@ -108,7 +114,7 @@ impl RuntimeOwner {
                 });
             }
         };
-        Ok(self.ticket(id, receiver))
+        Ok(self.ticket(id, result_rx))
     }
 
     pub(crate) fn resolve_dispatch(&self, id: CommandId, result: Result<(), CommandDispatchError>) {
@@ -166,14 +172,14 @@ pub(super) struct BlockingDispatchBackend {
     pub(super) inner: FakeBackend,
     pub(super) blocked: BlockedDispatch,
     pub(super) entered: Arc<Notify>,
-    pub(super) release: Arc<Mutex<mpsc::Receiver<()>>>,
+    pub(super) release_rx: Arc<Mutex<mpsc::Receiver<()>>>,
     pub(super) finished: Arc<Notify>,
 }
 
 impl BlockingDispatchBackend {
     fn wait(&self) {
         self.entered.notify_one();
-        self.release
+        self.release_rx
             .lock()
             .unwrap()
             .recv()
@@ -367,8 +373,8 @@ pub(super) fn gatt_scenario(command: u64, connection: u64, session: u64) -> Even
 
 pub(super) fn read_database() -> GattDatabase {
     GattDatabase {
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         services: vec![GattService {
             id: GattServiceId { value: 1 },
             uuid: BluetoothUuid {
@@ -396,17 +402,17 @@ pub(super) fn read_database() -> GattDatabase {
 pub(super) fn read_discovery() -> EventScenario {
     EventScenario::emit_before_return(
         RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-            command_id: CommandId { value: 3 },
-            connection_id: ConnectionId { value: 2 },
-            gatt_session_id: GattSessionId { value: 4 },
+            command_id: CommandId { value: 2 },
+            connection_id: ConnectionId { value: 1 },
+            gatt_session_id: GattSessionId { value: 2 },
         }),
         vec![
             BleEvent::GattDiscovered {
-                command_id: CommandId { value: 3 },
+                command_id: CommandId { value: 2 },
                 database: read_database(),
             },
             BleEvent::CommandCompleted {
-                command_id: CommandId { value: 3 },
+                command_id: CommandId { value: 2 },
                 error: None,
             },
         ],
@@ -420,17 +426,17 @@ pub(super) fn notification_discovery() -> EventScenario {
     properties.indicatable = true;
     EventScenario::emit_before_return(
         RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-            command_id: CommandId { value: 3 },
-            connection_id: ConnectionId { value: 2 },
-            gatt_session_id: GattSessionId { value: 4 },
+            command_id: CommandId { value: 2 },
+            connection_id: ConnectionId { value: 1 },
+            gatt_session_id: GattSessionId { value: 2 },
         }),
         vec![
             BleEvent::GattDiscovered {
-                command_id: CommandId { value: 3 },
+                command_id: CommandId { value: 2 },
                 database,
             },
             BleEvent::CommandCompleted {
-                command_id: CommandId { value: 3 },
+                command_id: CommandId { value: 2 },
                 error: None,
             },
         ],
@@ -440,8 +446,8 @@ pub(super) fn notification_discovery() -> EventScenario {
 pub(super) fn read_command(command: u64) -> RecordedCommand {
     RecordedCommand::ReadCharacteristic(ReadCharacteristicCommand {
         command_id: command.into(),
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         characteristic_id: GattCharacteristicId { value: 30 },
     })
 }
@@ -449,8 +455,8 @@ pub(super) fn read_command(command: u64) -> RecordedCommand {
 pub(super) fn read_value(command: u64, value: &[u8]) -> BleEvent {
     BleEvent::CharacteristicRead {
         command_id: command.into(),
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         characteristic_id: GattCharacteristicId { value: 30 },
         value: value.to_vec(),
     }
@@ -466,8 +472,8 @@ pub(super) fn read_terminal(command: u64, error: Option<BleEventError>) -> BleEv
 pub(super) fn write_command(command: u64, value: &[u8], write_type: WriteType) -> RecordedCommand {
     RecordedCommand::WriteCharacteristic(WriteCharacteristicCommand {
         command_id: command.into(),
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         characteristic_id: GattCharacteristicId { value: 30 },
         value: value.to_vec(),
         write_type,
@@ -477,8 +483,8 @@ pub(super) fn write_command(command: u64, value: &[u8], write_type: WriteType) -
 pub(super) fn written(command: u64) -> BleEvent {
     BleEvent::CharacteristicWritten {
         command_id: command.into(),
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         characteristic_id: GattCharacteristicId { value: 30 },
     }
 }
@@ -490,8 +496,8 @@ pub(super) fn notification_command(
 ) -> RecordedCommand {
     RecordedCommand::SetNotifications(SetNotificationsCommand {
         command_id: command.into(),
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         subscription_id: subscription.into(),
         characteristic_id: GattCharacteristicId { value: 30 },
         action,
@@ -505,8 +511,8 @@ pub(super) fn notification_state(
 ) -> BleEvent {
     BleEvent::NotificationStateChanged {
         command_id: command.into(),
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         subscription_id: subscription.into(),
         characteristic_id: GattCharacteristicId { value: 30 },
         state,
@@ -515,8 +521,8 @@ pub(super) fn notification_state(
 
 pub(super) fn notification_value(subscription: u64) -> BleEvent {
     BleEvent::NotificationReceived {
-        connection_id: ConnectionId { value: 2 },
-        gatt_session_id: GattSessionId { value: 4 },
+        connection_id: ConnectionId { value: 1 },
+        gatt_session_id: GattSessionId { value: 2 },
         subscription_id: subscription.into(),
         characteristic_id: GattCharacteristicId { value: 30 },
         value: vec![0xde, 0xad],
@@ -549,13 +555,13 @@ pub(super) fn started_scan() -> EventScenario {
     EventScenario::emit_before_return(
         RecordedCommand::StartScan(StartScanCommand {
             command_id: CommandId { value: 1 },
-            scan_session_id: ScanSessionId { value: 2 },
+            scan_session_id: ScanSessionId { value: 1 },
             options: ScanOptions::default(),
         }),
         vec![
             BleEvent::ScanStarted {
                 command_id: CommandId { value: 1 },
-                scan_id: ScanSessionId { value: 2 },
+                scan_id: ScanSessionId { value: 1 },
             },
             BleEvent::CommandCompleted {
                 command_id: CommandId { value: 1 },
@@ -567,7 +573,7 @@ pub(super) fn started_scan() -> EventScenario {
 
 pub(super) fn requested_stop(command: u64) -> BleEvent {
     BleEvent::ScanStopped {
-        scan_id: ScanSessionId { value: 2 },
+        scan_id: ScanSessionId { value: 1 },
         result: ScanStopResult::Ok {
             reason: ScanStopReason::Requested {
                 command_id: command.into(),
@@ -579,6 +585,6 @@ pub(super) fn requested_stop(command: u64) -> BleEvent {
 pub(super) fn stop_command(command: u64) -> RecordedCommand {
     RecordedCommand::StopScan(StopScanCommand {
         command_id: command.into(),
-        scan_session_id: ScanSessionId { value: 2 },
+        scan_session_id: ScanSessionId { value: 1 },
     })
 }

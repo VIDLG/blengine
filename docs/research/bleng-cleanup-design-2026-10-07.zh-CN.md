@@ -86,7 +86,7 @@ runtime 的 `RuntimePhase::Open` 表示 runtime 仍接受工作，不表示蓝�
 
 直到 commit 完成所有权登记，并尝试调度必要的 rejected 清理之后，admission guard 才释放名额。
 
-`BackendPort` 合并了原来的 assembly port 和 event bridge，因为它们都只需要 actor handle 与共享 lifecycle。assembly 将同一个 `Arc<BackendPort>` 的克隆作为 `Arc<dyn BleEventSink>` 交给 Hub，不再构造第二个 bridge 对象。backend 回调只获得 sink 接口。端口不持有 `RuntimeOwner`；事件协调仍归 `runtime/events.rs`，admission 与 disposal 记账仍归 cleanup。
+`BackendPort` 合并了原来的 assembly port 和 event bridge，因为它们都只需要 actor handle 与共享 lifecycle。assembly 将同一个 `Arc<BackendPort>` 的克隆作为 `Arc<dyn BleEventSink>` 交给 Hub，不再构造第二个 bridge 对象。backend 回调只获得 sink 接口。端口不持有 `RuntimeOwner`；事件协调仍归 `runtime/actor/events.rs`，admission 与 disposal 记账仍归 cleanup。
 
 ```mermaid
 sequenceDiagram
@@ -306,7 +306,9 @@ API 回归测试 [`private_runtime_timers_work_with_timerless_caller_runtimes`](
 
 [`RuntimeLifecycle`](../../crates/bleng/src/runtime/lifecycle.rs) 是共享的生命周期控制对象，而不只是状态快照。它拥有 phase gate、phase 变化通知和唯一的私有 `HubCleanup`。`fault()` 会直接启动 cleanup，即使 actor 或 mailbox 已不可用也不依赖它们完成清理触发。ingress、actor、assembly 和分离的 dispatch 路径持有同一个 lifecycle，而不是各自创建 cleanup owner。
 
-runtime 调用方通过 lifecycle 的方法执行 admission、取得可派发 Hub、启动 cleanup 和 `wait_for_cleanup()`，不再通过 getter 取得 cleanup 的 `Arc`。其中 `with_admission()` 自己绑定 Open-phase 策略，不接受调用方提供门禁判断；它仍将检查作为闭包传给 cleanup，保证取得锁后再读取 phase。其余生产 cleanup 操作直接代理转发。assembly commit 仍需再次检查 phase，因为 admission 之后的 foreign 工作可能与 close 或 fault 并发。shutdown coordinator 持有 lifecycle 来等待清理。`phase_changed` 用于唤醒应该停止工作的操作/事件读取方；cleanup 内部的通知则唤醒 disposal 完成等待方。runtime gate 已关闭不表示原生清理已经完成。disposal 调度与结果记账仍由 `HubCleanup` 负责。
+runtime 调用方通过 lifecycle 的方法执行 admission、取得可派发 Hub、启动 cleanup 和 `wait_for_cleanup()`，不再通过 getter 取得 cleanup 的 `Arc`。其中 `with_admission()` 自己绑定 Open-phase 策略，不接受调用方提供门禁判断；它仍将检查作为闭包传给 cleanup，保证取得锁后再读取 phase。其余生产 cleanup 操作直接代理转发。assembly commit 仍需再次检查 phase，因为 admission 之后的 foreign 工作可能与 close 或 fault 并发。shutdown coordinator 持有 lifecycle 来等待清理。`phase_tx` 用于唤醒应该停止工作的操作/事件读取方；cleanup 内部的通知则唤醒 disposal 完成等待方。runtime gate 已关闭不表示原生清理已经完成。disposal 调度与结果记账仍由 `HubCleanup` 负责。
+
+操作状态仍由 actor 串行持有。`WaiterRegistry` 留在 actor 中，使登记和结果交付无需额外锁即可串行完成，不放进共享的 `RuntimeLifecycle`。actor 的 `event_tx` 向 owner 的 FIFO 发布 BLE 事件，供 `next_event()` 读取；它与 lifecycle phase 通知、单命令 oneshot 结果是三条不同的通道。初始化统一由 `InitializationState` 表示 `NotStarted`、`Pending`、`Ready`：超时/取消保留 Pending 来处理晚到回调；成功时先结算 waiter，再释放完成证据。详细说明见 [waiter 设计](bleng-waiter-design-2026-10-06.md)。
 
 cleanup 不会把 runtime fault 变成成功的 BLE 命令，也不保证取消已经 dispatch 的操作。
 

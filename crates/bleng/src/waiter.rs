@@ -164,7 +164,7 @@ impl From<WaiterCloseReason> for WaiterError {
 /// the matching actor reservation remains alive after this entry is retired.
 struct WaiterEntry {
     expectation: WaiterExpectation,
-    sender: oneshot::Sender<Result<WaiterSuccess, WaiterError>>,
+    result_tx: oneshot::Sender<Result<WaiterSuccess, WaiterError>>,
 }
 
 /// Registry local to one actor / BLeng instance.
@@ -196,22 +196,22 @@ impl WaiterRegistry {
         if self.last_id.is_some_and(|last| value <= last) {
             return Err(WaiterError::InvalidCommandId);
         }
-        // A caller can cancel its ask before receiving the receiver. Reap only
+        // A caller can cancel its ask before receiving the result receiver. Reap only
         // those abandoned entries; never reuse their command IDs.
-        self.pending.retain(|_, entry| !entry.sender.is_closed());
+        self.pending.retain(|_, entry| !entry.result_tx.is_closed());
         if self.pending.len() >= MAX_PENDING {
             return Err(WaiterError::CapacityExceeded);
         }
-        let (sender, receiver) = oneshot::channel();
+        let (result_tx, result_rx) = oneshot::channel();
         self.pending.insert(
             command_id,
             WaiterEntry {
                 expectation,
-                sender,
+                result_tx,
             },
         );
         self.last_id = Some(value);
-        Ok(receiver)
+        Ok(result_rx)
     }
 
     /// Settles one waiter exactly once. Removing the entry before sending the
@@ -222,7 +222,7 @@ impl WaiterRegistry {
         result: Result<WaiterSuccess, WaiterError>,
     ) {
         if let Some(entry) = self.pending.remove(&command_id) {
-            let _ = entry.sender.send(result);
+            let _ = entry.result_tx.send(result);
         }
     }
 
@@ -260,7 +260,7 @@ impl WaiterRegistry {
         }
         self.closed = Some(reason);
         for (_, entry) in self.pending.drain() {
-            let _ = entry.sender.send(Err(reason.into()));
+            let _ = entry.result_tx.send(Err(reason.into()));
         }
     }
 }

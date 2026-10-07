@@ -1,17 +1,48 @@
-use super::support::*;
+use super::support::{
+    Arc, AssemblyAdmissionError, BleEvent, BleHub, CommandDispatchError, CommandId, Duration,
+    EventIngressStatus, EventReadError, EventScenario, FakeBackend, RecordedCommand, RuntimeOwner,
+    ScanOptions, ScanSessionId, StartScanCommand, WaiterError, WaiterExpectation,
+    command_completed, event,
+};
+
+#[test]
+fn event_publication_rejects_a_closed_or_faulted_gate_before_enqueueing() {
+    use crate::runtime::{BlengActor, RuntimeLifecycle};
+    use tokio::sync::mpsc::{channel, error::TryRecvError};
+
+    for faulted in [false, true] {
+        let lifecycle = Arc::new(RuntimeLifecycle::new());
+        let (event_tx, mut event_rx) = channel(1);
+        let actor = BlengActor::new(event_tx, Arc::clone(&lifecycle));
+        if faulted {
+            lifecycle.fault();
+        } else {
+            lifecycle.close();
+        }
+        assert_eq!(
+            actor.publish_event(&command_completed(1, None)),
+            Err(if faulted {
+                WaiterError::TransportFault
+            } else {
+                WaiterError::Closed
+            })
+        );
+        assert_eq!(event_rx.try_recv(), Err(TryRecvError::Empty));
+    }
+}
 
 #[test]
 fn real_hub_scan_waiter_requires_domain_even_after_successful_terminal() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let command = RecordedCommand::StartScan(StartScanCommand {
         command_id: CommandId { value: 1 },
-        scan_session_id: ScanSessionId { value: 2 },
+        scan_session_id: ScanSessionId { value: 1 },
         options: ScanOptions::default(),
     });
     let terminal = command_completed(1, None);
     let domain = BleEvent::ScanStarted {
         command_id: CommandId { value: 1 },
-        scan_id: ScanSessionId { value: 2 },
+        scan_id: ScanSessionId { value: 1 },
     };
     let events = vec![terminal.clone(), domain.clone()];
     let (backend, handle) =
@@ -45,7 +76,7 @@ fn real_hub_scan_waiter_requires_domain_even_after_successful_terminal() {
                 .is_err()
         );
         assert_eq!(handle.advance(), Some(EventIngressStatus::Delivered));
-        assert_eq!(start.await, Ok(ScanSessionId { value: 2 }));
+        assert_eq!(start.await, Ok(ScanSessionId { value: 1 }));
         for expected in events {
             assert_eq!(
                 owner.next_event(Duration::from_secs(2)).await,
@@ -94,13 +125,6 @@ fn rejection_cancellation_timeout_and_close_settle_distinct_waiters() {
             timed_out.wait_until(tokio::time::Instant::now()).await,
             Err(WaiterError::Timeout)
         );
-        assert!(matches!(
-            owner
-                .register_waiter(id, WaiterExpectation::TerminalOnly)
-                .await,
-            Err(WaiterError::InvalidCommandId)
-        ));
-
         let pending = owner
             .register_waiter(CommandId { value: 4 }, WaiterExpectation::TerminalOnly)
             .await

@@ -1,16 +1,22 @@
-use super::support::*;
+use super::support::{
+    Arc, BleErrorCategory, BleEvent, BleEventError, BleHub, CommandDispatchError, ConnectionId,
+    ConnectionState, ConnectionStateResult, Duration, EventIngressStatus, EventReadError,
+    EventScenario, FakeBackend, GattCharacteristicId, GattSessionId, PeripheralId, RuntimeOwner,
+    WaiterError, WriteType, connect_scenario, read_command, read_discovery, read_terminal,
+    read_value, write_command, written,
+};
 
 #[test]
 fn write_both_modes_require_exact_domain_and_terminal_and_keep_payload() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
         EventScenario::emit_before_return(
-            write_command(5, &[0, 255, 128], WriteType::WithResponse),
-            vec![read_terminal(5, None), written(5)],
+            write_command(3, &[0, 255, 128], WriteType::WithResponse),
+            vec![read_terminal(3, None), written(3)],
         ),
-        EventScenario::accept(write_command(6, &[0xab], WriteType::WithoutResponse)),
+        EventScenario::accept(write_command(4, &[0xab], WriteType::WithoutResponse)),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -20,8 +26,8 @@ fn write_both_modes_require_exact_domain_and_terminal_and_keep_payload() {
         .build()
         .unwrap();
     host.block_on(async {
-        let connection = ConnectionId { value: 2 };
-        let session = GattSessionId { value: 4 };
+        let connection = ConnectionId { value: 1 };
+        let session = GattSessionId { value: 2 };
         let characteristic = GattCharacteristicId { value: 30 };
         assert_eq!(owner.write_characteristic(connection, session, characteristic, vec![1], WriteType::WithResponse, Duration::from_secs(1)).await, Err(WaiterError::ConnectionNotActive));
         assert_eq!(owner.connect(PeripheralId { value: 10 }, Duration::from_secs(2)).await, Ok(connection));
@@ -39,9 +45,9 @@ fn write_both_modes_require_exact_domain_and_terminal_and_keep_payload() {
             }
             assert_eq!(owner.read_characteristic(connection, session, characteristic, Duration::from_secs(1)).await, Err(WaiterError::OperationBusy));
             assert_eq!(owner.write_characteristic(connection, session, characteristic, vec![1], WriteType::WithoutResponse, Duration::from_secs(1)).await, Err(WaiterError::OperationBusy));
-            assert_eq!(handle.emit(read_terminal(6, None)), EventIngressStatus::Delivered);
+            assert_eq!(handle.emit(read_terminal(4, None)), EventIngressStatus::Delivered);
             assert!(tokio::time::timeout(Duration::from_millis(20), &mut pending).await.is_err(), "terminal alone does not complete without-response write");
-            assert_eq!(handle.emit(written(6)), EventIngressStatus::Delivered);
+            assert_eq!(handle.emit(written(4)), EventIngressStatus::Delivered);
             assert_eq!(pending.await, Ok(()));
         }
         owner.close().await.unwrap();
@@ -58,16 +64,16 @@ fn write_timeout_keeps_native_slot_until_late_completion_then_retries() {
         platform_details: None,
     };
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
-        EventScenario::accept(write_command(5, &[1], WriteType::WithResponse)),
+        EventScenario::accept(write_command(3, &[1], WriteType::WithResponse)),
         EventScenario::emit_before_return(
-            write_command(6, &[2], WriteType::WithoutResponse),
-            vec![read_terminal(6, Some(error.clone()))],
+            write_command(4, &[2], WriteType::WithoutResponse),
+            vec![read_terminal(4, Some(error.clone()))],
         ),
         EventScenario::emit_before_return(
-            write_command(7, &[3], WriteType::WithResponse),
-            vec![written(7), read_terminal(7, None)],
+            write_command(5, &[3], WriteType::WithResponse),
+            vec![written(5), read_terminal(5, None)],
         ),
     ]);
     owner
@@ -114,7 +120,7 @@ fn write_timeout_keeps_native_slot_until_late_completion_then_retries() {
             Err(WaiterError::OperationBusy)
         );
         assert_eq!(
-            handle.emit(read_terminal(5, None)),
+            handle.emit(read_terminal(3, None)),
             EventIngressStatus::Delivered
         );
         assert_eq!(
@@ -130,7 +136,7 @@ fn write_timeout_keeps_native_slot_until_late_completion_then_retries() {
                 .await,
             Err(WaiterError::OperationBusy)
         );
-        assert_eq!(handle.emit(written(5)), EventIngressStatus::Delivered);
+        assert_eq!(handle.emit(written(3)), EventIngressStatus::Delivered);
         for _ in 0..6 {
             let _ = owner.next_event(Duration::from_secs(2)).await;
         }
@@ -173,19 +179,19 @@ fn write_predispatch_disconnect_and_rejected_callback_fail_closed() {
         .unwrap();
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
         EventScenario::emit_before_return(
-            write_command(5, &[1], WriteType::WithResponse),
+            write_command(3, &[1], WriteType::WithResponse),
             vec![BleEvent::ConnectionStateChanged {
                 command_id: None,
-                connection_id: ConnectionId { value: 2 },
+                connection_id: ConnectionId { value: 1 },
                 result: ConnectionStateResult::Ok {
                     state: ConnectionState::Disconnected,
                 },
             }],
         ),
-        connect_scenario(6, 7, 10),
+        connect_scenario(4, 3, 10),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -216,7 +222,7 @@ fn write_predispatch_disconnect_and_rejected_callback_fail_closed() {
             owner
                 .connect(PeripheralId { value: 10 }, Duration::from_secs(2))
                 .await,
-            Ok(ConnectionId { value: 7 })
+            Ok(ConnectionId { value: 3 })
         );
         owner.close().await.unwrap();
     });
@@ -224,11 +230,11 @@ fn write_predispatch_disconnect_and_rejected_callback_fail_closed() {
 
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
         EventScenario::emit_before_reject(
-            write_command(5, &[1], WriteType::WithoutResponse),
-            vec![written(5)],
+            write_command(3, &[1], WriteType::WithoutResponse),
+            vec![written(3)],
             CommandDispatchError::InvalidState {
                 detail: "write rejected".to_owned(),
             },
@@ -274,11 +280,11 @@ fn read_requires_committed_gatt_identity_and_preserves_binary_value() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let value = [0, 255, 128, 0x41];
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
         EventScenario::emit_before_return(
-            read_command(5),
-            vec![read_terminal(5, None), read_value(5, &value)],
+            read_command(3),
+            vec![read_terminal(3, None), read_value(3, &value)],
         ),
     ]);
     owner
@@ -289,8 +295,8 @@ fn read_requires_committed_gatt_identity_and_preserves_binary_value() {
         .build()
         .unwrap();
     host.block_on(async {
-        let connection = ConnectionId { value: 2 };
-        let session = GattSessionId { value: 4 };
+        let connection = ConnectionId { value: 1 };
+        let session = GattSessionId { value: 2 };
         let characteristic = GattCharacteristicId { value: 30 };
         assert_eq!(
             owner
@@ -354,12 +360,12 @@ fn read_requires_committed_gatt_identity_and_preserves_binary_value() {
 fn read_timeout_retains_slot_until_late_domain_and_terminal() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
-        EventScenario::accept(read_command(5)),
+        EventScenario::accept(read_command(3)),
         EventScenario::emit_before_return(
-            read_command(6),
-            vec![read_value(6, &[0x80]), read_terminal(6, None)],
+            read_command(4),
+            vec![read_value(4, &[0x80]), read_terminal(4, None)],
         ),
     ]);
     owner
@@ -397,7 +403,7 @@ fn read_timeout_retains_slot_until_late_domain_and_terminal() {
             Err(WaiterError::OperationBusy)
         );
         assert_eq!(
-            handle.emit(read_terminal(5, None)),
+            handle.emit(read_terminal(3, None)),
             EventIngressStatus::Delivered
         );
         assert_eq!(
@@ -407,7 +413,7 @@ fn read_timeout_retains_slot_until_late_domain_and_terminal() {
             Err(WaiterError::OperationBusy)
         );
         assert_eq!(
-            handle.emit(read_value(5, &[0, 255])),
+            handle.emit(read_value(3, &[0, 255])),
             EventIngressStatus::Delivered
         );
         // Drain the delivered event to establish the actor has retired the native reservation.
@@ -434,13 +440,13 @@ fn read_failure_releases_slot_and_accepted_read_is_busy_until_complete() {
         platform_details: None,
     };
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
         EventScenario::emit_before_return(
-            read_command(5),
-            vec![read_terminal(5, Some(error.clone()))],
+            read_command(3),
+            vec![read_terminal(3, Some(error.clone()))],
         ),
-        EventScenario::accept(read_command(6)),
+        EventScenario::accept(read_command(4)),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -489,11 +495,11 @@ fn read_failure_releases_slot_and_accepted_read_is_busy_until_complete() {
                 Err(WaiterError::OperationBusy)
             );
             assert_eq!(
-                handle.emit(read_value(6, &[0x10, 0x20])),
+                handle.emit(read_value(4, &[0x10, 0x20])),
                 EventIngressStatus::Delivered
             );
             assert_eq!(
-                handle.emit(read_terminal(6, None)),
+                handle.emit(read_terminal(4, None)),
                 EventIngressStatus::Delivered
             );
             assert_eq!(pending.await, Ok(vec![0x10, 0x20]));
@@ -512,14 +518,14 @@ fn read_predispatch_disconnect_releases_connection_and_callback_rejection_faults
     for disconnected in [
         BleEvent::ConnectionStateChanged {
             command_id: None,
-            connection_id: ConnectionId { value: 2 },
+            connection_id: ConnectionId { value: 1 },
             result: ConnectionStateResult::Ok {
                 state: ConnectionState::Disconnected,
             },
         },
         BleEvent::ConnectionStateChanged {
             command_id: None,
-            connection_id: ConnectionId { value: 2 },
+            connection_id: ConnectionId { value: 1 },
             result: ConnectionStateResult::Err {
                 error: BleEventError {
                     category: BleErrorCategory::Connection,
@@ -531,10 +537,10 @@ fn read_predispatch_disconnect_releases_connection_and_callback_rejection_faults
     ] {
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
         let (backend, handle) = FakeBackend::scripted([
-            connect_scenario(1, 2, 10),
+            connect_scenario(1, 1, 10),
             read_discovery(),
-            EventScenario::emit_before_return(read_command(5), vec![disconnected]),
-            connect_scenario(6, 7, 10),
+            EventScenario::emit_before_return(read_command(3), vec![disconnected]),
+            connect_scenario(4, 3, 10),
         ]);
         owner
             .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -563,7 +569,7 @@ fn read_predispatch_disconnect_releases_connection_and_callback_rejection_faults
                 owner
                     .connect(PeripheralId { value: 10 }, Duration::from_secs(2))
                     .await,
-                Ok(ConnectionId { value: 7 })
+                Ok(ConnectionId { value: 3 })
             );
             owner.close().await.unwrap();
         });
@@ -572,11 +578,11 @@ fn read_predispatch_disconnect_releases_connection_and_callback_rejection_faults
 
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         read_discovery(),
         EventScenario::emit_before_reject(
-            read_command(5),
-            vec![read_value(5, &[1])],
+            read_command(3),
+            vec![read_value(3, &[1])],
             CommandDispatchError::InvalidState {
                 detail: "rejected read".to_owned(),
             },

@@ -111,7 +111,7 @@
 //!   (also used by the scheduling caller if thread creation fails)
 //!
 //! wait_for_completion()
-//!   subscribe to changes BEFORE checking state
+//!   subscribe to cleanup signals BEFORE checking state
 //!   [lock] check: cleanup started AND admission released AND all slots settled
 //!          complete -> read retained result; unlock and return
 //!   [unlock] if incomplete: await a change, then lock and recheck
@@ -473,12 +473,12 @@ impl CleanupState {
 /// until those owners finish registration, disposal, and result publication.
 struct CleanupCoordinator {
     state: Mutex<CleanupState>,
-    changed: watch::Sender<CleanupSignal>,
+    cleanup_signal_tx: watch::Sender<CleanupSignal>,
 }
 
 impl CleanupCoordinator {
     fn signal(&self, signal: CleanupSignal) {
-        self.changed.send_replace(signal);
+        self.cleanup_signal_tx.send_replace(signal);
     }
 
     fn record_disposal_result(&self, slot: DisposalSlot, result: Result<(), CleanupError>) {
@@ -589,11 +589,11 @@ pub(crate) struct HubCleanup {
 
 impl HubCleanup {
     pub(crate) fn new() -> Self {
-        let (changed, _) = watch::channel(CleanupSignal::Initialized);
+        let (cleanup_signal_tx, _) = watch::channel(CleanupSignal::Initialized);
         Self {
             shared: Arc::new(CleanupCoordinator {
                 state: Mutex::new(CleanupState::default()),
-                changed,
+                cleanup_signal_tx,
             }),
         }
     }
@@ -671,7 +671,7 @@ impl HubCleanup {
     /// owner and waiter registry. The owner normally calls this after
     /// `HubCleanup::start_cleanup()` during `RuntimeOwner::close()`.
     pub(crate) async fn wait_for_completion(&self) -> Result<(), CleanupError> {
-        let mut changes = self.shared.changed.subscribe();
+        let mut cleanup_signal_rx = self.shared.cleanup_signal_tx.subscribe();
         loop {
             {
                 let state = self
@@ -688,9 +688,9 @@ impl HubCleanup {
             // Signals only wake this loop. `watch` may coalesce multiple
             // signals, so CleanupState remains the authoritative completion
             // source instead of matching a particular signal here.
-            match changes.changed().await {
+            match cleanup_signal_rx.changed().await {
                 Ok(()) => {
-                    let signal = *changes.borrow_and_update();
+                    let signal = *cleanup_signal_rx.borrow_and_update();
                     tracing::trace!(
                         target: "bleng::cleanup",
                         ?signal,

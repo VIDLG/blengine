@@ -7,7 +7,10 @@ use std::sync::{
 
 use blehub::BleHub;
 
-use crate::cleanup::{AssemblyAdmission, AssemblyAdmissionError, CleanupError, HubCleanup};
+use crate::{
+    cleanup::{AssemblyAdmission, AssemblyAdmissionError, CleanupError, HubCleanup},
+    waiter::WaiterError,
+};
 use tokio::sync::watch;
 
 /// Internal lifecycle phase for ingress, actor delivery, and backend cleanup.
@@ -49,18 +52,36 @@ impl From<RuntimePhase> for u8 {
 /// They all observe the same gate, but none of them borrows the owner or actor.
 pub(crate) struct RuntimeLifecycle {
     phase: AtomicU8,
-    phase_changed: watch::Sender<RuntimePhase>,
+    phase_tx: watch::Sender<RuntimePhase>,
     cleanup: Arc<HubCleanup>,
 }
 
 impl RuntimeLifecycle {
     pub(crate) fn new() -> Self {
-        let (phase_changed, _) = watch::channel(RuntimePhase::Open);
+        let (phase_tx, _) = watch::channel(RuntimePhase::Open);
         Self {
             phase: AtomicU8::new(RuntimePhase::Open.into()),
-            phase_changed,
+            phase_tx,
             cleanup: Arc::new(HubCleanup::new()),
         }
+    }
+
+    /// Maps the shared runtime gate to command admission without exposing phase storage.
+    pub(super) fn require_open(&self) -> Result<(), WaiterError> {
+        match self.phase() {
+            RuntimePhase::Closed => Err(WaiterError::Closed),
+            RuntimePhase::Faulted => Err(WaiterError::TransportFault),
+            RuntimePhase::Open => Ok(()),
+        }
+    }
+
+    /// Acquires a dispatchable root and maps lifecycle/cleanup gates to one result.
+    /// Check phase after the cleanup lock so close/fault wins over a missing root.
+    /// The returned root is not a lease against subsequent close or native disposal.
+    pub(super) fn hub_for_dispatch(&self) -> Result<Arc<BleHub>, WaiterError> {
+        let hub = self.cleanup.hub_for_dispatch();
+        self.require_open()?;
+        hub.ok_or(WaiterError::BackendNotAssembled)
     }
 
     /// Reserves assembly admission only while this lifecycle is open.
@@ -78,7 +99,6 @@ impl RuntimeLifecycle {
 
     delegate::delegate! {
         to self.cleanup {
-            pub(super) fn hub_for_dispatch(&self) -> Option<Arc<BleHub>>;
 
             pub(super) fn start_cleanup(&self);
 
@@ -96,7 +116,7 @@ impl RuntimeLifecycle {
     /// Subscribes to lifecycle changes, not native cleanup completion.
     /// The atomic phase remains authoritative; notifications wake async readers.
     pub(crate) fn subscribe_phase(&self) -> watch::Receiver<RuntimePhase> {
-        self.phase_changed.subscribe()
+        self.phase_tx.subscribe()
     }
 
     pub(crate) fn phase(&self) -> RuntimePhase {
@@ -117,7 +137,7 @@ impl RuntimeLifecycle {
             )
             .is_ok()
         {
-            self.phase_changed.send_replace(RuntimePhase::Faulted);
+            self.phase_tx.send_replace(RuntimePhase::Faulted);
             self.cleanup.start_cleanup();
         }
     }
@@ -133,7 +153,7 @@ impl RuntimeLifecycle {
             )
             .is_ok()
         {
-            self.phase_changed.send_replace(RuntimePhase::Closed);
+            self.phase_tx.send_replace(RuntimePhase::Closed);
         }
     }
 }

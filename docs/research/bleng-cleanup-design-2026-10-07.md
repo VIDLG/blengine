@@ -138,7 +138,7 @@ need only the actor handle and shared lifecycle controller. Assembly passes a
 clone of the same `Arc<BackendPort>` to the Hub as `Arc<dyn BleEventSink>`; no
 second bridge object is constructed. Backend callbacks receive only the sink
 interface. The port never retains `RuntimeOwner`, and event reconciliation
-remains in `runtime/events.rs`; admission and disposal accounting remain in
+remains in `runtime/actor/events.rs`; admission and disposal accounting remain in
 cleanup.
 
 ```mermaid
@@ -449,10 +449,20 @@ cleanup evaluates the phase after acquiring its lock. The other production
 cleanup operations are direct delegates. Assembly commit still rechecks the
 phase because foreign work may overlap a close or fault after admission.
 The shutdown coordinator retains the lifecycle controller while awaiting cleanup.
-`phase_changed` wakes operation/event readers when work must stop, whereas the
+`phase_tx` wakes operation/event readers when work must stop, whereas the
 cleanup module's notifier wakes disposal-completion waiters. A closed runtime
 gate does not mean native cleanup has finished. Disposal scheduling and result
 accounting remain responsibilities of `HubCleanup`.
+
+Operation-local state remains actor-confined. `WaiterRegistry` stays on the
+actor so admission and settlement are serialized without another lock; it is
+not part of shared `RuntimeLifecycle`. The actor's `event_tx` publishes BLE
+events to the owner's FIFO for `next_event()`, independently of lifecycle phase
+notifications and per-command oneshot results. Initialization is represented by
+one `InitializationState` (`NotStarted`, `Pending`, `Ready`): timeout/cancellation
+retains Pending for late callbacks, and success releases completed evidence only
+after waiter settlement. These boundaries are detailed in the
+[waiter design](bleng-waiter-design-2026-10-06.md).
 
 The cleanup module does not turn a runtime fault into a successful BLE command
 or promise cancellation of already dispatched work.

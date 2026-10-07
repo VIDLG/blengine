@@ -1,11 +1,15 @@
-use super::support::*;
+use super::support::{
+    Arc, BleEvent, BleHub, CommandDispatchError, ConnectionId, ConnectionState,
+    ConnectionStateResult, Duration, EventIngressStatus, EventScenario, FakeBackend, PeripheralId,
+    RuntimeOwner, WaiterError, connect_scenario, rssi_command, rssi_terminal, rssi_value,
+};
 
 #[test]
 fn read_rssi_requires_exact_domain_and_terminal_in_any_order() {
     for terminal_first in [false, true] {
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
-        let command = 3;
-        let connection = 2;
+        let command = 2;
+        let connection = 1;
         let domain = rssi_value(command, connection, -47);
         let terminal = rssi_terminal(command);
         let mut events = vec![
@@ -56,10 +60,10 @@ fn read_rssi_synchronous_callbacks_before_rejected_dispatch_fail_closed() {
         detail: "rejected RSSI read after callback".to_owned(),
     };
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
+        connect_scenario(1, 1, 10),
         EventScenario::emit_before_reject(
-            rssi_command(3, 2),
-            vec![rssi_value(3, 2, -48), rssi_terminal(3)],
+            rssi_command(2, 1),
+            vec![rssi_value(2, 1, -48), rssi_terminal(2)],
             error.clone(),
         ),
     ]);
@@ -75,7 +79,7 @@ fn read_rssi_synchronous_callbacks_before_rejected_dispatch_fail_closed() {
             owner
                 .connect(PeripheralId { value: 10 }, Duration::from_secs(2))
                 .await,
-            Ok(ConnectionId { value: 2 })
+            Ok(ConnectionId { value: 1 })
         );
         for _ in 0..2 {
             assert!(
@@ -89,7 +93,7 @@ fn read_rssi_synchronous_callbacks_before_rejected_dispatch_fail_closed() {
         assert_eq!(
             tokio::time::timeout(
                 Duration::from_secs(2),
-                owner.read_rssi(ConnectionId { value: 2 }, Duration::from_secs(1))
+                owner.read_rssi(ConnectionId { value: 1 }, Duration::from_secs(1))
             )
             .await
             .unwrap(),
@@ -106,11 +110,11 @@ fn read_rssi_synchronous_callbacks_before_rejected_dispatch_fail_closed() {
 fn read_rssi_timeout_keeps_slot_until_late_completion_then_retries() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
-        EventScenario::accept(rssi_command(3, 2)),
+        connect_scenario(1, 1, 10),
+        EventScenario::accept(rssi_command(2, 1)),
         EventScenario::emit_before_return(
-            rssi_command(4, 2),
-            vec![rssi_value(4, 2, -52), rssi_terminal(4)],
+            rssi_command(3, 1),
+            vec![rssi_value(3, 1, -52), rssi_terminal(3)],
         ),
     ]);
     owner
@@ -134,10 +138,10 @@ fn read_rssi_timeout_keeps_slot_until_late_completion_then_retries() {
             Err(WaiterError::OperationBusy)
         );
         assert_eq!(
-            handle.emit(rssi_value(3, 2, -53)),
+            handle.emit(rssi_value(2, 1, -53)),
             EventIngressStatus::Delivered
         );
-        assert_eq!(handle.emit(rssi_terminal(3)), EventIngressStatus::Delivered);
+        assert_eq!(handle.emit(rssi_terminal(2)), EventIngressStatus::Delivered);
         // Drain the connect and late RSSI events to establish that the late
         // native completion retired the timed-out reservation.
         for _ in 0..4 {
@@ -158,15 +162,15 @@ fn read_rssi_is_completed_as_disconnected_and_connection_can_be_reused() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let disconnected = BleEvent::ConnectionStateChanged {
         command_id: None,
-        connection_id: ConnectionId { value: 2 },
+        connection_id: ConnectionId { value: 1 },
         result: ConnectionStateResult::Ok {
             state: ConnectionState::Disconnected,
         },
     };
     let (backend, handle) = FakeBackend::scripted([
-        connect_scenario(1, 2, 10),
-        EventScenario::accept(rssi_command(3, 2)),
-        connect_scenario(4, 5, 10),
+        connect_scenario(1, 1, 10),
+        EventScenario::accept(rssi_command(2, 1)),
+        connect_scenario(3, 2, 10),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -197,7 +201,7 @@ fn read_rssi_is_completed_as_disconnected_and_connection_can_be_reused() {
             owner
                 .connect(PeripheralId { value: 10 }, Duration::from_secs(2))
                 .await,
-            Ok(ConnectionId { value: 5 })
+            Ok(ConnectionId { value: 2 })
         );
         owner.close().await.unwrap();
     });

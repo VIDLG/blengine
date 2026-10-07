@@ -136,6 +136,10 @@ impl Bleng {
     /// Discovers the complete GATT database needed to address characteristics
     /// and descriptors. The same completion is also emitted as a
     /// `BleEvent::GattDiscovered` event for callers that consume the event stream.
+    ///
+    /// Disable active subscriptions and await any pending subscription transitions
+    /// before discovery. Otherwise admission returns `Busy` with reason `Gatt`;
+    /// discovery does not implicitly disable subscriptions.
     pub async fn discover_gatt(
         &self,
         connection: ConnectionId,

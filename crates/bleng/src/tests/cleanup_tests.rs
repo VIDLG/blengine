@@ -38,8 +38,8 @@ impl BleEventSink for Sink {
 
 struct BlockingDisposeBackend {
     inner: FakeBackend,
-    entered: SyncSender<()>,
-    release: std::sync::Mutex<Receiver<()>>,
+    entered_tx: SyncSender<()>,
+    release_rx: std::sync::Mutex<Receiver<()>>,
     attempts: Arc<AtomicUsize>,
     error: BleHubError,
 }
@@ -64,10 +64,10 @@ impl BleBackend for BlockingDisposeBackend {
 
     fn dispose(&self) -> Result<(), BleHubError> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
-        self.entered
+        self.entered_tx
             .send(())
             .expect("dispose entry receiver dropped");
-        self.release
+        self.release_rx
             .lock()
             .unwrap()
             .recv_timeout(Duration::from_secs(3))
@@ -81,8 +81,8 @@ struct ReleaseOnDrop(Option<SyncSender<()>>);
 
 impl ReleaseOnDrop {
     fn release(&mut self) {
-        if let Some(sender) = self.0.take() {
-            let _ = sender.try_send(());
+        if let Some(release_tx) = self.0.take() {
+            let _ = release_tx.try_send(());
         }
     }
 }
@@ -163,8 +163,8 @@ fn blocking_dispose_does_not_block_start_or_runtime_and_shares_error_after_cance
     let hub = BleHub::new(
         Arc::new(BlockingDisposeBackend {
             inner: backend,
-            entered: entered_tx,
-            release: std::sync::Mutex::new(release_rx),
+            entered_tx,
+            release_rx: std::sync::Mutex::new(release_rx),
             attempts: Arc::clone(&attempts),
             error: error.clone(),
         }),
@@ -317,8 +317,8 @@ fn rejected_second_hub_is_tracked_and_its_error_is_repeatable() {
     let rejected = BleHub::new(
         Arc::new(BlockingDisposeBackend {
             inner: backend,
-            entered: entered_tx,
-            release: std::sync::Mutex::new(release_rx),
+            entered_tx,
+            release_rx: std::sync::Mutex::new(release_rx),
             attempts: Arc::new(AtomicUsize::new(0)),
             error: error.clone(),
         }),
@@ -378,8 +378,8 @@ fn late_cleanup_error_is_observable_after_an_earlier_successful_close() {
     let late = BleHub::new(
         Arc::new(BlockingDisposeBackend {
             inner: backend,
-            entered: entered_tx,
-            release: std::sync::Mutex::new(release_rx),
+            entered_tx,
+            release_rx: std::sync::Mutex::new(release_rx),
             attempts: Arc::new(AtomicUsize::new(0)),
             error: error.clone(),
         }),

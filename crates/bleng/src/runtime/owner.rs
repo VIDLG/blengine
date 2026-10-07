@@ -1,7 +1,6 @@
 //! Runtime owner, operation admission, and caller-side waiter tickets.
 
 use std::{
-    collections::HashMap,
     future::Future,
     io,
     sync::{
@@ -13,10 +12,10 @@ use std::{
 
 use crate::{
     cleanup::CleanupError,
-    waiter::{WaiterError, WaiterRegistry, WaiterSuccess},
+    waiter::{WaiterError, WaiterSuccess},
 };
 use blehub::{
-    AdapterSnapshot, BleBackend, BleEvent, BleHub, CommandId, ConnectionId, GattCharacteristicId,
+    AdapterSnapshot, BleBackend, BleEvent, CommandId, ConnectionId, GattCharacteristicId,
     GattDatabase, GattSessionId, PeripheralId, ScanOptions, ScanSessionId, WriteType,
 };
 use kameo::actor::Spawn;
@@ -47,21 +46,19 @@ pub(crate) enum EventReadError {
     Fault,
 }
 
-/// Atomic handoff phase for the interval between actor admission and caller
-/// ownership. The integer representation is an implementation detail of the
-/// atomic; callers use this enum and its transition methods instead.
+/// Cross-thread competition to begin dispatch. Owner acknowledgement is local
+/// to the guard, not another shared phase. The integer representation remains
+/// an implementation detail of the atomic.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, derive_more::TryFrom)]
 #[try_from(repr)]
 enum BeginPhase {
     /// The actor has not yet claimed the dispatch handoff.
     Pending = 0,
-    /// The actor has entered the native dispatch boundary.
-    Launched = 1,
-    /// The caller received the dispatch acknowledgement and owns the waiter.
-    Acknowledged = 2,
+    /// The actor claimed dispatch ownership; native entry is not guaranteed.
+    Claimed = 1,
     /// The caller dropped or timed out before ownership was acknowledged.
-    Cancelled = 3,
+    Cancelled = 2,
 }
 
 impl From<BeginPhase> for u8 {
@@ -70,84 +67,64 @@ impl From<BeginPhase> for u8 {
     }
 }
 
+/// Shared caller-to-actor permission to begin dispatch, not a native acknowledgement.
+/// The token carries no Hub; the actor acquires its dispatch root before claiming it.
 #[derive(Clone)]
-struct BeginState(Arc<AtomicU8>);
+pub(super) struct BeginHandoff(Arc<AtomicU8>);
 
-impl BeginState {
+impl BeginHandoff {
     fn new() -> Self {
         Self(Arc::new(AtomicU8::new(BeginPhase::Pending.into())))
     }
 
-    fn try_launch(&self) -> bool {
+    pub(super) fn try_launch(&self) -> bool {
         self.0
             .compare_exchange(
                 BeginPhase::Pending.into(),
-                BeginPhase::Launched.into(),
+                BeginPhase::Claimed.into(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
             .is_ok()
     }
 
-    fn acknowledge(&self) {
-        self.0
-            .store(BeginPhase::Acknowledged.into(), Ordering::Release);
-    }
-
+    /// Returns whether the actor claimed dispatch before cancellation.
     fn cancel(&self) -> bool {
         let previous = self.0.swap(BeginPhase::Cancelled.into(), Ordering::AcqRel);
-        // An impossible raw value fails closed as if native dispatch had begun.
+        // An impossible raw value fails closed as if the actor had claimed dispatch.
         matches!(
-            BeginPhase::try_from(previous).unwrap_or(BeginPhase::Launched),
-            BeginPhase::Launched
+            BeginPhase::try_from(previous).unwrap_or(BeginPhase::Claimed),
+            BeginPhase::Claimed
         )
     }
 }
 
-/// Common caller-owned data carried by every begin message.
-///
-/// The actor receives the Hub root and the same atomic handoff state as one
-/// value, while operation-specific messages only carry their own parameters.
-pub(crate) struct BeginContext {
-    pub(super) hub: Arc<BleHub>,
-    state: BeginState,
-}
-
-impl BeginContext {
-    fn new(hub: Arc<BleHub>, state: BeginState) -> Self {
-        Self { hub, state }
-    }
-
-    pub(super) fn try_launch(&self) -> bool {
-        self.state.try_launch()
-    }
-}
-
-struct BeginOperationGuard {
-    state: BeginState,
+/// Protects the caller until the owner receives the actor's begin reply.
+/// `armed` is task-local Drop policy; only `handoff` arbitrates with the actor.
+struct BeginHandoffGuard {
+    handoff: BeginHandoff,
     lifecycle: Arc<RuntimeLifecycle>,
+    armed: bool,
 }
 
-impl BeginOperationGuard {
+impl BeginHandoffGuard {
     fn new(lifecycle: Arc<RuntimeLifecycle>) -> Self {
         Self {
-            state: BeginState::new(),
+            handoff: BeginHandoff::new(),
             lifecycle,
+            armed: true,
         }
     }
 
-    fn acknowledged(&self) {
-        self.state.acknowledge();
-    }
-
-    fn context(&self, hub: Arc<BleHub>) -> BeginContext {
-        BeginContext::new(hub, self.state.clone())
+    /// Consumes the guard once the owner owns the reply; no atomic update is needed.
+    fn acknowledge(mut self) {
+        self.armed = false;
     }
 }
 
-impl Drop for BeginOperationGuard {
+impl Drop for BeginHandoffGuard {
     fn drop(&mut self) {
-        if self.state.cancel() {
+        if self.armed && self.handoff.cancel() {
             // Native dispatch may have begun but its ownership has not reached the caller.
             self.lifecycle.fault();
         }
@@ -160,7 +137,7 @@ impl Drop for BeginOperationGuard {
 /// waiter, but does not claim cancellation of a native command already dispatched.
 pub(crate) struct WaiterTicket {
     id: CommandId,
-    pub(crate) receiver: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
+    pub(crate) result_rx: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
     actor: ActorRef<BlengActor>,
     lifecycle: Arc<RuntimeLifecycle>,
     retire_on_drop: bool,
@@ -190,7 +167,7 @@ impl WaiterTicket {
         mut self,
         deadline: Instant,
     ) -> Result<WaiterSuccess, WaiterError> {
-        let mut changed = self.lifecycle.subscribe_phase();
+        let mut phase_rx = self.lifecycle.subscribe_phase();
         let timer = sleep_until(deadline);
         tokio::pin!(timer);
         loop {
@@ -206,7 +183,7 @@ impl WaiterTicket {
             }
             tokio::select! {
                 biased;
-                result = &mut self.receiver => {
+                result = &mut self.result_rx => {
                     self.disarm();
                     return match self.lifecycle.phase() {
                         RuntimePhase::Closed => Err(WaiterError::Closed),
@@ -223,7 +200,7 @@ impl WaiterTicket {
                         _ => Err(WaiterError::Timeout),
                     };
                 }
-                _ = changed.changed() => {
+                _ = phase_rx.changed() => {
                     // Lifecycle transitions are wake-ups; the loop rechecks
                     // RuntimePhase at the top and returns the public error.
                 }
@@ -251,13 +228,13 @@ impl Drop for WaiterTicket {
 pub(crate) struct RuntimeOwner {
     // Runtime ownership keeps the actor executor alive for this BLeng instance.
     runtime: Option<Runtime>,
-    pub(crate) actor: ActorRef<BlengActor>,
+    pub(super) actor: ActorRef<BlengActor>,
     pub(crate) lifecycle: Arc<RuntimeLifecycle>,
     // One bounded FIFO is intentionally single-consumer. Concurrent next_event
     // calls serialize on this guard and divide the stream; they do not broadcast.
-    events: Mutex<mpsc::Receiver<BleEvent>>,
+    event_rx: Mutex<mpsc::Receiver<BleEvent>>,
     shutdown_started: AtomicBool,
-    pub(crate) shutdown_result: watch::Sender<Option<Result<(), CleanupError>>>,
+    pub(crate) shutdown_result_tx: watch::Sender<Option<Result<(), CleanupError>>>,
 }
 
 /// Stop the actor after a lifecycle fault without borrowing `RuntimeOwner`.
@@ -265,11 +242,11 @@ pub(crate) struct RuntimeOwner {
 fn spawn_fault_shutdown(
     handle: &tokio::runtime::Handle,
     actor: ActorRef<BlengActor>,
-    mut phase: watch::Receiver<RuntimePhase>,
+    mut phase_rx: watch::Receiver<RuntimePhase>,
 ) {
     handle.spawn(async move {
         loop {
-            let current_phase = *phase.borrow_and_update();
+            let current_phase = *phase_rx.borrow_and_update();
             match current_phase {
                 RuntimePhase::Faulted => {
                     let _ = actor.stop_gracefully().await;
@@ -279,7 +256,7 @@ fn spawn_fault_shutdown(
                 RuntimePhase::Closed => break,
                 RuntimePhase::Open => {}
             }
-            if phase.changed().await.is_err() {
+            if phase_rx.changed().await.is_err() {
                 break;
             }
         }
@@ -289,13 +266,13 @@ fn spawn_fault_shutdown(
 /// Wait for the one shared shutdown result. It deliberately takes only the
 /// receiver so cancellation of one caller cannot cancel the owner coordinator.
 async fn wait_for_shutdown(
-    mut result: watch::Receiver<Option<Result<(), CleanupError>>>,
+    mut shutdown_result_rx: watch::Receiver<Option<Result<(), CleanupError>>>,
 ) -> Result<(), CleanupError> {
     loop {
-        if let Some(outcome) = result.borrow_and_update().clone() {
+        if let Some(outcome) = shutdown_result_rx.borrow_and_update().clone() {
             return outcome;
         }
-        if result.changed().await.is_err() {
+        if shutdown_result_rx.changed().await.is_err() {
             return Err(CleanupError::WorkerStopped);
         }
     }
@@ -304,22 +281,13 @@ async fn wait_for_shutdown(
 impl RuntimeOwner {
     pub(crate) fn new() -> io::Result<Self> {
         let runtime = Builder::new_multi_thread().enable_time().build()?;
-        let (sender, events) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let (shutdown_result, _) = watch::channel(None);
+        let (event_tx, event_rx) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
+        let (shutdown_result_tx, _) = watch::channel(None);
         let lifecycle = Arc::new(RuntimeLifecycle::new());
         let actor = {
             let _runtime_guard = runtime.enter();
             BlengActor::spawn_with_mailbox(
-                BlengActor {
-                    events: sender,
-                    lifecycle: Arc::clone(&lifecycle),
-                    waiters: WaiterRegistry::new(),
-                    next_id: 1,
-                    initialized: false,
-                    init: None,
-                    scan: None,
-                    connections: HashMap::new(),
-                },
+                BlengActor::new(event_tx, Arc::clone(&lifecycle)),
                 mailbox::bounded(ACTOR_MAILBOX_CAPACITY),
             )
         };
@@ -332,14 +300,14 @@ impl RuntimeOwner {
             runtime: Some(runtime),
             actor,
             lifecycle,
-            events: Mutex::new(events),
+            event_rx: Mutex::new(event_rx),
             shutdown_started: AtomicBool::new(false),
-            shutdown_result,
+            shutdown_result_tx,
         })
     }
 
     pub(crate) async fn close(&self) -> Result<(), CleanupError> {
-        let result = self.shutdown_result.subscribe();
+        let shutdown_result_rx = self.shutdown_result_tx.subscribe();
         self.lifecycle.close();
         self.lifecycle.start_cleanup();
         if !self.shutdown_started.swap(true, Ordering::AcqRel) {
@@ -347,7 +315,7 @@ impl RuntimeOwner {
         }
         // Every caller awaits the same outcome; no caller owns the shutdown
         // future, and a later close can still observe cleanup errors.
-        wait_for_shutdown(result).await
+        wait_for_shutdown(shutdown_result_rx).await
     }
 
     /// Spawn exactly one owner-held coordinator. It is deliberately detached
@@ -356,7 +324,7 @@ impl RuntimeOwner {
     fn spawn_shutdown_coordinator(&self) {
         let actor = self.actor.clone();
         let lifecycle = Arc::clone(&self.lifecycle);
-        let completed = self.shutdown_result.clone();
+        let shutdown_result_tx = self.shutdown_result_tx.clone();
         let handle = self
             .runtime
             .as_ref()
@@ -367,7 +335,7 @@ impl RuntimeOwner {
             let _ = actor.stop_gracefully().await;
             actor.wait_for_shutdown().await;
             let cleanup_result = lifecycle.wait_for_cleanup().await;
-            completed.send_replace(Some(cleanup_result));
+            shutdown_result_tx.send_replace(Some(cleanup_result));
         });
     }
 
@@ -377,21 +345,15 @@ impl RuntimeOwner {
         request: F,
     ) -> Result<(T, Instant), WaiterError>
     where
-        F: FnOnce(ActorRef<BlengActor>, BeginContext) -> Fut,
+        F: FnOnce(ActorRef<BlengActor>, BeginHandoff) -> Fut,
         Fut: Future<Output = Result<T, SendError<M, WaiterError>>>,
     {
-        match self.lifecycle.phase() {
-            RuntimePhase::Closed => return Err(WaiterError::Closed),
-            RuntimePhase::Faulted => return Err(WaiterError::TransportFault),
-            _ => {}
-        }
-        let hub = self
-            .lifecycle
-            .hub_for_dispatch()
-            .ok_or(WaiterError::BackendNotAssembled)?;
+        // Use the same dispatch gate as the actor, but retain no Hub across
+        // mailbox waiting. The actor reacquires the root before handoff.
+        drop(self.lifecycle.hub_for_dispatch()?);
         let deadline = Instant::now() + timeout;
-        let guard = BeginOperationGuard::new(Arc::clone(&self.lifecycle));
-        let request = request(self.actor.clone(), guard.context(hub));
+        let guard = BeginHandoffGuard::new(Arc::clone(&self.lifecycle));
+        let request = request(self.actor.clone(), guard.handoff.clone());
         let reply = match timeout_at(deadline, request).await {
             Ok(Ok(result)) => result,
             Ok(Err(SendError::HandlerError(error))) => return Err(error),
@@ -411,18 +373,18 @@ impl RuntimeOwner {
                 });
             }
         };
-        guard.acknowledged();
+        guard.acknowledge();
         Ok((reply, deadline))
     }
 
     pub(crate) fn ticket(
         &self,
         id: CommandId,
-        receiver: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
+        result_rx: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
     ) -> WaiterTicket {
         WaiterTicket {
             id,
-            receiver,
+            result_rx,
             actor: self.actor.clone(),
             lifecycle: Arc::clone(&self.lifecycle),
             retire_on_drop: true,
@@ -432,11 +394,11 @@ impl RuntimeOwner {
     pub(super) async fn wait_for_success<T>(
         &self,
         id: CommandId,
-        receiver: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
+        result_rx: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
         deadline: Instant,
         accept: impl FnOnce(WaiterSuccess) -> Option<T>,
     ) -> Result<T, WaiterError> {
-        let success = self.ticket(id, receiver).wait_until(deadline).await?;
+        let success = self.ticket(id, result_rx).wait_until(deadline).await?;
         accept(success).ok_or_else(|| {
             self.lifecycle.fault();
             WaiterError::TransportFault
@@ -447,12 +409,12 @@ impl RuntimeOwner {
         &self,
         deadline: Duration,
     ) -> Result<AdapterSnapshot, WaiterError> {
-        let ((id, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
-                actor.ask(BeginInitialize { context }).await
+        let ((id, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
+                actor.ask(BeginInitialize { handoff }).await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::Initialized(snapshot) => Some(snapshot),
             _ => None,
         })
@@ -464,12 +426,12 @@ impl RuntimeOwner {
         options: ScanOptions,
         deadline: Duration,
     ) -> Result<ScanSessionId, WaiterError> {
-        let ((id, session, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
-                actor.ask(BeginScan { context, options }).await
+        let ((id, session, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
+                actor.ask(BeginScan { handoff, options }).await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::ScanStarted(scan) if scan == session => Some(scan),
             _ => None,
         })
@@ -481,17 +443,17 @@ impl RuntimeOwner {
         peripheral_id: PeripheralId,
         deadline: Duration,
     ) -> Result<ConnectionId, WaiterError> {
-        let ((id, connection, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
+        let ((id, connection, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginConnect {
-                        context,
+                        handoff,
                         peripheral_id,
                     })
                     .await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::Connected(found) if found == connection => Some(found),
             _ => None,
         })
@@ -503,17 +465,17 @@ impl RuntimeOwner {
         connection: ConnectionId,
         deadline: Duration,
     ) -> Result<(), WaiterError> {
-        let ((id, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
+        let ((id, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginDisconnect {
-                        context,
+                        handoff,
                         connection,
                     })
                     .await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::Disconnected(found) if found == connection => Some(()),
             _ => None,
         })
@@ -525,17 +487,17 @@ impl RuntimeOwner {
         connection: ConnectionId,
         deadline: Duration,
     ) -> Result<GattDatabase, WaiterError> {
-        let ((id, session, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
+        let ((id, session, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginDiscoverGatt {
-                        context,
+                        handoff,
                         connection,
                     })
                     .await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::GattDiscovered(database)
                 if database.connection_id == connection && database.gatt_session_id == session =>
             {
@@ -551,17 +513,17 @@ impl RuntimeOwner {
         connection: ConnectionId,
         deadline: Duration,
     ) -> Result<i16, WaiterError> {
-        let ((id, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
+        let ((id, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginRssi {
-                        context,
+                        handoff,
                         connection,
                     })
                     .await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::RssiRead(found_connection, value) if found_connection == connection => {
                 Some(value)
             }
@@ -577,11 +539,11 @@ impl RuntimeOwner {
         characteristic: GattCharacteristicId,
         deadline: Duration,
     ) -> Result<Vec<u8>, WaiterError> {
-        let ((id, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
+        let ((id, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginRead {
-                        context,
+                        handoff,
                         connection,
                         session,
                         characteristic,
@@ -589,7 +551,7 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::CharacteristicRead {
                 connection_id,
                 gatt_session_id,
@@ -615,11 +577,11 @@ impl RuntimeOwner {
         write_type: WriteType,
         deadline: Duration,
     ) -> Result<(), WaiterError> {
-        let ((id, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
+        let ((id, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginWrite {
-                        context,
+                        handoff,
                         connection,
                         session,
                         characteristic,
@@ -629,7 +591,7 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::CharacteristicWritten(
                 found_connection,
                 found_session,
@@ -650,12 +612,12 @@ impl RuntimeOwner {
         session: ScanSessionId,
         deadline: Duration,
     ) -> Result<(), WaiterError> {
-        let ((id, receiver), deadline) = self
-            .begin_operation(deadline, move |actor, context| async move {
-                actor.ask(BeginStop { context, session }).await
+        let ((id, result_rx), deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
+                actor.ask(BeginStop { handoff, session }).await
             })
             .await?;
-        self.wait_for_success(id, receiver, deadline, |success| match success {
+        self.wait_for_success(id, result_rx, deadline, |success| match success {
             WaiterSuccess::ScanStopped(stopped) if stopped == session => Some(()),
             _ => None,
         })
@@ -692,8 +654,8 @@ impl RuntimeOwner {
         timeout: Duration,
     ) -> Result<Option<BleEvent>, EventReadError> {
         tokio::time::timeout(timeout, async {
-            let mut events = self.events.lock().await;
-            let mut changed = self.lifecycle.subscribe_phase();
+            let mut event_rx = self.event_rx.lock().await;
+            let mut phase_rx = self.lifecycle.subscribe_phase();
             loop {
                 match self.lifecycle.phase() {
                     RuntimePhase::Faulted => return Err(EventReadError::Fault),
@@ -701,7 +663,7 @@ impl RuntimeOwner {
                     RuntimePhase::Open => {}
                 }
                 tokio::select! {
-                    event = events.recv() => {
+                    event = event_rx.recv() => {
                         match self.lifecycle.phase() {
                             RuntimePhase::Faulted => return Err(EventReadError::Fault),
                             RuntimePhase::Closed => return Ok(None),
@@ -709,7 +671,7 @@ impl RuntimeOwner {
                         }
                         return Ok(event);
                     }
-                    _ = changed.changed() => {}
+                    _ = phase_rx.changed() => {}
                 }
             }
         })

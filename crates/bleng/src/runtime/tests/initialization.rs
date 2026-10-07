@@ -1,4 +1,67 @@
-use super::support::*;
+use super::support::{
+    AdapterSnapshot, AdapterState, Arc, AuthorizationState, BleErrorCategory, BleEvent,
+    BleEventError, BleHub, CommandDispatchError, CommandId, Duration, EventIngressStatus,
+    EventScenario, FakeBackend, PeripheralId, RecordedCommand, RuntimeOwner, ScanOptions,
+    ScanSessionId, StartScanCommand, WaiterError, command_completed, connect_scenario,
+    init_command, init_snapshot, init_snapshot_event,
+};
+
+#[test]
+fn late_initialize_success_enables_operations_and_ignores_duplicate_evidence() {
+    let owner = RuntimeOwner::new().unwrap();
+    let (backend, handle) = FakeBackend::scripted([
+        EventScenario::accept(init_command(1)),
+        connect_scenario(2, 1, 10),
+    ]);
+    owner
+        .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+        .unwrap();
+    let host = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    host.block_on(async {
+        assert_eq!(
+            owner.initialize(Duration::from_millis(20)).await,
+            Err(WaiterError::Timeout)
+        );
+        assert_eq!(
+            owner.connect(10.into(), Duration::from_secs(2)).await,
+            Err(WaiterError::NotInitialized)
+        );
+        let events = [
+            init_snapshot_event(Some(1)),
+            command_completed(1, None),
+            command_completed(
+                1,
+                Some(BleEventError {
+                    category: BleErrorCategory::Internal,
+                    message: "duplicate terminal must not replace success".to_owned(),
+                    platform_details: None,
+                }),
+            ),
+            init_snapshot_event(Some(1)),
+        ];
+        for event in events {
+            assert_eq!(handle.emit(event.clone()), EventIngressStatus::Delivered);
+            assert_eq!(
+                owner.next_event(Duration::from_secs(2)).await,
+                Ok(Some(event))
+            );
+        }
+        assert_eq!(
+            owner.connect(10.into(), Duration::from_secs(2)).await,
+            Ok(1.into())
+        );
+        assert_eq!(
+            owner.initialize(Duration::from_secs(2)).await,
+            Err(WaiterError::OperationBusy)
+        );
+        owner.close().await.unwrap();
+    });
+    assert_eq!(handle.commands().len(), 2);
+    assert_eq!(handle.dispose_count(), 1);
+}
 
 #[test]
 fn initialize_requires_correlated_snapshot_and_terminal_in_either_order() {
@@ -359,7 +422,7 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
     let options = ScanOptions::default();
     let scan_command = RecordedCommand::StartScan(StartScanCommand {
         command_id: CommandId { value: 2 },
-        scan_session_id: ScanSessionId { value: 3 },
+        scan_session_id: ScanSessionId { value: 1 },
         options: options.clone(),
     });
     let (backend, handle) = FakeBackend::scripted([
@@ -372,7 +435,7 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
             vec![
                 BleEvent::ScanStarted {
                     command_id: CommandId { value: 2 },
-                    scan_id: ScanSessionId { value: 3 },
+                    scan_id: ScanSessionId { value: 1 },
                 },
                 command_completed(2, None),
             ],
@@ -428,7 +491,7 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
         assert_eq!(initialize.await, Ok(init_snapshot()));
         assert_eq!(
             owner.start_scan(options, Duration::from_secs(2)).await,
-            Ok(ScanSessionId { value: 3 })
+            Ok(ScanSessionId { value: 1 })
         );
         assert_eq!(handle.commands(), vec![init_command(1), scan_command]);
         owner.close().await.unwrap();

@@ -30,15 +30,16 @@ pub enum BlengNotReadyReason {
 
 /// Identifies the BLeng-owned state that currently prevents admission.
 ///
-/// Busy is distinct from not-ready: the required resource exists, but another
-/// operation currently owns the serialized slot and must reach a terminal state.
+/// Busy is distinct from not-ready: the required resource exists, but conflicting
+/// ownership must finish or be explicitly released before admission can succeed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum BlengBusyReason {
     /// A scan session is already active, or its start/stop transition is pending.
     Scan,
     /// The peripheral already has a pending or active connection in this BLeng instance.
     Peripheral,
-    /// GATT discovery or rediscovery is already running for the connection.
+    /// Discovery conflicts with pending connection/GATT work or an active subscription.
+    /// Complete pending operations and disable subscriptions before rediscovering.
     Gatt,
     /// A conflicting per-connection operation is in flight, such as read, write, RSSI,
     /// disconnect, or a notification transition.
