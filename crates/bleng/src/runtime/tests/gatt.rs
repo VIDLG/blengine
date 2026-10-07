@@ -8,7 +8,7 @@ use super::support::{
     notification_enabled_scenario, oneshot, read_command, read_database, read_discovery,
     read_value,
 };
-use crate::runtime::{BeginHandoff, BlengActor, RuntimePhase};
+use crate::runtime::{BlengActor, RuntimePhase, owner::BeginHandoff};
 use kameo::prelude::{Context, Message};
 
 struct BeginInitializeWithBlockedReservation {

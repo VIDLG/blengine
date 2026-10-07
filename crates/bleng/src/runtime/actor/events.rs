@@ -16,7 +16,13 @@ use crate::{
     waiter::WaiterError,
 };
 
-use super::{BlengActor, DispatchResolved};
+use super::BlengActor;
+
+/// Native dispatch acknowledgement delivered back through the actor mailbox.
+pub(super) struct DispatchResolved {
+    pub(super) id: CommandId,
+    pub(super) result: Result<(), CommandDispatchError>,
+}
 
 impl BlengActor {
     fn reconciliation_fault(&self, fault: ReconcileFault) {

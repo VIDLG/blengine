@@ -173,7 +173,7 @@ RF tests do not deliberately create these startup faults on hardware.
 - [Provider coordination](../../../tests/peripherals/nrf52840/direct_fixture.py)
 - [Apple passive terminal mapping](../../../platforms/apple/Sources/BleHubApple/AppleBleBackend.swift)
 - [BLeng connection retirement](../../../crates/bleng/src/runtime/actor/events.rs)
-- [BLeng subscription admission](../../../crates/bleng/src/runtime/subscriptions.rs)
+- [BLeng subscription admission](../../../crates/bleng/src/runtime/commands.rs)
 
 ## Final software validation
 

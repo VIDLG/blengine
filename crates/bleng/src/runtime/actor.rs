@@ -105,13 +105,16 @@ use crate::waiter::{
 };
 
 use super::{
-    BeginHandoff, RuntimeLifecycle, RuntimePhase,
+    RuntimeLifecycle, RuntimePhase,
+    owner::BeginHandoff,
     reservations::{ConnectionReservations, InitializationState, ScanState},
 };
 
 // Event reconciliation is part of the actor implementation, not a consumer of
 // its state. Keep it inside the actor's privacy boundary without mutable getters.
 mod events;
+
+use events::DispatchResolved;
 
 // Keep the runtime regression suite in runtime/tests while compiling white-box
 // checks inside the actor boundary, without widening production visibility.
@@ -120,12 +123,6 @@ mod events;
 mod tests;
 
 pub(super) type WaiterReceiver = oneshot::Receiver<Result<WaiterSuccess, WaiterError>>;
-
-/// Native dispatch acknowledgement delivered back through the actor mailbox.
-pub(super) struct DispatchResolved {
-    pub(super) id: CommandId,
-    pub(super) result: Result<(), CommandDispatchError>,
-}
 
 /// Actor-local, nonzero IDs. Exhaustion never wraps or reuses a value.
 /// Allocation is not rolled back when subsequent admission or dispatch fails.

@@ -271,6 +271,7 @@ record-field visibility.
 | Owner / source | Responsibility |
 |---|---|
 | [`owner.rs`](../../crates/bleng/src/runtime/owner.rs): `RuntimeOwner` | Owns the executor, `ActorRef`, outward `event_rx`, caller deadline/waiting policy, and shutdown coordination. It does not interpret BLE reservation evidence. |
+| [`commands.rs`](../../crates/bleng/src/runtime/commands.rs) | Defines every `Begin*` request, named reply, and actor-side admission handler, including notification enable/disable. Caller deadlines and waiting remain in owner.rs. |
 | [`actor.rs`](../../crates/bleng/src/runtime/actor.rs): `BlengActor` | Owns serialized BLE orchestration, `WaiterRegistry`, waiter delivery, `event_tx`, and reservation storage. The actor root retains `Drop` and register/reserve methods, not a prelaunch rollback guard. |
 | [`reservations/mod.rs`](../../crates/bleng/src/runtime/reservations/mod.rs) | Documents ownership and exposes the runtime-facing state facade. No command-index map. |
 | [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | Shared dispatch evidence, bounded pre-ack buffering, and transient reconciliation outcomes. |
@@ -292,10 +293,12 @@ localize connection retirement; `take_discovery()` and
 `take_subscription_transition()` localize GATT/subscription rejection and
 removal without discarding previously committed state. These are dispatch
 rejection/failure handling and evidence retirement, not prelaunch rollback.
-Ingress and command handling remain integrated through
-[`actor/events.rs`](../../crates/bleng/src/runtime/actor/events.rs),
-[`commands.rs`](../../crates/bleng/src/runtime/commands.rs), and
-[`subscriptions.rs`](../../crates/bleng/src/runtime/subscriptions.rs).
+Ingress/dispatch-result coordination and command admission remain integrated
+through [`actor/events.rs`](../../crates/bleng/src/runtime/actor/events.rs) and
+[`commands.rs`](../../crates/bleng/src/runtime/commands.rs), respectively.
+Notification requests follow the same split as other commands: actor-side
+handlers live in commands.rs, caller-facing operations in owner.rs, and
+subscription state in reservations/subscription.rs.
 `WaiterRegistry` remains the caller command ledger; callback correlation uses the
 existing reservation hierarchy, not an additional `CommandId` index.
 
@@ -329,6 +332,51 @@ the enable result reads it from transition evidence before that evidence retires
 The remaining independent domain facts are not collapsed into one status enum.
 In particular, a draft database does not imply successful discovery until
 accepted dispatch and a successful terminal are also accounted for.
+
+### Begin requests and named replies
+
+`Begin` names the admission/handoff stage of a command, not the start of every
+BLE resource and not operation completion. `BeginStop` begins a stop command;
+`BeginDisconnect` begins a disconnect command. Actor validation, handoff,
+reservation installation, and native-dispatch submission precede the reply.
+Backend acceptance is reported separately by `DispatchResolved`; BLE completion
+still requires reservation evidence and waiter settlement.
+
+[`commands.rs`](../../crates/bleng/src/runtime/commands.rs) defines one runtime-only
+`BeginReply<Resource = ()>` with named `command_id`, `result_rx`, and `resource`
+fields. Scan, connection, discovery, and notification-enable replies carry their
+new typed resource IDs; commands creating no resource use `()`, not an `Option`
+or a resource-ID enum. All command handlers share this type, replacing the
+four tuple aliases and subscription-specific tuples. Owner methods use named
+reply fields and preserve the existing resource/result identity checks.
+
+`WaiterExpectation` remains separate: it describes the result being awaited and
+connection invalidation policy, not ownership of a result receiver. `BeginReply`
+is transient handoff metadata, not another mutable operation state or a guard.
+The generic representation adds no allocation or synchronization and does not
+change the public ABI, dispatch ordering, deadlines, or cancellation behavior.
+
+### Command boundaries and admission order
+
+Command messages are runtime-private (`pub(super)`) and imported directly by
+owner.rs rather than re-exported through the runtime root. `DispatchResolved`
+is defined beside its handler in actor/events.rs and exposed only to the actor
+parent; it reports a dispatch outcome, not a new admission request.
+
+Handlers validate lifecycle/readiness and operation-specific conditions before
+allocating resource IDs and registering a waiter. Actor-owned `launch_dispatch`
+then acquires a dispatchable Hub, claims the handoff, installs the reservation,
+and submits native dispatch. There is no await or normal-error branch between
+installation and submission. Validation cannot install native reservations;
+pre-handoff cancellation retires only the waiter. Issued ID gaps are allowed,
+not rolled back or reused.
+
+Handlers are grouped by initialization, scan start/stop, connection, GATT, I/O,
+subscriptions, and waiter retirement, with explicit command/resource/peripheral
+ID names. Their validation, expectation, reservation, and native command remain
+visible together; no generic command trait or handler-generating macro hides
+that correspondence. Dispatch coordination remains inside the actor privacy
+boundary rather than exposing its fields to commands.rs.
 
 ### Cancellation before mutation and evidence lifetime
 

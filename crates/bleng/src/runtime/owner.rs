@@ -16,7 +16,8 @@ use crate::{
 };
 use blehub::{
     AdapterSnapshot, BleBackend, BleEvent, CommandId, ConnectionId, GattCharacteristicId,
-    GattDatabase, GattSessionId, PeripheralId, ScanOptions, ScanSessionId, WriteType,
+    GattDatabase, GattSessionId, NotificationMode, NotificationModeRequest, PeripheralId,
+    ScanOptions, ScanSessionId, SubscriptionId, WriteType,
 };
 use kameo::actor::Spawn;
 use kameo::prelude::ActorRef;
@@ -28,9 +29,12 @@ use tokio::{
 };
 
 use super::{
-    AssemblyError, BackendPort, BeginConnect, BeginDisconnect, BeginDiscoverGatt, BeginInitialize,
-    BeginRead, BeginRssi, BeginScan, BeginStop, BeginWrite, BlengActor, RetireWaiter,
-    RuntimeLifecycle, RuntimePhase,
+    AssemblyError, BackendPort, BlengActor, RuntimeLifecycle, RuntimePhase,
+    commands::{
+        BeginConnect, BeginDisableNotifications, BeginDisconnect, BeginDiscoverGatt,
+        BeginEnableNotifications, BeginInitialize, BeginRead, BeginRssi, BeginScan, BeginStop,
+        BeginWrite, RetireWaiter,
+    },
 };
 
 /// Bounded mailbox for commands, ingress events, and lifecycle messages.
@@ -391,7 +395,7 @@ impl RuntimeOwner {
         }
     }
 
-    pub(super) async fn wait_for_success<T>(
+    async fn wait_for_success<T>(
         &self,
         id: CommandId,
         result_rx: oneshot::Receiver<Result<WaiterSuccess, WaiterError>>,
@@ -409,15 +413,20 @@ impl RuntimeOwner {
         &self,
         deadline: Duration,
     ) -> Result<AdapterSnapshot, WaiterError> {
-        let ((id, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor.ask(BeginInitialize { handoff }).await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::Initialized(snapshot) => Some(snapshot),
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::Initialized(snapshot) => Some(snapshot),
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -426,15 +435,20 @@ impl RuntimeOwner {
         options: ScanOptions,
         deadline: Duration,
     ) -> Result<ScanSessionId, WaiterError> {
-        let ((id, session, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor.ask(BeginScan { handoff, options }).await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::ScanStarted(scan) if scan == session => Some(scan),
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::ScanStarted(scan) if scan == reply.resource => Some(scan),
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -443,7 +457,7 @@ impl RuntimeOwner {
         peripheral_id: PeripheralId,
         deadline: Duration,
     ) -> Result<ConnectionId, WaiterError> {
-        let ((id, connection, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginConnect {
@@ -453,10 +467,15 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::Connected(found) if found == connection => Some(found),
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::Connected(found) if found == reply.resource => Some(found),
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -465,7 +484,7 @@ impl RuntimeOwner {
         connection: ConnectionId,
         deadline: Duration,
     ) -> Result<(), WaiterError> {
-        let ((id, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginDisconnect {
@@ -475,10 +494,15 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::Disconnected(found) if found == connection => Some(()),
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::Disconnected(found) if found == connection => Some(()),
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -487,7 +511,7 @@ impl RuntimeOwner {
         connection: ConnectionId,
         deadline: Duration,
     ) -> Result<GattDatabase, WaiterError> {
-        let ((id, session, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginDiscoverGatt {
@@ -497,14 +521,20 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::GattDiscovered(database)
-                if database.connection_id == connection && database.gatt_session_id == session =>
-            {
-                Some(database)
-            }
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::GattDiscovered(database)
+                    if database.connection_id == connection
+                        && database.gatt_session_id == reply.resource =>
+                {
+                    Some(database)
+                }
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -513,7 +543,7 @@ impl RuntimeOwner {
         connection: ConnectionId,
         deadline: Duration,
     ) -> Result<i16, WaiterError> {
-        let ((id, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginRssi {
@@ -523,12 +553,19 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::RssiRead(found_connection, value) if found_connection == connection => {
-                Some(value)
-            }
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::RssiRead(found_connection, value)
+                    if found_connection == connection =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -539,7 +576,7 @@ impl RuntimeOwner {
         characteristic: GattCharacteristicId,
         deadline: Duration,
     ) -> Result<Vec<u8>, WaiterError> {
-        let ((id, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginRead {
@@ -551,20 +588,25 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::CharacteristicRead {
-                connection_id,
-                gatt_session_id,
-                characteristic_id,
-                value,
-            } if connection_id == connection
-                && gatt_session_id == session
-                && characteristic_id == characteristic =>
-            {
-                Some(value)
-            }
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::CharacteristicRead {
+                    connection_id,
+                    gatt_session_id,
+                    characteristic_id,
+                    value,
+                } if connection_id == connection
+                    && gatt_session_id == session
+                    && characteristic_id == characteristic =>
+                {
+                    Some(value)
+                }
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -577,7 +619,7 @@ impl RuntimeOwner {
         write_type: WriteType,
         deadline: Duration,
     ) -> Result<(), WaiterError> {
-        let ((id, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor
                     .ask(BeginWrite {
@@ -591,19 +633,24 @@ impl RuntimeOwner {
                     .await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::CharacteristicWritten(
-                found_connection,
-                found_session,
-                found_characteristic,
-            ) if found_connection == connection
-                && found_session == session
-                && found_characteristic == characteristic =>
-            {
-                Some(())
-            }
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::CharacteristicWritten(
+                    found_connection,
+                    found_session,
+                    found_characteristic,
+                ) if found_connection == connection
+                    && found_session == session
+                    && found_characteristic == characteristic =>
+                {
+                    Some(())
+                }
+                _ => None,
+            },
+        )
         .await
     }
 
@@ -612,15 +659,106 @@ impl RuntimeOwner {
         session: ScanSessionId,
         deadline: Duration,
     ) -> Result<(), WaiterError> {
-        let ((id, result_rx), deadline) = self
+        let (reply, deadline) = self
             .begin_operation(deadline, move |actor, handoff| async move {
                 actor.ask(BeginStop { handoff, session }).await
             })
             .await?;
-        self.wait_for_success(id, result_rx, deadline, |success| match success {
-            WaiterSuccess::ScanStopped(stopped) if stopped == session => Some(()),
-            _ => None,
-        })
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::ScanStopped(stopped) if stopped == session => Some(()),
+                _ => None,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn enable_notifications(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        mode: NotificationModeRequest,
+        deadline: Duration,
+    ) -> Result<(SubscriptionId, Option<NotificationMode>), WaiterError> {
+        let (reply, deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
+                actor
+                    .ask(BeginEnableNotifications {
+                        handoff,
+                        connection,
+                        session,
+                        characteristic,
+                        mode,
+                    })
+                    .await
+            })
+            .await?;
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::NotificationsEnabled {
+                    connection_id,
+                    gatt_session_id,
+                    subscription_id,
+                    characteristic_id,
+                    actual_mode,
+                } if connection_id == connection
+                    && gatt_session_id == session
+                    && subscription_id == reply.resource
+                    && characteristic_id == characteristic =>
+                {
+                    Some((reply.resource, actual_mode))
+                }
+                _ => None,
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn disable_notifications(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        subscription: SubscriptionId,
+        deadline: Duration,
+    ) -> Result<(), WaiterError> {
+        let (reply, deadline) = self
+            .begin_operation(deadline, move |actor, handoff| async move {
+                actor
+                    .ask(BeginDisableNotifications {
+                        handoff,
+                        connection,
+                        session,
+                        subscription,
+                    })
+                    .await
+            })
+            .await?;
+        self.wait_for_success(
+            reply.command_id,
+            reply.result_rx,
+            deadline,
+            |success| match success {
+                WaiterSuccess::NotificationsDisabled(
+                    found_connection,
+                    found_session,
+                    found_subscription,
+                    _,
+                ) if found_connection == connection
+                    && found_session == session
+                    && found_subscription == subscription =>
+                {
+                    Some(())
+                }
+                _ => None,
+            },
+        )
         .await
     }
 

@@ -21,21 +21,13 @@
 mod actor;
 mod backend_port;
 mod commands;
-
 mod lifecycle;
 mod owner;
 mod reservations;
-mod subscriptions;
 
-use actor::{BlengActor, WaiterReceiver};
+use actor::BlengActor;
 pub(super) use backend_port::{AssemblyError, BackendPort, IngressEvent};
-pub(super) use commands::{
-    BeginConnect, BeginDisconnect, BeginDiscoverGatt, BeginInitialize, BeginRead, BeginRssi,
-    BeginScan, BeginStop, BeginWrite, RetireWaiter,
-};
-
 pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
-use owner::BeginHandoff;
 #[cfg(test)]
 pub(super) use owner::WaiterTicket;
 pub(super) use owner::{EventReadError, RuntimeOwner};

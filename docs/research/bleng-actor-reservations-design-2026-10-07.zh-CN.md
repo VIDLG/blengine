@@ -45,11 +45,12 @@ runtime/
     io.rs
     subscription.rs
   commands.rs
-  subscriptions.rs
 ```
 
 | 源码 | 职责 |
 |---|---|
+| [`commands.rs`](../../crates/bleng/src/runtime/commands.rs) | 所有 `Begin*` 消息、具名交接结果与 actor 侧命令准入，包括订阅 enable/disable；不负责调用方 deadline 或等待。 |
+| [`owner.rs`](../../crates/bleng/src/runtime/owner.rs) | 所有调用方操作入口，包括订阅 API；管理请求交接、deadline 与结果等待。 |
 | [`actor.rs`](../../crates/bleng/src/runtime/actor.rs) | 保留 `BlengActor`、`Drop`、register/reserve 方法；协调跨 reservation 的动作和 waiter 结算，不再持有 prelaunch rollback guard。 |
 | [`reservations/mod.rs`](../../crates/bleng/src/runtime/reservations/mod.rs) | 记录状态层边界，只重导出 runtime 实际使用的状态入口和协调结果。 |
 | [`dispatch.rs`](../../crates/bleng/src/runtime/reservations/dispatch.rs) | 共享 dispatch 证据、pre-ack 缓冲边界，以及一次性 reconciliation 结果和错误。 |
@@ -67,7 +68,7 @@ runtime/
 
 初始化与扫描 enum 的 payload 类型必须与 enum 的声明可见性匹配，但不单独重导出，字段与局部方法也不开放。`pending()`、`reserved()`、`reserved_mut()`、`find()`、`find_mut()` 等原始记录查询均为内部实现。actor 断连结算通过 `ConnectionReservations::accepted_command_ids(connection_id)` 取得所需 command ID，不再取得整个连接记录。测试通过 dispatch resolution、相关事件、结果与 admission 判断验证行为，不为了检查内部字段放宽可见性。
 
-reservation 是 commands 与 events 共用的 actor-confined 状态模型，不只是被动字段容器：它拥有局部 admission、回调关联、证据记录、dispatch reconciliation、结果判断与退休规则。reservation 是 actor 内的普通值，不单独调度。[`commands.rs`](../../crates/bleng/src/runtime/commands.rs)、[`actor/events.rs`](../../crates/bleng/src/runtime/actor/events.rs) 和 [`subscriptions.rs`](../../crates/bleng/src/runtime/subscriptions.rs) 仍负责消息与 ingress 集成；局部状态判断靠近其所有者。
+reservation 是 commands 与 events 共用的 actor-confined 状态模型，不只是被动字段容器：它拥有局部 admission、回调关联、证据记录、dispatch reconciliation、结果判断与退休规则。reservation 是 actor 内的普通值，不单独调度。[`commands.rs`](../../crates/bleng/src/runtime/commands.rs) 与 [`actor/events.rs`](../../crates/bleng/src/runtime/actor/events.rs) 分别负责命令准入和派发结果/ingress 集成；局部状态判断靠近其所有者。
 
 ## 命令 ID 与资源 ID 的独立分配
 
@@ -223,6 +224,22 @@ Idle
 scan retirement 不再接收原始 event 参数，只根据已关联的 reservation 证据（包括 `stop.stop_error`）决定回收。无关 scan 的 `ScanStopped::Err` 不能回收当前 scan 或丢弃其 pending stop 关联。
 
 scan 已停止也不代表 start 已完整记账：若 start 的 domain/terminal 证据不完整，必须保留 reservation，等证据足以结算 start waiter 后再回收。两种事件顺序、dispatch ack 前缓冲与晚到回调均遵循先结算、后回收。
+
+## Begin 命令与具名交接结果
+
+`Begin` 表示一次命令的 admission/交接阶段，不代表所有 BLE 资源都要「启动」，也不代表操作已完成。`BeginStop` 是开始处理 stop 命令，`BeginDisconnect` 是开始处理 disconnect 命令。actor 完成验证、交接、reservation 安装和原生派发任务提交后回复；backend 是否接受命令由 `DispatchResolved` 另行报告，BLE 完成仍依赖证据与 waiter 结算。
+
+[`commands.rs`](../../crates/bleng/src/runtime/commands.rs) 统一定义 runtime 内部的 `BeginReply<Resource = ()>`，具名字段为 `command_id`、`result_rx` 和 `resource`。scan、connection、GATT discovery 和 notification enable 携带新分配的 typed resource ID；不新建资源的命令使用 `()`，无需 `Option` 或资源 ID enum。所有命令共用该结构，替代原四种 tuple 别名与订阅 tuple。owner 使用具名字段，保留原有结果与资源 ID 的对应检查。
+
+`WaiterExpectation` 保持独立：它描述等待结果与 connection invalidation 规则，不负责接收端所有权。`BeginReply` 是一次性交接数据，不是新的可变操作状态或 guard；泛型表示不增加分配或同步，不改变公共 ABI、派发顺序、deadline 或取消行为。
+
+### 命令模块边界与准入顺序
+
+订阅命令不再单独跨层组织：`BeginEnableNotifications`、`BeginDisableNotifications` 及 handler 归入 `commands.rs`，调用方订阅 API 归入 `owner.rs`，订阅状态仍归 `reservations/subscription.rs`。`DispatchResolved` 定义与处理放在 `actor/events.rs`，只向 actor 父模块开放；它是派发结果，不是新的准入请求。命令消息只使用 runtime 内部的 `pub(super)`，owner 直接从 commands 导入，不经 runtime 根重导出。
+
+所有 handler 保持同一顺序：检查 lifecycle/初始化与具体操作条件，分配所需资源 ID，注册 waiter，再调用 actor 的 `launch_dispatch()`。最后一步先取得可派发 Hub，再竞争 handoff，成功后同步安装 reservation 并提交后台派发；两者之间没有 await 或正常错误分支。验证失败不安装 reservation，预交接取消只退休 waiter，ID 跳号允许但不回滚重用。`launch_dispatch()` 保留在 actor 的私有状态边界，避免为源码整理重新开放字段。
+
+handler 按初始化、扫描 start/stop、连接、GATT、I/O、订阅和 waiter 退休顺序排列。局部变量明确区分 `command_id`、新建的 `session_id` 与连接集合的 `peripheral_id`。不新增通用 command trait、handler 生成宏或 callback 套层来隐藏验证/expectation/reservation/派发之间的对应关系；这些显式步骤是有意保留的可读性边界，不是新的状态机。
 
 ## 先判取消，再修改 reservation
 
