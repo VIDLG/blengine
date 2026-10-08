@@ -41,6 +41,16 @@ fn late_initialize_success_enables_operations_and_ignores_duplicate_evidence() {
                 }),
             ),
             init_snapshot_event(Some(1)),
+            // Later adapter observations remain public without undoing readiness.
+            BleEvent::AdapterSnapshotChanged {
+                command_id: None,
+                snapshot: AdapterSnapshot {
+                    state: AdapterState::PoweredOff,
+                    scan_authorization: AuthorizationState::Denied,
+                    connection_authorization: AuthorizationState::Denied,
+                    name: None,
+                },
+            },
         ];
         for event in events {
             assert_eq!(handle.emit(event.clone()), EventIngressStatus::Delivered);

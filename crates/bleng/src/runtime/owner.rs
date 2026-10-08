@@ -368,10 +368,11 @@ impl RuntimeOwner {
             .ticket(reply.command_id, reply.result_rx)
             .wait_until(deadline)
             .await?;
-        M::decode_success(correlation, reply.resource, success).ok_or_else(|| {
+        let Some(output) = M::decode_success(correlation, reply.resource, success) else {
             self.lifecycle.fault();
-            WaiterError::TransportFault
-        })
+            return Err(WaiterError::TransportFault);
+        };
+        Ok(output)
     }
 
     pub(crate) async fn initialize(

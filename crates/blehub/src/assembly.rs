@@ -121,16 +121,17 @@ pub fn attach_backend(ticket: u64, backend: Arc<dyn BleBackend>) -> Result<(), B
     };
     match entry {
         Some(AssemblyEntry::Cancelled) | None => {
-            if let Ok(hub) = hub
-                && let Err(_error) = hub.dispose()
-            {
-                tracing::error!(
-                    target: "blehub::assembly",
-                    diagnostic = "cancelled_assembly_dispose_failed",
-                    ticket,
-                    error_class = "backend_cleanup",
-                    "failed to dispose a hub assembled after cancellation"
-                );
+            if let Ok(hub) = hub {
+                let cleanup_result = hub.dispose();
+                if let Err(_error) = cleanup_result {
+                    tracing::error!(
+                        target: "blehub::assembly",
+                        diagnostic = "cancelled_assembly_dispose_failed",
+                        ticket,
+                        error_class = "backend_cleanup",
+                        "failed to dispose a hub assembled after cancellation"
+                    );
+                }
             }
             Err(BleHubError::BackendAssembly {
                 detail: format!("backend assembly ticket {ticket} was cancelled"),
@@ -139,16 +140,17 @@ pub fn attach_backend(ticket: u64, backend: Arc<dyn BleBackend>) -> Result<(), B
         Some(AssemblyEntry::Pending { .. })
         | Some(AssemblyEntry::Attached { .. })
         | Some(AssemblyEntry::Attaching) => {
-            if let Ok(hub) = hub
-                && let Err(_error) = hub.dispose()
-            {
-                tracing::error!(
-                    target: "blehub::assembly",
-                    diagnostic = "unexpected_assembly_state_dispose_failed",
-                    ticket,
-                    error_class = "backend_cleanup",
-                    "failed to dispose a hub after an unexpected assembly state transition"
-                );
+            if let Ok(hub) = hub {
+                let cleanup_result = hub.dispose();
+                if let Err(_error) = cleanup_result {
+                    tracing::error!(
+                        target: "blehub::assembly",
+                        diagnostic = "unexpected_assembly_state_dispose_failed",
+                        ticket,
+                        error_class = "backend_cleanup",
+                        "failed to dispose a hub after an unexpected assembly state transition"
+                    );
+                }
             }
             Err(BleHubError::BackendAssembly {
                 detail: format!("backend assembly ticket {ticket} changed state unexpectedly"),
@@ -195,15 +197,13 @@ fn cancel_backend_assembly(ticket: AssemblyTicket) {
             other => other,
         }
     };
-    let attached_hub = match entry {
-        Some(AssemblyEntry::Attached { hub }) => Some(hub),
-        Some(AssemblyEntry::Pending { .. }) | Some(AssemblyEntry::Cancelled) | None => None,
+    let hub = match entry {
+        Some(AssemblyEntry::Attached { hub }) => hub,
+        Some(AssemblyEntry::Pending { .. }) | Some(AssemblyEntry::Cancelled) | None => return,
         Some(AssemblyEntry::Attaching) => unreachable!("attaching entry is restored above"),
     };
 
-    if let Some(hub) = attached_hub
-        && let Err(_error) = hub.dispose()
-    {
+    if let Err(_error) = hub.dispose() {
         tracing::error!(
             target: "blehub::assembly",
             diagnostic = "cancelled_attached_hub_dispose_failed",

@@ -459,10 +459,13 @@ impl CleanupState {
     /// runtime's canonical ownership; rejected/late Hub errors are fallback
     /// diagnostics only.
     fn completed_result(&self) -> Result<(), CleanupError> {
-        let primary_error = self.primary.as_ref().and_then(PrimaryRegistration::error);
-        primary_error
-            .or_else(|| self.rejected_hubs.iter().find_map(RejectedHub::error))
-            .map_or(Ok(()), Err)
+        if let Some(error) = self.primary.as_ref().and_then(PrimaryRegistration::error) {
+            return Err(error);
+        }
+        if let Some(error) = self.rejected_hubs.iter().find_map(RejectedHub::error) {
+            return Err(error);
+        }
+        Ok(())
     }
 }
 

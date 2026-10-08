@@ -182,7 +182,15 @@ Rust 的 `pub(super)` 将可见范围限制在 `runtime` 及其子模块，不�
 
 `require_open()` 的 phase-to-error 映射属于 `RuntimeLifecycle`；`require_initialized()` 的 readiness-to-error 映射属于 `InitializationState`，只有 `Ready` 通过，`NotStarted`、`Pending` 和 `Rejected` 均返回 `NotInitialized`。actor 通过 `delegate!` 使用这两个门禁，不再重复判断状态。`reserve_connection` 和连接内的 `reserve_*` 入口也通过 `delegate!` 转发给 `ConnectionReservations`，actor 不再拼装 disconnect/RSSI/I/O/subscription 字段或持有 `connection_mut()` helper。`InitializationState::reserve_initialize()` 建立 pending 状态，私有 `InitReservation::new()` 拥有初始证据；actor 同样只转发。`ScanState` 拥有 scan 根的 admission、start/stop 登记、拒绝移除和退休，stop slot 的初始化仍属于 `ScanReservation`。所有纯转发集中在一个 `delegate!` 块中并按所有者分组；scan 的四个命令入口统一 `to self.scan`，不再由 actor 解包 `Option` 或表达 scan 可用条件。
 
-初始化的结算后推进统一调用 `advance_after_settlement() -> Result<(), WaiterError>`：未确认派发或 terminal 未到时保留 Pending；terminal 失败返回原操作错误，由 actor fault；成功且 snapshot 已到才转 Ready。它替代外部先查 `has_failed()` 再调用完成方法的组合，不克隆成功 snapshot，不改变 waiter 先结算的顺序。`record_event()` 直接匹配带关联命令 ID 的 snapshot，不再先执行包含 terminal 的通用匹配再重复解构；`pending()` / `pending_mut()` 保持私有，复用多处状态访问。`reserve_initialize()` 的断言复用 `require_not_started()`，不另保留 `has_started()` 查询。测试 fixture 使用 reserve、dispatch acceptance、snapshot、terminal 和完成推进建立就绪状态，不新增只供测试使用的生产构造器或 getter。
+初始化的结算后推进统一调用 `advance_after_settlement() -> Result<(), WaiterError>`：未确认派发或 terminal 未到时保留 Pending；terminal 失败返回原操作错误，由 actor fault；成功且 snapshot 已到才转 Ready。它替代外部先查 `has_failed()` 再调用完成方法的组合，不克隆成功 snapshot，不改变 waiter 先结算的顺序。`record_event()` 直接匹配带关联命令 ID 的 snapshot，不再先执行包含 terminal 的通用匹配再重复解构；`pending()` / `pending_mut()` 保持私有，复用多处状态访问。`reserve_initialize()` 的断言复用 `require_not_started()`，不另保留 `has_started()` 查询。初始化用私有 `pending_for()` / `pending_for_mut()` 统一按 command ID 选取 Pending，scan 用私有 `stop_for()` / `stop_for_mut()` 统一选择 stop reservation；只抽取重复选择，不为每个仅使用一次的 connection slot 增加 getter。测试 fixture 使用 reserve、dispatch acceptance、snapshot、terminal 和完成推进建立就绪状态，不新增只供测试使用的生产构造器或 getter。
+
+### Adapter snapshot 的获取与状态归属
+
+`InitializationState::Ready` 只表示初始化证据已经完成，不保存 adapter 的最新快照，也不表示蓝牙处于 PoweredOn。`Bleng::initialize()` 成功返回首个关联初始化 snapshot；该结果是初始化证据，不保证等于函数返回瞬间的最新状态。后续平台观察到的电源或授权变化，经 `AdapterSnapshotChanged` 进入 `Bleng::next_event()`，即使初始化已 Ready 也继续对外发布，不重置初始化状态。
+
+当前公共接口没有主动刷新或读取最新 adapter snapshot 的 getter，重复 initialize 会被拒绝，不能用于刷新状态。调用方应使用一个事件读取循环维护最后观察到的 adapter snapshot，再向 UI 或其他消费者提供状态；FIFO 不广播，也不向晚加入的读者重放最新状态。若已经处理了后续 adapter 事件，不要再用较早的 initialize 返回值覆盖该状态。初始化 waiter 超时或取消后，迟到 snapshot 仍可经事件流取得。未来若要增加缓存查询或原生刷新命令，应独立明确其所有者、时效和并发语义，不能把初始化 reservation 当作持续状态仓库。此边界与 [计划中的调用方状态归属](../../.plan/PLAN.md#22-术语) 一致。
+
+### Actor 内部状态与协调入口
 
 actor 的 `lifecycle`、`initialization`、`scan`、`connections` 现在全部私有。messages 中的命令与订阅 handler 不取得 reservation 实体：初始化/扫描/连接/GATT/RSSI/读写/订阅的 admission 条件由对应所有者验证，actor 用 `delegate!` 转发，返回值只包含成功/错误或后续登记需要的 ID，保留原错误优先级。scan slot 的空闲/占用判断属于 `ScanState`；session 内 stop 验证属于 `ScanReservation`。
 
@@ -212,7 +220,7 @@ runtime 的生产代码和测试使用显式导入，不使用父模块或 prelu
 
 `record_terminal()` 仅记录首个结果，冲突的重复 terminal 不能覆盖它；读取通过 `has_terminal()`、`terminal_succeeded()`、`terminal_failed()`。`is_awaiting_dispatch_result()` 只表示仍在等待原生同步派发的结果被 actor 处理，不表示 waiter 或原生操作仍 pending；dispatch 被接受不等于 BLE 操作完成。这里的 result 是 `DispatchResolved` 携带的同步派发结果，不是 Begin reply 或 BLE 原生应答。
 
-`CommandProgress::terminal_result()` 不接收 success closure，也不依赖 `WaiterSuccess`：未确认 dispatch 或缺少 terminal 时返回 `None`；terminal 错误交付为操作错误；terminal 成功仅返回 `Ok(())`，不代表 domain 完整。具体 reservation 使用 `terminal_result()?.map(|()| /* Option<WaiterSuccess> */).transpose()` 组合领域证据；`Result::map` 只在成功时执行，因此仍保留惰性构造及错误优先级，缺少 domain 仍返回 `None`。`is_complete(domain_evidence_ready)` 判断命令证据是否完整：dispatch 已接受、terminal 已到达，且 terminal 失败或成功所需的关联领域证据已经齐全。这里的完整不等于 native 生命周期结束，也不依赖 waiter 是否仍存在；native 资源何时可安全移除仍由具体 reservation 判断。连接错误、被动断连等操作特有的优先级和退休条件仍由具体 reservation 判断，不隐藏在通用状态机中。
+`CommandProgress::terminal_result()` 不接收 success closure，也不依赖 `WaiterSuccess`：未确认 dispatch 或缺少 terminal 时返回 `None`；terminal 错误交付为操作错误；terminal 成功仅返回 `Ok(())`，不代表 domain 完整。具体 reservation 采用直线控制流组合领域证据：先用 `terminal_result()?` 等待已接受命令的 terminal；若返回错误，立即交付 `Some(Err(error))`；只有成功后才读取 domain 并构造 `Some(Ok(success))`，缺少 domain 仍返回 `None`。不再通过嵌套的 `map(...).transpose()` 转换容器，成功数据仍只在 terminal 成功后才克隆或构造，也不重新引入 success closure。`is_complete(domain_evidence_ready)` 判断命令证据是否完整：dispatch 已接受、terminal 已到达，且 terminal 失败或成功所需的关联领域证据已经齐全。这里的完整不等于 native 生命周期结束，也不依赖 waiter 是否仍存在；native 资源何时可安全移除仍由具体 reservation 判断。连接错误、被动断连等操作特有的优先级和退休条件仍由具体 reservation 判断，不隐藏在通用状态机中。
 
 snapshot、连接状态/error、discovery draft、RSSI/read payload、write 完成事实与通知状态仍保留在对应 reservation；共享进度不拥有这些 typed domain 证据、waiter 或路由策略。
 

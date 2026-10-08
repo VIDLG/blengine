@@ -350,19 +350,21 @@ fn store_pending_operation(
     operation: &PendingOperation,
 ) -> bool {
     let mut current = lock_state(state);
-    connected_gatt_mut(&mut current, correlation.connection)
-        .and_then(|gatt| gatt.pending.as_mut())
-        .is_some_and(|pending| {
-            if pending.correlation != correlation
-                || pending.stage != stage
-                || !pending.driver_running
-                || !matches!(pending.operation, PendingOperationState::Reserved)
-            {
-                return false;
-            }
-            pending.operation = PendingOperationState::Running(clone_operation(operation));
-            true
-        })
+    let Some(gatt) = connected_gatt_mut(&mut current, correlation.connection) else {
+        return false;
+    };
+    let Some(pending) = gatt.pending.as_mut() else {
+        return false;
+    };
+    if pending.correlation != correlation
+        || pending.stage != stage
+        || !pending.driver_running
+        || !matches!(pending.operation, PendingOperationState::Reserved)
+    {
+        return false;
+    }
+    pending.operation = PendingOperationState::Running(clone_operation(operation));
+    true
 }
 
 fn validate_discovery(

@@ -28,13 +28,10 @@ impl RssiReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.progress
-            .terminal_result()?
-            .map(|()| {
-                self.value
-                    .map(|value| WaiterSuccess::RssiRead(connection_id, value))
-            })
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        Some(Ok(WaiterSuccess::RssiRead(connection_id, self.value?)))
     }
     pub(super) fn is_retirable(&self) -> bool {
         self.progress.is_complete(self.value.is_some())
@@ -87,19 +84,15 @@ impl ReadReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.progress
-            .terminal_result()?
-            .map(|()| {
-                self.value
-                    .clone()
-                    .map(|value| WaiterSuccess::CharacteristicRead {
-                        connection_id,
-                        gatt_session_id: self.session_id,
-                        characteristic_id: self.characteristic_id,
-                        value,
-                    })
-            })
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        Some(Ok(WaiterSuccess::CharacteristicRead {
+            connection_id,
+            gatt_session_id: self.session_id,
+            characteristic_id: self.characteristic_id,
+            value: self.value.clone()?,
+        }))
     }
     pub(super) fn is_retirable(&self) -> bool {
         self.progress.is_complete(self.value.is_some())
@@ -151,16 +144,15 @@ impl WriteReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.progress
-            .terminal_result()?
-            .map(|()| {
-                self.written.then_some(WaiterSuccess::CharacteristicWritten(
-                    connection_id,
-                    self.session_id,
-                    self.characteristic_id,
-                ))
-            })
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        self.written
+            .then_some(Ok(WaiterSuccess::CharacteristicWritten(
+                connection_id,
+                self.session_id,
+                self.characteristic_id,
+            )))
     }
     pub(super) fn is_retirable(&self) -> bool {
         self.progress.is_complete(self.written)

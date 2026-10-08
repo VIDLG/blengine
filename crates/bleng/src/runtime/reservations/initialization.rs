@@ -9,6 +9,8 @@ use super::dispatch::{
 
 /// Owns initialization admission, correlated evidence, and readiness transitions.
 /// Readiness is distinct from runtime lifecycle and adapter power.
+/// Ready retains no snapshot: initialize() returns its completion evidence, while
+/// subsequent adapter snapshots remain public events for caller-owned state.
 /// A Pending record survives waiter retirement so late callbacks remain correlated.
 ///
 /// The actor checks admission before registering a waiter, then installs the
@@ -61,8 +63,7 @@ impl InitializationState {
             command_id: Some(command_id),
             snapshot,
         } = event
-            && let Some(init) = self.pending_mut()
-            && init.progress.command_id == *command_id
+            && let Some(init) = self.pending_for_mut(*command_id)
             && init.snapshot.is_none()
         {
             init.snapshot = Some(snapshot.clone());
@@ -76,9 +77,7 @@ impl InitializationState {
         command_id: CommandId,
         result: &Result<(), CommandDispatchError>,
     ) -> Option<DispatchResolution> {
-        let init = self
-            .pending_mut()
-            .filter(|init| init.progress.command_id == command_id)?;
+        let init = self.pending_for_mut(command_id)?;
         Some(if result.is_err() {
             let resolution = init
                 .progress
@@ -131,6 +130,16 @@ impl InitializationState {
         }
     }
 
+    fn pending_for(&self, command_id: CommandId) -> Option<&InitReservation> {
+        self.pending()
+            .filter(|init| init.progress.command_id == command_id)
+    }
+
+    fn pending_for_mut(&mut self, command_id: CommandId) -> Option<&mut InitReservation> {
+        self.pending_mut()
+            .filter(|init| init.progress.command_id == command_id)
+    }
+
     /// Returns whether initialization owns the command, not whether it succeeded.
     /// A matching duplicate still returns true; the first terminal is preserved.
     pub fn record_terminal(
@@ -138,10 +147,7 @@ impl InitializationState {
         command_id: CommandId,
         result: &Result<(), BleEventError>,
     ) -> bool {
-        let Some(init) = self
-            .pending_mut()
-            .filter(|init| init.progress.command_id == command_id)
-        else {
+        let Some(init) = self.pending_for_mut(command_id) else {
             return false;
         };
         init.progress.record_terminal(result);
@@ -155,13 +161,11 @@ impl InitializationState {
         &self,
         command_id: CommandId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        let init = self
-            .pending()
-            .filter(|init| init.progress.command_id == command_id)?;
-        init.progress
-            .terminal_result()?
-            .map(|()| init.snapshot.clone().map(WaiterSuccess::Initialized))
-            .transpose()
+        let init = self.pending_for(command_id)?;
+        if let Err(error) = init.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        Some(Ok(WaiterSuccess::Initialized(init.snapshot.clone()?)))
     }
 
     /// Advances readiness after waiter settlement, even when no caller remains.

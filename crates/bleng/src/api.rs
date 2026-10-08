@@ -69,6 +69,10 @@ impl Bleng {
         Ok(())
     }
 
+    /// Initializes once and returns the first correlated initialization snapshot.
+    /// This is not a live adapter-state query; repeated initialization is rejected.
+    /// Observe later AdapterSnapshotChanged events through next_event() and maintain
+    /// caller-owned last-observed state instead of treating this result as a cache.
     pub async fn initialize(&self, timeout_ms: u64) -> Result<AdapterSnapshot, BlengError> {
         let deadline = validate_timeout(timeout_ms)?;
         let owner = Arc::clone(&self.owner);
@@ -239,6 +243,9 @@ impl Bleng {
             .await??)
     }
 
+    /// Reads the bounded event FIFO, including later adapter snapshot changes.
+    /// No last-known snapshot is replayed. Concurrent readers divide this stream,
+    /// so consumers should share one reader and project their own application state.
     pub async fn next_event(&self, timeout_ms: u64) -> Result<Option<BleEvent>, BlengError> {
         let timeout = validate_timeout(timeout_ms)?;
         let owner = Arc::clone(&self.owner);

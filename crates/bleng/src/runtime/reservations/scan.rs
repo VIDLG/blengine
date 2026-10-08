@@ -70,10 +70,7 @@ impl ScanState {
                 scan.progress.accepted_resolution()
             });
         }
-        let stop = scan
-            .stop
-            .as_mut()
-            .filter(|stop| stop.progress.command_id == command_id)?;
+        let stop = scan.stop_for_mut(command_id)?;
         Some(if result.is_err() {
             let resolution = stop
                 .progress
@@ -274,6 +271,18 @@ impl ScanReservation {
         self.progress.terminal_failed()
     }
 
+    fn stop_for(&self, command_id: CommandId) -> Option<&StopReservation> {
+        self.stop
+            .as_ref()
+            .filter(|stop| stop.progress.command_id == command_id)
+    }
+
+    fn stop_for_mut(&mut self, command_id: CommandId) -> Option<&mut StopReservation> {
+        self.stop
+            .as_mut()
+            .filter(|stop| stop.progress.command_id == command_id)
+    }
+
     /// Returns whether scan start or stop owns the command, not whether it succeeded.
     /// A matching duplicate still returns true; the first terminal is preserved.
     fn record_terminal(
@@ -285,11 +294,7 @@ impl ScanReservation {
             self.progress.record_terminal(result);
             return true;
         }
-        if let Some(stop) = self
-            .stop
-            .as_mut()
-            .filter(|stop| stop.progress.command_id == command_id)
-        {
+        if let Some(stop) = self.stop_for_mut(command_id) {
             stop.progress.record_terminal(result);
             return true;
         }
@@ -298,18 +303,14 @@ impl ScanReservation {
 
     fn waiter_result(&self, command_id: CommandId) -> Option<Result<WaiterSuccess, WaiterError>> {
         if self.progress.command_id == command_id {
+            if let Err(error) = self.progress.terminal_result()? {
+                return Some(Err(error));
+            }
             return self
-                .progress
-                .terminal_result()?
-                .map(|()| {
-                    self.started
-                        .then_some(WaiterSuccess::ScanStarted(self.session_id))
-                })
-                .transpose();
+                .started
+                .then_some(Ok(WaiterSuccess::ScanStarted(self.session_id)));
         }
-        self.stop
-            .as_ref()
-            .filter(|stop| stop.progress.command_id == command_id)?
+        self.stop_for(command_id)?
             .waiter_result(self.session_id, self.stopped)
     }
 
@@ -362,9 +363,9 @@ impl StopReservation {
         if let Some(error) = &self.stop_error {
             return Some(Err(WaiterError::Operation(error.clone())));
         }
-        self.progress
-            .terminal_result()?
-            .map(|()| stopped.then_some(WaiterSuccess::ScanStopped(session_id)))
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        stopped.then_some(Ok(WaiterSuccess::ScanStopped(session_id)))
     }
 }

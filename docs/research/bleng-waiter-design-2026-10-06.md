@@ -481,10 +481,12 @@ Accepted dispatch alone is never BLE completion.
 `CommandProgress::terminal_result()` takes no success closure and does not depend
 on `WaiterSuccess`: unresolved dispatch or a missing terminal returns `None`;
 a terminal error becomes an operation error; terminal success returns only
-`Ok(())`, not proof of domain completion. Concrete reservations combine domain
-evidence with `terminal_result()?.map(|()| /* Option<WaiterSuccess> */).transpose()`.
-`Result::map` keeps success construction lazy and preserves terminal-error
-precedence; missing domain evidence still returns `None`.
+`Ok(())`, not proof of domain completion. Concrete reservations use straight-line
+control flow: `terminal_result()?` waits for an accepted command's terminal;
+`Err(error)` immediately returns `Some(Err(error))`; only success proceeds to domain
+evidence and constructs `Some(Ok(success))`. Missing domain evidence returns `None`.
+This replaces nested `map(...).transpose()` without reintroducing a success closure;
+success payloads are still cloned or constructed only after terminal success.
 `is_complete(domain_evidence_ready)` requires accepted dispatch plus a terminal,
 and then either terminal failure or all correlated domain evidence required for
 success. This is command-evidence completion, not the end of a native lifecycle;
@@ -1048,6 +1050,19 @@ can make the actor ready even after the waiter timed out or was cancelled. Dupli
 success still appear on the event stream but cannot change readiness or permit
 a second initialization. Readiness is not adapter power state or runtime phase.
 
+Ready retains no adapter snapshot. `Bleng::initialize()` returns the first correlated
+initialization snapshot, not a fresh query at the instant the async call returns.
+Later platform observations are published as `AdapterSnapshotChanged` through
+`Bleng::next_event()` without undoing readiness. There is no current snapshot getter
+or refresh command; repeated initialization is rejected. Callers should maintain
+last-observed adapter state from a single FIFO reader and share that projection with
+other consumers. The FIFO neither broadcasts nor replays last-known state to late
+readers. Once later events have been applied, an older initialize return must not
+replace them. Late initialization evidence remains observable through the event
+stream after caller timeout or cancellation. A future cached query or native refresh
+would need separately reviewed ownership and freshness semantics, not extra state in
+the initialization reservation.
+
 Dispatch rejection releases the pending record and enters `Rejected { command_id }`.
 Only this one correlation ID is retained, not snapshot/terminal evidence or a pending
 progress object. Clean rejection still starts Hub cleanup without faulting the runtime;
@@ -1070,7 +1085,10 @@ snapshot. `record_event()` directly matches a correlated snapshot instead of fir
 matching a broader snapshot-or-terminal category. Private `pending()` / `pending_mut()`
 helpers remain shared by multiple owner methods; no raw-record getter is exposed.
 The registration assertion reuses `require_not_started()` without a separate
-`has_started()` helper. Test fixtures build readiness through the ordinary evidence
+`has_started()` helper. Private `pending_for()` / `pending_for_mut()` centralize
+command-ID selection for initialization, and `stop_for()` / `stop_for_mut()` do the
+same for scan stop. Single-use connection-slot selection stays inline rather than
+adding a getter for every slot. Test fixtures build readiness through the ordinary evidence
 transitions, not a test-only production constructor or wider phase visibility.
 
 ### `WaiterEntry`

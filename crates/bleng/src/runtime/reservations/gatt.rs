@@ -100,13 +100,11 @@ impl GattDiscoveryReservation {
     /// Queries this already-selected discovery; None means incomplete evidence.
     /// Does not commit the draft or retire discovery; settlement must happen first.
     pub(super) fn waiter_result(&self) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.progress
-            .terminal_result()?
-            .map(|()| {
-                self.draft_database
-                    .clone()
-                    .map(WaiterSuccess::GattDiscovered)
-            })
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        Some(Ok(WaiterSuccess::GattDiscovered(
+            self.draft_database.clone()?,
+        )))
     }
 }

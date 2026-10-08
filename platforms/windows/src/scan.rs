@@ -295,28 +295,29 @@ fn invoke_scan_stop(
             "stop advertisement watcher",
             error,
         );
-        let delivery = {
+        let (ingress, event) = {
             let mut state = lock_state(state);
-            let ingress = state.ingress();
-            let command_id = state.scan.as_mut().and_then(|scan| {
-                (scan.scan_session_id == scan_session_id
-                    && scan.stop_command_id == Some(command_id))
-                .then(|| scan.stop_command_id.take())
-                .flatten()
-            });
-            ingress.zip(command_id).map(|(ingress, command_id)| {
-                (
-                    ingress,
-                    BleEvent::CommandCompleted {
-                        command_id,
-                        error: Some(failure),
-                    },
-                )
-            })
+            let Some(scan) = state.scan.as_mut() else {
+                return;
+            };
+            if scan.scan_session_id != scan_session_id || scan.stop_command_id != Some(command_id) {
+                return;
+            }
+            let Some(command_id) = scan.stop_command_id.take() else {
+                return;
+            };
+            let Some(ingress) = state.ingress() else {
+                return;
+            };
+            (
+                ingress,
+                BleEvent::CommandCompleted {
+                    command_id,
+                    error: Some(failure),
+                },
+            )
         };
-        if let Some((ingress, event)) = delivery {
-            push_events(&ingress, vec![event], "fail Windows scan stop");
-        }
+        push_events(&ingress, vec![event], "fail Windows scan stop");
     }
 }
 

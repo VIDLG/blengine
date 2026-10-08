@@ -76,28 +76,25 @@ impl SubscriptionReservation {
         if transition.progress.command_id != command_id {
             return None;
         }
-        transition
-            .progress
-            .terminal_result()?
-            .map(|()| match transition.domain {
-                Some(NotificationState::Enabled { actual_mode }) => {
-                    Some(WaiterSuccess::NotificationsEnabled {
-                        connection_id,
-                        gatt_session_id: self.session_id,
-                        subscription_id,
-                        characteristic_id: self.characteristic_id,
-                        actual_mode,
-                    })
-                }
-                Some(NotificationState::Disabled) => Some(WaiterSuccess::NotificationsDisabled(
-                    connection_id,
-                    self.session_id,
-                    subscription_id,
-                    self.characteristic_id,
-                )),
-                None => None,
-            })
-            .transpose()
+        if let Err(error) = transition.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        let success = match transition.domain? {
+            NotificationState::Enabled { actual_mode } => WaiterSuccess::NotificationsEnabled {
+                connection_id,
+                gatt_session_id: self.session_id,
+                subscription_id,
+                characteristic_id: self.characteristic_id,
+                actual_mode,
+            },
+            NotificationState::Disabled => WaiterSuccess::NotificationsDisabled(
+                connection_id,
+                self.session_id,
+                subscription_id,
+                self.characteristic_id,
+            ),
+        };
+        Some(Ok(success))
     }
 
     pub(super) fn matches_event(

@@ -516,13 +516,11 @@ impl ConnectionReservation {
         if self.disconnected {
             return Some(Err(WaiterError::Disconnected));
         }
-        self.progress
-            .terminal_result()?
-            .map(|()| {
-                self.connected
-                    .then_some(WaiterSuccess::Connected(self.connection_id))
-            })
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        self.connected
+            .then_some(Ok(WaiterSuccess::Connected(self.connection_id)))
     }
 
     /// Queries without consuming evidence; None means unowned or incomplete.
@@ -677,13 +675,11 @@ impl DisconnectReservation {
         &self,
         connection_id: ConnectionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.progress
-            .terminal_result()?
-            .map(|()| {
-                self.domain
-                    .then_some(WaiterSuccess::Disconnected(connection_id))
-            })
-            .transpose()
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        self.domain
+            .then_some(Ok(WaiterSuccess::Disconnected(connection_id)))
     }
 }
 

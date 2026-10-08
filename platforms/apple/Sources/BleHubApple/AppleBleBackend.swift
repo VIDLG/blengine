@@ -408,10 +408,10 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
             let wasScanning = scanController.activeSessionId != nil
             let connectionRoutes = connectionController.drain()
             _ = gattController.drain()
-            let connectedPeripherals = connectionRoutes.compactMap {
-                route -> (CBPeripheral, AppleGattRetirement)? in
+            var connectedPeripherals: [(CBPeripheral, AppleGattRetirement)] = []
+            for route in connectionRoutes {
                 guard let peripheral = route.correlation.peripheral as? CBPeripheral else {
-                    return nil
+                    continue
                 }
                 _ = rssiController.retire(
                     connection: route.correlation,
@@ -427,7 +427,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                         context: "the Apple backend was disposed during GATT activity"
                     )
                 )
-                return (peripheral, retirement)
+                connectedPeripherals.append((peripheral, retirement))
             }
             rssiController.drain()
             gattIoController.drain()
