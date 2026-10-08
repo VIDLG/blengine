@@ -549,9 +549,12 @@ actor so admission and settlement are serialized without another lock; it is
 not part of shared `RuntimeLifecycle`. The actor's `event_tx` publishes BLE
 events to the owner's FIFO for `next_event()`, independently of lifecycle phase
 notifications and per-command oneshot results. Initialization is represented by
-one `InitializationState` (`NotStarted`, `Pending`, `Ready`): timeout/cancellation
-retains Pending for late callbacks, and success releases completed evidence only
-after waiter settlement. These boundaries are detailed in the
+one `InitializationState` (`NotStarted`, `Pending`, `Ready`, `Rejected`):
+timeout/cancellation retains Pending for late callbacks, and success releases
+completed evidence only after waiter settlement. Dispatch rejection releases
+pending evidence and retains only its command ID in Rejected. Clean rejection
+starts cleanup without faulting; a later correlated callback faults before public
+publication instead of being buffered as if dispatch were unresolved. These boundaries are detailed in the
 [waiter design](bleng-waiter-design-2026-10-06.md).
 
 Operation durations in owner are named `timeout`. Its private

@@ -3,13 +3,14 @@ use crate::{
         BlengActor, RuntimePhase,
         messages::{BeginReply, OperationResult},
         owner::BeginHandoff,
-        reservations::{GattAccess, InitializationState},
+        reservations::GattAccess,
     },
     waiter::{WaiterError, WaiterExpectation, WaiterSuccess},
 };
 use blehub::{
-    BleEvent, CommandId, DiscoverGattCommand, GattDatabase, GattSessionId, InitializeCommand,
-    NotificationModeRequest, PeripheralId, SubscriptionId,
+    AdapterSnapshot, AdapterState, AuthorizationState, BleEvent, CommandId, DiscoverGattCommand,
+    GattDatabase, GattSessionId, InitializeCommand, NotificationModeRequest, PeripheralId,
+    SubscriptionId,
 };
 use kameo::prelude::{Context, Message};
 use std::{
@@ -24,7 +25,26 @@ impl Message<AssumeInitialized> for BlengActor {
     type Reply = ();
 
     async fn handle(&mut self, _: AssumeInitialized, _: &mut Context<Self, Self::Reply>) {
-        self.initialization = InitializationState::Ready;
+        // Establish fixture readiness through the production state transitions,
+        // without consuming caller command IDs or publishing synthetic events.
+        let command_id = CommandId::from(0);
+        self.initialization.reserve_initialize(command_id);
+        self.initialization
+            .resolve_dispatch(command_id, &Ok(()))
+            .unwrap();
+        self.initialization
+            .record_event(&BleEvent::AdapterSnapshotChanged {
+                command_id: Some(command_id),
+                snapshot: AdapterSnapshot {
+                    state: AdapterState::PoweredOn,
+                    scan_authorization: AuthorizationState::Authorized,
+                    connection_authorization: AuthorizationState::Authorized,
+                    name: None,
+                },
+            });
+        assert!(self.initialization.record_terminal(command_id, &Ok(())));
+        self.initialization.advance_after_settlement().unwrap();
+        self.initialization.require_initialized().unwrap();
     }
 }
 
@@ -367,23 +387,18 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                 WaiterSuccess::RssiRead(connection_id, -42),
             )
         };
-        assert_eq!(
-            self.connections
-                .buffer_before_dispatch(callback.clone())
-                .unwrap(),
-            None
-        );
+        assert_eq!(self.connections.gate_event(callback.clone()).unwrap(), None);
         assert_eq!(self.connections.waiter_result(sibling_id), None);
         let resolution = self
             .connections
             .resolve_dispatch(sibling_id, &Ok(()))
             .unwrap();
         assert!(matches!(
-            resolution.effect,
-            crate::runtime::reservations::DispatchEffect::None
+            resolution.action,
+            crate::runtime::reservations::DispatchAction::None
         ));
-        assert_eq!(resolution.replay, vec![callback]);
-        for event in &resolution.replay {
+        assert_eq!(resolution.events_to_replay, vec![callback]);
+        for event in &resolution.events_to_replay {
             self.connections.record_event(event).unwrap();
         }
         assert_eq!(self.connections.waiter_result(sibling_id), None);

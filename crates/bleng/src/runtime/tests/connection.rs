@@ -508,7 +508,7 @@ fn passive_disconnect_before_rejected_read_gatt_rssi_or_write_preserves_rejectio
 }
 
 #[test]
-fn disconnect_rejects_while_sibling_rssi_dispatch_is_awaiting_dispatch_ack() {
+fn disconnect_rejects_while_sibling_rssi_dispatch_is_awaiting_dispatch_result() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
@@ -565,7 +565,7 @@ fn disconnect_rejects_while_sibling_rssi_dispatch_is_awaiting_dispatch_ack() {
 }
 
 #[test]
-fn read_characteristic_rejects_while_sibling_rssi_dispatch_is_awaiting_dispatch_ack() {
+fn read_characteristic_rejects_while_sibling_rssi_dispatch_is_awaiting_dispatch_result() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),

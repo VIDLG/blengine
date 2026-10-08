@@ -422,7 +422,11 @@ fn passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart(
             started_scan(),
             EventScenario::emit_before_reject(
                 stop_command(2),
-                vec![stopped.clone()],
+                vec![
+                    command_completed(2, None),
+                    stopped.clone(),
+                    command_completed(2, None),
+                ],
                 rejection.clone(),
             ),
             EventScenario::emit_before_return(

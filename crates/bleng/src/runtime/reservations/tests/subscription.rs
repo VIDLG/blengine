@@ -68,7 +68,7 @@ fn successful_transitions_require_ack_terminal_and_matching_domain() {
     ));
     assert!(!route.is_active());
     route.progress_mut().unwrap().accepted_resolution();
-    assert!(!route.progress().unwrap().is_awaiting_dispatch_ack());
+    assert!(!route.progress().unwrap().is_awaiting_dispatch_result());
     assert_eq!(
         route.waiter_result(6.into(), CONNECTION, SUBSCRIPTION),
         None

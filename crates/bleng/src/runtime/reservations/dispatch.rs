@@ -1,26 +1,34 @@
 use blehub::{BleEvent, BleEventError, CommandId};
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::WaiterError;
 
 #[derive(Debug)]
-pub enum ReconcileFault {
+pub enum ReconciliationFault {
     BufferOverflow,
     UnexpectedNotificationMode,
-    ContradictoryDispatch,
+    DispatchEvidenceConflict,
 }
 
 #[derive(Default)]
-pub enum DispatchEffect {
+pub enum DispatchAction {
     #[default]
     None,
-    Cleanup,
-    Fault(ReconcileFault),
+    StartCleanup,
+    FaultRuntime(ReconciliationFault),
 }
 
 #[derive(Default)]
 pub struct DispatchResolution {
-    pub replay: Vec<BleEvent>,
-    pub effect: DispatchEffect,
+    pub events_to_replay: Vec<BleEvent>,
+    pub action: DispatchAction,
+}
+
+/// How to handle one buffered event after dispatch rejection. The reservation
+/// supplies the context-dependent decision; it is not an intrinsic event property.
+pub(super) enum BufferedEventDisposition {
+    Replay,
+    Discard,
+    Conflict,
 }
 
 /// Common dispatch and terminal progress, not a generic BLE operation.
@@ -28,8 +36,8 @@ pub struct DispatchResolution {
 pub(super) struct CommandProgress {
     pub(super) command_id: CommandId,
     dispatch_accepted: bool,
-    buffered: Vec<BleEvent>,
-    terminal: Option<Result<(), BleEventError>>,
+    buffered_events: Vec<BleEvent>,
+    terminal_result: Option<Result<(), BleEventError>>,
 }
 
 impl CommandProgress {
@@ -37,85 +45,106 @@ impl CommandProgress {
         Self {
             command_id,
             dispatch_accepted: false,
-            buffered: Vec::new(),
-            terminal: None,
+            buffered_events: Vec::new(),
+            terminal_result: None,
         }
     }
 
-    pub(super) fn is_awaiting_dispatch_ack(&self) -> bool {
+    pub(super) fn is_awaiting_dispatch_result(&self) -> bool {
         !self.dispatch_accepted
     }
 
-    fn accept(&mut self) -> Vec<BleEvent> {
-        self.dispatch_accepted = true;
-        self.take_buffered_events()
-    }
-
-    pub(super) fn buffer(&mut self, event: BleEvent) -> Result<(), ReconcileFault> {
+    pub(super) fn buffer(&mut self, event: BleEvent) -> Result<(), ReconciliationFault> {
         const PREDISPATCH_EVENTS: usize = 64;
-        if self.buffered.len() >= PREDISPATCH_EVENTS {
-            return Err(ReconcileFault::BufferOverflow);
+        if self.buffered_events.len() >= PREDISPATCH_EVENTS {
+            return Err(ReconciliationFault::BufferOverflow);
         }
-        self.buffered.push(event);
+        self.buffered_events.push(event);
         Ok(())
     }
 
-    pub(super) fn has_buffered_events(&self) -> bool {
-        !self.buffered.is_empty()
-    }
-
     /// Transfers evidence without acknowledging dispatch or choosing a replay policy.
-    pub(super) fn take_buffered_events(&mut self) -> Vec<BleEvent> {
-        std::mem::take(&mut self.buffered)
+    fn take_buffered_events(&mut self) -> Vec<BleEvent> {
+        std::mem::take(&mut self.buffered_events)
     }
 
+    /// Acknowledges acceptance and transfers early callbacks for ordered replay.
+    /// Normal acceptance requests no cleanup or fault action.
     pub(super) fn accepted_resolution(&mut self) -> DispatchResolution {
+        self.dispatch_accepted = true;
         DispatchResolution {
-            replay: self.accept(),
-            ..Default::default()
+            events_to_replay: self.take_buffered_events(),
+            action: DispatchAction::None,
         }
+    }
+
+    /// Drains early evidence without acknowledging acceptance. The reservation
+    /// chooses replay, discard, or conflict for each event and owns resource teardown.
+    /// Any conflict overrides the clean-rejection action, but classification continues
+    /// so permitted events retain their order. The actor executes the resulting action.
+    pub(super) fn rejected_resolution(
+        &mut self,
+        on_clean_rejection: DispatchAction,
+        classify: impl Fn(&BleEvent) -> BufferedEventDisposition,
+    ) -> DispatchResolution {
+        let mut resolution = DispatchResolution {
+            events_to_replay: Vec::new(),
+            action: on_clean_rejection,
+        };
+        for event in self.take_buffered_events() {
+            match classify(&event) {
+                BufferedEventDisposition::Replay => resolution.events_to_replay.push(event),
+                BufferedEventDisposition::Discard => {}
+                BufferedEventDisposition::Conflict => {
+                    resolution.action =
+                        DispatchAction::FaultRuntime(ReconciliationFault::DispatchEvidenceConflict);
+                }
+            }
+        }
+        resolution
     }
 
     /// The first terminal is authoritative; duplicate callbacks cannot replace it.
     pub(super) fn record_terminal(&mut self, result: &Result<(), BleEventError>) {
-        if self.terminal.is_none() {
-            self.terminal = Some(result.clone());
+        if self.terminal_result.is_none() {
+            self.terminal_result = Some(result.clone());
         }
     }
 
     pub(super) fn has_terminal(&self) -> bool {
-        self.terminal.is_some()
+        self.terminal_result.is_some()
     }
 
     pub(super) fn terminal_succeeded(&self) -> bool {
-        self.terminal == Some(Ok(()))
+        self.terminal_result == Some(Ok(()))
     }
 
     pub(super) fn terminal_failed(&self) -> bool {
-        self.terminal.as_ref().is_some_and(Result::is_err)
+        self.terminal_result.as_ref().is_some_and(Result::is_err)
     }
 
-    /// Terminal failure wins over success evidence, but neither is deliverable
-    /// until native dispatch has been acknowledged. The success closure is lazy.
-    pub(super) fn waiter_result(
-        &self,
-        success: impl FnOnce() -> Option<WaiterSuccess>,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if self.is_awaiting_dispatch_ack() {
+    /// Returns the recorded terminal only after dispatch acceptance. Success says
+    /// nothing about domain evidence; the reservation must still supply that evidence.
+    pub(super) fn terminal_result(&self) -> Option<Result<(), WaiterError>> {
+        if self.is_awaiting_dispatch_result() {
             return None;
         }
-        match self.terminal.as_ref()? {
-            Err(error) => Some(Err(WaiterError::Operation(error.clone()))),
-            Ok(()) => success().map(Ok),
-        }
+        self.terminal_result
+            .clone()
+            .map(|result| result.map_err(WaiterError::Operation))
     }
 
-    /// Completion is independent of whether a caller still has a waiter.
-    pub(super) fn is_complete(&self, domain_ready: bool) -> bool {
-        self.dispatch_accepted
-            && self
-                .terminal
-                .as_ref()
-                .is_some_and(|result| result.is_err() || domain_ready)
+    /// Command evidence is complete after accepted dispatch and a terminal failure,
+    /// or a terminal success with all required correlated domain evidence.
+    /// This neither depends on a live waiter nor proves native resources can retire.
+    pub(super) fn is_complete(&self, domain_evidence_ready: bool) -> bool {
+        if !self.dispatch_accepted {
+            return false;
+        }
+        match self.terminal_result.as_ref() {
+            None => false,
+            Some(Err(_)) => true,
+            Some(Ok(())) => domain_evidence_ready,
+        }
     }
 }

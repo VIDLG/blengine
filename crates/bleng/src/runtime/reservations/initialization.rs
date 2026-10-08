@@ -2,26 +2,53 @@ use blehub::{AdapterSnapshot, BleEvent, BleEventError, CommandDispatchError, Com
 
 use crate::waiter::{WaiterError, WaiterSuccess};
 
-use super::dispatch::{CommandProgress, DispatchEffect, DispatchResolution, ReconcileFault};
+use super::dispatch::{
+    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
+    ReconciliationFault,
+};
 
+/// Owns initialization admission, correlated evidence, and readiness transitions.
 /// Readiness is distinct from runtime lifecycle and adapter power.
 /// A Pending record survives waiter retirement so late callbacks remain correlated.
+///
+/// The actor checks admission before registering a waiter, then installs the
+/// reservation only after claiming the caller handoff. Live callbacks pass through
+/// gate_event() before publication and evidence recording; buffered callbacks are
+/// replayed after resolve_dispatch(). After recording evidence, the actor settles
+/// any caller waiter before advance_after_settlement() can release pending state.
+/// This owner neither settles waiters nor performs runtime lifecycle actions.
 #[derive(Default)]
-pub enum InitializationState {
+pub struct InitializationState {
+    phase: InitializationPhase,
+}
+
+#[derive(Default)]
+enum InitializationPhase {
     #[default]
     NotStarted,
     Pending(InitReservation),
     Ready,
+    // Retain only correlation for escaped callbacks, not pending operation evidence.
+    Rejected {
+        command_id: CommandId,
+    },
 }
 
 impl InitializationState {
-    pub fn buffer_before_dispatch(
-        &mut self,
-        event: BleEvent,
-    ) -> Result<Option<BleEvent>, ReconcileFault> {
+    /// Gates a live callback on dispatch evidence, before public publication.
+    /// Some(event) passes through, including owned events needing no buffering;
+    /// this is not an ownership query. None retains the event pending resolution.
+    /// Overflow or evidence contradicting rejection is an error.
+    pub fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
+        if let InitializationPhase::Rejected { command_id } = &self.phase
+            && matches_initialization_event(&event, *command_id)
+        {
+            // A callback contradicts rejection even if it escaped after the result.
+            return Err(ReconciliationFault::DispatchEvidenceConflict);
+        }
         if let Some(init) = self.pending_mut()
-            && init.progress.is_awaiting_dispatch_ack()
-            && init.matches_event(&event)
+            && init.progress.is_awaiting_dispatch_result()
+            && matches_initialization_event(&event, init.progress.command_id)
         {
             init.progress.buffer(event)?;
             return Ok(None);
@@ -30,15 +57,20 @@ impl InitializationState {
     }
 
     pub fn record_event(&mut self, event: &BleEvent) {
-        if let Some(init) = self.pending_mut()
-            && init.matches_event(event)
-            && let BleEvent::AdapterSnapshotChanged { snapshot, .. } = event
+        if let BleEvent::AdapterSnapshotChanged {
+            command_id: Some(command_id),
+            snapshot,
+        } = event
+            && let Some(init) = self.pending_mut()
+            && init.progress.command_id == *command_id
             && init.snapshot.is_none()
         {
             init.snapshot = Some(snapshot.clone());
         }
     }
 
+    /// Returns None if no pending initialization owns this dispatch result.
+    /// Otherwise updates state and returns ordered replay plus actor-owned actions.
     pub fn resolve_dispatch(
         &mut self,
         command_id: CommandId,
@@ -48,36 +80,37 @@ impl InitializationState {
             .pending_mut()
             .filter(|init| init.progress.command_id == command_id)?;
         Some(if result.is_err() {
-            DispatchResolution {
-                effect: if init.progress.has_buffered_events() {
-                    DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
-                } else {
-                    DispatchEffect::Cleanup
-                },
-                ..Default::default()
-            }
+            let resolution = init
+                .progress
+                .rejected_resolution(DispatchAction::StartCleanup, |_| {
+                    BufferedEventDisposition::Conflict
+                });
+            self.phase = InitializationPhase::Rejected { command_id };
+            resolution
         } else {
             init.progress.accepted_resolution()
         })
     }
 
+    /// Installs the reservation after admission and caller handoff succeed.
+    /// A second installation is an invariant violation, not a normal error path.
     pub fn reserve_initialize(&mut self, command_id: CommandId) {
-        *self = Self::Pending(InitReservation::new(command_id));
-    }
-
-    fn has_started(&self) -> bool {
-        !matches!(self, Self::NotStarted)
+        assert!(
+            self.require_not_started().is_ok(),
+            "validated initialization has already started"
+        );
+        self.phase = InitializationPhase::Pending(InitReservation::new(command_id));
     }
 
     pub fn require_not_started(&self) -> Result<(), WaiterError> {
-        if self.has_started() {
+        if !matches!(self.phase, InitializationPhase::NotStarted) {
             return Err(WaiterError::OperationBusy);
         }
         Ok(())
     }
 
     pub fn require_initialized(&self) -> Result<(), WaiterError> {
-        if matches!(self, Self::Ready) {
+        if matches!(self.phase, InitializationPhase::Ready) {
             Ok(())
         } else {
             Err(WaiterError::NotInitialized)
@@ -85,23 +118,17 @@ impl InitializationState {
     }
 
     fn pending(&self) -> Option<&InitReservation> {
-        match self {
-            Self::Pending(reservation) => Some(reservation),
+        match &self.phase {
+            InitializationPhase::Pending(reservation) => Some(reservation),
             _ => None,
         }
     }
 
     fn pending_mut(&mut self) -> Option<&mut InitReservation> {
-        match self {
-            Self::Pending(reservation) => Some(reservation),
+        match &mut self.phase {
+            InitializationPhase::Pending(reservation) => Some(reservation),
             _ => None,
         }
-    }
-
-    pub fn has_failed(&self) -> bool {
-        self.pending().is_some_and(|init| {
-            !init.progress.is_awaiting_dispatch_ack() && init.progress.terminal_failed()
-        })
     }
 
     /// Returns whether initialization owns the command, not whether it succeeded.
@@ -121,6 +148,9 @@ impl InitializationState {
         true
     }
 
+    /// Returns a deliverable result without advancing or releasing pending state.
+    /// None means either the command is not owned or its evidence is incomplete;
+    /// it is not a command-ownership probe. The actor owns waiter delivery.
     pub fn waiter_result(
         &self,
         command_id: CommandId,
@@ -129,44 +159,53 @@ impl InitializationState {
             .pending()
             .filter(|init| init.progress.command_id == command_id)?;
         init.progress
-            .waiter_result(|| init.snapshot.clone().map(WaiterSuccess::Initialized))
+            .terminal_result()?
+            .map(|()| init.snapshot.clone().map(WaiterSuccess::Initialized))
+            .transpose()
     }
 
-    /// Called only after the actor has settled the result from this evidence.
-    pub fn complete_if_ready(&mut self) {
-        if self.pending().is_some_and(|init| {
-            init.progress.is_complete(init.snapshot.is_some()) && init.progress.terminal_succeeded()
-        }) {
-            *self = Self::Ready;
+    /// Advances readiness after waiter settlement, even when no caller remains.
+    /// Incomplete evidence stays pending; success with a snapshot enters Ready.
+    /// Accepted terminal failure is returned for actor-owned runtime faulting.
+    /// Ok(()) does not imply readiness: it also covers pending or inactive phases.
+    pub fn advance_after_settlement(&mut self) -> Result<(), WaiterError> {
+        let Some(init) = self.pending() else {
+            return Ok(());
+        };
+        let Some(terminal) = init.progress.terminal_result() else {
+            return Ok(());
+        };
+        terminal?;
+        if init.snapshot.is_some() {
+            self.phase = InitializationPhase::Ready;
         }
+        Ok(())
     }
 }
 
 /// Dispatch, correlated snapshot, and terminal may arrive in either order.
-/// The enum payload matches its owner's visibility, but exposes no record internals.
-pub struct InitReservation {
+/// The pending record and all phase transitions stay private to this owner.
+struct InitReservation {
     progress: CommandProgress,
     snapshot: Option<AdapterSnapshot>,
 }
 
 impl InitReservation {
-    fn matches_event(&self, event: &BleEvent) -> bool {
-        match event {
-            BleEvent::AdapterSnapshotChanged {
-                command_id: Some(command_id),
-                ..
-            }
-            | BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.progress.command_id
-            }
-            _ => false,
-        }
-    }
-
     fn new(command_id: CommandId) -> Self {
         Self {
             progress: CommandProgress::new(command_id),
             snapshot: None,
         }
+    }
+}
+
+fn matches_initialization_event(event: &BleEvent, expected: CommandId) -> bool {
+    match event {
+        BleEvent::AdapterSnapshotChanged {
+            command_id: Some(command_id),
+            ..
+        }
+        | BleEvent::CommandCompleted { command_id, .. } => *command_id == expected,
+        _ => false,
     }
 }

@@ -6,7 +6,9 @@ use blehub::{
 };
 
 use crate::{
-    runtime::reservations::{ConnectionReservations, DispatchEffect, GattAccess, ReconcileFault},
+    runtime::reservations::{
+        ConnectionReservations, DispatchAction, GattAccess, ReconciliationFault,
+    },
     waiter::{WaiterError, WaiterSuccess},
 };
 
@@ -30,7 +32,7 @@ fn connection_event(
 
 fn record(connections: &mut ConnectionReservations, event: BleEvent) {
     let event = connections
-        .buffer_before_dispatch(event)
+        .gate_event(event)
         .unwrap()
         .expect("fixture dispatch was already accepted");
     connections.record_event(&event).unwrap();
@@ -55,8 +57,8 @@ fn terminal(
 
 fn accept(connections: &mut ConnectionReservations, command_id: CommandId) {
     let resolution = connections.resolve_dispatch(command_id, &Ok(())).unwrap();
-    assert!(matches!(resolution.effect, DispatchEffect::None));
-    assert!(resolution.replay.is_empty());
+    assert!(matches!(resolution.action, DispatchAction::None));
+    assert!(resolution.events_to_replay.is_empty());
 }
 
 fn database() -> GattDatabase {
@@ -220,19 +222,20 @@ fn pre_ack_operation_priority_is_global_across_connections() {
                 // connection identifies an operation's loss route, which wins globally.
                 let event =
                     connection_event(Some(3.into()), CONNECTION, ConnectionState::Disconnected);
-                assert_eq!(
-                    connections.buffer_before_dispatch(event.clone()).unwrap(),
-                    None
-                );
+                assert_eq!(connections.gate_event(event.clone()).unwrap(), None);
                 let connect = connections.resolve_dispatch(3.into(), &Ok(())).unwrap();
-                assert!(matches!(connect.effect, DispatchEffect::None));
+                assert!(matches!(connect.action, DispatchAction::None));
                 assert!(
-                    connect.replay.is_empty(),
+                    connect.events_to_replay.is_empty(),
                     "connect stole {operation:?} loss"
                 );
                 let operation_resolution = connections.resolve_dispatch(4.into(), &Ok(())).unwrap();
-                assert!(matches!(operation_resolution.effect, DispatchEffect::None));
-                assert_eq!(operation_resolution.replay, vec![event], "{operation:?}");
+                assert!(matches!(operation_resolution.action, DispatchAction::None));
+                assert_eq!(
+                    operation_resolution.events_to_replay,
+                    vec![event],
+                    "{operation:?}"
+                );
             }
         }
     }
@@ -245,14 +248,11 @@ fn pre_ack_connect_fallback_is_broad_but_replayed_evidence_is_exact() {
         let mut connections = ConnectionReservations::default();
         connections.reserve_connection(PERIPHERAL, 1.into(), CONNECTION);
         let event = connection_event(command_id, connection_id, ConnectionState::Connected);
-        assert_eq!(
-            connections.buffer_before_dispatch(event.clone()).unwrap(),
-            None
-        );
+        assert_eq!(connections.gate_event(event.clone()).unwrap(), None);
         let resolution = connections.resolve_dispatch(1.into(), &Ok(())).unwrap();
-        assert!(matches!(resolution.effect, DispatchEffect::None));
-        assert_eq!(resolution.replay, vec![event]);
-        for event in resolution.replay {
+        assert!(matches!(resolution.action, DispatchAction::None));
+        assert_eq!(resolution.events_to_replay, vec![event]);
+        for event in resolution.events_to_replay {
             record(&mut connections, event);
         }
         terminal(&mut connections, 1.into(), Ok(()));
@@ -511,12 +511,12 @@ fn enabled_unknown_mode_is_default_only_and_strict_duplicates_are_validated() {
                     record(&mut connections, enabled(4.into(), Some(valid)));
                 }
                 let invalid = connections
-                    .buffer_before_dispatch(enabled(4.into(), actual_mode))
+                    .gate_event(enabled(4.into(), actual_mode))
                     .unwrap()
                     .unwrap();
                 assert!(matches!(
                     connections.record_event(&invalid),
-                    Err(ReconcileFault::UnexpectedNotificationMode)
+                    Err(ReconciliationFault::UnexpectedNotificationMode)
                 ));
                 assert_eq!(connections.waiter_result(4.into()), None);
             }

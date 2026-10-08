@@ -1,8 +1,8 @@
 use super::support::{
     AdapterSnapshot, AdapterState, Arc, AuthorizationState, BleErrorCategory, BleEvent,
     BleEventError, BleHub, CommandDispatchError, CommandId, Duration, EventIngressStatus,
-    EventScenario, FakeBackend, PeripheralId, RecordedCommand, RuntimeOwner, ScanOptions,
-    ScanSessionId, StartScanCommand, WaiterError, command_completed, connect_scenario,
+    EventReadError, EventScenario, FakeBackend, PeripheralId, RecordedCommand, RuntimeOwner,
+    ScanOptions, ScanSessionId, StartScanCommand, WaiterError, command_completed, connect_scenario,
     init_command, init_snapshot, init_snapshot_event,
 };
 
@@ -414,6 +414,58 @@ fn initialize_clean_dispatch_rejection_retires_hub_without_faulting() {
     });
     assert_eq!(handle.commands(), vec![init_command(1)]);
     assert!(handle.push_statuses().is_empty());
+}
+
+#[test]
+fn initialize_late_callbacks_after_clean_rejection_fault_without_reopening_or_replaying() {
+    for late in [init_snapshot_event(Some(1)), command_completed(1, None)] {
+        let owner = RuntimeOwner::new().unwrap();
+        let rejection = CommandDispatchError::InvalidState {
+            detail: "initialization rejected without callbacks".to_owned(),
+        };
+        let (backend, handle) =
+            FakeBackend::scripted([EventScenario::reject(init_command(1), rejection.clone())]);
+        let sink = owner.event_sink();
+        owner
+            .attach_hub(BleHub::new(Arc::new(backend), Arc::clone(&sink)).unwrap())
+            .unwrap();
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        host.block_on(async {
+            let timeout = Duration::from_secs(2);
+            assert_eq!(
+                owner.initialize(timeout).await,
+                Err(WaiterError::DispatchRejected(rejection))
+            );
+            assert!(!owner.faulted_for_test());
+
+            // Use the actual runtime sink to model callbacks that already escaped
+            // the Hub's ingress gate before cleanup closed native delivery.
+            for foreign in [
+                init_snapshot_event(None),
+                init_snapshot_event(Some(99)),
+                command_completed(99, None),
+            ] {
+                sink.on_event(foreign.clone()).unwrap();
+                assert_eq!(owner.next_event(timeout).await, Ok(Some(foreign)));
+            }
+            assert!(!owner.faulted_for_test());
+            sink.on_event(late).unwrap();
+            assert_eq!(owner.next_event(timeout).await, Err(EventReadError::Fault));
+            tokio::time::timeout(timeout, owner.wait_for_actor_stop_for_test())
+                .await
+                .unwrap();
+            assert_eq!(
+                owner.initialize(timeout).await,
+                Err(WaiterError::TransportFault)
+            );
+            owner.close().await.unwrap();
+        });
+        assert_eq!(handle.commands(), vec![init_command(1)]);
+        assert_eq!(handle.dispose_count(), 1);
+    }
 }
 
 #[test]

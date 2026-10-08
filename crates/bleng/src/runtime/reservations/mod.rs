@@ -29,6 +29,21 @@
 //! native dispatch without an intervening await. Losing cancellation creates
 //! no reservation to roll back. Accepted native work outlives caller waiters.
 //!
+//! Live callbacks first pass through gate_event(), before public publication or
+//! evidence recording. This is a dispatch-evidence gate, not an ownership query
+//! or a filter: Ok(Some(event)) passes both unclaimed callbacks and owned callbacks
+//! whose dispatch result no longer requires buffering. Ok(None) means the event
+//! was retained for ordered replay, not discarded. Err means overflow or conflicting
+//! evidence; the actor faults the runtime. Dispatch resolution transfers buffered
+//! callbacks for replay directly into normal processing, without gating them again.
+//!
+//! Result APIs answer different questions. resolve_dispatch(None) means no matching
+//! reservation; record_terminal() returns ownership where routing needs it, not
+//! operation success. waiter_result(None) can mean either unowned or incomplete;
+//! a present result is deliverable but does not itself advance or retire state.
+//! Leaf waiter_result() methods without a command ID assume the caller already
+//! selected the owning record. None must not be treated as an admission failure.
+//!
 //! Events record correlated evidence, settle affected waiters, then retire or
 //! commit records. Retirement must depend on owned evidence, not an unrelated
 //! raw event, and must retain incomplete start/dispatch evidence for late callbacks.
@@ -51,7 +66,7 @@ mod tests;
 
 pub(super) use connection::connection_lost;
 pub(super) use connections::ConnectionReservations;
-pub(super) use dispatch::{DispatchEffect, DispatchResolution, ReconcileFault};
+pub(super) use dispatch::{DispatchAction, DispatchResolution, ReconciliationFault};
 pub(super) use gatt::GattAccess;
 pub(super) use initialization::InitializationState;
 pub(super) use scan::ScanState;

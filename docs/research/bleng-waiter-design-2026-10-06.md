@@ -230,7 +230,7 @@ from `Closed` still use phase; no duplicate state is introduced.
 The lifecycle owns phase-to-admission-error mapping (`require_open()`), and
 `InitializationState` owns readiness-to-admission-error mapping
 (`require_initialized()`). Only `Ready` passes the initialization gate;
-`NotStarted` and `Pending` return `NotInitialized`. The actor delegates both
+`NotStarted`, `Pending`, and `Rejected` return `NotInitialized`. The actor delegates both
 gates without reinterpreting their state. Connection registration and operation reservation methods
 are delegated to `ConnectionReservations`, which owns their installation logic.
 `InitializationState::reserve_initialize()` uses a private `InitReservation::new()`.
@@ -292,7 +292,7 @@ these entry names remain unchanged. These synchronous entries are `pub(super)`
 methods in actor.rs, not public crate APIs. All state coordination stays in
 actor.rs behind those two entries: early-callback buffering, foreign-disconnect
 exclusion, publication, evidence recording, settlement, retirement,
-`DispatchEffect` execution, and replay. The remaining coordination helpers are
+`DispatchAction` execution, and replay. The remaining coordination helpers are
 private. Messages cannot access actor fields or obtain state through new getters.
 This is source organization within the existing runtime, not a new boundary;
 it adds no actor, lock, queue, index, or state machine and changes neither ABI
@@ -326,14 +326,36 @@ unpacking reservation fields; the two asynchronous-input handlers in
 `runtime/messages.rs` only forward through the restricted actor entries.
 Initialization, scan, and connection owners provide:
 
-- `buffer_before_dispatch(event)`: correlate and consume an early callback into
-  its existing bounded buffer. `Ok(None)` means consumed, `Ok(Some(event))` means
-  unclaimed, and overflow returns `ReconcileFault`.
+- `gate_event(event)`: gate a live callback before publication and evidence
+  recording. Correlated callbacks awaiting a dispatch result enter the existing
+  bounded buffer; native dispatch may already be running. `Ok(None)` means buffered,
+  `Ok(Some(event))` means continue to the next owner or normal processing, and overflow
+  or initialization evidence contradicting rejection returns `ReconciliationFault`.
+  Passing through is not an ownership answer: both unclaimed events and owned events
+  no longer needing buffering pass. Buffering retains the event for ordered replay;
+  it does not discard it.
 - `record_event(&event)`: validate command/connection/session/target identity and
   record local evidence, without publishing, settling, or retiring resources.
 - `resolve_dispatch(command_id, result)`: accept dispatch and take buffered events,
   or remove rejected provisional state while preserving committed GATT databases
   and active routes where required.
+
+Initialization keeps admission checks separate from reservation installation:
+check before waiter registration, install only after the caller handoff is claimed.
+After evidence recording, settle the waiter before calling
+`advance_after_settlement()` to advance readiness or report accepted failure.
+`Ok(())` from that method does not imply readiness; incomplete evidence stays pending.
+Likewise, `waiter_result(None)` is not an ownership answer: the command may be owned
+but incomplete. In contrast, `record_terminal()` returns command ownership and
+`resolve_dispatch(None)` means no pending initialization owns that dispatch result.
+
+These result and settlement contracts also apply to scan and connection owners.
+Their `waiter_result()` returns `None` for either unowned commands or incomplete
+results; ID-free queries on already-selected I/O/GATT leaves mean incomplete evidence.
+The connection collection is the actor's final terminal route, so it needs no
+ownership boolean. Retirement APIs retain resource-specific names and run after
+waiter settlement. A subscription's `Keep` can mean incomplete, active, or restored,
+not successful completion; the connection owner applies `Remove` to the collection.
 
 Leaf correlation methods are reused for buffering and recording. Recording is
 also gated by the specific domain-event variant, so broader loss/terminal
@@ -348,8 +370,11 @@ order. Foreign-command loss of a known connection remains publicly visible but b
 cannot mutate reservation evidence.
 
 `DispatchResolution` is a transient outcome, not another state registry. It
-contains allowed `replay` events and a `DispatchEffect` (none, cleanup, or fault).
-The actor executes the effect, settles any dispatch rejection, then replays in
+contains `events_to_replay` and an `action: DispatchAction`: `None`, `StartCleanup`,
+or `FaultRuntime(ReconciliationFault)`. The action is requested work, not an
+already-applied effect; `StartCleanup` does not promise completed cleanup.
+`DispatchEvidenceConflict` identifies a dispatch-result/event-evidence conflict.
+The actor executes the action, settles any dispatch rejection, then replays in
 order. Each replay publishes, records, settles waiters, then retires state.
 Generic operation rejection permits only passive-loss replay; subscription
 rejection retains its broader connection-loss policy. Clean initialization
@@ -378,8 +403,10 @@ there is no public module path or wider re-export. Sibling-shared implementation
 uses `pub(super)` within the directory; file-local helpers remain private. This
 replaces repeated `pub(in crate::runtime)` without widening the effective API.
 
-Initialization and scan enum payload types match their enum declaration visibility,
-but are not independently re-exported and keep their fields private. Raw-record
+`InitializationState` is an opaque struct: its `InitializationPhase` enum, phase
+field, and `InitReservation` are private. Consumers cannot construct `Ready` or
+overwrite pending evidence. Scan enum payload types still match their enum declaration
+visibility, but are not independently re-exported and keep their fields private. Raw-record
 queries (`pending`, `reserved`, `reserved_mut`, `find`, and `find_mut`) are internal.
 The actor requests `accepted_command_ids(connection_id)` for loss settlement rather
 than inspecting a connection record. Tests now exercise dispatch resolution,
@@ -437,33 +464,67 @@ no additional visibility for tests. End-to-end tests remain under `runtime/tests
 
 [`CommandProgress`](../../crates/bleng/src/runtime/reservations/dispatch.rs)
 replaces `DispatchReservation` plus the separate terminal field on each concrete
-record. Every command's `progress` retains `command_id`, private `buffered`, private
-`dispatch_accepted`, and private `terminal: Option<Result<(), BleEventError>>`.
+record. Every command's `progress` retains `command_id`, private `buffered_events`,
+private `dispatch_accepted`, and private `terminal_result: Option<Result<(), BleEventError>>`.
 Initialization, scan start/stop, connect/disconnect, discovery, RSSI, reads,
 writes, and notification transitions use this same boundary; they no longer
 store a separate `terminal` or `start_terminal`.
 
 `record_terminal()` preserves the first result, including its native error;
 conflicting duplicate terminals cannot overwrite it. Queries use `has_terminal()`,
-`terminal_succeeded()`, and `terminal_failed()`. `is_awaiting_dispatch_ack()` means
-dispatch acknowledgement is unresolved, not that the caller waiter or native
-operation is pending. Accepted dispatch alone is never BLE completion.
+`terminal_succeeded()`, and `terminal_failed()`. `is_awaiting_dispatch_result()` means
+the synchronous native dispatch result is still awaiting actor processing, not
+that the caller waiter or native operation is pending. The result arrives in
+`DispatchResolved`; it is neither the Begin reply nor a native BLE response.
+Accepted dispatch alone is never BLE completion.
 
-`CommandProgress::waiter_result(success)` no longer takes an external terminal:
-unresolved dispatch or a missing terminal returns `None`; a terminal error is
-returned as an operation error; a successful terminal lazily invokes the concrete
-reservation's domain-result closure. `is_complete(domain_ready)` requires accepted
-dispatch plus a terminal, and then either terminal failure or complete domain
-evidence. Completion does not itself decide when native resources are removable.
+`CommandProgress::terminal_result()` takes no success closure and does not depend
+on `WaiterSuccess`: unresolved dispatch or a missing terminal returns `None`;
+a terminal error becomes an operation error; terminal success returns only
+`Ok(())`, not proof of domain completion. Concrete reservations combine domain
+evidence with `terminal_result()?.map(|()| /* Option<WaiterSuccess> */).transpose()`.
+`Result::map` keeps success construction lazy and preserves terminal-error
+precedence; missing domain evidence still returns `None`.
+`is_complete(domain_evidence_ready)` requires accepted dispatch plus a terminal,
+and then either terminal failure or all correlated domain evidence required for
+success. This is command-evidence completion, not the end of a native lifecycle;
+it neither depends on a live waiter nor decides when native resources are removable.
 Connection failure and passive loss retain their concrete-record precedence.
 Typed snapshots, connection facts/errors, discovery drafts, RSSI/read payloads,
 write evidence, and notification domain state remain local to their reservations,
 not in this helper.
 
-Peer modules cannot mutate `buffered`: only bounded `buffer()` enqueues events.
-`has_buffered_events()` queries retained evidence; `take_buffered_events()`
-transfers it in order without acknowledging dispatch or choosing rejection replay
-policy. Initialization and scan `record_event()` return `()` because they cannot
+Peer modules cannot mutate `buffered_events`: only bounded `buffer()` enqueues events.
+`CommandProgress` owns exactly two dispatch-resolution entry points; both drain
+buffered evidence:
+
+- `accepted_resolution()` marks dispatch accepted and transfers all early callbacks
+  in order. It explicitly returns `DispatchAction::None`; normal acceptance itself
+  requests neither cleanup nor fault.
+- `rejected_resolution(on_clean_rejection, classify)` drains early evidence without
+  marking acceptance. The concrete reservation returns `BufferedEventDisposition`
+  for each event: `Replay`, `Discard`, or `Conflict`. The shared loop preserves
+  replay order and drops legitimately ignored evidence. Any conflict overrides
+  the clean-rejection action with a fault, but classification continues.
+
+Initialization, scan start, and connect classify every early callback as a conflict;
+with no buffered events, initialization requests `StartCleanup` and the others
+request no action. Ordinary I/O permits only passive-loss replay; subscriptions
+retain their broader connection-loss policy. Scan stop uses the same entry point
+with its local three-way policy: passive stop/error replays, requested stop conflicts,
+and the rejected command's terminal is discarded.
+
+`DispatchResolution` is only result data, with no separate classifier constructor.
+`rejected_resolution_with_replay()` and `from_rejected_events()` are removed.
+`take_buffered_events()` is private; peers no longer extract buffers or assemble
+rejection outcomes in their own loops. Strict rejection also drains the buffer
+instead of relying on later reservation removal to discard evidence.
+
+Resource removal and subscription restoration stay with their concrete owners;
+resolution construction executes no lifecycle action or event publication. The
+actor still executes actions, settles rejection, then replays events; a fault
+prevents further public replay.
+Initialization and scan `record_event()` return `()` because they cannot
 fail; the actor retains a fallible reconciliation boundary for connection-side
 notification-mode validation.
 
@@ -945,7 +1006,7 @@ interprets it with the shared progress gate; no separate terminal field remains.
 
 The result decision now lives beside the state it interprets:
 
-- `InitReservation::waiter_result()` requires a snapshot and successful
+- `InitializationState::waiter_result()` requires a snapshot and successful
   terminal result;
 - `ScanReservation` and `StopReservation` preserve start/stop ordering and
   scan-stop errors;
@@ -966,8 +1027,8 @@ concrete reservations are clearer than a type-level state-machine abstraction.
 
 ### Initialization state and late completion
 
-The actor has one `InitializationState`, rather than an independent readiness
-boolean and optional initialization reservation:
+The actor has one opaque `InitializationState`, rather than an independent
+readiness boolean and optional initialization reservation. Its private phase follows:
 
 ```text
 NotStarted -- successful handoff + reserve --> Pending(InitReservation) -> Ready
@@ -976,7 +1037,8 @@ NotStarted -- successful handoff + reserve --> Pending(InitReservation) -> Ready
          stay NotStarted; remove only waiter      |   stay Pending; retire only waiter
                                                   +-- cancel before owner begin ack: fault runtime
                                                   +-- accepted terminal failure: fault runtime
-                                                  +-- clean dispatch rejection: retire Hub, not retry
+                                                  +-- dispatch rejection: Rejected { command_id }
+                                                      clean: retire Hub; conflicting evidence: fault
 ```
 
 Ready requires accepted dispatch, a command-correlated snapshot, and a successful
@@ -985,6 +1047,31 @@ releasing completed evidence. After owner begin acknowledgement, late success
 can make the actor ready even after the waiter timed out or was cancelled. Duplicate initialization callbacks after
 success still appear on the event stream but cannot change readiness or permit
 a second initialization. Readiness is not adapter power state or runtime phase.
+
+Dispatch rejection releases the pending record and enters `Rejected { command_id }`.
+Only this one correlation ID is retained, not snapshot/terminal evidence or a pending
+progress object. Clean rejection still starts Hub cleanup without faulting the runtime;
+it cannot retry initialization. A later matching snapshot or terminal contradicts the
+rejection and faults before public publication, rather than entering a pre-dispatch
+buffer indefinitely. Uncorrelated events continue through the ordinary event stream
+without changing initialization state. Duplicate dispatch results cannot revive or
+re-settle the rejected operation. `reserve_initialize()` asserts `NotStarted` so an
+internal admission violation cannot overwrite existing initialization state.
+Regression coverage lives in the runtime initialization and reconciliation tests;
+the actor test uses the real runtime sink to model a callback already escaped from
+the Hub's closing ingress gate.
+
+After waiter settlement, the actor calls only
+`advance_after_settlement() -> Result<(), WaiterError>`, rather than separately querying
+`has_failed()` and then completing. Missing dispatch acceptance or terminal keeps
+Pending; terminal failure returns the original operation error for actor faulting;
+terminal success with a snapshot enters Ready. This check does not clone a success
+snapshot. `record_event()` directly matches a correlated snapshot instead of first
+matching a broader snapshot-or-terminal category. Private `pending()` / `pending_mut()`
+helpers remain shared by multiple owner methods; no raw-record getter is exposed.
+The registration assertion reuses `require_not_started()` without a separate
+`has_started()` helper. Test fixtures build readiness through the ordinary evidence
+transitions, not a test-only production constructor or wider phase visibility.
 
 ### `WaiterEntry`
 

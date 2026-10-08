@@ -10,7 +10,10 @@ use crate::waiter::{WaiterError, WaiterSuccess};
 
 use super::{
     connection::{ConnectionReservation, DisconnectReservation, PreAckRoute},
-    dispatch::{CommandProgress, DispatchEffect, DispatchResolution, ReconcileFault},
+    dispatch::{
+        BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
+        ReconciliationFault,
+    },
     gatt::GattAccess,
     io::{ReadReservation, RssiReservation, WriteReservation},
     subscription::SubscriptionReservation,
@@ -25,10 +28,10 @@ pub struct ConnectionReservations {
 }
 
 impl ConnectionReservations {
-    pub fn buffer_before_dispatch(
-        &mut self,
-        event: BleEvent,
-    ) -> Result<Option<BleEvent>, ReconcileFault> {
+    /// Gates live callbacks before publication; this is not an ownership query.
+    /// Some(event) passes through, including owned events needing no buffering.
+    /// None retains the event pending dispatch resolution; overflow is an error.
+    pub fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
         // Category priority is global, not per connection. A malformed callback
         // can identify one connection by command and another by connection ID.
         for route in [
@@ -50,7 +53,7 @@ impl ConnectionReservations {
         Ok(Some(event))
     }
 
-    pub fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconcileFault> {
+    pub fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconciliationFault> {
         let connection_id = match event {
             BleEvent::ConnectionStateChanged { connection_id, .. }
             | BleEvent::RssiRead { connection_id, .. }
@@ -66,6 +69,8 @@ impl ConnectionReservations {
         Ok(())
     }
 
+    /// Returns None when no retained connection command owns this dispatch result.
+    /// Otherwise updates reservations and returns ordered replay plus actor actions.
     pub fn resolve_dispatch(
         &mut self,
         command_id: CommandId,
@@ -77,16 +82,11 @@ impl ConnectionReservations {
         }
         debug_assert_eq!(connection.progress.command_id, command_id);
         Some(if result.is_err() {
-            let contradictory = connection.progress.has_buffered_events();
+            let resolution = connection
+                .progress
+                .rejected_resolution(DispatchAction::None, |_| BufferedEventDisposition::Conflict);
             self.remove(peripheral_id);
-            DispatchResolution {
-                effect: if contradictory {
-                    DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
-                } else {
-                    DispatchEffect::None
-                },
-                ..Default::default()
-            }
+            resolution
         } else {
             connection.progress.accepted_resolution()
         })
@@ -352,6 +352,8 @@ impl ConnectionReservations {
         self.by_peripheral.remove(&peripheral_id)
     }
 
+    /// Records the first terminal in its owning command, ignoring unowned IDs.
+    /// No ownership result is needed: this collection is the actor's final route.
     pub fn record_terminal(&mut self, command_id: CommandId, result: &Result<(), BleEventError>) {
         for connection in self.by_peripheral.values_mut() {
             if connection.record_terminal(command_id, result) {
@@ -360,6 +362,8 @@ impl ConnectionReservations {
         }
     }
 
+    /// Queries a deliverable result without advancing or retiring reservations.
+    /// None means unowned or incomplete, not operation failure.
     pub fn waiter_result(
         &self,
         command_id: CommandId,
@@ -370,6 +374,8 @@ impl ConnectionReservations {
     }
 
     /// Call only after settling affected waiters, including after late callbacks.
+    /// Retires completed child operations before removing retirable connection roots;
+    /// caller timeout or cancellation alone permits neither kind of retirement.
     pub fn retire_completed(&mut self) {
         self.by_peripheral.retain(|_, connection| {
             connection.retire_completed_operations();

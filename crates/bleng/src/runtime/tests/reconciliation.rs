@@ -1,11 +1,15 @@
-use blehub::{BleEvent, CommandDispatchError, NotificationModeRequest};
+use blehub::{
+    BleErrorCategory, BleEvent, BleEventError, CommandDispatchError, NotificationModeRequest,
+    ScanStopReason, ScanStopResult,
+};
 
 use crate::runtime::reservations::{
-    ConnectionReservations, DispatchEffect, InitializationState, ReconcileFault,
+    ConnectionReservations, DispatchAction, InitializationState, ReconciliationFault, ScanState,
 };
 
 use super::support::{
-    WaiterError, WaiterSuccess, connected_event, disconnected_event, init_snapshot,
+    WaiterError, WaiterSuccess, command_completed, connected_event, disconnected_event,
+    init_snapshot, init_snapshot_event,
 };
 
 #[test]
@@ -23,32 +27,25 @@ fn pre_ack_buffer_is_bounded_and_replays_correlated_evidence_in_order() {
         })
         .collect();
     for event in &events {
-        assert_eq!(
-            initialization
-                .buffer_before_dispatch(event.clone())
-                .unwrap(),
-            None
-        );
+        assert_eq!(initialization.gate_event(event.clone()).unwrap(), None);
     }
     let foreign = BleEvent::AdapterSnapshotChanged {
         command_id: Some(99.into()),
         snapshot: init_snapshot(),
     };
     assert_eq!(
-        initialization
-            .buffer_before_dispatch(foreign.clone())
-            .unwrap(),
+        initialization.gate_event(foreign.clone()).unwrap(),
         Some(foreign)
     );
     assert!(matches!(
-        initialization.buffer_before_dispatch(events[0].clone()),
-        Err(ReconcileFault::BufferOverflow)
+        initialization.gate_event(events[0].clone()),
+        Err(ReconciliationFault::BufferOverflow)
     ));
 
     let resolution = initialization.resolve_dispatch(1.into(), &Ok(())).unwrap();
-    assert!(matches!(resolution.effect, DispatchEffect::None));
-    assert_eq!(resolution.replay, events);
-    for event in &resolution.replay {
+    assert!(matches!(resolution.action, DispatchAction::None));
+    assert_eq!(resolution.events_to_replay, events);
+    for event in &resolution.events_to_replay {
         initialization.record_event(event);
     }
     assert_eq!(initialization.waiter_result(1.into()), None);
@@ -63,8 +60,142 @@ fn pre_ack_buffer_is_bounded_and_replays_correlated_evidence_in_order() {
 }
 
 #[test]
+fn initialization_dispatch_rejection_is_final_and_correlates_late_evidence() {
+    let mut initialization = InitializationState::default();
+    initialization.reserve_initialize(1.into());
+    let rejection = Err(CommandDispatchError::InvalidState {
+        detail: "initialization rejected without callbacks".to_owned(),
+    });
+    let resolution = initialization
+        .resolve_dispatch(1.into(), &rejection)
+        .unwrap();
+    assert!(matches!(resolution.action, DispatchAction::StartCleanup));
+    assert!(resolution.events_to_replay.is_empty());
+    assert_eq!(
+        initialization.require_not_started(),
+        Err(WaiterError::OperationBusy)
+    );
+    assert_eq!(
+        initialization.require_initialized(),
+        Err(WaiterError::NotInitialized)
+    );
+
+    // Duplicate dispatch results cannot revive or re-settle a rejected operation.
+    assert!(initialization.resolve_dispatch(1.into(), &Ok(())).is_none());
+    assert!(
+        initialization
+            .resolve_dispatch(1.into(), &rejection)
+            .is_none()
+    );
+    for foreign in [
+        init_snapshot_event(None),
+        init_snapshot_event(Some(99)),
+        command_completed(99, None),
+    ] {
+        assert_eq!(
+            initialization.gate_event(foreign.clone()).unwrap(),
+            Some(foreign)
+        );
+    }
+    for late in [init_snapshot_event(Some(1)), command_completed(1, None)] {
+        assert!(matches!(
+            initialization.gate_event(late.clone()),
+            Err(ReconciliationFault::DispatchEvidenceConflict)
+        ));
+        initialization.record_event(&late);
+    }
+    assert!(!initialization.record_terminal(1.into(), &Ok(())));
+    assert_eq!(initialization.waiter_result(1.into()), None);
+    initialization.advance_after_settlement().unwrap();
+    assert_eq!(
+        initialization.require_initialized(),
+        Err(WaiterError::NotInitialized)
+    );
+}
+
+#[test]
+fn scan_stop_rejection_discards_terminals_and_preserves_replay_order_across_conflicts() {
+    for include_conflict in [false, true] {
+        let mut scan = ScanState::default();
+        scan.reserve_scan_start(1.into(), 10.into());
+        scan.resolve_dispatch(1.into(), &Ok(())).unwrap();
+        scan.record_event(&BleEvent::ScanStarted {
+            command_id: 1.into(),
+            scan_id: 10.into(),
+        });
+        assert!(scan.record_terminal(1.into(), &Ok(())));
+        scan.reserve_scan_stop(2.into());
+
+        let terminal = BleEvent::CommandCompleted {
+            command_id: 2.into(),
+            error: None,
+        };
+        let suspended = BleEvent::ScanStopped {
+            scan_id: 10.into(),
+            result: ScanStopResult::Ok {
+                reason: ScanStopReason::SystemSuspended,
+            },
+        };
+        let failed = BleEvent::ScanStopped {
+            scan_id: 10.into(),
+            result: ScanStopResult::Err {
+                error: BleEventError {
+                    category: BleErrorCategory::AdapterUnavailable,
+                    message: "adapter stopped scanning independently".to_owned(),
+                    platform_details: None,
+                },
+            },
+        };
+        let mut events = vec![terminal.clone(), suspended.clone()];
+        if include_conflict {
+            events.push(BleEvent::ScanStopped {
+                scan_id: 10.into(),
+                result: ScanStopResult::Ok {
+                    reason: ScanStopReason::Requested {
+                        command_id: 2.into(),
+                    },
+                },
+            });
+        }
+        events.extend([terminal, failed.clone()]);
+        for event in events {
+            assert_eq!(scan.gate_event(event).unwrap(), None);
+        }
+
+        let rejection = Err(CommandDispatchError::InvalidState {
+            detail: "stop rejected after early callbacks".to_owned(),
+        });
+        let resolution = scan.resolve_dispatch(2.into(), &rejection).unwrap();
+        assert_eq!(resolution.events_to_replay, vec![suspended, failed]);
+        if include_conflict {
+            assert!(matches!(
+                resolution.action,
+                DispatchAction::FaultRuntime(ReconciliationFault::DispatchEvidenceConflict)
+            ));
+        } else {
+            assert!(matches!(resolution.action, DispatchAction::None));
+        }
+        assert_eq!(scan.stop_command(), None);
+        assert_eq!(scan.validate_scan_stop(10.into()), Ok(()));
+        assert_eq!(scan.require_scan_available(), Err(WaiterError::ScanBusy));
+
+        // Resolution only transfers evidence. The actor decides whether to replay;
+        // a conflicting result would fault before publishing any of these events.
+        if !include_conflict {
+            for event in &resolution.events_to_replay {
+                scan.record_event(event);
+            }
+            scan.retire_completed();
+            assert_eq!(scan.require_scan_available(), Ok(()));
+        }
+    }
+}
+
+#[test]
 fn rejection_replay_preserves_distinct_io_and_subscription_loss_policies() {
-    for subscription in [false, true] {
+    for (subscription, include_passive) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let mut connections = ConnectionReservations::default();
         connections.reserve_connection(1.into(), 1.into(), 10.into());
         connections.resolve_dispatch(1.into(), &Ok(())).unwrap();
@@ -87,14 +218,23 @@ fn rejection_replay_preserves_distinct_io_and_subscription_loss_policies() {
         // but only subscription rejection permits replaying this kind of loss.
         let loss = disconnected_event(Some(1), 10);
         assert!(!connections.is_foreign_disconnect(&loss));
-        assert_eq!(
-            connections.buffer_before_dispatch(loss.clone()).unwrap(),
-            None
-        );
+        let mut events = vec![loss.clone()];
+        if include_passive {
+            events.push(disconnected_event(None, 10));
+        }
+        for event in &events {
+            assert_eq!(connections.gate_event(event.clone()).unwrap(), None);
+        }
+        let expected_replay: Vec<_> = events
+            .into_iter()
+            .filter(|event| subscription || event.command_id().is_none())
+            .collect();
         let rejection = Err(CommandDispatchError::InvalidState {
             detail: "rejected after native connection loss".to_owned(),
         });
         let resolution = connections.resolve_dispatch(2.into(), &rejection).unwrap();
+        // A conflict must not stop classification of subsequent passive events.
+        assert_eq!(resolution.events_to_replay, expected_replay);
         assert_eq!(
             connections.waiter_result(1.into()),
             Some(Ok(WaiterSuccess::Connected(10.into())))
@@ -102,14 +242,16 @@ fn rejection_replay_preserves_distinct_io_and_subscription_loss_policies() {
         assert_eq!(connections.validate_gatt_discovery(10.into()), Ok(1.into()));
         assert!(connections.resolve_dispatch(2.into(), &Ok(())).is_none());
         if subscription {
-            assert!(matches!(resolution.effect, DispatchEffect::None));
-            assert_eq!(resolution.replay, vec![loss.clone()]);
+            assert!(matches!(resolution.action, DispatchAction::None));
+
             assert_eq!(
                 connections.validate_notification_disable(10.into(), 20.into(), 40.into()),
                 Err(WaiterError::SubscriptionNotActive)
             );
             // The actor, not resolve_dispatch(), decides when to record replay.
-            connections.record_event(&loss).unwrap();
+            for event in &resolution.events_to_replay {
+                connections.record_event(event).unwrap();
+            }
             connections.retire_completed();
             assert_eq!(connections.require_peripheral_available(1.into()), Ok(()));
             assert_eq!(
@@ -118,10 +260,10 @@ fn rejection_replay_preserves_distinct_io_and_subscription_loss_policies() {
             );
         } else {
             assert!(matches!(
-                resolution.effect,
-                DispatchEffect::Fault(ReconcileFault::ContradictoryDispatch)
+                resolution.action,
+                DispatchAction::FaultRuntime(ReconciliationFault::DispatchEvidenceConflict)
             ));
-            assert!(resolution.replay.is_empty());
+
             assert_eq!(connections.validate_gatt_discovery(10.into()), Ok(1.into()));
         }
     }

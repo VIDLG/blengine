@@ -59,7 +59,7 @@ pub(super) struct GattDiscoveryReservation {
     pub(super) progress: CommandProgress,
     session_id: GattSessionId,
     /// Database drafted by this discovery; it becomes committed only after
-    /// the discovery terminal succeeds.
+    /// accepted dispatch and successful terminal, following waiter settlement.
     pub(super) draft_database: Option<GattDatabase>,
 }
 
@@ -97,11 +97,16 @@ impl GattDiscoveryReservation {
         self.draft_database.is_some() && self.progress.terminal_succeeded()
     }
 
+    /// Queries this already-selected discovery; None means incomplete evidence.
+    /// Does not commit the draft or retire discovery; settlement must happen first.
     pub(super) fn waiter_result(&self) -> Option<Result<WaiterSuccess, WaiterError>> {
-        self.progress.waiter_result(|| {
-            self.draft_database
-                .clone()
-                .map(WaiterSuccess::GattDiscovered)
-        })
+        self.progress
+            .terminal_result()?
+            .map(|()| {
+                self.draft_database
+                    .clone()
+                    .map(WaiterSuccess::GattDiscovered)
+            })
+            .transpose()
     }
 }

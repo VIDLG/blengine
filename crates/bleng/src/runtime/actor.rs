@@ -9,7 +9,7 @@
 //! |   +-- waiters: CommandId -> expectation + oneshot result_tx
 //! |   +-- command_id_gen: monotonic command ID allocation
 //! |   +-- resource_id_gen: independent scan/connection/GATT/subscription ID allocation
-//! |   +-- initialization: NotStarted -> Pending(InitReservation) -> Ready
+//! |   +-- initialization: private NotStarted / Pending / Ready / Rejected phases
 //! |   +-- scan: Idle -> Reserved(ScanReservation) -> Idle
 //! |   +-- connections: ConnectionReservations (private peripheral-keyed map)
 //! |       +-- connect/disconnect correlation
@@ -109,8 +109,8 @@ use super::{
     messages::DispatchResolved,
     owner::BeginHandoff,
     reservations::{
-        ConnectionReservations, DispatchEffect, DispatchResolution, GattAccess,
-        InitializationState, ReconcileFault, ScanState, connection_lost,
+        ConnectionReservations, DispatchAction, DispatchResolution, GattAccess,
+        InitializationState, ReconciliationFault, ScanState, connection_lost,
     },
 };
 
@@ -390,13 +390,13 @@ impl BlengActor {
             self.process_event(event);
             return;
         }
-        match self.buffer_before_dispatch(event) {
+        match self.gate_event(event) {
             Ok(Some(event)) => self.process_event(event),
             Ok(None) => {}
             Err(fault) => {
                 tracing::error!(
                     ?fault,
-                    "BLE event could not be buffered before dispatch acknowledgement; closing runtime"
+                    "BLE event failed dispatch evidence reconciliation; closing runtime"
                 );
                 self.lifecycle.fault();
             }
@@ -410,10 +410,10 @@ impl BlengActor {
         result: Result<(), CommandDispatchError>,
     ) {
         let resolution = self.resolve_dispatch(command_id, &result);
-        match resolution.effect {
-            DispatchEffect::None => {}
-            DispatchEffect::Cleanup => self.lifecycle.start_cleanup(),
-            DispatchEffect::Fault(fault) => {
+        match resolution.action {
+            DispatchAction::None => {}
+            DispatchAction::StartCleanup => self.lifecycle.start_cleanup(),
+            DispatchAction::FaultRuntime(fault) => {
                 tracing::error!(
                     ?fault,
                     command_id = command_id.value,
@@ -427,7 +427,7 @@ impl BlengActor {
             self.waiters
                 .finish(command_id, Err(WaiterError::DispatchRejected(error)));
         }
-        for event in resolution.replay {
+        for event in resolution.events_to_replay {
             if !self.lifecycle.is_open() {
                 break;
             }
@@ -458,7 +458,7 @@ impl BlengActor {
         self.advance_and_retire_state();
     }
 
-    fn record_event_evidence(&mut self, event: &BleEvent) -> Result<(), ReconcileFault> {
+    fn record_event_evidence(&mut self, event: &BleEvent) -> Result<(), ReconciliationFault> {
         match event {
             BleEvent::AdapterSnapshotChanged { .. } => self.initialization.record_event(event),
             BleEvent::ScanStarted { .. } | BleEvent::ScanStopped { .. } => {
@@ -499,29 +499,27 @@ impl BlengActor {
 
     /// Advance initialization and retire completed native reservations after waiter settlement.
     fn advance_and_retire_state(&mut self) {
-        if self.initialization.has_failed() {
+        if self.initialization.advance_after_settlement().is_err() {
             // Accepted initialization failure invalidates even a caller-retired Hub.
             self.lifecycle.fault();
             return;
         }
-        self.initialization.complete_if_ready();
         self.connections.retire_completed();
         self.scan.retire_completed();
     }
 
-    fn buffer_before_dispatch(
-        &mut self,
-        event: BleEvent,
-    ) -> Result<Option<BleEvent>, ReconcileFault> {
+    /// Probes owners before publication: Some passes through, None is buffered,
+    /// and an error prevents publication and requires runtime faulting.
+    fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
         // These are ownership probes, not broadcasts. Each connection owner also
         // preserves global operation-category priority within its collection.
-        let Some(event) = self.initialization.buffer_before_dispatch(event)? else {
+        let Some(event) = self.initialization.gate_event(event)? else {
             return Ok(None);
         };
-        let Some(event) = self.connections.buffer_before_dispatch(event)? else {
+        let Some(event) = self.connections.gate_event(event)? else {
             return Ok(None);
         };
-        self.scan.buffer_before_dispatch(event)
+        self.scan.gate_event(event)
     }
 
     fn resolve_dispatch(

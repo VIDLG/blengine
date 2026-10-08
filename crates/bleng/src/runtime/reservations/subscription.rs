@@ -7,7 +7,7 @@ use crate::waiter::{WaiterError, WaiterSuccess};
 
 use super::{
     connection::connection_lost,
-    dispatch::{CommandProgress, ReconcileFault},
+    dispatch::{CommandProgress, ReconciliationFault},
 };
 
 /// A subscription becomes active only after dispatch acknowledgement, a successful
@@ -64,6 +64,8 @@ impl SubscriptionReservation {
         }
     }
 
+    /// Queries a deliverable transition result without changing the route.
+    /// None means no matching transition or incomplete evidence, not failure.
     pub(super) fn waiter_result(
         &self,
         command_id: CommandId,
@@ -76,7 +78,8 @@ impl SubscriptionReservation {
         }
         transition
             .progress
-            .waiter_result(|| match transition.domain {
+            .terminal_result()?
+            .map(|()| match transition.domain {
                 Some(NotificationState::Enabled { actual_mode }) => {
                     Some(WaiterSuccess::NotificationsEnabled {
                         connection_id,
@@ -94,6 +97,7 @@ impl SubscriptionReservation {
                 )),
                 None => None,
             })
+            .transpose()
     }
 
     pub(super) fn matches_event(
@@ -132,7 +136,7 @@ impl SubscriptionReservation {
         event: &BleEvent,
         connection_id: ConnectionId,
         subscription_id: SubscriptionId,
-    ) -> Result<(), ReconcileFault> {
+    ) -> Result<(), ReconciliationFault> {
         if !self.matches_event(event, connection_id, subscription_id) {
             return Ok(());
         }
@@ -156,7 +160,7 @@ impl SubscriptionReservation {
                 // Validate even a duplicate; first evidence does not excuse a
                 // later correlated callback that contradicts the required mode.
                 if !valid {
-                    return Err(ReconcileFault::UnexpectedNotificationMode);
+                    return Err(ReconciliationFault::UnexpectedNotificationMode);
                 }
                 transition
             }
@@ -190,8 +194,11 @@ impl SubscriptionReservation {
         self.state = SubscriptionState::Disabling(NotificationTransition::new(command_id));
     }
 
+    /// Call after waiter settlement, even when the caller already retired.
     /// Failed disable preserves the active route; failed enable removes the
     /// provisional route. Successful transitions also require domain evidence.
+    /// Keep can mean incomplete, active, or restored; it does not imply success.
+    /// The connection owner must apply Remove to its route collection.
     pub(super) fn retire_transition(&mut self) -> SubscriptionDisposition {
         let Some(transition) = self.transition() else {
             return SubscriptionDisposition::Keep;
@@ -212,8 +219,10 @@ impl SubscriptionReservation {
         }
     }
 
-    /// The caller takes buffered events before rejection and removes the route
-    /// immediately when requested; only a rejected disable has an active fallback.
+    /// Restores Active for a failed disable, or requests removal of a failed enable.
+    /// Dispatch rejection drains buffered events before calling this; accepted
+    /// terminal failure reaches it after waiter settlement through retire_transition().
+    /// The connection owner must remove the route when Remove is returned.
     pub(super) fn reject_transition(&mut self) -> SubscriptionDisposition {
         match self.state {
             SubscriptionState::Enabling { .. } => SubscriptionDisposition::Remove,

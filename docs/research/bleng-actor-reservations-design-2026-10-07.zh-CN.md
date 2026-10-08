@@ -127,7 +127,7 @@ runtime/
 
 可见性由私有实现模块与受限 facade 共同控制：`mod.rs` 中所有实现模块保持私有，只有真正的状态入口与协调结果通过 `pub(super) use` 向 runtime 重导出。实现文件的这些入口使用 `pub`，但没有公开模块路径或更宽的重导出，因此不是 crate 公共 API，也不改变 ABI。目录内部共享的类型、字段与 helper 使用 `pub(super)`，文件局部实现保持私有，不再逐项重复 `pub(in crate::runtime)`。
 
-初始化与扫描 enum 的 payload 类型必须与 enum 的声明可见性匹配，但不单独重导出，字段与局部方法也不开放。`pending()`、`reserved()`、`reserved_mut()`、`find()`、`find_mut()` 等原始记录查询均为内部实现。actor 断连结算通过 `ConnectionReservations::accepted_command_ids(connection_id)` 取得所需 command ID，不再取得整个连接记录。测试通过 dispatch resolution、相关事件、结果与 admission 判断验证行为，不为了检查内部字段放宽可见性。
+`InitializationState` 是不透明 struct：其 `InitializationPhase` enum、phase 字段和 `InitReservation` 全部私有，外部不能直接构造 `Ready` 或覆盖 pending 证据。扫描 enum 的 payload 类型仍与 enum 的声明可见性匹配，但不单独重导出，字段与局部方法也不开放。`pending()`、`reserved()`、`reserved_mut()`、`find()`、`find_mut()` 等原始记录查询均为内部实现。actor 断连结算通过 `ConnectionReservations::accepted_command_ids(connection_id)` 取得所需 command ID，不再取得整个连接记录。测试通过 dispatch resolution、相关事件、结果与 admission 判断验证行为，不为了检查内部字段放宽可见性。
 
 reservation 是命令与事件处理共用的 actor-confined 状态模型，不只是被动字段容器：它拥有局部 admission、回调关联、证据记录、dispatch reconciliation、结果判断与退休规则。reservation 是 actor 内的普通值，不单独调度。[`messages.rs`](../../crates/bleng/src/runtime/messages.rs) 统一命令准入与派发结果/ingress 消息入口；状态协调集中在 [`actor.rs`](../../crates/bleng/src/runtime/actor.rs)，局部状态判断靠近其 reservation 所有者。这是既有 runtime 内按角色划分源码，不是新增运行时或架构边界。
 
@@ -180,11 +180,13 @@ Rust 的 `pub(super)` 将可见范围限制在 `runtime` 及其子模块，不�
 
 `event_tx` 和 `waiters` 现在是 actor 私有字段。`publish_event()` 只负责入口 open gate、向外入队和队列失败时 fault；成功仅表示本地入队。私有 `process_event()` 在发送后再次检查 lifecycle，才继续处理证据。前者是发送前置条件，后者是事件协调的继续处理条件，不在同一函数里重复 `require_open()`。发送后的检查应对并发 shutdown，但不能撤回已入队事件，也不保证发布与关闭原子化。命令侧取消/超时统一通过 actor 的 `retire_waiter(command_id, timed_out)`：`timed_out` 为 true 时调用 `waiters.timeout`，否则调用 `waiters.cancel`，取代两个独立 delegate，逻辑不变。actor 内部的结果交付直接使用私有 registry；`launch_dispatch()` 交接失败也直接调用 `waiters.cancel`，不绕行命令入口。
 
-`require_open()` 的 phase-to-error 映射属于 `RuntimeLifecycle`；`require_initialized()` 的 readiness-to-error 映射属于 `InitializationState`，只有 `Ready` 通过，`NotStarted` 和 `Pending` 均返回 `NotInitialized`。actor 通过 `delegate!` 使用这两个门禁，不再重复判断状态。`reserve_connection` 和连接内的 `reserve_*` 入口也通过 `delegate!` 转发给 `ConnectionReservations`，actor 不再拼装 disconnect/RSSI/I/O/subscription 字段或持有 `connection_mut()` helper。`InitializationState::reserve_initialize()` 建立 pending 状态，私有 `InitReservation::new()` 拥有初始证据；actor 同样只转发。`ScanState` 拥有 scan 根的 admission、start/stop 登记、拒绝移除和退休，stop slot 的初始化仍属于 `ScanReservation`。所有纯转发集中在一个 `delegate!` 块中并按所有者分组；scan 的四个命令入口统一 `to self.scan`，不再由 actor 解包 `Option` 或表达 scan 可用条件。
+`require_open()` 的 phase-to-error 映射属于 `RuntimeLifecycle`；`require_initialized()` 的 readiness-to-error 映射属于 `InitializationState`，只有 `Ready` 通过，`NotStarted`、`Pending` 和 `Rejected` 均返回 `NotInitialized`。actor 通过 `delegate!` 使用这两个门禁，不再重复判断状态。`reserve_connection` 和连接内的 `reserve_*` 入口也通过 `delegate!` 转发给 `ConnectionReservations`，actor 不再拼装 disconnect/RSSI/I/O/subscription 字段或持有 `connection_mut()` helper。`InitializationState::reserve_initialize()` 建立 pending 状态，私有 `InitReservation::new()` 拥有初始证据；actor 同样只转发。`ScanState` 拥有 scan 根的 admission、start/stop 登记、拒绝移除和退休，stop slot 的初始化仍属于 `ScanReservation`。所有纯转发集中在一个 `delegate!` 块中并按所有者分组；scan 的四个命令入口统一 `to self.scan`，不再由 actor 解包 `Option` 或表达 scan 可用条件。
+
+初始化的结算后推进统一调用 `advance_after_settlement() -> Result<(), WaiterError>`：未确认派发或 terminal 未到时保留 Pending；terminal 失败返回原操作错误，由 actor fault；成功且 snapshot 已到才转 Ready。它替代外部先查 `has_failed()` 再调用完成方法的组合，不克隆成功 snapshot，不改变 waiter 先结算的顺序。`record_event()` 直接匹配带关联命令 ID 的 snapshot，不再先执行包含 terminal 的通用匹配再重复解构；`pending()` / `pending_mut()` 保持私有，复用多处状态访问。`reserve_initialize()` 的断言复用 `require_not_started()`，不另保留 `has_started()` 查询。测试 fixture 使用 reserve、dispatch acceptance、snapshot、terminal 和完成推进建立就绪状态，不新增只供测试使用的生产构造器或 getter。
 
 actor 的 `lifecycle`、`initialization`、`scan`、`connections` 现在全部私有。messages 中的命令与订阅 handler 不取得 reservation 实体：初始化/扫描/连接/GATT/RSSI/读写/订阅的 admission 条件由对应所有者验证，actor 用 `delegate!` 转发，返回值只包含成功/错误或后续登记需要的 ID，保留原错误优先级。scan slot 的空闲/占用判断属于 `ScanState`；session 内 stop 验证属于 `ScanReservation`。
 
-`launch_dispatch()` 位于 actor.rs，只有这里内部克隆 lifecycle 给分离的 blocking dispatch task；messages 不获取或克隆 actor 的 lifecycle Arc。`runtime/messages.rs` 与 actor.rs 平级，其中两个异步输入 `IngressEvent`、`DispatchResolved` 的 `Message` handler 各只调用 `self.handle_ingress_event(event)`、`self.handle_dispatch_result(message.id, message.result)`，入口名称不变。这两个同步入口在 actor.rs 中为 `pub(super)`；实际处理、提前回调缓冲、foreign disconnect 排除、发布、记录、结算、回收、`DispatchEffect` 执行与回放都封装在 actor.rs 中，其余协调 helper 保持私有。messages 不访问 actor 字段，也不通过新 getter 取得状态；回调关联、局部证据修改和订阅模式验证仍属于 reservation。`resource_id_gen` 和 `IdGenerator` 同样私有，Begin handler 通过 actor 的 `allocate_resource_id()` 分配。
+`launch_dispatch()` 位于 actor.rs，只有这里内部克隆 lifecycle 给分离的 blocking dispatch task；messages 不获取或克隆 actor 的 lifecycle Arc。`runtime/messages.rs` 与 actor.rs 平级，其中两个异步输入 `IngressEvent`、`DispatchResolved` 的 `Message` handler 各只调用 `self.handle_ingress_event(event)`、`self.handle_dispatch_result(message.id, message.result)`，入口名称不变。这两个同步入口在 actor.rs 中为 `pub(super)`；实际处理、提前回调缓冲、foreign disconnect 排除、发布、记录、结算、回收、`DispatchAction` 执行与回放都封装在 actor.rs 中，其余协调 helper 保持私有。messages 不访问 actor 字段，也不通过新 getter 取得状态；回调关联、局部证据修改和订阅模式验证仍属于 reservation。`resource_id_gen` 和 `IdGenerator` 同样私有，Begin handler 通过 actor 的 `allocate_resource_id()` 分配。
 
 同一项 reservation 登记在 actor 和拥有者上采用同名 `reserve_initialize()`、`reserve_connection()`、`reserve_scan_stop()`，不再通过 `#[call(begin)]`、`#[call(register)]` 或 `#[call(begin_stop)]` 建立额外的名称对应。generator 的上下文不同，`allocate_resource_id()` → `allocate()` 的改名转发仍保留；waiter 取消/超时则共用显式的 `retire_waiter(command_id, timed_out)` 入口。
 
@@ -206,15 +208,24 @@ runtime 的生产代码和测试使用显式导入，不使用父模块或 prelu
 
 `RuntimeLifecycle::is_open()` 读取既有原子 phase，只用于查询当前是否 Open；它不保留 admission、不阻止并发 close/fault，也不新增状态。需要区分 `Faulted` 与 `Closed` 并映射错误的路径仍使用 phase；`require_open()` 保留相应错误映射。
 
-[`CommandProgress`](../../crates/bleng/src/runtime/reservations/dispatch.rs) 替代原 `DispatchReservation` 加各记录独立 terminal 字段的组合。每个命令的 `progress` 保存 `command_id`、私有 `buffered`、私有 `dispatch_accepted` 和私有 `terminal: Option<Result<(), BleEventError>>`；scan start/stop、connect/disconnect、discovery、RSSI、读写与订阅 transition 都复用它，不再另存 `start_terminal` 或 `terminal`。
+[`CommandProgress`](../../crates/bleng/src/runtime/reservations/dispatch.rs) 替代原 `DispatchReservation` 加各记录独立 terminal 字段的组合。每个命令的 `progress` 保存 `command_id`、私有 `buffered_events`、私有 `dispatch_accepted` 和私有 `terminal_result: Option<Result<(), BleEventError>>`；scan start/stop、connect/disconnect、discovery、RSSI、读写与订阅 transition 都复用它，不再另存 `start_terminal` 或 `terminal`。
 
-`record_terminal()` 仅记录首个结果，冲突的重复 terminal 不能覆盖它；读取通过 `has_terminal()`、`terminal_succeeded()`、`terminal_failed()`。`is_awaiting_dispatch_ack()` 只表示尚未收到 dispatch acknowledgement，不表示 waiter 或原生操作仍 pending；dispatch 被接受不等于 BLE 操作完成。
+`record_terminal()` 仅记录首个结果，冲突的重复 terminal 不能覆盖它；读取通过 `has_terminal()`、`terminal_succeeded()`、`terminal_failed()`。`is_awaiting_dispatch_result()` 只表示仍在等待原生同步派发的结果被 actor 处理，不表示 waiter 或原生操作仍 pending；dispatch 被接受不等于 BLE 操作完成。这里的 result 是 `DispatchResolved` 携带的同步派发结果，不是 Begin reply 或 BLE 原生应答。
 
-`CommandProgress::waiter_result(success)` 不再接收外部 terminal 参数：未确认 dispatch 或缺少 terminal 时返回 `None`；terminal 错误交付为操作错误；terminal 成功后才惰性调用具体 reservation 的 closure，由其 domain 证据构造 typed result。`is_complete(domain_ready)` 在 dispatch 已接受且 terminal 已到达后，允许 terminal 失败或所需 domain 完整时退休；它不判断 native 资源何时可安全移除。连接错误、被动断连等操作特有的优先级和退休条件仍由具体 reservation 判断，不隐藏在通用状态机中。
+`CommandProgress::terminal_result()` 不接收 success closure，也不依赖 `WaiterSuccess`：未确认 dispatch 或缺少 terminal 时返回 `None`；terminal 错误交付为操作错误；terminal 成功仅返回 `Ok(())`，不代表 domain 完整。具体 reservation 使用 `terminal_result()?.map(|()| /* Option<WaiterSuccess> */).transpose()` 组合领域证据；`Result::map` 只在成功时执行，因此仍保留惰性构造及错误优先级，缺少 domain 仍返回 `None`。`is_complete(domain_evidence_ready)` 判断命令证据是否完整：dispatch 已接受、terminal 已到达，且 terminal 失败或成功所需的关联领域证据已经齐全。这里的完整不等于 native 生命周期结束，也不依赖 waiter 是否仍存在；native 资源何时可安全移除仍由具体 reservation 判断。连接错误、被动断连等操作特有的优先级和退休条件仍由具体 reservation 判断，不隐藏在通用状态机中。
 
 snapshot、连接状态/error、discovery draft、RSSI/read payload、write 完成事实与通知状态仍保留在对应 reservation；共享进度不拥有这些 typed domain 证据、waiter 或路由策略。
 
-`buffered` 不向兄弟模块暴露：事件只能通过有界 `buffer()` 入队，拒绝处理通过 `has_buffered_events()` 查询或 `take_buffered_events()` 按原顺序接管事件。取走事件不表示 dispatch 被接受，也不决定回放策略；这些领域判断仍由各 reservation 负责。初始化与扫描的 `record_event()` 返回 `()`，不伪造不会发生的错误；actor 的协调方法仍返回 `Result`，因为连接侧的通知模式验证可以失败。
+`buffered_events` 不向兄弟模块暴露，事件只能通过有界 `buffer()` 入队。派发结果只有两个入口，均由 `CommandProgress` 接管缓冲：
+
+- `accepted_resolution()` 标记派发已接受，并按原顺序移交全部缓冲事件；明确返回 `DispatchAction::None`，正常接受本身不要求 cleanup 或 fault。
+- `rejected_resolution(on_clean_rejection, classify)` 取走全部缓冲，不标记接受；具体 reservation 对每条事件返回 `BufferedEventDisposition::Replay`、`Discard` 或 `Conflict`。共享层保序收集回放事件、丢弃合法可忽略的证据；任何冲突覆盖正常拒绝动作，要求 fault，但不提前结束后续分类。
+
+initialization、scan start 和 connect 将所有提前回调分类为 `Conflict`，保留严格拒绝规则；无事件时 initialization 要求 `StartCleanup`，其他正常拒绝为 `None`。普通 I/O 只回放被动 connection loss；订阅保留较宽的 connection-loss 条件。scan stop 同样走统一入口，只在本地定义三路分类：被动停止或停止错误为 `Replay`，主动停止证据为 `Conflict`，被拒绝命令的 terminal 为 `Discard`。
+
+`DispatchResolution` 只是结果数据，不再拥有独立分类构造入口；`rejected_resolution_with_replay()` 和 `from_rejected_events()` 已移除。`take_buffered_events()` 保持私有，外部既不直接取缓冲，也不自己循环组装拒绝结果。严格拒绝同样排空缓冲，不再依赖随后删除 reservation 来丢弃证据。
+
+资源移除、订阅恢复和动作执行不在这些入口中。取走缓冲不表示接受，也不自行发布事件；actor 仍负责执行动作、结算拒绝、再回放，发生 fault 后不会继续公开回放。初始化与扫描的 `record_event()` 返回 `()`，不伪造不会发生的错误；actor 的协调方法仍返回 `Result`，因为连接侧的通知模式验证可以失败。
 
 | 已移除的冗余 bool | 唯一证据来源 |
 |---|---|
@@ -263,11 +274,15 @@ owner 确认 actor 的 begin reply 后，超时或调用方取消只退休 waite
 
 | 入口 | 所有者负责的行为 |
 |---|---|
-| `buffer_before_dispatch(event)` | 关联 callback，只有 dispatch 未确认时进入原有有界缓冲；`Ok(None)` 表示已消耗，`Ok(Some(event))` 交给下一个所有者，overflow 返回错误。 |
+| `gate_event(event)` | 在公开发布和证据记录前检查实时 callback；dispatch 结果未确认时，关联事件进入原有有界缓冲，此时 native dispatch 可能已经执行。`Ok(None)` 表示已缓冲而非丢弃；`Ok(Some(event))` 继续交给下一个所有者或正常处理，既可能是不归当前所有者的事件，也可能是当前所有者无需再缓冲的事件，因此它不是所有权查询或过滤器。overflow 或初始化拒绝后的矛盾证据返回错误。 |
 | `record_event(&event)` | 校验 command/connection/session/target，修改本地证据；不发布事件、不结算 waiter、不执行生命周期动作或完成退休。 |
 | `resolve_dispatch(command_id, result)` | 接受 dispatch 并取出缓冲，或按操作规则移除被拒绝的 provisional slot；返回回放列表和必要的后续动作。 |
 
+这套约束不只适用于初始化：scan 与 connections 的 `waiter_result()` 返回 `None` 同样可能表示未认领或证据未齐；已选定 I/O/GATT 叶子记录的无 command ID 查询则表示证据未齐。`record_terminal()` 在需要继续路由的层返回是否认领，connections 作为 actor 的最终路由无需返回布尔值。`retire_completed()`、`retire_completed_discovery()`、`retire_transition()` 保持资源退休的命名，但必须在 waiter 结算后执行；订阅返回 `Keep` 可能表示尚未完成、维持 Active 或恢复 Active，不等于命令成功。`Remove` 由 connection 容器实际执行删除，状态对象不自行管理外层容器。
+
 叶子 reservation 的关联方法由缓冲和证据记录复用。记录时仍先按 domain event 类型分支，因此匹配 terminal 或断连的宽泛缓冲规则不会被误用为 read/RSSI/value 等证据。连接状态与 explicit disconnect domain 在同一次连接查找中记录。首次 snapshot/read/RSSI/subscription 证据保持不变；GATT draft 仍保留最后一次关联结果，未改变既有策略。
+
+初始化 API 的阶段约束保持明确：登记 waiter 前检查准入，认领 caller handoff 后才安装 reservation；记录证据后先结算 waiter，再调用 `advance_after_settlement()` 推进就绪状态或报告已接受操作的失败。该方法返回 `Ok(())` 不代表已经 Ready，证据不足时仍保留 Pending。`waiter_result()` 返回 `None` 也不代表“不归初始化所有”，还可能是证据未齐；与之不同，`record_terminal()` 的布尔值表示命令所有权，`resolve_dispatch()` 返回 `None` 表示没有匹配的 Pending 初始化。状态对象不接管 waiter registry 或 lifecycle 副作用。
 
 pre-ack 探测顺序保持：
 
@@ -280,7 +295,7 @@ initialization
 
 连接类别优先级作用于整个容器，不是每条连接各自探测完所有操作再换下一条；不使用 `command_progresses()` / `child_progresses()` 的一般遍历顺序代替它，也不新增命令索引。带外来 command 的已知连接断连事件仍公开交付，但在缓冲前和证据记录前均阻止其改变当前生命周期。
 
-`DispatchResolution` 只是一次处理结果，不是新增的 canonical state：其中 `replay` 保存允许回放的事件，`DispatchEffect` 表示无需动作、cleanup 或 fault。actor 按以下顺序执行：
+`DispatchResolution` 只是一次处理结果，不是新增的 canonical state：其中 `events_to_replay` 保存允许回放的事件，`action: DispatchAction` 表示尚待 actor 执行的动作：`None`、`StartCleanup` 或 `FaultRuntime(ReconciliationFault)`。`StartCleanup` 只要求启动清理，不承诺清理已经完成。actor 按以下顺序执行：
 
 ```text
 reservation 局部 dispatch 变化
@@ -290,7 +305,7 @@ reservation 局部 dispatch 变化
        -> 发布 -> 记录 -> 结算 -> 退休
 ```
 
-普通 GATT/read/write/RSSI/disconnect 的拒绝只允许回放被动 loss；订阅拒绝保留原来的较宽 connection-loss 规则。其他已逃逸 callback 是矛盾证据，要求 fail closed。干净的初始化拒绝只启动 Hub cleanup，不把 runtime 改成 Faulted。`ReconcileFault` 区分缓冲超限、实际通知模式不符和 dispatch 矛盾，actor 使用已有 tracing 记录原因，不记录 callback payload。
+普通 GATT/read/write/RSSI/disconnect 的拒绝只允许回放被动 loss；订阅拒绝保留原来的较宽 connection-loss 规则。其他已逃逸 callback 是矛盾证据，要求 fail closed。初始化派发拒绝后转入 `Rejected { command_id }`，释放 pending 证据，只保留一个命令 ID 识别已逃逸的晚到回调；不会重新允许初始化，也不会继续按派发前事件缓冲。干净拒绝只启动 Hub cleanup，不把 runtime 改成 Faulted；若之后仍到达关联 snapshot 或 terminal，则判定为 `DispatchEvidenceConflict`，在公开发布前 fail closed。无 command ID 或其他命令 ID 的事件仍走正常事件流，不改变初始化状态。重复 dispatch result 不会重新认领已拒绝的操作。`reserve_initialize()` 断言当前为 `NotStarted`，防止内部调用绕过 admission 后覆盖既有状态。`ReconciliationFault` 区分缓冲超限、实际通知模式不符和派发结果与事件证据冲突（`DispatchEvidenceConflict`），actor 使用已有 tracing 记录原因，不记录 callback payload。
 
 每个命令的有界缓冲由 `CommandProgress` 统一限制为 64 条，不为重构添加新队列、锁或 executor。回归见 [`reconciliation.rs`](../../crates/bleng/src/runtime/tests/reconciliation.rs)：覆盖精确容量、外来事件不消耗容量、原序回放，以及 I/O 与订阅拒绝的不同 loss 策略；既有同步 callback、晚到证据和取消测试继续保护完整 actor 流程。
 
