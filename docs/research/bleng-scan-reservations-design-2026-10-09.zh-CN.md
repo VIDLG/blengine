@@ -51,6 +51,8 @@ flowchart TD
 
 `started` 与 `stopped` 是独立的已观察事实，不是互斥阶段。会话结束证据可能先于 start 的匹配 domain 或 terminal 被处理；晚到的 `ScanStarted` 不代表已结束的会话重新启动。
 
+这也是 scan 不需要像 connection 那样增加 `start_error` 的原因：`ScanStopped::Err` 不携带 command ID，可能描述 start 前后发生的被动会话结束；把它归给 start 会凭空制造错误关联。只有存在显式 stop reservation 时，子结构才为 stop waiter 保留该错误；否则父结构只记录会话结束事实。
+
 把 `stopped` 收进可选子结构，会导致没有显式 stop 时无法表达被动结束。再加一层结构包住两者，也不会减少任何独立事实或判断。当前父子组合已经将它们打包在同一个所有者之下。
 
 ## 证据记录的职责

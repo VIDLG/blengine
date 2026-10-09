@@ -63,9 +63,9 @@ impl InitializationState {
             snapshot,
         } = event
             && let Some(init) = self.pending_for_mut(*command_id)
-            && init.snapshot.is_none()
+            && init.snapshot_evidence.is_none()
         {
-            init.snapshot = Some(snapshot.clone());
+            init.snapshot_evidence = Some(snapshot.clone());
         }
     }
 
@@ -131,12 +131,12 @@ impl InitializationState {
 
     fn pending_for(&self, command_id: CommandId) -> Option<&InitReservation> {
         self.pending()
-            .filter(|init| init.progress.command_id == command_id)
+            .filter(|init| init.progress.owns_command(command_id))
     }
 
     fn pending_for_mut(&mut self, command_id: CommandId) -> Option<&mut InitReservation> {
         self.pending_mut()
-            .filter(|init| init.progress.command_id == command_id)
+            .filter(|init| init.progress.owns_command(command_id))
     }
 
     /// Returns whether initialization owns the command, not whether it succeeded.
@@ -164,7 +164,9 @@ impl InitializationState {
         if let Err(error) = init.progress.terminal_result()? {
             return Some(Err(error));
         }
-        Some(Ok(WaiterSuccess::Initialized(init.snapshot.clone()?)))
+        Some(Ok(WaiterSuccess::Initialized(
+            init.snapshot_evidence.clone()?,
+        )))
     }
 
     /// Advances readiness after waiter settlement, even when no caller remains.
@@ -179,7 +181,7 @@ impl InitializationState {
             return Ok(());
         };
         terminal?;
-        if init.snapshot.is_some() {
+        if init.snapshot_evidence.is_some() {
             self.phase = InitializationPhase::Ready;
         }
         Ok(())
@@ -190,21 +192,21 @@ impl InitializationState {
 /// The pending record and all phase transitions stay private to this owner.
 struct InitReservation {
     progress: CommandProgress,
-    snapshot: Option<AdapterSnapshot>,
+    snapshot_evidence: Option<AdapterSnapshot>,
 }
 
 impl InitReservation {
     /// Buffering needs both unresolved dispatch and command correlation.
-    /// The pure matcher also handles late callbacks after rejection.
+    /// Rejected-phase late callbacks are checked by InitializationState before this.
     fn should_buffer_event(&self, event: &BleEvent) -> bool {
         self.progress.is_awaiting_dispatch_result()
-            && matches_initialization_event(event, self.progress.command_id)
+            && matches_initialization_event(event, self.progress.command_id())
     }
 
     fn new(command_id: CommandId) -> Self {
         Self {
             progress: CommandProgress::new(command_id),
-            snapshot: None,
+            snapshot_evidence: None,
         }
     }
 }

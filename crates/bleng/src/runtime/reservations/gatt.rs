@@ -60,10 +60,20 @@ pub(super) struct GattDiscoveryReservation {
     session_id: GattSessionId,
     /// Database drafted by this discovery; it becomes committed only after
     /// accepted dispatch and successful terminal, following waiter settlement.
-    pub(super) draft_database: Option<GattDatabase>,
+    draft_database: Option<GattDatabase>,
 }
 
 impl GattDiscoveryReservation {
+    /// Records the latest correlated discovery draft. Terminal and loss events
+    /// are related for routing but do not carry a database draft.
+    pub(super) fn record_event(&mut self, event: &BleEvent, expected: ConnectionId) {
+        if self.matches_related_event(event, expected)
+            && let BleEvent::GattDiscovered { database, .. } = event
+        {
+            self.draft_database = Some(database.clone());
+        }
+    }
+
     /// Dispatch timing applies only to buffering, not domain evidence recording.
     pub(super) fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
@@ -76,12 +86,12 @@ impl GattDiscoveryReservation {
                 command_id,
                 database,
             } => {
-                self.progress.command_id == *command_id
+                self.progress.owns_command(*command_id)
                     && self.session_id == database.gatt_session_id
                     && expected == database.connection_id
             }
             BleEvent::CommandCompleted { command_id, .. } => {
-                self.progress.command_id == *command_id
+                self.progress.owns_command(*command_id)
             }
             _ => connection_lost(event, expected),
         }

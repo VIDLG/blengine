@@ -34,7 +34,7 @@ pub(super) enum BufferedEventDisposition {
 /// Common dispatch and terminal progress, not a generic BLE operation.
 /// Domain evidence and operation-specific error precedence remain in each record.
 pub(super) struct CommandProgress {
-    pub(super) command_id: CommandId,
+    command_id: CommandId,
     dispatch_accepted: bool,
     buffered_events: Vec<BleEvent>,
     terminal_result: Option<Result<(), BleEventError>>,
@@ -48,6 +48,14 @@ impl CommandProgress {
             buffered_events: Vec::new(),
             terminal_result: None,
         }
+    }
+
+    pub(super) fn command_id(&self) -> CommandId {
+        self.command_id
+    }
+
+    pub(super) fn owns_command(&self, command_id: CommandId) -> bool {
+        self.command_id == command_id
     }
 
     pub(super) fn is_awaiting_dispatch_result(&self) -> bool {

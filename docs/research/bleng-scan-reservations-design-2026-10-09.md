@@ -51,6 +51,8 @@ The four `stopped`/`stop` combinations are meaningful:
 
 `started` and `stopped` are independent observed facts, not exclusive phases. Session-end evidence can be processed before the start's matching domain event or terminal. A late `ScanStarted` does not mean the ended session restarted.
 
+This is why scan does not have a `start_error` parallel to connection's command-correlated domain error. `ScanStopped::Err` carries no command ID and can describe passive teardown around a start; assigning it to start would manufacture an error relationship. When an explicit stop reservation exists, the child retains the error for that stop waiter. Otherwise the parent records only session termination.
+
 Moving `stopped` into the optional child would make passive teardown unrepresentable when no explicit stop exists. Adding another wrapper around both would not remove any independent fact or decision. The existing parent/child composition already groups them under one owner.
 
 ## Recording responsibilities

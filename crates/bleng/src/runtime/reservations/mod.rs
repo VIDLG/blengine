@@ -13,7 +13,7 @@
 //! and the authoritative first terminal; typed domain evidence stays in each record.
 //! Follow it with
 //! `initialization` and `scan`. `connections` owns the peripheral-keyed collection
-//! and global pre-ack routing priority; `connection` owns one connection record
+//! and global dispatch-pending routing priority; `connection` owns one connection record
 //! and its operation reconciliation. Then read the subordinate `gatt`, `io`, and
 //! `subscription` records. Collection ownership is distinct from record-local
 //! evidence and retirement; there is no second command-routing map. The collection

@@ -9,14 +9,9 @@ use blehub::{
 use crate::waiter::{WaiterError, WaiterSuccess};
 
 use super::{
-    connection::{ConnectionReservation, DisconnectReservation, PreAckRoute},
-    dispatch::{
-        BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
-        ReconciliationFault,
-    },
+    connection::{ConnectionReservation, DispatchPendingRoute},
+    dispatch::{DispatchResolution, ReconciliationFault},
     gatt::GattAccess,
-    io::{ReadReservation, RssiReservation, WriteReservation},
-    subscription::SubscriptionReservation,
 };
 
 /// Actor-local ownership of connection lifecycles, keyed only by peripheral.
@@ -35,17 +30,16 @@ impl ConnectionReservations {
         // Category priority is global, not per connection. A malformed callback
         // can identify one connection by command and another by connection ID.
         for route in [
-            PreAckRoute::Disconnect,
-            PreAckRoute::Discovery,
-            PreAckRoute::Rssi,
-            PreAckRoute::Read,
-            PreAckRoute::Write,
-            PreAckRoute::Subscription,
-            PreAckRoute::Connect,
+            DispatchPendingRoute::Disconnect,
+            DispatchPendingRoute::Discovery,
+            DispatchPendingRoute::Rssi,
+            DispatchPendingRoute::Read,
+            DispatchPendingRoute::Write,
+            DispatchPendingRoute::Subscription,
+            DispatchPendingRoute::Connect,
         ] {
             for connection in self.by_peripheral.values_mut() {
-                if let Some(progress) = connection.pre_ack_route(route, &event) {
-                    progress.buffer(event)?;
+                if connection.buffer_pending_dispatch_event(route, &event)? {
                     return Ok(None);
                 }
             }
@@ -77,19 +71,12 @@ impl ConnectionReservations {
         result: &Result<(), CommandDispatchError>,
     ) -> Option<DispatchResolution> {
         let (peripheral_id, connection) = self.find_command_mut(command_id)?;
-        if let Some(resolution) = connection.resolve_operation_dispatch(command_id, result) {
-            return Some(resolution);
-        }
-        debug_assert_eq!(connection.progress.command_id, command_id);
-        Some(if result.is_err() {
-            let resolution = connection
-                .progress
-                .rejected_resolution(DispatchAction::None, |_| BufferedEventDisposition::Conflict);
+        let root_rejected = result.is_err() && connection.owns_root_command(command_id);
+        let resolution = connection.resolve_dispatch(command_id, result)?;
+        if root_rejected {
             self.remove(peripheral_id);
-            resolution
-        } else {
-            connection.progress.accepted_resolution()
-        })
+        }
+        Some(resolution)
     }
 
     pub fn is_foreign_disconnect(&self, event: &BleEvent) -> bool {
@@ -103,21 +90,13 @@ impl ConnectionReservations {
         } = event
             && let Some((_, connection)) = self.find(*connection_id)
         {
-            return *command_id != connection.progress.command_id
-                && !connection
-                    .disconnect
-                    .as_ref()
-                    .is_some_and(|slot| slot.progress.command_id == *command_id);
+            return connection.is_foreign_disconnect(*command_id);
         }
         false
     }
 
     pub fn disconnect_command(&self, connection_id: ConnectionId) -> Option<CommandId> {
-        self.find(connection_id)?
-            .1
-            .disconnect
-            .as_ref()
-            .map(|slot| slot.progress.command_id)
+        self.find(connection_id)?.1.disconnect_command()
     }
 
     pub fn require_peripheral_available(
@@ -218,10 +197,8 @@ impl ConnectionReservations {
 
     /// Registers a disconnect transition on an existing connection.
     pub fn reserve_disconnect(&mut self, peripheral_id: PeripheralId, command_id: CommandId) {
-        self.connection_mut(peripheral_id).disconnect = Some(DisconnectReservation {
-            progress: CommandProgress::new(command_id),
-            domain: false,
-        });
+        self.connection_mut(peripheral_id)
+            .reserve_disconnect(command_id);
     }
 
     /// Registers a GATT discovery transition while preserving any committed database.
@@ -232,16 +209,12 @@ impl ConnectionReservations {
         session_id: GattSessionId,
     ) {
         self.connection_mut(peripheral_id)
-            .gatt
-            .begin_discovery(command_id, session_id);
+            .reserve_gatt_discovery(command_id, session_id);
     }
 
     /// Registers a pending RSSI read on an existing connection.
     pub fn reserve_rssi(&mut self, peripheral_id: PeripheralId, command_id: CommandId) {
-        self.connection_mut(peripheral_id).rssi = Some(RssiReservation {
-            progress: CommandProgress::new(command_id),
-            value: None,
-        });
+        self.connection_mut(peripheral_id).reserve_rssi(command_id);
     }
 
     /// Registers a pending characteristic read.
@@ -252,11 +225,8 @@ impl ConnectionReservations {
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
     ) {
-        self.connection_mut(peripheral_id).read = Some(ReadReservation::new(
-            command_id,
-            session_id,
-            characteristic_id,
-        ));
+        self.connection_mut(peripheral_id)
+            .reserve_read(command_id, session_id, characteristic_id);
     }
 
     /// Registers a pending characteristic write.
@@ -267,11 +237,8 @@ impl ConnectionReservations {
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
     ) {
-        self.connection_mut(peripheral_id).write = Some(WriteReservation::new(
-            command_id,
-            session_id,
-            characteristic_id,
-        ));
+        self.connection_mut(peripheral_id)
+            .reserve_write(command_id, session_id, characteristic_id);
     }
 
     /// Registers a notification enable transition and its new subscription.
@@ -284,10 +251,14 @@ impl ConnectionReservations {
         characteristic_id: GattCharacteristicId,
         mode: NotificationModeRequest,
     ) {
-        self.connection_mut(peripheral_id).subscriptions.insert(
-            subscription_id,
-            SubscriptionReservation::enabling(command_id, session_id, characteristic_id, mode),
-        );
+        self.connection_mut(peripheral_id)
+            .reserve_notification_enable(
+                command_id,
+                subscription_id,
+                session_id,
+                characteristic_id,
+                mode,
+            );
     }
 
     /// Registers a notification disable transition on an active subscription.
@@ -298,10 +269,7 @@ impl ConnectionReservations {
         subscription_id: SubscriptionId,
     ) {
         self.connection_mut(peripheral_id)
-            .subscriptions
-            .get_mut(&subscription_id)
-            .expect("validated subscription")
-            .begin_disable(command_id);
+            .reserve_notification_disable(command_id, subscription_id);
     }
 
     /// Collects accepted commands for loss settlement without exposing connection records.
@@ -325,14 +293,16 @@ impl ConnectionReservations {
         self.by_peripheral
             .iter()
             .find_map(|(peripheral_id, connection)| {
-                (connection.connection_id == connection_id).then_some((*peripheral_id, connection))
+                connection
+                    .matches_connection_id(connection_id)
+                    .then_some((*peripheral_id, connection))
             })
     }
 
     fn find_mut(&mut self, connection_id: ConnectionId) -> Option<&mut ConnectionReservation> {
         self.by_peripheral
             .values_mut()
-            .find(|connection| connection.connection_id == connection_id)
+            .find(|connection| connection.matches_connection_id(connection_id))
     }
 
     fn find_command_mut(

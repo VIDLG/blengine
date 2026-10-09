@@ -478,7 +478,7 @@ impl BlengActor {
             && connection_lost(event, *connection_id)
         {
             // Only accepted connection-bound commands lose their waiters here;
-            // pre-ack callbacks stay buffered until dispatch resolves.
+            // dispatch-pending callbacks stay buffered until dispatch resolves.
             self.waiters
                 .disconnect_commands(self.connections.accepted_command_ids(*connection_id));
             // Passive loss may complete an explicit disconnect's domain evidence,

@@ -331,7 +331,7 @@ Idle
 
 `ScanState` 与 `InitializationState` 一样是不透明的状态所有者：`phase`、`ScanPhase`、`ScanReservation` 和 `StopReservation` 均为私有，外部只能通过准入、登记、证据和退休方法操作，不能直接构造 variant 或替换 payload。
 
-`ScanReservation` 持有扫描会话槽位；其 `stop: Option<StopReservation>` 占据会话内唯一的显式停止命令槽位，并保留自己的 command progress 和停止错误。`Reservation` 既可以表示资源会话占位，也可以表示会话内部的命令槽位及其关联证据；嵌套关系描述所有权，不要求 reservation 独立存在。这与 connection 内的 `DisconnectReservation`、`RssiReservation`、`ReadReservation` 等命名一致。调用方 waiter 退休不释放尚未完成的停止命令关联；停止操作失败但扫描仍未结束时，只移除 stop，保留会话以允许重试。`ScanState::gate_event()` 只选择当前会话；start/stop 缓冲路由下沉到 `ScanReservation::gate_event()`。失败 stop 是否可释放由子结构的 `can_retire_after_failure()` 判断，父结构负责实际删除；`start_failed()` 明确只指启动命令失败。
+`ScanReservation` 持有扫描会话槽位；其 `stop: Option<StopReservation>` 占据会话内唯一的显式停止命令槽位，并保留自己的 command progress 和停止错误。与 connection 的 `connect_domain_error` 不同，`ScanStopped::Err` 没有 command ID，不能归属于 start；没有显式 stop 时它只建立 scan 会话结束事实。`Reservation` 既可以表示资源会话占位，也可以表示会话内部的命令槽位及其关联证据；嵌套关系描述所有权，不要求 reservation 独立存在。这与 connection 内的 `DisconnectReservation`、`RssiReservation`、`ReadReservation` 等命名一致。调用方 waiter 退休不释放尚未完成的停止命令关联；停止操作失败但扫描仍未结束时，只移除 stop，保留会话以允许重试。`ScanState::gate_event()` 只选择当前会话；start/stop 缓冲路由下沉到 `ScanReservation::gate_event()`。失败 stop 是否可释放由子结构的 `can_retire_after_failure()` 判断，父结构负责实际删除；`start_failed()` 明确只指启动命令失败。
 
 `Reserved` 只表示持有 scan slot，不等于已经开始射频扫描；它覆盖启动中、扫描中、stop 中以及 native 已停但晚到 start/stop 证据尚未齐全的阶段。没有额外增加 Running/Stopping 等重复状态，也不把独立的 domain、terminal 和 dispatch ack 事实压成线性 enum。
 

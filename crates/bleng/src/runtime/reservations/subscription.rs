@@ -73,13 +73,13 @@ impl SubscriptionReservation {
         subscription_id: SubscriptionId,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
         let transition = self.transition()?;
-        if transition.progress.command_id != command_id {
+        if !transition.progress.owns_command(command_id) {
             return None;
         }
         if let Err(error) = transition.progress.terminal_result()? {
             return Some(Err(error));
         }
-        let success = match transition.domain? {
+        let success = match transition.domain_evidence? {
             NotificationState::Enabled { actual_mode } => WaiterSuccess::NotificationsEnabled {
                 connection_id,
                 gatt_session_id: self.session_id,
@@ -131,14 +131,14 @@ impl SubscriptionReservation {
                 characteristic_id,
                 ..
             } => {
-                transition.progress.command_id == *command_id
+                transition.progress.owns_command(*command_id)
                     && expected == *connection_id
                     && self.session_id == *gatt_session_id
                     && subscription_id == *event_subscription
                     && self.characteristic_id == *characteristic_id
             }
             BleEvent::CommandCompleted { command_id, .. } => {
-                transition.progress.command_id == *command_id
+                transition.progress.owns_command(*command_id)
             }
             _ => connection_lost(event, expected),
         }
@@ -180,8 +180,8 @@ impl SubscriptionReservation {
             (SubscriptionState::Disabling(transition), NotificationState::Disabled) => transition,
             _ => return Ok(()),
         };
-        if transition.domain.is_none() {
-            transition.domain = Some(*state);
+        if transition.domain_evidence.is_none() {
+            transition.domain_evidence = Some(*state);
         }
         Ok(())
     }
@@ -216,7 +216,10 @@ impl SubscriptionReservation {
         let Some(transition) = self.transition() else {
             return SubscriptionDisposition::Keep;
         };
-        if !transition.progress.is_complete(transition.domain.is_some()) {
+        if !transition
+            .progress
+            .is_complete(transition.domain_evidence.is_some())
+        {
             return SubscriptionDisposition::Keep;
         }
         if transition.progress.terminal_failed() {
@@ -250,14 +253,14 @@ impl SubscriptionReservation {
 
 struct NotificationTransition {
     progress: CommandProgress,
-    domain: Option<NotificationState>,
+    domain_evidence: Option<NotificationState>,
 }
 
 impl NotificationTransition {
     fn new(command_id: CommandId) -> Self {
         Self {
             progress: CommandProgress::new(command_id),
-            domain: None,
+            domain_evidence: None,
         }
     }
 }

@@ -1,9 +1,9 @@
 //! Scan session ownership and explicit stop command evidence.
 //!
 //! `ScanState` owns at most one `ScanReservation`. That session owns both the
-//! `stopped` fact and an optional `StopReservation`; they are related but distinct:
+//! `stopped_evidence` fact and an optional `StopReservation`; they are related but distinct:
 //!
-//! - `stopped` records valid native session-end evidence. System suspension or
+//! - `stopped_evidence` records valid native session-end evidence. System suspension or
 //!   native scan failure can establish it without any explicit stop command.
 //! - `StopReservation` occupies the session's explicit stop command slot and
 //!   retains dispatch progress, terminal results, and native stop errors. Its
@@ -11,7 +11,7 @@
 //!
 //! These combinations describe different situations, not redundant state:
 //!
-//! | stopped | stop | Meaning |
+//! | stopped_evidence | stop | Meaning |
 //! |---------|------|---------|
 //! | false | None | No observed session end and no explicit stop command. |
 //! | false | Some | Explicit stop is reserved; session end is not yet observed. |
@@ -21,7 +21,7 @@
 //! Session end alone does not prove successful stop command completion: dispatch
 //! acceptance and a successful terminal are also required. Settlement and retirement
 //! combine the session facts with command evidence. Keep them together under the
-//! session owner, but do not move `stopped` into the optional child: passive teardown
+//! session owner, but do not move `stopped_evidence` into the optional child: passive teardown
 //! must remain representable when no stop command exists. Nesting expresses ownership;
 //! a reservation need not exist independently to reserve a slot and retain evidence.
 
@@ -85,7 +85,7 @@ impl ScanState {
         result: &Result<(), CommandDispatchError>,
     ) -> Option<DispatchResolution> {
         let scan = self.reserved_mut()?;
-        if scan.start_progress.command_id == command_id {
+        if scan.start_progress.owns_command(command_id) {
             if result.is_ok() {
                 return Some(scan.start_progress.accepted_resolution());
             }
@@ -108,7 +108,7 @@ impl ScanState {
         self.reserved()?
             .stop
             .as_ref()
-            .map(|stop| stop.progress.command_id)
+            .map(|stop| stop.progress.command_id())
     }
 
     pub fn require_scan_available(&self) -> Result<(), WaiterError> {
@@ -196,10 +196,12 @@ struct ScanReservation {
     // Start command progress; stop has its own command and acknowledgement.
     start_progress: CommandProgress,
     session_id: ScanSessionId,
-    // Independent evidence, not mutually exclusive phases: native stop can arrive
-    // before the start's matching domain or terminal.
-    stopped: bool,
-    started: bool,
+    // Session-level teardown evidence. ScanStopped::Err has no command ID and can
+    // race start, so it must not be attributed to start as a start-domain error.
+    // If an explicit stop exists, StopReservation separately retains that error
+    // for the stop waiter; without one, this remains only a session-end fact.
+    stopped_evidence: bool,
+    started_evidence: bool,
     stop: Option<StopReservation>,
 }
 
@@ -228,7 +230,7 @@ impl ScanReservation {
         match event {
             BleEvent::ScanStarted { command_id, .. }
             | BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.start_progress.command_id
+                self.start_progress.owns_command(*command_id)
             }
             // Native advertisements can reach the actor before it processes the
             // start dispatch result. Buffer until acceptance, not until ScanStarted.
@@ -247,8 +249,8 @@ impl ScanReservation {
             BleEvent::ScanStarted {
                 command_id,
                 scan_id,
-            } if *command_id == self.start_progress.command_id && *scan_id == self.session_id => {
-                self.started = true;
+            } if self.start_progress.owns_command(*command_id) && *scan_id == self.session_id => {
+                self.started_evidence = true;
             }
             BleEvent::ScanStopped { scan_id, result } if *scan_id == self.session_id => {
                 if let Some(stop) = self.stop.as_mut() {
@@ -260,7 +262,7 @@ impl ScanReservation {
                     | ScanStopResult::Ok {
                         reason: ScanStopReason::SystemSuspended,
                     } => {
-                        self.stopped = true;
+                        self.stopped_evidence = true;
                     }
                     ScanStopResult::Ok {
                         reason: ScanStopReason::Requested { command_id },
@@ -268,7 +270,7 @@ impl ScanReservation {
                         if let Some(stop) = &self.stop
                             && stop.confirms_requested_stop(*command_id)
                         {
-                            self.stopped = true;
+                            self.stopped_evidence = true;
                         }
                     }
                 }
@@ -281,21 +283,21 @@ impl ScanReservation {
         Self {
             start_progress: CommandProgress::new(command_id),
             session_id,
-            stopped: false,
-            started: false,
+            stopped_evidence: false,
+            started_evidence: false,
             stop: None,
         }
     }
 
     fn validate_stop(&self, session: ScanSessionId) -> Result<(), WaiterError> {
-        if self.session_id != session || self.start_failed() || self.stopped {
+        if self.session_id != session || self.start_failed() || self.stopped_evidence {
             return Err(WaiterError::ScanNotActive);
         }
         // Completion here means the start command is confirmed, not the scan has ended:
         // accepted dispatch + matching ScanStarted + successful terminal (failure was
         // excluded above). A running scan can stop once start is confirmed. A retained
         // stop reservation blocks another stop even if its caller has already timed out.
-        if !self.start_progress.is_complete(self.started) || self.stop.is_some() {
+        if !self.start_progress.is_complete(self.started_evidence) || self.stop.is_some() {
             return Err(WaiterError::ScanBusy);
         }
         Ok(())
@@ -308,7 +310,7 @@ impl ScanReservation {
         );
         self.stop = Some(StopReservation {
             progress: CommandProgress::new(command_id),
-            stop_error: None,
+            stop_error_evidence: None,
         });
     }
 
@@ -319,13 +321,13 @@ impl ScanReservation {
     fn stop_for(&self, command_id: CommandId) -> Option<&StopReservation> {
         self.stop
             .as_ref()
-            .filter(|stop| stop.progress.command_id == command_id)
+            .filter(|stop| stop.progress.owns_command(command_id))
     }
 
     fn stop_for_mut(&mut self, command_id: CommandId) -> Option<&mut StopReservation> {
         self.stop
             .as_mut()
-            .filter(|stop| stop.progress.command_id == command_id)
+            .filter(|stop| stop.progress.owns_command(command_id))
     }
 
     /// Returns whether scan start or stop owns the command, not whether it succeeded.
@@ -335,7 +337,7 @@ impl ScanReservation {
         command_id: CommandId,
         result: &Result<(), BleEventError>,
     ) -> bool {
-        if self.start_progress.command_id == command_id {
+        if self.start_progress.owns_command(command_id) {
             self.start_progress.record_terminal(result);
             return true;
         }
@@ -347,32 +349,32 @@ impl ScanReservation {
     }
 
     fn waiter_result(&self, command_id: CommandId) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if self.start_progress.command_id == command_id {
+        if self.start_progress.owns_command(command_id) {
             if let Err(error) = self.start_progress.terminal_result()? {
                 return Some(Err(error));
             }
             return self
-                .started
+                .started_evidence
                 .then_some(Ok(WaiterSuccess::ScanStarted(self.session_id)));
         }
         self.stop_for(command_id)?
-            .waiter_result(self.session_id, self.stopped)
+            .waiter_result(self.session_id, self.stopped_evidence)
     }
 
     /// Pure session-retirement decision, evaluated after waiter settlement.
     /// Complete command evidence does not itself prove the session has ended.
     fn is_retirable(&self) -> bool {
         // Native end cannot release a start whose domain/terminal is still missing.
-        if !self.start_progress.is_complete(self.started) {
+        if !self.start_progress.is_complete(self.started_evidence) {
             return false;
         }
         if let Some(stop) = &self.stop
-            && !stop.is_complete(self.stopped)
+            && !stop.is_complete(self.stopped_evidence)
         {
             return false;
         }
         // A failed stop alone leaves the scan running; retire only its child slot.
-        self.start_failed() || self.stopped
+        self.start_failed() || self.stopped_evidence
     }
 
     /// Releases only a failed stop command, leaving the session available to retry.
@@ -392,7 +394,7 @@ impl ScanReservation {
 /// independently of the caller's waiter. Owned and retired by the scan session.
 struct StopReservation {
     progress: CommandProgress,
-    stop_error: Option<BleEventError>,
+    stop_error_evidence: Option<BleEventError>,
 }
 
 impl StopReservation {
@@ -424,14 +426,14 @@ impl StopReservation {
     /// Successful results do not erase failure evidence or settle the command alone.
     fn record_stop_result(&mut self, result: &ScanStopResult) {
         if let ScanStopResult::Err { error } = result {
-            self.stop_error = Some(error.clone());
+            self.stop_error_evidence = Some(error.clone());
         }
     }
 
     /// Requested teardown must belong to this stop and follow dispatch acceptance.
     /// This confirms session end, not completion of the stop command's terminal.
     fn confirms_requested_stop(&self, command_id: CommandId) -> bool {
-        self.progress.command_id == command_id && !self.progress.is_awaiting_dispatch_result()
+        self.progress.owns_command(command_id) && !self.progress.is_awaiting_dispatch_result()
     }
 
     /// Buffers related events only while stop dispatch is unresolved, including
@@ -442,7 +444,7 @@ impl StopReservation {
         }
         match event {
             BleEvent::CommandCompleted { command_id, .. } => {
-                *command_id == self.progress.command_id
+                self.progress.owns_command(*command_id)
             }
             BleEvent::ScanStopped { scan_id, .. } => *scan_id == session_id,
             _ => false,
@@ -451,14 +453,14 @@ impl StopReservation {
 
     /// Enough evidence to settle the command, even if its caller has retired.
     /// Native failure proves teardown and does not require a terminal callback.
-    fn is_complete(&self, stopped: bool) -> bool {
+    fn is_complete(&self, stopped_evidence: bool) -> bool {
         if self.progress.is_awaiting_dispatch_result() {
             return false;
         }
-        if self.stop_error.is_some() {
+        if self.stop_error_evidence.is_some() {
             return true;
         }
-        self.progress.is_complete(stopped)
+        self.progress.is_complete(stopped_evidence)
     }
 
     /// A confirmed terminal failure can release this slot after waiter settlement.
@@ -470,12 +472,12 @@ impl StopReservation {
     fn waiter_result(
         &self,
         session_id: ScanSessionId,
-        stopped: bool,
+        stopped_evidence: bool,
     ) -> Option<Result<WaiterSuccess, WaiterError>> {
-        if !self.is_complete(stopped) {
+        if !self.is_complete(stopped_evidence) {
             return None;
         }
-        if let Some(error) = &self.stop_error {
+        if let Some(error) = &self.stop_error_evidence {
             return Some(Err(WaiterError::Operation(error.clone())));
         }
         if let Err(error) = self.progress.terminal_result()? {
