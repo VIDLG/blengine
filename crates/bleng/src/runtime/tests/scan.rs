@@ -6,6 +6,8 @@ use super::support::{
     requested_stop, started_scan, stop_command,
 };
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use crate::runtime::reservations::ScanState;
 
 #[test]
@@ -64,6 +66,70 @@ fn scan_state_retains_unsettled_start_and_ignores_stale_rejection() {
         state.validate_scan_stop(20.into()),
         Err(WaiterError::ScanNotActive)
     );
+}
+
+#[test]
+fn scan_installation_cannot_replace_a_session_or_bypass_stop_admission() {
+    let mut state = ScanState::default();
+    state.reserve_scan_start(1.into(), 10.into());
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            state.reserve_scan_start(99.into(), 99.into());
+        }))
+        .is_err()
+    );
+
+    // Each missing start prerequisite must reject installation without a stop slot.
+    for stage in 0..3 {
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                state.reserve_scan_stop(2.into());
+            }))
+            .is_err()
+        );
+        assert_eq!(state.stop_command(), None);
+        match stage {
+            0 => {
+                state.resolve_dispatch(1.into(), &Ok(())).unwrap();
+            }
+            1 => state.record_event(&BleEvent::ScanStarted {
+                command_id: 1.into(),
+                scan_id: 10.into(),
+            }),
+            _ => assert!(state.record_terminal(1.into(), &Ok(()))),
+        }
+    }
+    assert_eq!(
+        state.waiter_result(1.into()),
+        Some(Ok(WaiterSuccess::ScanStarted(10.into())))
+    );
+
+    state.reserve_scan_stop(2.into());
+    assert!(
+        catch_unwind(AssertUnwindSafe(|| {
+            state.reserve_scan_stop(3.into());
+        }))
+        .is_err()
+    );
+    assert_eq!(state.stop_command(), Some(2.into()));
+    assert!(!state.record_terminal(3.into(), &Ok(())));
+
+    state.resolve_dispatch(2.into(), &Ok(())).unwrap();
+    state.record_event(&BleEvent::ScanStopped {
+        scan_id: 10.into(),
+        result: ScanStopResult::Ok {
+            reason: ScanStopReason::Requested {
+                command_id: 2.into(),
+            },
+        },
+    });
+    assert!(state.record_terminal(2.into(), &Ok(())));
+    assert_eq!(
+        state.waiter_result(2.into()),
+        Some(Ok(WaiterSuccess::ScanStopped(10.into())))
+    );
+    state.retire_completed();
+    assert_eq!(state.require_scan_available(), Ok(()));
 }
 
 #[test]
@@ -500,101 +566,106 @@ fn passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart(
 
 #[test]
 fn native_stop_error_retires_scan_and_cannot_poison_next_session() {
-    let owner = RuntimeOwner::new_assuming_initialized().unwrap();
-    let error = BleEventError {
-        category: BleErrorCategory::Backend,
-        message: "stop failed".to_owned(),
-        platform_details: None,
-    };
-    let (backend, handle) = FakeBackend::scripted([
-        started_scan(),
-        EventScenario::emit_before_return(
-            stop_command(2),
-            vec![
-                BleEvent::ScanStopped {
-                    scan_id: ScanSessionId { value: 1 },
-                    result: ScanStopResult::Err {
-                        error: error.clone(),
+    for (include_terminal, terminal_first) in [(false, false), (true, false), (true, true)] {
+        let owner = RuntimeOwner::new_assuming_initialized().unwrap();
+        let error = BleEventError {
+            category: BleErrorCategory::Backend,
+            message: "stop failed".to_owned(),
+            platform_details: None,
+        };
+        let mut stop_events = vec![BleEvent::ScanStopped {
+            scan_id: 1.into(),
+            result: ScanStopResult::Err {
+                error: error.clone(),
+            },
+        }];
+        if include_terminal {
+            stop_events.push(command_completed(2, None));
+        }
+        if terminal_first {
+            stop_events.reverse();
+        }
+        let (backend, handle) = FakeBackend::scripted([
+            started_scan(),
+            EventScenario::emit_before_return(stop_command(2), stop_events),
+            EventScenario::emit_before_return(
+                RecordedCommand::StartScan(StartScanCommand {
+                    command_id: CommandId { value: 3 },
+                    scan_session_id: ScanSessionId { value: 2 },
+                    options: ScanOptions::default(),
+                }),
+                vec![
+                    BleEvent::ScanStarted {
+                        command_id: CommandId { value: 3 },
+                        scan_id: ScanSessionId { value: 2 },
                     },
-                },
-                BleEvent::CommandCompleted {
-                    command_id: CommandId { value: 2 },
-                    error: None,
-                },
-            ],
-        ),
-        EventScenario::emit_before_return(
-            RecordedCommand::StartScan(StartScanCommand {
-                command_id: CommandId { value: 3 },
-                scan_session_id: ScanSessionId { value: 2 },
-                options: ScanOptions::default(),
-            }),
-            vec![
-                BleEvent::ScanStarted {
-                    command_id: CommandId { value: 3 },
-                    scan_id: ScanSessionId { value: 2 },
-                },
-                BleEvent::CommandCompleted {
-                    command_id: CommandId { value: 3 },
-                    error: None,
-                },
-            ],
-        ),
-    ]);
-    owner
-        .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
-        .unwrap();
-    let host = tokio::runtime::Builder::new_multi_thread()
-        .enable_time()
-        .build()
-        .unwrap();
-    host.block_on(async {
-        let session = owner
-            .start_scan(ScanOptions::default(), Duration::from_secs(2))
-            .await
+                    BleEvent::CommandCompleted {
+                        command_id: CommandId { value: 3 },
+                        error: None,
+                    },
+                ],
+            ),
+        ]);
+        owner
+            .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
             .unwrap();
-        assert_eq!(
-            owner
-                .stop_scan(ScanSessionId { value: 99 }, Duration::from_secs(1))
-                .await,
-            Err(WaiterError::ScanNotActive)
-        );
-        assert_eq!(
-            owner.stop_scan(session, Duration::from_secs(2)).await,
-            Err(WaiterError::Operation(error))
-        );
-        assert_eq!(
-            owner.stop_scan(session, Duration::from_millis(20)).await,
-            Err(WaiterError::ScanNotActive)
-        );
-        assert_eq!(
-            owner
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        host.block_on(async {
+            let session = owner
                 .start_scan(ScanOptions::default(), Duration::from_secs(2))
-                .await,
-            Ok(ScanSessionId { value: 2 })
-        );
-        assert_eq!(
-            handle.emit(BleEvent::ScanStopped {
-                scan_id: session,
-                result: ScanStopResult::Err {
-                    error: BleEventError {
-                        category: BleErrorCategory::Backend,
-                        message: "late duplicate".to_owned(),
-                        platform_details: None,
+                .await
+                .unwrap();
+            assert_eq!(
+                owner
+                    .stop_scan(ScanSessionId { value: 99 }, Duration::from_secs(1))
+                    .await,
+                Err(WaiterError::ScanNotActive)
+            );
+            assert_eq!(
+                owner.stop_scan(session, Duration::from_secs(2)).await,
+                Err(WaiterError::Operation(error))
+            );
+            assert_eq!(
+                owner.stop_scan(session, Duration::from_millis(20)).await,
+                Err(WaiterError::ScanNotActive)
+            );
+            assert_eq!(
+                owner
+                    .start_scan(ScanOptions::default(), Duration::from_secs(2))
+                    .await,
+                Ok(ScanSessionId { value: 2 })
+            );
+            // Missing or duplicate old terminals must not release the new scan slot.
+            assert_eq!(
+                handle.emit(command_completed(2, None)),
+                EventIngressStatus::Delivered
+            );
+            assert_eq!(
+                handle.emit(BleEvent::ScanStopped {
+                    scan_id: session,
+                    result: ScanStopResult::Err {
+                        error: BleEventError {
+                            category: BleErrorCategory::Backend,
+                            message: "late duplicate".to_owned(),
+                            platform_details: None,
+                        },
                     },
-                },
-            }),
-            EventIngressStatus::Delivered
-        );
-        assert_eq!(
-            owner
-                .start_scan(ScanOptions::default(), Duration::from_millis(20))
-                .await,
-            Err(WaiterError::ScanBusy)
-        );
-        owner.close().await.unwrap();
-    });
-    assert_eq!(handle.commands().len(), 3);
+                }),
+                EventIngressStatus::Delivered
+            );
+            assert_eq!(
+                owner
+                    .start_scan(ScanOptions::default(), Duration::from_millis(20))
+                    .await,
+                Err(WaiterError::ScanBusy)
+            );
+            owner.close().await.unwrap();
+        });
+        assert_eq!(handle.commands().len(), 3);
+    }
 }
 
 #[test]

@@ -97,7 +97,23 @@ impl SubscriptionReservation {
         Some(Ok(success))
     }
 
-    pub(super) fn matches_event(
+    /// Only an unresolved transition can buffer; an active route has no target.
+    pub(super) fn should_buffer_event(
+        &self,
+        event: &BleEvent,
+        expected: ConnectionId,
+        subscription_id: SubscriptionId,
+    ) -> bool {
+        let Some(progress) = self.progress() else {
+            return false;
+        };
+        progress.is_awaiting_dispatch_result()
+            && self.matches_related_event(event, expected, subscription_id)
+    }
+
+    /// Correlates transition state, terminal, or connection loss, not enable success.
+    /// record_event() separately checks the domain variant and required mode.
+    fn matches_related_event(
         &self,
         event: &BleEvent,
         expected: ConnectionId,
@@ -134,7 +150,7 @@ impl SubscriptionReservation {
         connection_id: ConnectionId,
         subscription_id: SubscriptionId,
     ) -> Result<(), ReconciliationFault> {
-        if !self.matches_event(event, connection_id, subscription_id) {
+        if !self.matches_related_event(event, connection_id, subscription_id) {
             return Ok(());
         }
         let BleEvent::NotificationStateChanged { state, .. } = event else {

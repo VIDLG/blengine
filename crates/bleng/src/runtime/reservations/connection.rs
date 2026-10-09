@@ -46,6 +46,10 @@ pub(super) struct ConnectionReservation {
 
 impl ConnectionReservation {
     /// Selects a command awaiting dispatch resolution in the requested category.
+    /// Related events include terminals and connection loss, not just success data;
+    /// recording checks the domain variant separately. Categories can overlap.
+    /// Each reservation combines dispatch timing and correlation; this method
+    /// selects a target within the category chosen by the collection's global order.
     /// None means no pending buffer target, not that this connection is unrelated.
     pub(super) fn pre_ack_route(
         &mut self,
@@ -53,42 +57,38 @@ impl ConnectionReservation {
         event: &BleEvent,
     ) -> Option<&mut CommandProgress> {
         let connection_id = self.connection_id;
-        let progress = match route {
+        match route {
             PreAckRoute::Disconnect => self
                 .disconnect
                 .as_mut()
-                .filter(|slot| slot.matches_event(event, connection_id))
+                .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
             PreAckRoute::Discovery => self
                 .gatt
                 .discovery
                 .as_mut()
-                .filter(|slot| slot.matches_event(event, connection_id))
+                .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
             PreAckRoute::Rssi => self
                 .rssi
                 .as_mut()
-                .filter(|slot| slot.matches_event(event, connection_id))
+                .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
             PreAckRoute::Read => self
                 .read
                 .as_mut()
-                .filter(|slot| slot.matches_event(event, connection_id))
+                .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
             PreAckRoute::Write => self
                 .write
                 .as_mut()
-                .filter(|slot| slot.matches_event(event, connection_id))
+                .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
             PreAckRoute::Subscription => {
                 self.subscriptions
                     .iter_mut()
                     .find_map(|(subscription_id, route)| {
-                        if route.matches_event(event, connection_id, *subscription_id)
-                            && route
-                                .progress()
-                                .is_some_and(CommandProgress::is_awaiting_dispatch_result)
-                        {
+                        if route.should_buffer_event(event, connection_id, *subscription_id) {
                             route.progress_mut()
                         } else {
                             None
@@ -96,26 +96,35 @@ impl ConnectionReservation {
                     })
             }
             PreAckRoute::Connect => {
-                // Buffer broadly before acceptance, but record only exact
-                // connection/command evidence after replay.
-                let matches = match event {
-                    BleEvent::ConnectionStateChanged {
-                        command_id,
-                        connection_id,
-                        ..
-                    } => {
-                        *connection_id == self.connection_id
-                            || *command_id == Some(self.progress.command_id)
-                    }
-                    BleEvent::CommandCompleted { command_id, .. } => {
-                        *command_id == self.progress.command_id
-                    }
-                    _ => false,
-                };
-                matches.then_some(&mut self.progress)
+                if self.should_buffer_connect_event(event) {
+                    Some(&mut self.progress)
+                } else {
+                    None
+                }
             }
-        };
-        progress.filter(|progress| progress.is_awaiting_dispatch_result())
+        }
+    }
+
+    /// Buffer broadly before acceptance, but record only exact connection/command
+    /// evidence after replay. Collection-wide operation priority stays with the caller.
+    fn should_buffer_connect_event(&self, event: &BleEvent) -> bool {
+        if !self.progress.is_awaiting_dispatch_result() {
+            return false;
+        }
+        match event {
+            BleEvent::ConnectionStateChanged {
+                command_id,
+                connection_id,
+                ..
+            } => {
+                *connection_id == self.connection_id
+                    || *command_id == Some(self.progress.command_id)
+            }
+            BleEvent::CommandCompleted { command_id, .. } => {
+                *command_id == self.progress.command_id
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconciliationFault> {
@@ -163,7 +172,7 @@ impl ConnectionReservation {
                     _ => {}
                 }
                 if let Some(slot) = self.disconnect.as_mut()
-                    && slot.matches_event(event, connection_id)
+                    && slot.matches_related_event(event, connection_id)
                 {
                     // Passive errors prove teardown but do not replace the
                     // explicit disconnect command's authoritative terminal.
@@ -172,7 +181,7 @@ impl ConnectionReservation {
             }
             BleEvent::GattDiscovered { database, .. } => {
                 if let Some(discovery) = self.gatt.discovery.as_mut()
-                    && discovery.matches_event(event, connection_id)
+                    && discovery.matches_related_event(event, connection_id)
                 {
                     // Discovery deliberately keeps the latest correlated draft.
                     discovery.draft_database = Some(database.clone());
@@ -180,7 +189,7 @@ impl ConnectionReservation {
             }
             BleEvent::RssiRead { rssi, .. } => {
                 if let Some(slot) = self.rssi.as_mut()
-                    && slot.matches_event(event, connection_id)
+                    && slot.matches_related_event(event, connection_id)
                     && slot.value.is_none()
                 {
                     slot.value = Some(*rssi);
@@ -188,7 +197,7 @@ impl ConnectionReservation {
             }
             BleEvent::CharacteristicRead { value, .. } => {
                 if let Some(read) = self.read.as_mut()
-                    && read.matches_event(event, connection_id)
+                    && read.matches_related_event(event, connection_id)
                     && read.value.is_none()
                 {
                     read.value = Some(value.clone());
@@ -196,7 +205,7 @@ impl ConnectionReservation {
             }
             BleEvent::CharacteristicWritten { .. } => {
                 if let Some(write) = self.write.as_mut()
-                    && write.matches_event(event, connection_id)
+                    && write.matches_related_event(event, connection_id)
                 {
                     write.written = true;
                 }
@@ -646,7 +655,13 @@ pub(super) struct DisconnectReservation {
 }
 
 impl DisconnectReservation {
-    fn matches_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+    /// Dispatch timing applies only to buffering, not domain evidence recording.
+    fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    }
+
+    /// Matches related disconnect, terminal, and passive failure events, not success.
+    fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         match event {
             BleEvent::ConnectionStateChanged {
                 command_id,

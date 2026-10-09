@@ -246,7 +246,10 @@ cancellation/timeout instead use the one explicit retirement entry above.
 The actor retains ID allocation, cross-reservation settlement, and transport
 policy. The connection collection needs no `Option`: its empty map already
 represents zero connections. `ScanState` explicitly owns the single scan slot:
-`Idle` or `Reserved(ScanReservation)`.
+`Idle` or `Reserved(ScanReservation)`. Like `InitializationState`, it is an opaque
+struct: its phase, phase enum, session record, and stop record are private.
+External code uses owner methods rather than constructing variants or replacing
+payloads.
 
 `Reserved` includes pending, running, stopping, and stopped-but-unsettled
 sessions. It does not claim native scanning is active. A matching start dispatch
@@ -256,8 +259,11 @@ an occupied slot, and a stale rejection cannot release a different session.
 The state type owns availability, registration, rejection, terminal/result
 routing, and retirement rather than existing only to support delegation. It adds
 no separate Running/Stopping flags or linear state machine over independent
-callback evidence. `reserved()` / `reserved_mut()` serve the actor's internal
-event implementation, not outward actor getters. The actual reserved payload is
+callback evidence. `reserved()` / `reserved_mut()` remain private owner helpers,
+not outward actor getters. Start installation reuses `require_scan_available()`
+as an invariant assertion; stop installation similarly reuses `validate_stop()`.
+Internal misuse cannot install stop before start evidence is complete, overwrite
+an unresolved stop, or install stop on an ended session. The actual reserved payload is
 `Box<ScanReservation>`. Boxing keeps the idle slot compact at the cost of one
 allocation per admitted scan session, not per callback, without adding shared
 ownership or synchronization. The earlier inline-size measurement is not a
@@ -357,9 +363,20 @@ ownership boolean. Retirement APIs retain resource-specific names and run after
 waiter settlement. A subscription's `Keep` can mean incomplete, active, or restored,
 not successful completion; the connection owner applies `Remove` to the collection.
 
-Leaf correlation methods are reused for buffering and recording. Recording is
-also gated by the specific domain-event variant, so broader loss/terminal
-buffering matches cannot manufacture domain evidence. Connection lifecycle and
+Leaf correlation methods are named `matches_related_event()` and reused for
+buffering and recording. Related terminals or connection loss are not success
+evidence, and an event can relate to multiple reservations. Buffer decisions now
+live in reservation-owned `should_buffer_event()` methods for initialization,
+disconnect, GATT discovery, RSSI, read/write, subscription transitions, and scan
+stop. Scan start uses `should_buffer_start_event()`; the connection root uses
+`should_buffer_connect_event()` to retain its broader command-or-connection scope.
+These methods combine unresolved dispatch with correlation. An active subscription
+without a transition cannot buffer. Containers select targets without repeating
+dispatch checks; connection category priority remains global across all connections.
+Reusable `matches_related_event()` predicates remain pure correlation queries for
+recording, and initialization's pure matcher also detects callbacks contradicting
+rejection. Recording is gated by the specific domain-event variant, so broader
+loss/terminal buffering matches cannot manufacture domain evidence. Connection lifecycle and
 explicit-disconnect domain evidence are updated through a single lookup.
 
 The pre-ack order remains initialization, connections, then scan start/stop.
@@ -795,7 +812,12 @@ callbacks buffered before dispatch ack.
 ### Scan retirement review corrections
 
 Scan retirement takes no raw event argument: it uses only correlated reservation
-evidence, including `stop.stop_error`. An unrelated `ScanStopped::Err` must not
+evidence, including `stop.stop_error`. The outer `retire_completed()` first uses
+the pure `is_retirable()` decision to remove a completed session. Otherwise,
+`retire_failed_stop()` discards only an accepted stop with a failed terminal so
+the retained session can retry. It neither removes the session nor settles its
+caller. No mutation is hidden in `is_some_and()`, and no boolean helper both
+mutates a child record and decides whether its root should be removed. An unrelated `ScanStopped::Err` must not
 retire the current scan or discard its pending stop correlation. A stopped scan
 also retains incomplete start evidence until its domain/terminal facts can settle
 the start waiter; settlement precedes retirement, including for late callbacks
@@ -1006,12 +1028,17 @@ terminal result, including its native error rather than only a success boolean.
 Each operation-specific reservation retains its own typed domain evidence and
 interprets it with the shared progress gate; no separate terminal field remains.
 
+For the distinction between scan session facts, explicit stop command evidence,
+and caller waiter lifetime, see the [scan reservation design](bleng-scan-reservations-design-2026-10-09.md)
+([中文](bleng-scan-reservations-design-2026-10-09.zh-CN.md)).
+
 The result decision now lives beside the state it interprets:
 
 - `InitializationState::waiter_result()` requires a snapshot and successful
   terminal result;
-- `ScanReservation` and `StopReservation` preserve start/stop ordering and
-  scan-stop errors;
+- `ScanReservation` and its optional `StopReservation` preserve start/stop ordering
+  and scan-stop errors; the child reserves the session's explicit stop command
+  slot and retains its evidence independently of the caller's waiter;
 - `ConnectionReservation` handles connection failure and passive loss;
 - GATT, RSSI, read, write, and notification reservations build their typed
   `WaiterSuccess` values from their own evidence.

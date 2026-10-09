@@ -64,7 +64,13 @@ pub(super) struct GattDiscoveryReservation {
 }
 
 impl GattDiscoveryReservation {
-    pub(super) fn matches_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+    /// Dispatch timing applies only to buffering, not domain evidence recording.
+    pub(super) fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    }
+
+    /// Correlates database, terminal, or connection loss; not a success predicate.
+    pub(super) fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         match event {
             BleEvent::GattDiscovered {
                 command_id,

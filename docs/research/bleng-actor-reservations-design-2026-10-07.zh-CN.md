@@ -288,7 +288,7 @@ owner 确认 actor 的 begin reply 后，超时或调用方取消只退休 waite
 
 这套约束不只适用于初始化：scan 与 connections 的 `waiter_result()` 返回 `None` 同样可能表示未认领或证据未齐；已选定 I/O/GATT 叶子记录的无 command ID 查询则表示证据未齐。`record_terminal()` 在需要继续路由的层返回是否认领，connections 作为 actor 的最终路由无需返回布尔值。`retire_completed()`、`retire_completed_discovery()`、`retire_transition()` 保持资源退休的命名，但必须在 waiter 结算后执行；订阅返回 `Keep` 可能表示尚未完成、维持 Active 或恢复 Active，不等于命令成功。`Remove` 由 connection 容器实际执行删除，状态对象不自行管理外层容器。
 
-叶子 reservation 的关联方法由缓冲和证据记录复用。记录时仍先按 domain event 类型分支，因此匹配 terminal 或断连的宽泛缓冲规则不会被误用为 read/RSSI/value 等证据。连接状态与 explicit disconnect domain 在同一次连接查找中记录。首次 snapshot/read/RSSI/subscription 证据保持不变；GATT draft 仍保留最后一次关联结果，未改变既有策略。
+叶子 reservation 的宽泛关联方法统一命名为 `matches_related_event()`，由缓冲和证据记录复用；它可匹配 terminal 或影响操作的连接丢失，不表示成功，也不表示该事件只与一个 reservation 相关。缓冲入口统一使用 `should_buffer*()` 决策，在 reservation 内部组合 dispatch 未决与事件关联：init、disconnect、GATT discovery、RSSI、read/write 和订阅各自提供 `should_buffer_event()`；没有 transition 的 Active 订阅返回 false。扫描会话使用 `should_buffer_start_event()`，其 start 指 scan-start 命令，范围包括同 session 的 advertisement 和 `ScanStopped`；stop 使用 `should_buffer_event()`，也涵盖被动结束。连接根使用 `should_buffer_connect_event()` 保留 command 或 connection 任一匹配的宽泛缓冲规则。复用于证据记录的 `matches_related_event()` 仍是纯关联查询，不能加入 dispatch 未决条件；init 的纯关联函数也继续用于拒绝后晚到回调的矛盾检查。容器层只选择目标，不能改变 connections 的全局类别优先级。记录时仍先按 domain event 类型分支，因此匹配 terminal 或断连的宽泛缓冲规则不会被误用为 read/RSSI/value 等证据。连接状态与 explicit disconnect domain 在同一次连接查找中记录。首次 snapshot/read/RSSI/subscription 证据保持不变；GATT draft 仍保留最后一次关联结果，未改变既有策略。
 
 初始化 API 的阶段约束保持明确：登记 waiter 前检查准入，认领 caller handoff 后才安装 reservation；记录证据后先结算 waiter，再调用 `advance_after_settlement()` 推进就绪状态或报告已接受操作的失败。该方法返回 `Ok(())` 不代表已经 Ready，证据不足时仍保留 Pending。`waiter_result()` 返回 `None` 也不代表“不归初始化所有”，还可能是证据未齐；与之不同，`record_terminal()` 的布尔值表示命令所有权，`resolve_dispatch()` 返回 `None` 表示没有匹配的 Pending 初始化。状态对象不接管 waiter registry 或 lifecycle 副作用。
 
@@ -319,6 +319,8 @@ reservation 局部 dispatch 变化
 
 ## ScanState 与扫描回收
 
+会话事实、显式停止命令证据与 waiter 生命周期的区别，详见 [扫描 reservation 专题（中文）](bleng-scan-reservations-design-2026-10-09.zh-CN.md) / [English](bleng-scan-reservations-design-2026-10-09.md)。
+
 ```text
 Idle
   -> admission + caller handoff 成功
@@ -327,18 +329,22 @@ Idle
        -> 完整证据记账、先结算 waiter、再退休 -> Idle
 ```
 
+`ScanState` 与 `InitializationState` 一样是不透明的状态所有者：`phase`、`ScanPhase`、`ScanReservation` 和 `StopReservation` 均为私有，外部只能通过准入、登记、证据和退休方法操作，不能直接构造 variant 或替换 payload。
+
+`ScanReservation` 持有扫描会话槽位；其 `stop: Option<StopReservation>` 占据会话内唯一的显式停止命令槽位，并保留自己的 command progress 和停止错误。`Reservation` 既可以表示资源会话占位，也可以表示会话内部的命令槽位及其关联证据；嵌套关系描述所有权，不要求 reservation 独立存在。这与 connection 内的 `DisconnectReservation`、`RssiReservation`、`ReadReservation` 等命名一致。调用方 waiter 退休不释放尚未完成的停止命令关联；停止操作失败但扫描仍未结束时，只移除 stop，保留会话以允许重试。`ScanState::gate_event()` 只选择当前会话；start/stop 缓冲路由下沉到 `ScanReservation::gate_event()`。失败 stop 是否可释放由子结构的 `can_retire_after_failure()` 判断，父结构负责实际删除；`start_failed()` 明确只指启动命令失败。
+
 `Reserved` 只表示持有 scan slot，不等于已经开始射频扫描；它覆盖启动中、扫描中、stop 中以及 native 已停但晚到 start/stop 证据尚未齐全的阶段。没有额外增加 Running/Stopping 等重复状态，也不把独立的 domain、terminal 和 dispatch ack 事实压成线性 enum。
 
 实际 payload 使用 `Box<ScanReservation>`，装箱避免空闲 scan slot 也占据整份会话的空间；不把重构前的布局测量当作当前类型大小。代价是每次成功登记 scan 多一次分配，不是每个回调分配；不新增 `Arc`、锁、执行器或共享状态。
 
-相较于 actor 持有 `Option<ScanReservation>`，新增类型的价值不是形式一致或方便宏转发，而是把 slot 可用性、登记和释放的策略放在同一个所有者上。`ScanState` 统一处理 terminal/result 路由、拒绝和退休，actor 只协调结算顺序。重复安装不能覆盖仍保留的会话；晚到的旧 start rejection 不能释放新会话。内部事件实现通过 `reserved()` / `reserved_mut()` 记录证据，这些访问不作为 actor 的对外 getter。
+相较于 actor 持有 `Option<ScanReservation>`，新增类型的价值不是形式一致或方便宏转发，而是把 slot 可用性、登记和释放的策略放在同一个所有者上。`ScanState` 统一处理 terminal/result 路由、拒绝和退休，actor 只协调结算顺序。重复安装不能覆盖仍保留的会话；晚到的旧 start rejection 不能释放新会话。状态所有者内部通过私有 `reserved()` / `reserved_mut()` 访问当前会话，这些方法不作为 actor 的 getter。start 安装断言复用 `require_scan_available()`；stop 安装断言复用 `validate_stop()`，在 dispatch、start domain 或 terminal 不完整，以及已有 stop 或 session 已结束时拒绝内部误用，避免覆盖仍待结算的命令。
 
 
-scan retirement 不再接收原始 event 参数，只根据已关联的 reservation 证据（包括 `stop.stop_error`）决定回收。无关 scan 的 `ScanStopped::Err` 不能回收当前 scan 或丢弃其 pending stop 关联。
+scan retirement 不再接收原始 event 参数，只根据已关联的 reservation 证据（包括 `stop.stop_error`）决定回收。外层 `retire_completed()` 明确先调用纯查询 `is_retirable()`，可移除整个 session 时转 Idle 并返回；否则调用 `retire_failed_stop()`，仅清除已接受且 terminal 失败的 stop 命令，以便当前 session 重试。父结构将启动进度明确命名为 `start_progress`；退休查询依次检查 start 证据完整、存在的 stop 证据完整、启动失败或会话已结束。`StopReservation::is_complete(stopped)` 统一支撑 waiter 结果和退休的就绪判断，父级退休查询不重复解释子级错误与 terminal。后者不删除 session，也不决定 caller 结果；不再通过 `is_some_and()` 隐藏修改，或让同一个布尔 helper 同时修改子状态并决定根删除。无关 scan 的 `ScanStopped::Err` 不能回收当前 scan 或丢弃其 pending stop 关联。
 
 scan 已停止也不代表 start 已完整记账：若 start 的 domain/terminal 证据不完整，必须保留 reservation，等证据足以结算 start waiter 后再回收。两种事件顺序、dispatch ack 前缓冲与晚到回调均遵循先结算、后回收。
 
-stop dispatch 被拒绝时，不能把缓冲的全部 `ScanStopped` 都判为矛盾。[契约的 `command_id()`](../../crates/blehub/src/contract/events.rs) 明确区分：`SystemSuspended` 与 `ScanStopResult::Err` 没有 command ID，是独立的原生结束证据；`Requested` 则携带 command ID。`ScanState::resolve_dispatch()` 移除被拒绝的 stop reservation，按原顺序回放被动结束；actor 先交付 `DispatchRejected`，再发布并记录回放事件，随后退休旧会话。被动结束不能把拒绝变成 stop 成功；被拒绝命令的 terminal 不参与回放。任何 buffered `Requested` 仍触发矛盾 fault，即使同批还有被动结束事件。
+stop dispatch 被拒绝时，不能把缓冲的全部 `ScanStopped` 都判为矛盾。[契约的 `command_id()`](../../crates/blehub/src/contract/events.rs) 明确区分：`SystemSuspended` 与 `ScanStopResult::Err` 没有 command ID，是独立的原生结束证据；`Requested` 则携带 command ID。`StopReservation::resolve_dispatch()` 负责拒绝事件分类，`ScanState::resolve_dispatch()` 负责路由并移除被拒绝的 stop reservation，允许的被动结束按原顺序回放；actor 先交付 `DispatchRejected`，再发布并记录回放事件，随后退休旧会话。被动结束不能把拒绝变成 stop 成功；被拒绝命令的 terminal 不参与回放。任何 buffered `Requested` 仍触发矛盾 fault，即使同批还有被动结束事件。
 
 `passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart` 覆盖被动暂停和原生扫描错误两种情况，验证拒绝优先、事件可见、槽位释放、重新扫描，以及旧 session/command 的晚到事件不影响新扫描。已有 rejected-stop 回归扩展为两种混合回调顺序，保证 fail-closed 策略不因允许被动回放而放宽。
 

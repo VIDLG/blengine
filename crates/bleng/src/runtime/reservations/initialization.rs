@@ -49,8 +49,7 @@ impl InitializationState {
             return Err(ReconciliationFault::DispatchEvidenceConflict);
         }
         if let Some(init) = self.pending_mut()
-            && init.progress.is_awaiting_dispatch_result()
-            && matches_initialization_event(&event, init.progress.command_id)
+            && init.should_buffer_event(&event)
         {
             init.progress.buffer(event)?;
             return Ok(None);
@@ -195,6 +194,13 @@ struct InitReservation {
 }
 
 impl InitReservation {
+    /// Buffering needs both unresolved dispatch and command correlation.
+    /// The pure matcher also handles late callbacks after rejection.
+    fn should_buffer_event(&self, event: &BleEvent) -> bool {
+        self.progress.is_awaiting_dispatch_result()
+            && matches_initialization_event(event, self.progress.command_id)
+    }
+
     fn new(command_id: CommandId) -> Self {
         Self {
             progress: CommandProgress::new(command_id),

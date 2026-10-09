@@ -10,7 +10,13 @@ pub(super) struct RssiReservation {
 }
 
 impl RssiReservation {
-    pub(super) fn matches_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+    /// Dispatch timing applies only to buffering, not domain evidence recording.
+    pub(super) fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    }
+
+    /// Correlates RSSI data, terminal, or connection loss; not a success predicate.
+    pub(super) fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         match event {
             BleEvent::RssiRead {
                 command_id,
@@ -46,7 +52,13 @@ pub(super) struct ReadReservation {
 }
 
 impl ReadReservation {
-    pub(super) fn matches_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+    /// Dispatch timing applies only to buffering, not domain evidence recording.
+    pub(super) fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    }
+
+    /// Correlates read data, terminal, or connection loss; not a success predicate.
+    pub(super) fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         match event {
             BleEvent::CharacteristicRead {
                 command_id,
@@ -107,7 +119,13 @@ pub(super) struct WriteReservation {
 }
 
 impl WriteReservation {
-    pub(super) fn matches_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+    /// Dispatch timing applies only to buffering, not domain evidence recording.
+    pub(super) fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    }
+
+    /// Correlates write evidence, terminal, or connection loss; not a success predicate.
+    pub(super) fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         match event {
             BleEvent::CharacteristicWritten {
                 command_id,

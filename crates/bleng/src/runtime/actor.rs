@@ -10,7 +10,7 @@
 //! |   +-- command_id_gen: monotonic command ID allocation
 //! |   +-- resource_id_gen: independent scan/connection/GATT/subscription ID allocation
 //! |   +-- initialization: private NotStarted / Pending / Ready / Rejected phases
-//! |   +-- scan: Idle -> Reserved(ScanReservation) -> Idle
+//! |   +-- scan: private Idle / Reserved phases (one reusable scan slot)
 //! |   +-- connections: ConnectionReservations (private peripheral-keyed map)
 //! |       +-- connect/disconnect correlation
 //! |       +-- GATT: committed database + pending discovery
