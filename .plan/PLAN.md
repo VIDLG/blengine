@@ -993,7 +993,7 @@ impl BleHub {
 - 平台执行上下文、权限宿主和平台专属配置在创建 native backend 时提供，不塞入通用 Hub config。
 - `BleBackend`/`BleEventSink` trait自身声明`Send + Sync`；Rust与generated foreign proxy使用同一trait object ownership，无需在每个使用点重复`+ Send + Sync`。
 - event queue、容量、drop/coalesce 和 backpressure 由下游 sink 配置。
-- timeout scheduler 由下游拥有；BleHub 不维护 clock/timer。
+- caller-visible timeout/deadline scheduler 由下游拥有；BleHub 不维护 caller clock/timer。Platform backend 另自有不可变的 native safety watchdog，用于防止 active native operation 无限占用 driver lane；它不是 caller deadline，也不由 `BleHub` 控制。
 - BleHub没有recent command retention、public ID allocator、BLE domain registry或process-local ingress registry。direct handle对象图每Hub固定O(1)，不需要用户配置。
 
 ### 6.4 Platform 与 capabilities
@@ -1914,12 +1914,13 @@ Windows 与 Android conformance 文档必须明确两种 write 的成功语义�
 
 ### 8.11 Timeout
 
-BleHub 不拥有 clock、timer、watchdog、deadline、线程或调度器，也不提供 `expire_command`。
+`BleHub` 不拥有 caller clock、caller deadline、caller timer、线程或调度器，也不提供 `expire_command`。Platform backend 可以拥有自己的 native safety watchdog，但它只负责防止 active native operation 无限占用 driver lane，不替代 caller deadline。
 
-- 平台API自己产生timeout时，backend可以emit`CommandCompleted { error: Some(error) }`，其中`error.category = Timeout`；caller deadline不是backend result。
-- application-level deadline 由 caller runtime 维护；到期后 caller 在自己的 command table 中标记 terminal，并按 operation 选择 `stop_scan`、`disconnect` 或只忽略晚到结果。
+- 平台API或 backend safety watchdog 产生 native timeout 时，backend可以emit`CommandCompleted { error: Some(error) }`，其中`error.category = Timeout`；caller deadline不是backend result。
+- application-level deadline 由 caller runtime 维护；到期后 caller 在自己的 command table 中标记 terminal，并按 operation 选择显式 cancellation、`stop_scan`、`disconnect` 或只忽略晚到结果。
+- backend safety watchdog 超时不能直接释放 active slot 继续 FIFO；backend必须停止受影响 connection lane并执行 best-effort cancellation/recovery，直到旧 native ownership 被隔离。
 - 晚到 `BleEvent` 仍携带原 `CommandId` 和 session IDs，caller 可确定性识别。
-- v0.1 取消遵循 7.2：优先 operation-specific cleanup command；不可取消 operation 由 caller 本地标记 `Cancelled` 并忽略 late result，不在 BleHub 内启动 timer 或伪造 backend acknowledgement。
+- v0.1 取消遵循 7.2：caller cancel 与 native cancellation 分层；不可取消 operation 由 caller 本地标记 `Cancelled` 并忽略 late result，不在 `BleHub` 内启动 caller timer 或伪造 backend acknowledgement。
 
 ### 8.12 本地 dispose/close
 
@@ -2750,3 +2751,392 @@ Tauri plugin/showcase 已归档、暂停维护与扩平台，不再是Phase 3 do
 | 单 BlueZ daemon 管理双 adapter 不稳定 | 首选明确绑定；必要时切换双 VM、每 VM 单 controller 的隔离拓扑 |
 | 单块DK被误用来证明双设备或多设备身份混淆 | 双设备RF至少需要两块独立standalone DK，各自显式选择probe serial/串口、独占BTP session并核验profile/广播identity及connection/GATT作用域；缺少第二块时标为未验证，不以两个service、logical profile、Dongle或历史手机Peripheral替代 |
 | 只用单一Peripheral实现造成兼容性盲区 | 保留历史Android/BLESS互操作证据的原candidate范围；新增跨实现release gate须在第二provider具备时显式评审，不把archive旧结果重标为当前candidate通过 |
+
+### 16.1 Platform native operation queue 重构计划（提案，2026-10-10）
+
+**状态：方向已确认，具体实现按阶段审查；本节不冻结新的 public ABI，也不改变 Phase 3 → Phase 4 → Phase 5 的平台顺序。** 本计划响应当前对 native BLE 基础设施的重构要求：先把 Apple/Android/Windows platform 层的 operation admission、per-connection FIFO、callback correlation、disconnect/dispose 和并发边界做正确，再重新评估 `crates/bleng` 的 reservations 是否需要支持多个排队操作。未完成本节的平台 gate 前，不把 native queue 的存在当作 BLeng 多操作并发已经完成。
+
+#### 16.1.1 目标和非目标
+
+目标：
+
+1. 同一个 `Connection` 采用一个有界 native operation lane；read、write、CCCD/subscription transition、RSSI 和 discovery barrier 不绕过该 lane。
+2. 不同 `Connection` 使用独立 lane，可以独立推进；backend 不人为建立全局 GATT operation queue。
+3. scan 是 backend 级独立资源。scan 与 connect、已有连接的 GATT I/O、其他连接的 disconnect 可以并行，但同一 scan session 的 start/stop 仍按 scan lifecycle 排序。
+4. disconnect 是 connection-level teardown/supersession：关闭该连接的新 operation admission，结算 active/queued operation，清除 callback route，并安全处理晚到 callback。
+5. dispose 是 backend-level close barrier：关闭全局 admission，退休 scan 与所有 connection，重复调用共享一个最终 cleanup 结果。
+6. 同步 command `Result` 只表示 dispatch 是否被 native backend 接受；callback/domain event 可以在 dispatch 方法返回前或返回后出现，但一个命令一旦已经产生 event，不得再从 native dispatch 返回普通 `Err`。
+7. no-response write 的 public terminal 与 native queue slot release 分离：本地 submission 可以较早完成，但 native driver 仍须等待平台允许继续发送或完成其 flow-control 阶段。
+
+非目标：
+
+- 不强制保证 native 方法返回先于 callback event；这不能单独保证 `BleHub` actor 先处理 dispatch result。
+- 不在 backend trait 中引入 `async fn`、Rust `Future`、Tokio runtime 或新的跨平台 BLE wrapper。
+- 不把 React Native library、RxAndroidBle 或其他高层 BLE engine 引入 production backend；它们只作为行为参考。
+- 不在本节直接把 `bleng` 的单槽 reservations 改成 `VecDeque`；该决定放到 native queue 完成并通过测试后单独评审。
+- 不承诺多个连接在物理 RF 层面同时传输；只承诺 BleHub 不对不同连接施加不必要的全局串行化。
+
+#### 16.1.2 规范性并发矩阵
+
+| 组合 | 同一资源 | 不同资源 | 规范策略 |
+|---|---|---|---|
+| `startScan` / `startScan` | 拒绝第二个 | — | 一个 backend 只有一个 active scan session |
+| `startScan` / `stopScan` | 同一 scan lane 排序 | — | stop 不能绕过未完成的 start；旧 session 退休前不能开始新 session |
+| scan / connect | 允许 | 允许 | 平台可能因 controller 资源失败，但 backend 不人为互斥 |
+| scan / GATT I/O | 允许 | 允许 | scan 不属于某个 connection |
+| scan / disconnect | 允许 | 允许 | 停止扫描不自动断开 connection |
+| `connect(A)` / `connect(B)` | — | 允许 | 每个 connection 独立 lifecycle |
+| `connect(A)` / `connect(A)` | 拒绝第二个 | — | 同一 peripheral 只有一个 active connection lifecycle |
+| connect / GATT（同一 connection） | 排序 | — | GATT 仅在连接和 GATT session ready 后 admission |
+| connect / disconnect（同一 connection） | disconnect supersede | — | disconnect 可终止 pending connect，不建立第二条独立 native lifecycle |
+| GATT / GATT（同一 connection） | bounded FIFO | — | 一个 native callback owner；不依赖 Android/Apple 的偶然并行能力 |
+| GATT(A) / GATT(B) | — | 允许 | 独立 operation lane |
+| GATT / disconnect（同一 connection） | disconnect supersede | — | active/queued operation 各自只结算一次 |
+| disconnect(A) / disconnect(B) | — | 允许 | 不同 connection 独立 teardown |
+| 任意 operation / dispose | dispose supersede | — | dispose 关闭全局 admission 并退休所有资源 |
+| dispose / dispose | 一个 coordinator | — | 所有调用方等待同一 cleanup result |
+| callback / command return | 可能早或晚 | 可能早或晚 | 通过 native identity、generation 和 operation correlation 处理 |
+
+该矩阵与 [`docs/research/concurrency-case-matrix.md`](../docs/research/concurrency-case-matrix.md) 的 Hub/ingress 规则共同生效；本节补充 platform native driver 的资源级约束。
+
+#### 16.1.3 共同 native driver 模型
+
+每个平台 backend 最终应能表达如下所有权结构：
+
+```text
+BackendCoordinator
+├── global lifecycle
+├── scan controller（一个 backend 级 scan lane）
+└── connection registry
+    ├── ConnectionDriver A
+    │   ├── connection lifecycle
+    │   ├── native identity + generation
+    │   ├── GATT session
+    │   ├── bounded operation FIFO
+    │   └── active native operation
+    ├── ConnectionDriver B
+    └── ...
+```
+
+`BackendCoordinator` 负责 adapter/lifecycle、scan 唯一性、connection registry 和 dispose barrier；`ConnectionDriver` 负责单 connection 的 native handle、generation、GATT session、operation FIFO、callback correlation 和 retirement。平台自己的 Handler/DispatchQueue/state mutex 只负责短状态转换和 driver ownership，不得把所有 connection 的实际 BLE 工作强行汇聚成一个全局 lane。
+
+每次 operation admission 必须在 native 调用前完成：
+
+1. 校验 backend lifecycle、connection、GATT session、target identity 和 queue capacity。
+2. 登记 `command_id`、connection/generation、operation kind 和 native correlation。
+3. 将 operation 放入 bounded FIFO；如果 driver 空闲，取出 active operation。
+4. 释放状态锁后调用 Android/Apple/Windows native API。
+5. native API 若在 callback 前同步拒绝，回滚这一次 admission 并返回 `CommandDispatchError`；一旦 acceptance point 已建立，不再把后续 native outcome 转换成同步 dispatch error。
+
+callback 必须重新验证 exact native object、generation、operation kind 和 active owner；成功或失败只释放自己拥有的 active slot，并推进同一 connection 的下一项。disconnect/dispose 先切断公开 correlation，再进行 best-effort native cancel/unsubscribe/close；任何 late callback 都不得重新建立 route 或污染新 generation。不得持有状态锁跨越 native 调用、foreign callback 或 cleanup wait。
+
+#### 16.1.4 分阶段实施顺序
+
+**P0：契约和测试模型先行。**
+
+- 将本节矩阵、dispatch acceptance/event ordering、per-connection FIFO、disconnect supersession、dispose barrier 和 no-response write 双阶段语义补充到 platform research/conformance 文档。
+- 明确三类结果：同步 dispatch accepted/rejected、native/domain evidence、public terminal event；不得用其中一类替代另一类。
+- 建立跨平台 deterministic driver scenarios：callback-before-return、callback-after-return、queue full、same-connection FIFO、different-connection progress、disconnect with active/queued work、queued cancellation、active cancellation request、safety watchdog、connection recovery、dispose race、late callback 和 repeated close。
+- 先验证 queue/driver 纯状态逻辑，不用测试放宽生产 visibility，也不把 `bleng` reservation 私有 API 暴露给 platform tests。
+
+**P1：Apple native driver（当前 Phase 3 优先）。**
+
+- 以现有 `AppleBleBackend` 的 serial queue 和 `GattIoController` 为基础，不引入第二套 operation engine；第一版 driver 同时建立 queued cancellation、active cancellation hook、per-kind safety watchdog 和 connection recovery 状态。
+- 将 RSSI 纳入同一 per-connection operation lane，统一 read/write/CCCD/RSSI/discovery barrier 的 admission、active owner 和 retirement。
+- 保留现有 CoreBluetooth native-object identity、connection generation、callback/value-route barrier、notification unsubscribe-before-rediscovery 和 no-response flow-control 语义。
+- 明确 discovery 是 barrier；rediscovery 前必须处理已有 subscription route，不能让旧 GATT session 的操作越过 barrier。
+- 验证 disconnect、adapter loss、dispose、native unsubscribe callback 和 replacement peripheral object 的 late callback 安全性。
+- 为 queue capacity、RSSI FIFO、双 connection 独立推进、scan/connect 并行和 dispose race 添加 deterministic Swift tests，再执行 macOS/iOS 各自适用的 runtime/HIL gate。
+
+**P2：Android native driver（Phase 3 Apple exit 后进入 Phase 4）。**
+
+- 将 `ActiveConnection.pendingIo` 从单个 slot 改为 bounded FIFO，并由 connection-specific driver 在 owner `Handler` 上推进；第一版 driver 同时建立 queued cancellation、active best-effort cancellation、per-kind safety watchdog 和旧 `BluetoothGatt` recovery，不先交付一个无法安全取消的简化 queue。
+- characteristic/descriptor read/write、CCCD transition 和 RSSI 统一进入该 lane；RSSI 的串行化是 BleHub 跨平台策略，不声称 Android `readRemoteRssi()` 使用了 `BluetoothGatt.mDeviceBusy`。
+- 遵守 Android framework 对 GATT read/write/descriptor operation 的 `mDeviceBusy` 约束；不能在 public no-response terminal 后提前释放 native slot。
+- callback 侧严格验证 `BluetoothGatt` object、connection generation、target instance 和 active operation；handler post/dispatch 失败必须 failure-atomic 回滚或明确 fault。
+- 将 discovery 作为 GATT barrier，禁止旧 session 的 I/O 越过 pending discovery；disconnect 时一次性、逐 operation 结算 active/queued work，并清除 subscriptions/callback routes。
+- 添加 JVM/Android deterministic tests，再执行 artifact-only、Android ART、单 DK/双 DK RF、passive disconnect、queue overflow 和 reload/invalidation gate。
+
+**P3：Windows driver 对齐和容量加固。**
+
+- 保留现有 per-connection GATT driver，不把它改成全局队列；在同一 driver 中补齐 queued cancellation、active cancellation/close hook、safety watchdog 和 connection recovery ownership。
+- 为 `QueuedIo`/driver 增加明确 capacity、queue-full admission 和 failure-atomic rollback 断言。
+- 对齐 discovery barrier、disconnect retirement、native object cleanup、late callback/generation 和不同 connection 独立推进语义。
+- 明确 Windows RSSI v0.1 不支持，不为不支持的 RSSI 建立伪造 operation lane。
+- 通过 Windows deterministic/conformance、artifact consumer、现有 active nRF RF 和资源归零 gate；历史 QEMU/BLESS 证据不自动重标为本计划的当前 provider gate。
+
+**P4：跨平台 native 退出审查。**
+
+每个平台都必须针对同一 candidate 保存：
+
+- queue admission/overflow 和同步 rejection 零 event 证据；
+- queued cancellation、active cancellation request、watchdog timeout、connection recovery 和 late callback barrier 证据；
+- callback-before/after-dispatch-return 证据；
+- scan 与 connect、scan 与 disconnect 的并行证据；
+- 两个不同 connection 交错推进证据；
+- 同一 connection FIFO 顺序和 no-response write slot 证据；
+- active/queued disconnect retirement 和 passive disconnect 证据；
+- dispose 与 command/callback race、重复 dispose、晚到 callback 证据；
+- native identity/generation 错配 fail-closed 证据；
+- 静态 package/symbol、ART/Swift runtime 和适用 RF/HIL 证据。
+
+P4 退出前不修改或放宽 `crates/bleng` 的 reservation visibility，不把 native queue 直接宣称为 BLeng queue，也不删除 BLeng pre-dispatch reconciliation。
+
+**P5：native 稳定后重新评估 BLeng。**
+
+仅在 P4 完成后再决定：
+
+- BLeng 是否继续对同一 connection 只允许一个 public pending operation；或
+- BLeng 是否采用有界 operation collection/queue，接受多个调用方命令并分别维护 `CommandProgress`。
+
+若进入第二种方案，必须单独解决 passive disconnect 对多个 pending command 的广播结算、queue full/backpressure、timeout 后 native reservation 保留、discovery barrier、dispatch/admission 顺序和 no-response 双阶段完成；不能只把三个 `Option` 机械替换为 `VecDeque`。该阶段需要独立 API/行为评审，不属于本节 native 重构的自动结果。
+
+#### 16.1.5 退出条件、禁止事项和证据边界
+
+退出条件：
+
+1. 每个平台的 native queue 都是有界的，并在 admission 前处理容量耗尽。
+2. 同一 connection 没有多个未经 correlation 管理的 native callback owner。
+3. 不同 connection 不因共享状态锁而被错误地全局串行化。
+4. disconnect/dispose 不会留下 active/queued operation、subscription route 或 waiter 所需的未记账 ownership。
+5. late callback 不会恢复已退休的 connection、scan 或 GATT generation。
+6. queue 和 callback 的确定性测试通过后，才运行对应 platform package/runtime/RF gate。
+7. 所有结果按 tested candidate、platform、host、provider 和 gate 类型记录；一个平台的 queue 通过不替代另一个平台的 runtime/RF 证据。
+
+禁止事项：
+
+- 不以“native 方法通常返回很快”作为 callback 顺序保证。
+- 不持锁跨 native API、callback、foreign sink 或 dispose wait。
+- 不用全局 operation queue 伪装多 connection 并行。
+- 不用无界 queue、无界 callback map 或 caller timeout 假设 native 已取消。
+- 不把 `react-native-ble-plx` 的 RxAndroidBle 内部行为、`react-native-ble-manager` 的历史 queue 或 Nitro 的 descriptor-only queue 当作 BleHub 的平台保证；它们只提供参考和回归问题来源。
+- 不在 BLeng 尚未重新评审前修改其 public async semantics、reservation ownership 或 operation concurrency contract。
+
+本节计划本身不表示任何新的 native queue、Android/Apple/Windows runtime、RF、BLeng 或 ABI gate 已通过；实现和证据必须按阶段分别登记。
+
+#### 16.1.6 操作身份、取消和“事务”命名决策
+
+本项目借鉴 `react-native-ble-plx` 的 `transactionId` 思想，但 v0.1 不新增一个同时承担多种含义的公共 `TransactionId`。PLX 中该标识主要用于把异步请求与取消句柄关联起来；它不保证 native operation 已回滚、peripheral 已停止处理、callback 不再到达或多个 BLE 操作具备原子性。BleHub 必须保留这些边界，不能把 transaction 命名误解为数据库事务。
+
+当前和目标层次固定如下：
+
+| 语义 | 当前/目标实体 | 责任 |
+|---|---|---|
+| 单个 BLE command 的事件关联 | `CommandId` | 一个 command 一个唯一 ID；native/domain event 原样回显；不得复用 |
+| 资源作用域 | `ConnectionId`、`GattSessionId`、`SubscriptionId` | 限定 operation 的 connection、GATT database 或 subscription 生命周期 |
+| caller waiter 控制 | `WaiterTicket` / waiter retirement | timeout/drop/caller cancel 终结上层等待；不承诺 native cancel |
+| native callback 相关性 | native identity + generation + operation correlation | 防止 replacement object、late callback 和旧 session 污染新状态 |
+| 多个 command 的业务分组 | 暂不提供 | 如未来需要，应先定义 group failure/partial success/cancel 语义，再单独评审 `OperationGroupId` 或等价高层概念 |
+
+因此，native queue item 只需要保留 `CommandId`、connection/session/generation、operation kind 和 exact native target；不为了模仿 PLX 再复制一个公共 transaction 字段。除非未来一个高层 BLeng operation 确实展开成多个独立 BleHub commands，并且调用方需要整体取消/观察，否则 `TransactionId` 只是重复 `CommandId` 或混淆 waiter cancellation。
+
+取消语义必须明确区分三件事：
+
+```text
+caller cancel / timeout
+    -> waiter 不再等待
+native cancellation
+    -> backend 尝试移除 queued operation 或请求 active operation 停止
+BLE rollback
+    -> v0.1 不承诺；外设已经观察到的副作用不能由取消自动撤销
+```
+
+native operation 的推荐状态是 `Registered -> Accepted/Queued -> Active -> Completed`；取消可能在任何阶段发生，但 active operation 的 callback 仍可能迟到。disconnect/dispose 可以退休 correlation 和失败 queued work，却不能伪造“远端已回滚”。这条规则同时适用于 BLeng、platform backend 和未来 RN adapter。
+
+**距离理想状态的审计：**
+
+- **接近目标：** `CommandId` 已经是 caller-owned、每 command 唯一的 event correlation；`ConnectionId`/`GattSessionId` 等作用域 ID 已存在；`WaiterTicket` 和 reservation 生命周期已把 caller waiter retirement 与 native reservation 保持分离；late callback/generation 的设计原则已经明确。
+- **部分完成：** Apple 已有 per-connection GATT FIFO，Windows 已有 per-connection GATT driver；但 Apple RSSI 尚未统一进入同一 operation lane，Windows queue 仍需按本节补足容量和跨操作语义，两个实现也还没有按照同一 platform matrix 完成退出审查。
+- **主要缺口：** Android 当前仍以单个 `pendingIo` 表达连接内 pending operation，尚未形成统一 bounded FIFO；三平台还没有共同验证 queue overflow、active/queued disconnect retirement、dispose race 和 callback-before/after-return 的完整矩阵。
+- **有意保留的缺口：** BLeng 当前 reservations 仍是单槽/按类别模型。这不是遗漏，而是等待 native driver 稳定后的 P5 决策；不能在 platform queue 尚未完成前仅凭 PLX 的 `transactionId` 推断 BLeng 应开放多命令并发。
+- **不属于当前缺口：** v0.1 不需要业务级 transaction grouping，也不需要 native rollback。若产品以后需要多步配对、发现、配置或写入流程的整体取消，应在 BLeng/application 层设计补偿式 workflow，而不是向底层 BLE command 追加一个含糊的事务字段。
+
+这意味着当前整体距离理想架构不是缺少一个 `TransactionId`，而是还缺少统一完成的 native per-connection driver、退休/取消语义和跨平台并发证据。下一步仍按 16.1.4 的 P1–P4 推进，P5 才重新审查 BLeng reservations。
+
+#### 16.1.7 Native cancellation 与 safety watchdog 的统一设计（当前 Platform 重构必需能力）
+
+native cancellation 不作为一个孤立的 cancel API 补丁实现，而是和 per-connection operation driver、active-operation watchdog、connection recovery 以及 late-callback barrier 一起设计。它解决的是“如何安全地停止或退休 native operation”，不是“如何回滚已经被 peripheral 观察到的 BLE 副作用”。
+
+推荐的 native operation 状态模型为：
+
+```text
+Registered
+    -> Accepted
+    -> Queued
+    -> Active
+    -> Terminal
+
+Queued
+    -> CancelledQueued
+
+Active
+    -> CancelRequested
+    -> Terminal
+    -> RecoveryRequired
+
+Active watchdog timeout
+    -> TimeoutTerminal
+    -> RecoveryRequired
+```
+
+### 分层取消语义
+
+1. **Caller cancellation**：`WaiterTicket`/BLeng waiter 不再等待；不自动改变 native queue，也不抑制事件。
+2. **Queued native cancellation**：如果 operation 仍未进入 native API，driver 可以在自己的串行状态边界内安全移除它，并为已 accepted command 产生一次明确的 cancellation terminal。
+3. **Active native cancellation**：backend 向平台发起 best-effort cancel/close/disconnect；在平台给出可靠 completion 或 connection recovery 完成前，不能复用 active slot，也不能启动下一条 operation。
+4. **Safety watchdog**：active operation 超过 backend-configured safety deadline 时，产生一次 timeout terminal，退休公开 correlation，停止推进该 connection 的普通 FIFO，并进入 recovery；不能只释放 slot 后盲目执行下一条。
+5. **Connection recovery**：取消或 watchdog 使 native stack 状态不再可证明时，关闭该 connection 的 operation admission，结算 queued operations，清理 subscription/CCCD routes，best-effort disconnect，分配新的 generation；所有 late callback 必须被旧 generation barrier 拦截。
+6. **BLE rollback**：不承诺。write、CCCD 或其他已经进入 native/peripheral 的副作用不能因为 caller/native cancellation 自动撤销；需要业务补偿时由 BLeng/application workflow 负责。
+
+统一的安全顺序是：
+
+```text
+retire public correlation
+    -> emit at-most-once cancellation/timeout terminal
+    -> stop admitting or advancing the affected lane
+    -> request best-effort native cancellation
+    -> wait for native completion or enter connection recovery
+    -> retire active/queued operations and routes
+    -> install generation/late-callback barrier
+    -> release connection only after native ownership is no longer reused
+```
+
+**Active timeout 不能直接释放 slot。** Android `BluetoothGatt`、Apple CoreBluetooth 和 Windows async GATT 都可能在本地 deadline 之后仍有迟到 completion；若 timer 触发后立即启动下一条 operation，旧 callback 可能消费新 operation 或 native stack 仍处于 busy 状态。timeout 后的安全默认动作是 connection-level fail-closed recovery，而不是普通 FIFO 继续运行。
+
+### 配置和 public 边界
+
+`NativeOperationTimeoutConfiguration` 可在 backend 构造时传入，按 operation kind 配置有限的 safety deadline，例如 connect、discovery、read、write-with-response、write-without-response flow-control、CCCD 和 RSSI。配置必须有安全上下限，不能使用无限等待；它是 backend safety policy，不是 caller-visible operation deadline，也不加入普通 `BackendCapabilities`。生产默认值和测试小值都必须由平台 backend 校验，非法配置在 assembly 前失败。
+
+当前 Platform driver 和 public cancellation contract 都优先以现有 `CommandId` 作为 cancellation target，而不是新增公共 `TransactionId`。第一阶段同时实现 backend-private queued removal、active best-effort request、watchdog recovery 和 caller waiter retirement；BleHub/BLeng 的 public control shape 见 16.1.8。任何形状都不能承诺 cancel 返回就代表空口操作已经停止。
+
+### 平台实现边界
+
+- **Android**：characteristic/descriptor/GATT busy 状态不提供可任意复用的 active cancel 边界；cancel/watchdog 后优先停止该 connection driver，best-effort `BluetoothGatt` teardown/disconnect，并以新 generation/reconnect 恢复，不在不确定的旧 `BluetoothGatt` 上继续 FIFO。
+- **Apple**：CoreBluetooth 不为每类 GATT operation 提供统一的撤销确认；取消先退休 exact peripheral/characteristic route、停止 `GattIoController` driver，再按平台可用路径 unsubscribe/disconnect；late delegate callback 只能进入 retired barrier。
+- **Windows**：使用 WinRT operation 的可取消/关闭能力时，仍须等待或验证 driver ownership 的释放；若无法证明 active operation 已退出，采用同样的 connection recovery，不将 task cancellation 当作 native completion。
+
+### 验收要求
+
+每个平台把 native cancellation/watchdog 作为当前 driver 的正式基础设施后，必须通过：
+
+- queued operation 在 active 前取消且只产生一次 terminal；
+- active operation 取消请求后 callback 迟到、重复或错 generation；
+- watchdog timeout 不复用旧 active slot；
+- timeout 后 queued operation 按 connection recovery 结算；
+- cancel/disconnect/dispose 的竞态和重复调用；
+- no-response write flow-control 卡住后的 recovery；
+- 新 generation operation 不被旧 callback 完成；
+- caller waiter cancellation 不抑制 native event；
+- backend dispose 等待 native ownership 退休而不是只等待 queue 变空。
+
+本节把 native cancellation/watchdog 纳入当前 P1–P4 Platform driver 重构，但不表示代码或 runtime gate 已经通过。P1–P4 的基础 queue、retirement、recovery、BleHub cancellation 和 BLeng cancellation tests 必须一起完成；public cancellation 不是表面的 `TransactionId` API，而是以现有 command identity 为目标、明确 native stop 边界的控制语义。
+
+#### 16.1.8 BleHub 与 BLeng 的 public cancellation contract（当前设计范围）
+
+public cancellation 与普通 BLE operation 使用同一个 caller-owned `CommandId`，不额外引入 `TransactionId`。取消请求本身是 control-plane action，不是一个需要再分配第二个 operation ID 的 GATT operation：它的目标就是已有的 `target_command_id`。
+
+**BleHub 层候选契约：**
+
+```rust
+pub struct CancelOperationRequest {
+    pub target_command_id: CommandId,
+}
+
+trait BleBackend {
+    // This control request has no independent command lifecycle or command ID.
+    fn cancel_operation(
+        &self,
+        request: CancelOperationRequest,
+    ) -> Result<(), CommandDispatchError>;
+}
+```
+
+`BleHub::cancel_operation(target_command_id)` 的同步 `Ok(())` 只表示 cancellation request 已在 backend 的 control plane 线性化；它不表示 active native operation 已经停止。取消请求不产生第二个普通 BLE operation 的 domain event。目标 command 最终至多产生一次：
+
+```text
+CommandCompleted {
+    command_id: target_command_id,
+    error: Cancelled,
+}
+```
+
+queued operation 可以在 native API 调用前安全移除；active operation 则进入 `CancelRequested`，由平台 best-effort cancel、watchdog 或 connection recovery 完成内部清理。active callback 可能迟到，但不得恢复目标 command、消费新 operation 或产生已经退休的目标 domain event。connection-level state（例如 disconnect/recovery）仍然正常上报。
+
+取消请求的精确 rejection 至少区分：
+
+```text
+Closed
+OperationNotFound
+OperationAlreadyCompleted
+OperationNotCancellable
+ResourceExhausted（仅适用于 backend 自身无法登记 cancellation control work）
+```
+
+重复取消一个已经进入 `CancelRequested` 的 target 应是幂等成功，不重复产生 terminal；取消已经完成的 target 不应伪造新的 event。初始化、scan、connect、disconnect、GATT、CCCD、RSSI 的 cancelability 必须由每个 operation 的 driver contract 明确，而不是由调用方猜测。
+
+**BLeng 层候选契约：**
+
+当前 `Bleng` 的 async convenience method 只返回最终值，调用方看不到内部 `CommandId`，因此仅增加 `Bleng::cancel(command_id)` 不足以形成可用的 public API。BLeng 应同时提供一个可取消的 operation handle/view：
+
+```text
+begin operation
+    -> operation handle（内部持有 CommandId）
+    -> handle.cancel()
+    -> handle.wait() / typed completion
+```
+
+已有的 `start_scan`、`connect`、`read_characteristic` 等 run-to-completion convenience method 可以保留为包装层，但需要明确：
+
+- 显式 `handle.cancel()` 才请求 native cancellation；
+- foreign task drop、caller timeout 和 waiter retirement 默认不自动变成 native cancel；
+- handle 的取消结果表示 cancellation request 被接受/拒绝，最终 operation result 单独返回 `Cancelled`、`Timeout`、`Disconnected` 或具体 operation error；
+- handle drop 不得隐藏地创建第二套 cancellation policy；如未来提供 cancel-on-drop，必须是明确的独立 API 语义。
+- `wait()` 是 single-consumer，最多成功消费一次最终结果；`cancel()` 可重复调用且幂等；不为普通 operation handle 提供多 waiter/broadcast 语义。
+
+BLeng actor 必须在同一 actor-owned reservation 中线性化 `cancel_operation`：先确认 target 仍处于可取消状态，再退休公开 domain route/更新 reservation cancellation state，最后通过 BleHub dispatch native cancellation；actor 不在 mailbox 内等待 native stop。caller waiter、native reservation、public event 和 native recovery 继续分层。
+
+**事件和副作用边界：**
+
+```text
+cancel accepted
+    -> target operation 的公开完成语义变为 Cancelled
+    -> target domain success event 不再发送
+    -> native cleanup/recovery 继续在后台执行
+    -> late callback 只用于内部 retirement 或被 barrier 丢弃
+```
+
+这表示“调用方不再把 target 当作成功 operation”，不表示外设已经撤销此前观察到的 write/CCCD 副作用。需要补偿写入或业务恢复的流程属于 BLeng/application workflow。
+
+**公共错误候选：** `CommandDispatchError` 增加 `OperationNotFound`、`OperationAlreadyCompleted` 和 `OperationNotCancellable`；`BleErrorCategory::Cancelled` 用于目标 command 的 cancellation terminal，必要时另增 `OperationAborted` 表达因 connection recovery 被动终止的其他 queued operation。所有新增错误必须在 Rust、Swift、Kotlin binding 和 artifact consumer 中锁步验证。
+
+**当前验收必须覆盖：**
+
+- BleHub queued target cancellation：零 native submission、一次 `Cancelled` terminal；
+- BleHub active target cancellation：best-effort native request、slot 不提前复用、迟到 callback 隔离；
+- cancellation 与 normal callback、timeout、disconnect、dispose 的竞态；
+- BLeng operation handle 的 `wait()` single-consumer 且只完成一次，重复 `wait()` 返回明确的 consumed 错误；重复 `cancel()` 幂等，foreign task drop 不隐式 cancel；
+- cancel unknown/completed/non-cancellable target 的精确 error；
+- cancellation 后 target domain success event 不泄漏，新 generation operation 不被旧 callback 完成；
+- Apple、Android、Windows 都通过同一 control-plane/conformance matrix。
+
+本节将 public cancellation 与 native queue/watchdog 一起纳入当前 P1–P4 设计和 ABI candidate；它不宣称当前代码已经实现或任何 platform/runtime/RF gate 已通过。
+
+#### 16.1.9 已确认的补充决策
+
+以下决策已经确认，并覆盖本计划中较早的候选表述：
+
+1. **Recovery 不自动重连。** Native cancellation、watchdog timeout 或 connection recovery 只负责停止当前 driver、清理 active/queued operation、撤销旧 routes、建立 generation barrier 并将连接置为 `Disconnected`。不自动重连、不自动重放 GATT/CCCD/写入操作；调用方必须显式调用 `connect()`。
+2. **Cancellation 与 disconnect/dispose 按线性化顺序竞争。** 同一 connection driver/actor 的线性化边界决定先后，不额外建立全局优先级：cancel 先赢返回 `Cancelled`；explicit disconnect 先赢则未完成 operation 返回 `OperationAborted`；passive disconnect 先发生则返回 `Disconnected`；dispose 先赢则返回 `Closed`。
+3. **旧连接身份永久退休。** Recovery 后不复用旧 `ConnectionId`；generation 只用于 native callback 隔离。显式重新连接创建新的 connection identity，不恢复旧 command。
+4. **Native queue 默认有界。** 每个 connection 使用独立 FIFO，生产默认容量为 `1024`，测试可传入 `1` 或 `2`；backend 构造后不可修改。容量耗尽在 acceptance 前同步返回 `ResourceExhausted`，不产生 event、不创建 route、不修改 reservation。
+5. **Watchdog 默认值可以平台不同。** 配置结构、毫秒单位、最小/最大边界和不可变性统一；具体生产默认时长由 Apple、Android、Windows backend 按平台事实提供，测试可以显式使用短时长。具体默认数值不进入 `BackendCapabilities`，也不改变 public ABI shape。
+6. **BLeng 对外使用 typed operation handle。** Rust 内部共享私有 `OperationControl`，Stable UniFFI 对外按 operation 类型提供 typed handle；`wait()` 返回对应 typed result，`cancel()` 只返回 cancellation request 是否被接受。保留现有 run-to-completion API 作为 `begin + wait` 包装。
+7. **重复消费有明确错误。** typed handle 的 `wait()` 是 single-consumer；重复调用返回 `OperationResultConsumed`，不提供普通 handle 的多 waiter/broadcast 语义。`cancel()` 幂等；handle drop 只退休 caller waiter，不自动触发 native cancellation。
+8. **Runtime close 终止未完成 handle。** close 前已完成的 operation 保留其结果；因 runtime close 终止的等待返回 `Closed`；close 后调用 `cancel()` 返回 `Closed`。handle 不拥有 runtime lifecycle。
+9. **Cancellation 是 control-plane request。** 它不占普通 BLE operation FIFO slot，不分配第二个 `CommandId`，也不产生第二个普通 BLE event；但必须与目标 connection driver 使用同一线性化边界。
+10. **取消错误携带目标身份。** `OperationNotFound`、`OperationAlreadyCompleted` 和 `OperationNotCancellable` 均携带目标 `CommandId`；`ResourceExhausted` 携带诊断 detail。`BleErrorCategory::Cancelled` 表示目标主动取消，`BleErrorCategory::OperationAborted` 表示因 disconnect/recovery 被动终止的其他 operation。
+11. **Native cancel 失败不改写已获胜的取消语义。** 如果 cancellation 已在线性化边界获胜，即使平台 best-effort cancel 调用失败，目标仍只产生一次 `Cancelled` terminal；connection 进入 recovery，其他被连带终止的 operation 使用 `OperationAborted`。
+12. **公共 trait 不隐藏取消能力。** `BleBackend::cancel_operation(CancelOperationRequest)` 是强制 trait 方法，不提供默认实现。尚未具备 native cancellation driver 的 backend 必须显式返回 `OperationNotCancellable`，不能用默认实现掩盖能力缺口。
+13. **ABI 仍未冻结。** 上述 cancellation contract 立即纳入当前未冻结 ABI candidate，并同步 Rust、Swift、Kotlin binding/conformance；只有 Apple、Android、Windows 的 queue、cancellation、watchdog、recovery 和跨平台 gate 全部通过后，才进入 Phase 5 ABI freeze。
+
+这些决策不表示当前代码已经实现 cancellation、native queue、watchdog、recovery、typed handle 或新的 generated binding；它们只是后续实现必须遵守的稳定设计边界。
