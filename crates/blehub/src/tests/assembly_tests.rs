@@ -1,12 +1,12 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard, OnceLock};
 
 use super::*;
 use crate::{
-    BackendCapabilities, BackendEventIngressHandle, BleEvent, CommandDispatchError, ConnectCommand,
-    DisconnectCommand, DiscoverGattCommand, EventSinkError, InitializeCommand, Platform,
-    ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand, StartScanCommand,
-    StopScanCommand, WriteCharacteristicCommand,
+    BackendCapabilities, BackendEventIngressHandle, BleEvent, CancelOperationRequest,
+    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand, EventSinkError,
+    InitializeCommand, Platform, ReadCharacteristicCommand, ReadRssiCommand,
+    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
 };
 
 struct Sink;
@@ -32,6 +32,15 @@ impl BleEventSink for ReentrantDropSink {
     fn on_event(&self, _: BleEvent) -> Result<(), EventSinkError> {
         Ok(())
     }
+}
+
+static ASSEMBLY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn assembly_test_guard() -> MutexGuard<'static, ()> {
+    ASSEMBLY_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Drop for ReentrantDropSink {
@@ -105,6 +114,10 @@ impl BleBackend for Backend {
         unreachable!()
     }
 
+    fn cancel_operation(&self, _: CancelOperationRequest) -> Result<(), CommandDispatchError> {
+        unreachable!()
+    }
+
     fn dispose(&self) -> Result<(), BleHubError> {
         self.dispose_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -131,6 +144,7 @@ fn blocking_backend(
 
 #[test]
 fn dropping_pending_assembly_cancels_its_ticket() {
+    let _test_guard = assembly_test_guard();
     let assembly = BackendAssembly::new(Arc::new(Sink));
     let ticket = assembly.ticket();
 
@@ -145,6 +159,7 @@ fn dropping_pending_assembly_cancels_its_ticket() {
 
 #[test]
 fn failed_finish_does_not_leave_a_pending_ticket() {
+    let _test_guard = assembly_test_guard();
     let assembly = BackendAssembly::new(Arc::new(Sink));
     let ticket = assembly.ticket();
 
@@ -172,6 +187,7 @@ fn reentrant_drop_sink() -> (Arc<dyn BleEventSink>, Arc<AtomicBool>, Arc<AtomicB
 
 #[test]
 fn pending_cancel_drops_sink_outside_registry_lock_and_completes_nested_cancel() {
+    let _test_guard = assembly_test_guard();
     let (sink, lock_was_free, nested_cancel_completed) = reentrant_drop_sink();
     let assembly = BackendAssembly::new(sink);
     drop(assembly);
@@ -181,6 +197,7 @@ fn pending_cancel_drops_sink_outside_registry_lock_and_completes_nested_cancel()
 
 #[test]
 fn pending_finish_drops_sink_outside_registry_lock_and_completes_nested_cancel() {
+    let _test_guard = assembly_test_guard();
     let (sink, lock_was_free, nested_cancel_completed) = reentrant_drop_sink();
     let assembly = BackendAssembly::new(Arc::clone(&sink));
     assert!(assembly.finish().is_err());
@@ -191,6 +208,7 @@ fn pending_finish_drops_sink_outside_registry_lock_and_completes_nested_cancel()
 
 #[test]
 fn dropping_attached_assembly_disposes_the_unclaimed_hub() {
+    let _test_guard = assembly_test_guard();
     let dispose_count = Arc::new(AtomicUsize::new(0));
     let assembly = BackendAssembly::new(Arc::new(Sink));
 
@@ -202,6 +220,7 @@ fn dropping_attached_assembly_disposes_the_unclaimed_hub() {
 
 #[test]
 fn dropping_assembly_during_attach_disposes_the_cancelled_hub() {
+    let _test_guard = assembly_test_guard();
     let dispose_count = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
@@ -224,6 +243,7 @@ fn dropping_assembly_during_attach_disposes_the_cancelled_hub() {
 
 #[test]
 fn finish_transfers_hub_ownership_out_of_the_guard() {
+    let _test_guard = assembly_test_guard();
     let dispose_count = Arc::new(AtomicUsize::new(0));
     let assembly = BackendAssembly::new(Arc::new(Sink));
 
@@ -237,6 +257,7 @@ fn finish_transfers_hub_ownership_out_of_the_guard() {
 
 #[test]
 fn duplicate_unknown_and_late_attach_are_rejected() {
+    let _test_guard = assembly_test_guard();
     let first_dispose_count = Arc::new(AtomicUsize::new(0));
     let rejected_dispose_count = Arc::new(AtomicUsize::new(0));
     let assembly = BackendAssembly::new(Arc::new(Sink));

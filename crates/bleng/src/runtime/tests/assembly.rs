@@ -1,11 +1,11 @@
 use super::support::{
     Arc, AssemblyAdmissionError, BackendCapabilities, BackendEventIngressHandle, BleBackend,
-    BleEvent, BleHubError, CommandDispatchError, CommandId, ConnectCommand, DisconnectCommand,
-    DiscoverGattCommand, Duration, EventIngressStatus, EventScenario, FakeBackend,
-    InitializeCommand, Mutex, ReadCharacteristicCommand, ReadRssiCommand, RecordedCommand,
-    RuntimeOwner, ScanOptions, ScanSessionId, SetNotificationsCommand, StartScanCommand,
-    StopScanCommand, WaiterError, WriteCharacteristicCommand, command_completed, init_command,
-    init_snapshot, init_snapshot_event,
+    BleEvent, BleHubError, CancelOperationRequest, CommandDispatchError, CommandId, ConnectCommand,
+    DisconnectCommand, DiscoverGattCommand, Duration, EventIngressStatus, EventScenario,
+    FakeBackend, InitializeCommand, Mutex, ReadCharacteristicCommand, ReadRssiCommand,
+    RecordedCommand, RuntimeOwner, ScanOptions, ScanSessionId, SetNotificationsCommand,
+    StartScanCommand, StopScanCommand, WaiterError, WriteCharacteristicCommand, command_completed,
+    init_command, init_snapshot, init_snapshot_event,
 };
 use crate::runtime::{AssemblyError, RuntimeLifecycle};
 use blehub::{BLEHUB_CONTRACT_VERSION, Platform};
@@ -19,7 +19,7 @@ fn lifecycle_rejects_admission_after_close_or_fault_without_running_foreign_work
             lifecycle.fault();
         } else {
             // Exercise the phase gate before cleanup itself has started.
-            lifecycle.close();
+            lifecycle.mark_closed();
         }
         let result: Result<(), AssemblyAdmissionError> = lifecycle.with_admission(|_| {
             panic!("foreign assembly must not run after close or fault");
@@ -154,6 +154,7 @@ impl BleBackend for GatedAssemblyBackend {
             fn write_characteristic(&self, command: WriteCharacteristicCommand) -> Result<(), CommandDispatchError>;
             fn set_notifications(&self, command: SetNotificationsCommand) -> Result<(), CommandDispatchError>;
             fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+            fn cancel_operation(&self, request: CancelOperationRequest) -> Result<(), CommandDispatchError>;
         }
     }
 
@@ -243,7 +244,7 @@ fn assembly_rejects_hub_when_phase_closes_before_cleanup_starts() {
         }))
     });
     entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    owner.lifecycle.close();
+    owner.lifecycle.mark_closed();
     release_tx.send(()).unwrap();
     assert_eq!(
         attach.join().unwrap(),
@@ -330,7 +331,7 @@ fn cancelled_close_waiter_does_not_cancel_owner_shutdown() {
             }),
         }))
         .unwrap();
-    let mut shutdown_result_rx = owner.shutdown_result_tx.subscribe();
+    let mut shutdown_result_rx = owner.shutdown_result_rx.clone();
     let host = tokio::runtime::Builder::new_multi_thread()
         .enable_time()
         .build()

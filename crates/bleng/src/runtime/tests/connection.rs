@@ -397,7 +397,7 @@ fn passive_disconnect_before_rejected_read_gatt_rssi_or_write_preserves_rejectio
             "read" => (
                 vec![
                     connect_scenario(1, 1, 10),
-                    read_discovery(),
+                    read_discovery(2),
                     EventScenario::emit_before_reject(
                         read_command(3),
                         vec![disconnected_event(None, 1)],
@@ -424,7 +424,7 @@ fn passive_disconnect_before_rejected_read_gatt_rssi_or_write_preserves_rejectio
             "write" => (
                 vec![
                     connect_scenario(1, 1, 10),
-                    read_discovery(),
+                    read_discovery(2),
                     EventScenario::emit_before_reject(
                         write_command(3, &[1], WriteType::WithResponse),
                         vec![disconnected_event(None, 1)],
@@ -569,7 +569,7 @@ fn read_characteristic_rejects_while_sibling_rssi_dispatch_is_awaiting_dispatch_
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        read_discovery(),
+        read_discovery(2),
         EventScenario::accept(rssi_command(3, 1)),
     ]);
     let entered = Arc::new(Notify::new());
@@ -641,7 +641,7 @@ fn wrong_command_passive_disconnect_before_rejected_read_keeps_connection_active
     };
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        read_discovery(),
+        read_discovery(2),
         EventScenario::emit_before_reject(
             read_command(3),
             vec![disconnected_event(Some(99), 1)],
@@ -694,7 +694,7 @@ fn disconnect_timeout_holds_connection_until_late_domain_and_terminal() {
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
         EventScenario::accept(disconnect_command(2, 1)),
-        connect_scenario(3, 2, 10),
+        connect_scenario(5, 2, 10),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -869,8 +869,8 @@ fn connect_keeps_peripheral_lifecycles_independent_and_retires_passive_disconnec
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        connect_scenario(2, 2, 20),
-        connect_scenario(3, 3, 10),
+        connect_scenario(3, 2, 20),
+        connect_scenario(4, 3, 10),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -959,7 +959,7 @@ fn connect_failure_releases_peripheral_and_timeout_keeps_native_reservation() {
             connection_id: ConnectionId { value: 3 },
             peripheral_id: PeripheralId { value: 20 },
         })),
-        connect_scenario(4, 4, 20),
+        connect_scenario(5, 4, 20),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())

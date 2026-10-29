@@ -1,5 +1,8 @@
-//! Per-Hub actor state and facade. The mailbox protocol in messages.rs adapts
-//! requests and asynchronous inputs to actor methods; state and reconciliation stay private.
+//! Private per-Hub runtime used by the public `facade` module; the runtime does
+//! not depend on facade types. The mailbox protocol in `messages.rs` adapts
+//! requests and asynchronous inputs to actor methods; state and reconciliation
+//! stay private. `shared.rs` holds cross-module ID allocation and predispatch
+//! cancellation/claim mechanics, not native BLE reservations.
 //!
 //! The runtime state is intentionally layered so multi-device operations remain
 //! independent while each device's native operations stay serialized:
@@ -22,10 +25,18 @@ mod actor;
 mod backend_port;
 mod lifecycle;
 mod messages;
+mod operation;
 mod owner;
 mod reservations;
+mod shared;
 
 use actor::BlengActor;
 pub(super) use backend_port::{AssemblyError, BackendPort};
 pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
-pub(super) use owner::{EventReadError, RuntimeOwner};
+pub(crate) use messages::{
+    BeginConnect, BeginDisableNotifications, BeginDisconnect, BeginDiscoverGatt,
+    BeginEnableNotifications, BeginInitialize, BeginRead, BeginRssi, BeginScan, BeginStop,
+    BeginWrite, OperationSpec,
+};
+pub(crate) use operation::{OperationControl, OperationHandoff, ResultSlot};
+pub(super) use owner::{EventReadError, RuntimeOwner, TaskFailure};

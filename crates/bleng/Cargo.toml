@@ -20,3 +20,4 @@ uniffi.workspace = true
 
 [dev-dependencies]
 blehub-testkit = { path = "../../tests/support/blehub-testkit" }
+proptest.workspace = true

@@ -9,7 +9,10 @@
 //!
 //! All registry methods are synchronous and must be called by the owning actor.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use blehub::{
     AdapterSnapshot, BleEventError, CommandDispatchError, CommandId, ConnectionId,
@@ -121,6 +124,7 @@ pub(crate) enum WaiterError {
     Operation(BleEventError),
     InvalidCommandId,
     CapacityExceeded,
+    SubmissionQueueFull,
     ScanBusy,
     ScanNotActive,
     PeripheralBusy,
@@ -132,10 +136,18 @@ pub(crate) enum WaiterError {
     Disconnected,
     /// The facade has no attached Hub to which it can dispatch a command.
     BackendNotAssembled,
+    OperationNotFound(CommandId),
+    OperationAlreadyCompleted(CommandId),
+    OperationNotCancellable(CommandId),
+    /// A typed operation's one-shot result receiver was already consumed.
+    OperationResultConsumed,
     /// The attached Hub exists, but initialization is incomplete.
     NotInitialized,
     IdExhausted,
 }
+
+/// One actor-to-caller result; not evidence that native BLE work has retired.
+pub(crate) type WaiterOutcome = Result<WaiterSuccess, WaiterError>;
 
 /// The only reasons that can permanently close a `WaiterRegistry`.
 ///
@@ -160,11 +172,43 @@ impl From<WaiterCloseReason> for WaiterError {
     }
 }
 
+/// Shared access to one sender, never a second delivery channel. Local queued
+/// cancellation and actor settlement compete to take it exactly once.
+#[derive(Clone)]
+pub(crate) struct WaiterSender(Arc<Mutex<Option<oneshot::Sender<WaiterOutcome>>>>);
+
+impl WaiterSender {
+    pub(crate) fn new() -> (Self, oneshot::Receiver<WaiterOutcome>) {
+        let (sender, receiver) = oneshot::channel();
+        (Self(Arc::new(Mutex::new(Some(sender)))), receiver)
+    }
+
+    pub(crate) fn send(&self, result: WaiterOutcome) {
+        if let Some(sender) = self.0.lock().expect("waiter sender lock").take() {
+            let _ = sender.send(result);
+        }
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.0
+            .lock()
+            .expect("waiter sender lock")
+            .as_ref()
+            .is_none_or(oneshot::Sender::is_closed)
+    }
+}
+
 /// Caller-facing waiter entry. BLE evidence intentionally does not live here;
 /// the matching actor reservation remains alive after this entry is retired.
 struct WaiterEntry {
     expectation: WaiterExpectation,
-    result_tx: oneshot::Sender<Result<WaiterSuccess, WaiterError>>,
+    result_tx: WaiterSender,
+    // The BLE operation can finish while its cancellation request is still awaiting
+    // a backend receipt. For example, a read succeeds, then the connection is lost:
+    // if cancellation is rejected, wait() must receive that original read result,
+    // not a Disconnected result recomputed from the now-changed connection state.
+    // If cancellation is accepted, the waiter receives Cancelled instead.
+    deferred_result: Option<WaiterOutcome>,
 }
 
 /// Registry local to one actor / BLeng instance.
@@ -175,7 +219,6 @@ struct WaiterEntry {
 #[derive(Default)]
 pub(crate) struct WaiterRegistry {
     pending: HashMap<CommandId, WaiterEntry>,
-    last_id: Option<u64>,
     closed: Option<WaiterCloseReason>,
 }
 
@@ -184,62 +227,98 @@ impl WaiterRegistry {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn register(
         &mut self,
         command_id: CommandId,
         expectation: WaiterExpectation,
-    ) -> Result<oneshot::Receiver<Result<WaiterSuccess, WaiterError>>, WaiterError> {
-        if let Some(reason) = self.closed {
-            return Err(reason.into());
+    ) -> Result<oneshot::Receiver<WaiterOutcome>, WaiterError> {
+        let (result_tx, result_rx) = WaiterSender::new();
+        self.register_sender(command_id, expectation, result_tx)?;
+        Ok(result_rx)
+    }
+
+    pub(crate) fn register_sender(
+        &mut self,
+        command_id: CommandId,
+        expectation: WaiterExpectation,
+        result_tx: WaiterSender,
+    ) -> Result<(), WaiterError> {
+        let error = if let Some(reason) = self.closed {
+            Some(reason.into())
+        } else if command_id.value == 0 || self.pending.contains_key(&command_id) {
+            Some(WaiterError::InvalidCommandId)
+        } else {
+            self.pending.retain(|_, entry| !entry.result_tx.is_closed());
+            (self.pending.len() >= MAX_PENDING).then_some(WaiterError::CapacityExceeded)
+        };
+        if let Some(error) = error {
+            // The submission owner linearizes admission rejection versus local
+            // cancellation before publishing on this shared sender.
+            return Err(error);
         }
-        let value: u64 = command_id.into();
-        if self.last_id.is_some_and(|last| value <= last) {
-            return Err(WaiterError::InvalidCommandId);
-        }
-        // A caller can cancel its ask before receiving the result receiver. Reap only
-        // those abandoned entries; never reuse their command IDs.
-        self.pending.retain(|_, entry| !entry.result_tx.is_closed());
-        if self.pending.len() >= MAX_PENDING {
-            return Err(WaiterError::CapacityExceeded);
-        }
-        let (result_tx, result_rx) = oneshot::channel();
         self.pending.insert(
             command_id,
             WaiterEntry {
                 expectation,
                 result_tx,
+                deferred_result: None,
             },
         );
-        self.last_id = Some(value);
-        Ok(result_rx)
+        Ok(())
+    }
+
+    /// Removes an admission draft without publishing an outcome. Its submission
+    /// still owns the shared sender and arbitrates rejection versus cancellation.
+    pub(crate) fn discard(&mut self, command_id: CommandId) {
+        self.pending.remove(&command_id);
     }
 
     pub(crate) fn contains(&self, command_id: CommandId) -> bool {
         self.pending.contains_key(&command_id)
     }
 
+    /// Retains the first complete outcome while native cancellation is undecided.
+    /// This uses the existing bounded waiter entry and original result channel;
+    /// timeout, caller retirement and close still remove the entire entry.
+    pub(crate) fn defer_result(&mut self, command_id: CommandId, result: WaiterOutcome) {
+        if let Some(entry) = self.pending.get_mut(&command_id) {
+            entry.deferred_result.get_or_insert(result);
+        }
+    }
+
+    /// Releases a retained outcome after cancellation rejection, without looking
+    /// at connection state that may have changed since completion.
+    pub(crate) fn finish_deferred(&mut self, command_id: CommandId) -> bool {
+        let Some(result) = self
+            .pending
+            .get_mut(&command_id)
+            .and_then(|entry| entry.deferred_result.take())
+        else {
+            return false;
+        };
+        self.finish(command_id, result);
+        true
+    }
+
     /// Settles one waiter exactly once. Removing the entry before sending the
     /// result makes late or duplicate actor attempts harmless.
-    pub(crate) fn finish(
-        &mut self,
-        command_id: CommandId,
-        result: Result<WaiterSuccess, WaiterError>,
-    ) {
+    pub(crate) fn finish(&mut self, command_id: CommandId, result: WaiterOutcome) {
         if let Some(entry) = self.pending.remove(&command_id) {
-            let _ = entry.result_tx.send(result);
+            entry.result_tx.send(result);
         }
     }
 
     /// Fails only connection-bound waiters selected by actor-owned reservations.
     /// The actor supplies accepted command IDs so a passive callback buffered
     /// before dispatch acknowledgement cannot prematurely retire its waiter.
+    /// A previously completed outcome waiting for its control receipt survives;
+    /// a cancellation request without a result does not delay loss.
     pub(crate) fn disconnect_commands(&mut self, command_ids: impl IntoIterator<Item = CommandId>) {
         for command_id in command_ids {
-            if self
-                .pending
-                .get(&command_id)
-                .is_some_and(|entry| entry.expectation.connection_id().is_some())
-            {
+            if self.pending.get(&command_id).is_some_and(|entry| {
+                entry.expectation.connection_id().is_some() && entry.deferred_result.is_none()
+            }) {
                 self.finish(command_id, Err(WaiterError::Disconnected));
             }
         }
@@ -251,11 +330,13 @@ impl WaiterRegistry {
     }
 
     /// Called when the owner deadline expires; native work may still be live.
+    #[cfg(test)]
     pub(crate) fn timeout(&mut self, command_id: CommandId) {
         self.finish(command_id, Err(WaiterError::Timeout));
     }
 
-    /// Permanently closes the registry and fails every pending waiter.
+    /// Normal close preserves completed outcomes still awaiting control receipts
+    /// and fails unfinished waiters. Transport faults override all retained results.
     /// The first reason is retained for both existing and future callers;
     /// repeated closes cannot replace it or reopen admission.
     pub(crate) fn close(&mut self, reason: WaiterCloseReason) {
@@ -264,7 +345,13 @@ impl WaiterRegistry {
         }
         self.closed = Some(reason);
         for (_, entry) in self.pending.drain() {
-            let _ = entry.result_tx.send(Err(reason.into()));
+            let result = match reason {
+                WaiterCloseReason::Closed => {
+                    entry.deferred_result.unwrap_or(Err(WaiterError::Closed))
+                }
+                WaiterCloseReason::TransportFault => Err(WaiterError::TransportFault),
+            };
+            entry.result_tx.send(result);
         }
     }
 }

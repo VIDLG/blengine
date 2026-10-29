@@ -2,9 +2,10 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use crate::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEventSink, BleHubError,
-    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
-    InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
-    StartScanCommand, StopScanCommand, WriteCharacteristicCommand, ingress::EventIngressState,
+    CancelOperationRequest, CommandDispatchError, ConnectCommand, DisconnectCommand,
+    DiscoverGattCommand, InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand,
+    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    ingress::EventIngressState,
 };
 
 #[derive(uniffi::Object)]
@@ -177,6 +178,17 @@ impl BleHub {
 
     pub fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
         self.with_backend(|backend| backend.read_rssi(command))
+    }
+
+    /// Requests cancellation of an existing operation by its original ID.
+    /// Success only means that the backend accepted the control request.
+    pub fn cancel_operation(
+        &self,
+        target_command_id: crate::CommandId,
+    ) -> Result<(), CommandDispatchError> {
+        self.with_backend(|backend| {
+            backend.cancel_operation(CancelOperationRequest { target_command_id })
+        })
     }
 
     pub fn dispose(&self) -> Result<(), BleHubError> {

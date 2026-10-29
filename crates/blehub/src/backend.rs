@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    BackendCapabilities, BackendEventIngressHandle, BleHubError, CommandDispatchError,
-    ConnectCommand, DisconnectCommand, DiscoverGattCommand, InitializeCommand,
-    ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand, StartScanCommand,
-    StopScanCommand, WriteCharacteristicCommand,
+    BackendCapabilities, BackendEventIngressHandle, BleHubError, CancelOperationRequest,
+    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
+    InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
+    StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
 };
 
 /// Platform implementation boundary. Rust implementations must not panic:
@@ -51,6 +51,12 @@ pub trait BleBackend: Send + Sync {
     ) -> Result<(), CommandDispatchError>;
 
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+
+    /// Requests cancellation of an accepted operation. `Ok(())` only means
+    /// that the backend serialized the request; native work may still be
+    /// stopping and the target keeps its original command identity.
+    fn cancel_operation(&self, request: CancelOperationRequest)
+    -> Result<(), CommandDispatchError>;
 
     fn dispose(&self) -> Result<(), BleHubError>;
 }

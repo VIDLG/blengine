@@ -40,7 +40,8 @@ impl Default for RecordingSink {
 
 impl BleEventSink for RecordingSink {
     fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError> {
-        match self.behavior.lock().unwrap().clone() {
+        let behavior = self.behavior.lock().unwrap().clone();
+        match behavior {
             SinkBehavior::Accept => {
                 self.events.lock().unwrap().push(event);
                 Ok(())

@@ -113,6 +113,12 @@ impl ScanOptions {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct CancelOperationRequest {
+    /// Existing command identity; cancellation has no independent lifecycle.
+    pub target_command_id: CommandId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct InitializeCommand {
     pub command_id: CommandId,
 }

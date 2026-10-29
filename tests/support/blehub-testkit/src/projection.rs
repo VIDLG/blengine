@@ -37,10 +37,15 @@ struct SubscriptionScope {
     characteristic_id: GattCharacteristicId,
 }
 
+struct RegisteredCommand {
+    command: RecordedCommand,
+    discovery_superseded: bool,
+}
+
 #[derive(Default)]
 pub struct ReferenceProjection {
     pending: HashSet<CommandId>,
-    commands: HashMap<CommandId, RecordedCommand>,
+    commands: HashMap<CommandId, RegisteredCommand>,
     outcomes: HashMap<CommandId, ProjectedCommandOutcome>,
     active_scans: HashSet<ScanSessionId>,
     active_connections: HashSet<ConnectionId>,
@@ -58,7 +63,13 @@ impl ReferenceProjection {
         if !self.register_command(command_id) {
             return false;
         }
-        self.commands.insert(command_id, command);
+        self.commands.insert(
+            command_id,
+            RegisteredCommand {
+                command,
+                discovery_superseded: false,
+            },
+        );
         true
     }
 
@@ -95,12 +106,13 @@ impl ReferenceProjection {
             if !self.pending.contains(&command_id) {
                 return EventDisposition::Orphan;
             }
-            if self
-                .commands
-                .get(&command_id)
-                .is_some_and(|command| !command_matches_event(command, event))
-            {
-                return EventDisposition::ContractViolation;
+            if let Some(record) = self.commands.get(&command_id) {
+                if !command_matches_event(&record.command, event) {
+                    return EventDisposition::ContractViolation;
+                }
+                if record.discovery_superseded {
+                    return EventDisposition::Stale;
+                }
             }
             if self.command_domain_is_stale(event) {
                 return EventDisposition::Stale;
@@ -146,6 +158,16 @@ impl ReferenceProjection {
         connection_id: ConnectionId,
         gatt_session_id: GattSessionId,
     ) {
+        // A published session supersedes already-registered discovery intents,
+        // not discoveries registered later to replace this session.
+        for record in self.commands.values_mut() {
+            if let RecordedCommand::DiscoverGatt(command) = &record.command
+                && command.connection_id == connection_id
+                && command.gatt_session_id != gatt_session_id
+            {
+                record.discovery_superseded = true;
+            }
+        }
         self.active_gatt_sessions
             .retain(|(candidate, _)| *candidate != connection_id);
         self.active_subscriptions
@@ -373,12 +395,12 @@ impl ReferenceProjection {
 #[cfg(test)]
 mod tests {
     use blehub::{
-        BleErrorCategory, GattCharacteristicId, GattSessionId, ReadCharacteristicCommand,
-        SubscriptionId,
+        BleErrorCategory, DiscoverGattCommand, GattCharacteristicId, GattSessionId,
+        ReadCharacteristicCommand, SubscriptionId,
     };
 
     use super::*;
-    use crate::advertisement_observation_fixture;
+    use crate::{advertisement_observation_fixture, duplicate_gatt_database_fixture};
 
     fn completed(command_id: CommandId) -> BleEvent {
         BleEvent::CommandCompleted {
@@ -539,6 +561,113 @@ mod tests {
             }),
             EventDisposition::Accepted
         );
+    }
+
+    #[test]
+    fn old_discovery_cannot_replace_an_explicit_new_gatt_session() {
+        let database = duplicate_gatt_database_fixture();
+        let connection_id = database.connection_id;
+        let old_gatt = database.gatt_session_id;
+        let new_gatt = GattSessionId {
+            value: old_gatt.value + 1,
+        };
+        let characteristic_id = database.services[0].characteristics[0].id;
+        let subscription_id = SubscriptionId { value: 10 };
+        let discover = DiscoverGattCommand {
+            command_id: CommandId { value: 1 },
+            connection_id,
+            gatt_session_id: old_gatt,
+        };
+        let mut projection = ReferenceProjection::default();
+        projection.activate_connection(connection_id);
+        projection.activate_gatt_session(connection_id, old_gatt);
+        assert!(projection.register(RecordedCommand::DiscoverGatt(discover)));
+        projection.activate_gatt_session(connection_id, new_gatt);
+        projection.activate_subscription(
+            connection_id,
+            new_gatt,
+            subscription_id,
+            characteristic_id,
+        );
+
+        assert_eq!(
+            projection.apply(&BleEvent::GattDiscovered {
+                command_id: discover.command_id,
+                database,
+            }),
+            EventDisposition::Stale
+        );
+        assert!(projection.is_pending(discover.command_id));
+        assert_eq!(projection.outcome(discover.command_id), None);
+        let read = ReadCharacteristicCommand {
+            command_id: CommandId { value: 2 },
+            connection_id,
+            gatt_session_id: new_gatt,
+            characteristic_id,
+        };
+        assert!(projection.register(RecordedCommand::ReadCharacteristic(read)));
+        assert_eq!(
+            projection.apply(&BleEvent::CharacteristicRead {
+                command_id: read.command_id,
+                connection_id,
+                gatt_session_id: new_gatt,
+                characteristic_id,
+                value: vec![1],
+            }),
+            EventDisposition::Accepted
+        );
+        assert_eq!(
+            projection.apply(&notification(
+                connection_id,
+                new_gatt,
+                subscription_id,
+                characteristic_id
+            )),
+            EventDisposition::Accepted
+        );
+        assert!(
+            projection
+                .active_gatt_sessions
+                .contains(&(connection_id, new_gatt))
+        );
+        assert!(
+            !projection
+                .active_gatt_sessions
+                .contains(&(connection_id, old_gatt))
+        );
+    }
+
+    #[test]
+    fn newly_registered_discovery_can_replace_the_current_gatt_session() {
+        let mut projection = ReferenceProjection::default();
+        let mut database = duplicate_gatt_database_fixture();
+        projection.activate_connection(database.connection_id);
+        for value in [1, 2] {
+            let discover = DiscoverGattCommand {
+                command_id: CommandId { value },
+                connection_id: database.connection_id,
+                gatt_session_id: database.gatt_session_id,
+            };
+            assert!(projection.register(RecordedCommand::DiscoverGatt(discover)));
+            assert_eq!(
+                projection.apply(&BleEvent::GattDiscovered {
+                    command_id: discover.command_id,
+                    database: database.clone(),
+                }),
+                EventDisposition::Accepted
+            );
+            assert_eq!(
+                projection.apply(&completed(discover.command_id)),
+                EventDisposition::Accepted
+            );
+            assert!(
+                projection
+                    .active_gatt_sessions
+                    .contains(&(database.connection_id, database.gatt_session_id))
+            );
+            database.gatt_session_id.value += 1;
+        }
+        assert_eq!(projection.active_gatt_sessions.len(), 1);
     }
 
     #[test]

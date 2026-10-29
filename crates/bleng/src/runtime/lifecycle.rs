@@ -89,6 +89,12 @@ impl RuntimeLifecycle {
         hub.ok_or(WaiterError::BackendNotAssembled)
     }
 
+    /// Checks the open gate and assembled Hub before enqueueing a command.
+    /// This snapshot does not reserve the Hub; actor dispatch checks again.
+    pub(super) fn require_submission_ready(&self) -> Result<(), WaiterError> {
+        self.hub_for_dispatch().map(|_| ())
+    }
+
     /// Reserves assembly admission only while this lifecycle is open.
     /// Cleanup evaluates the phase under its lock, not before acquiring it.
     pub(super) fn with_admission<T, E>(
@@ -146,7 +152,8 @@ impl RuntimeLifecycle {
         }
     }
 
-    pub(crate) fn close(&self) {
+    /// Marks the admission/ingress gate closed without starting cleanup.
+    pub(super) fn mark_closed(&self) {
         if self
             .phase
             .compare_exchange(
@@ -159,5 +166,11 @@ impl RuntimeLifecycle {
         {
             self.phase_tx.send_replace(RuntimePhase::Closed);
         }
+    }
+
+    /// Starts normal close without waiting for actor shutdown or native disposal.
+    pub(super) fn request_close(&self) {
+        self.mark_closed();
+        self.cleanup.start_cleanup();
     }
 }

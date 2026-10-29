@@ -17,7 +17,7 @@ use crate::runtime::{
 };
 
 #[test]
-fn cancelling_begin_after_launch_handoff_before_reply_faults_and_disposes_once() {
+fn dropping_wait_after_dispatch_claim_retires_delivery_without_faulting() {
     let owner = RuntimeOwner::new().unwrap();
     let (backend, handle) = FakeBackend::scripted([EventScenario::accept(init_command(1))]);
     owner
@@ -33,8 +33,8 @@ fn cancelling_begin_after_launch_handoff_before_reply_faults_and_disposes_once()
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         let mut pending = Box::pin(owner.run_operation(
             deadline,
-            |handoff| BeginInitializeWithBlockedReservation {
-                handoff,
+            |submission| BeginInitializeWithBlockedReservation {
+                submission,
                 entered_tx,
                 release_rx,
             },
@@ -48,9 +48,13 @@ fn cancelling_begin_after_launch_handoff_before_reply_faults_and_disposes_once()
         .await
         .unwrap();
         drop(pending);
-        assert_eq!(owner.lifecycle.phase(), RuntimePhase::Faulted);
+        assert_eq!(owner.lifecycle.phase(), RuntimePhase::Open);
         release_tx.send(()).unwrap();
-        // Cleanup races native dispatch; only fault/shutdown ownership is asserted here.
+        tokio::time::timeout(deadline, async {
+            while handle.commands().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(handle.commands(), vec![init_command(1)]);
+        // Dropped caller delivery neither cancels eager work nor faults the owner.
         tokio::time::timeout(deadline, owner.close())
             .await
             .unwrap()
@@ -95,11 +99,11 @@ fn rejected_or_failed_rediscovery_preserves_committed_database_for_reads() {
         };
         let (backend, handle) = FakeBackend::scripted([
             connect_scenario(1, 1, 10),
-            read_discovery(),
+            read_discovery(2),
             rediscovery,
             EventScenario::emit_before_return(
-                read_command(4),
-                vec![read_value(4, &[0x12, 0x34]), command_completed(4, None)],
+                read_command(5),
+                vec![read_value(5, &[0x12, 0x34]), command_completed(5, None)],
             ),
         ]);
         owner
@@ -149,7 +153,7 @@ fn rediscovery_keeps_first_success_terminal_until_database_arrives() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        read_discovery(),
+        read_discovery(2),
         EventScenario::accept(RecordedCommand::DiscoverGatt(DiscoverGattCommand {
             command_id: 3.into(),
             connection_id: 1.into(),
@@ -228,7 +232,7 @@ fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement(
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         notification_enabled_scenario(3, 3),
         EventScenario::emit_before_return(
             notification_command(4, 3, NotificationAction::Disable),
@@ -238,13 +242,13 @@ fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement(
             ],
         ),
         EventScenario::accept(RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-            command_id: 5.into(),
+            command_id: 6.into(),
             connection_id: 1.into(),
             gatt_session_id: 4.into(),
         })),
         EventScenario::emit_before_return(
             RecordedCommand::SetNotifications(SetNotificationsCommand {
-                command_id: 6.into(),
+                command_id: 12.into(),
                 connection_id: 1.into(),
                 gatt_session_id: 4.into(),
                 subscription_id: 5.into(),
@@ -255,7 +259,7 @@ fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement(
             }),
             vec![
                 BleEvent::NotificationStateChanged {
-                    command_id: 6.into(),
+                    command_id: 12.into(),
                     connection_id: 1.into(),
                     gatt_session_id: 4.into(),
                     subscription_id: 5.into(),
@@ -264,7 +268,7 @@ fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement(
                         actual_mode: Some(NotificationMode::Notification),
                     },
                 },
-                command_completed(6, None),
+                command_completed(12, None),
             ],
         ),
     ]);
@@ -316,7 +320,7 @@ fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement(
             if database_arrived {
                 assert_eq!(
                     handle.emit(BleEvent::GattDiscovered {
-                        command_id: 5.into(),
+                        command_id: 6.into(),
                         database: draft.clone(),
                     }),
                     EventIngressStatus::Delivered
@@ -360,7 +364,7 @@ fn pending_rediscovery_blocks_enable_until_commit_after_subscription_retirement(
             );
         }
         assert_eq!(
-            handle.emit(command_completed(5, None)),
+            handle.emit(command_completed(6, None)),
             EventIngressStatus::Delivered
         );
         assert_eq!(pending.await, Ok(draft.clone()));
@@ -410,12 +414,12 @@ fn prelaunch_rediscovery_cancellation_preserves_committed_database_for_reads() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        read_discovery(),
+        read_discovery(2),
         EventScenario::emit_before_return(
-            read_command(4),
-            vec![read_value(4, &[0x56, 0x78]), command_completed(4, None)],
+            read_command(5),
+            vec![read_value(5, &[0x56, 0x78]), command_completed(5, None)],
         ),
-        gatt_scenario(5, 1, 4),
+        gatt_scenario(6, 1, 4),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -432,27 +436,23 @@ fn prelaunch_rediscovery_cancellation_preserves_committed_database_for_reads() {
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
         let (checked_tx, checked_rx) = oneshot::channel();
-        let mut pending = Box::pin(
-            owner.run_operation(deadline, |handoff| CancelledRediscovery {
-                handoff,
+        let pending = owner
+            .begin_operation(|submission| CancelledRediscovery {
+                submission,
                 gate: HoldActor {
                     entered: Arc::clone(&entered),
                     release: Arc::clone(&release),
                 },
                 database: database.clone(),
                 checked_tx,
-            }),
-        );
-        tokio::time::timeout(deadline, async {
-            tokio::select! {
-                _ = entered.notified() => {}
-                result = &mut pending => panic!("rediscovery passed the actor gate: {result:?}"),
-            }
-        })
-        .await
-        .unwrap();
-        // Drop the real begin guard while the actor owns the message but cannot launch it.
-        drop(pending);
+            })
+            .unwrap();
+        tokio::time::timeout(deadline, entered.notified())
+            .await
+            .unwrap();
+        let (id, control, slot) = pending.into_parts();
+        assert_eq!(control.cancel(id).await, Ok(()));
+        assert_eq!(slot.wait(deadline).await, Err(WaiterError::Cancelled));
         release.notify_one();
         let (command_id, discarded_session) = tokio::time::timeout(deadline, checked_rx)
             .await
@@ -491,7 +491,7 @@ fn connection_leaf_prelaunch_cancellations_preserve_siblings_database_and_active
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
         let (backend, handle) = FakeBackend::scripted([
             connect_scenario(1, 1, 10),
-            notification_discovery(),
+            notification_discovery(2),
             notification_enabled_scenario(3, 3),
         ]);
         owner
@@ -522,42 +522,52 @@ fn connection_leaf_prelaunch_cancellations_preserve_siblings_database_and_active
                 WaiterExpectation::CharacteristicRead(connection, session, characteristic),
                 WaiterExpectation::CharacteristicWritten(connection, session, characteristic),
                 WaiterExpectation::Disconnected(connection),
-                WaiterExpectation::NotificationsEnabled(connection, session, 100.into(), characteristic),
-                WaiterExpectation::NotificationsDisabled(connection, session, active_subscription, characteristic),
+                WaiterExpectation::NotificationsEnabled(
+                    connection,
+                    session,
+                    100.into(),
+                    characteristic,
+                ),
+                WaiterExpectation::NotificationsDisabled(
+                    connection,
+                    session,
+                    active_subscription,
+                    characteristic,
+                ),
             ][leaf];
             let entered = Arc::new(Notify::new());
             let release = Arc::new(Notify::new());
             let (checked_tx, checked_rx) = oneshot::channel();
-            let mut pending = Box::pin(owner.run_operation(
-                deadline,
-                |handoff| CancelledConnectionLeaf {
-                        handoff,
-                        gate: HoldActor {
-                            entered: Arc::clone(&entered),
-                            release: Arc::clone(&release),
-                        },
-                        peripheral_id: 10.into(),
-                        database,
-                        active_subscription,
-                        expectation,
-                        checked_tx,
-                },
-            ));
-            tokio::time::timeout(deadline, async {
-                tokio::select! {
-                    _ = entered.notified() => {}
-                    result = &mut pending => panic!("{expectation:?} passed the actor gate: {result:?}"),
-                }
-            })
-            .await
-            .unwrap();
-            drop(pending);
+            let pending = owner
+                .begin_operation(|submission| CancelledConnectionLeaf {
+                    submission,
+                    gate: HoldActor {
+                        entered: Arc::clone(&entered),
+                        release: Arc::clone(&release),
+                    },
+                    peripheral_id: 10.into(),
+                    database,
+                    active_subscription,
+                    expectation,
+                    checked_tx,
+                })
+                .unwrap();
+            tokio::time::timeout(deadline, entered.notified())
+                .await
+                .unwrap();
+            let (id, control, slot) = pending.into_parts();
+            assert_eq!(control.cancel(id).await, Ok(()));
+            assert_eq!(slot.wait(deadline).await, Err(WaiterError::Cancelled));
             release.notify_one();
             tokio::time::timeout(deadline, checked_rx)
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(handle.commands().len(), 3, "{expectation:?} must not dispatch");
+            assert_eq!(
+                handle.commands().len(),
+                3,
+                "{expectation:?} must not dispatch"
+            );
             assert!(!owner.faulted_for_test());
             owner.close().await.unwrap();
         });

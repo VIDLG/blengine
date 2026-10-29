@@ -5,6 +5,17 @@ use super::support::{
     command_completed, event, mpsc, oneshot,
 };
 use crate::runtime::actor::HoldActor;
+use kameo::prelude::{Context, Message};
+
+struct PanicActor;
+
+impl Message<PanicActor> for crate::runtime::BlengActor {
+    type Reply = ();
+
+    async fn handle(&mut self, _: PanicActor, _: &mut Context<Self, Self::Reply>) {
+        panic!("test actor handler failure");
+    }
+}
 
 #[test]
 fn real_hub_scan_waiter_requires_domain_even_after_successful_terminal() {
@@ -121,7 +132,7 @@ fn rejection_cancellation_timeout_and_close_settle_distinct_waiters() {
 }
 
 #[test]
-fn waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_paths() {
+fn waiter_deadline_with_full_mailbox_retires_delivery_without_fault_in_both_paths() {
     use crate::runtime::messages::DispatchResolved;
     use kameo::error::SendError;
     use std::{future::Future, task::Poll};
@@ -209,10 +220,13 @@ fn waiter_deadline_retirement_mailbox_overflow_reports_transport_fault_in_both_p
                 .expect("released actor must close")
                 .unwrap();
 
-            assert!(faulted, "failed retirement must fault lifecycle");
+            assert!(
+                !faulted,
+                "delivery-only timeout must not need mailbox capacity"
+            );
             assert_eq!(
                 result.expect("waiter deadline must settle"),
-                Err(WaiterError::TransportFault),
+                Err(WaiterError::Timeout),
                 "pre_expired={pre_expired}"
             );
         });
@@ -386,6 +400,62 @@ fn unexpected_actor_stop_fails_pending_waiter_and_disposes_hub() {
                 .unwrap(),
             Ok(())
         );
+    });
+    assert_eq!(handle.dispose_count(), 1);
+}
+
+#[test]
+fn actor_panic_after_close_request_is_not_reported_as_success() {
+    let owner = RuntimeOwner::new().unwrap();
+    let (backend, handle) = FakeBackend::scripted([]);
+    owner
+        .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+        .unwrap();
+    let host = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    host.block_on(async {
+        let release = owner.hold_actor_for_test().await;
+        owner.actor.tell(PanicActor).try_send().unwrap();
+        owner.request_close();
+        release.notify_one();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), owner.close())
+                .await
+                .expect("close must finish after actor panic"),
+            Err(crate::cleanup::CleanupError::WorkerStopped)
+        );
+    });
+    assert_eq!(handle.dispose_count(), 1);
+}
+
+#[test]
+fn coordinator_abort_fails_close_callers_and_retires_owned_hub() {
+    let owner = RuntimeOwner::new().unwrap();
+    let (backend, handle) = FakeBackend::scripted([]);
+    owner
+        .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+        .unwrap();
+    let host = tokio::runtime::Builder::new_multi_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    host.block_on(async {
+        let _release = owner.hold_actor_for_test().await;
+        owner.coordinator_abort.abort();
+        for _ in 0..2 {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), owner.close())
+                    .await
+                    .expect("coordinator failure must wake close callers"),
+                Err(crate::cleanup::CleanupError::WorkerStopped)
+            );
+        }
+        tokio::time::timeout(Duration::from_secs(2), owner.lifecycle.wait_for_cleanup())
+            .await
+            .expect("failed coordinator must still retire the owned Hub")
+            .unwrap();
     });
     assert_eq!(handle.dispose_count(), 1);
 }

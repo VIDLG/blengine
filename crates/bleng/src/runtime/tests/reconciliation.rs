@@ -60,6 +60,81 @@ fn pre_ack_buffer_is_bounded_and_replays_correlated_evidence_in_order() {
 }
 
 #[test]
+fn init_publication_uses_one_64_event_buffer_and_keeps_earlier_passive_snapshots_immediate() {
+    for terminal_first in [false, true] {
+        let mut initialization = InitializationState::default();
+        initialization.reserve_initialize(1.into());
+        let passive = |index: usize| {
+            let mut snapshot = init_snapshot();
+            snapshot.name = Some(format!("passive-{index}"));
+            BleEvent::AdapterSnapshotChanged {
+                command_id: None,
+                snapshot,
+            }
+        };
+        let earlier = passive(0);
+        assert_eq!(
+            initialization.gate_event(earlier.clone()).unwrap(),
+            Some(earlier)
+        );
+        let domain = init_snapshot_event(Some(1));
+        let terminal = command_completed(1, None);
+        let (first, last) = if terminal_first {
+            (terminal, domain)
+        } else {
+            (domain, terminal)
+        };
+        assert_eq!(initialization.gate_event(first.clone()).unwrap(), None);
+        let mut events = vec![first];
+        // The second correlated event comes after the passive updates, so even
+        // terminal-first input cannot use a passive snapshot as success evidence.
+        for index in 1..=62 {
+            let event = passive(index);
+            assert_eq!(initialization.gate_event(event.clone()).unwrap(), None);
+            events.push(event);
+        }
+        assert_eq!(initialization.gate_event(last.clone()).unwrap(), None);
+        events.push(last);
+        let foreign = init_snapshot_event(Some(99));
+        assert_eq!(
+            initialization.gate_event(foreign.clone()).unwrap(),
+            Some(foreign)
+        );
+        assert!(matches!(
+            initialization.gate_event(passive(63)),
+            Err(ReconciliationFault::BufferOverflow)
+        ));
+        let resolution = initialization.resolve_dispatch(1.into(), &Ok(())).unwrap();
+        assert!(matches!(resolution.action, DispatchAction::None));
+        assert_eq!(resolution.events_to_replay, events);
+        for event in &resolution.events_to_replay[..63] {
+            if let BleEvent::CommandCompleted { command_id, .. } = event {
+                initialization.record_terminal(*command_id, &Ok(()));
+            } else {
+                initialization.record_event(event);
+            }
+        }
+        assert_eq!(initialization.waiter_result(1.into()), None);
+        let last = resolution.events_to_replay.last().unwrap();
+        if let BleEvent::CommandCompleted { command_id, .. } = last {
+            initialization.record_terminal(*command_id, &Ok(()));
+        } else {
+            initialization.record_event(last);
+        }
+        assert_eq!(
+            initialization.waiter_result(1.into()),
+            Some(Ok(WaiterSuccess::Initialized(init_snapshot())))
+        );
+        initialization.advance_after_settlement().unwrap();
+        let after_ack = passive(64);
+        assert_eq!(
+            initialization.gate_event(after_ack.clone()).unwrap(),
+            Some(after_ack)
+        );
+    }
+}
+
+#[test]
 fn initialization_dispatch_rejection_is_final_and_correlates_late_evidence() {
     let mut initialization = InitializationState::default();
     initialization.reserve_initialize(1.into());

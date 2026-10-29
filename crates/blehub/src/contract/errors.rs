@@ -8,6 +8,7 @@ pub enum BleErrorCategory {
     NotFound,
     Timeout,
     Cancelled,
+    OperationAborted,
     Connection,
     Gatt,
     Protocol,
@@ -65,6 +66,14 @@ pub enum CommandDispatchError {
     InvalidRequest { detail: String },
     #[error("invalid backend state: {detail}")]
     InvalidState { detail: String },
+    #[error("operation was not found: {target_command_id:?}")]
+    OperationNotFound { target_command_id: super::CommandId },
+    #[error("operation already completed: {target_command_id:?}")]
+    OperationAlreadyCompleted { target_command_id: super::CommandId },
+    #[error("operation cannot be cancelled: {target_command_id:?}")]
+    OperationNotCancellable { target_command_id: super::CommandId },
+    #[error("backend resource exhausted: {detail}")]
+    ResourceExhausted { detail: String },
     #[error("backend unavailable for command dispatch: {detail}")]
     BackendUnavailable {
         detail: String,

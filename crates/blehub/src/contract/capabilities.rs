@@ -1,6 +1,6 @@
 use super::BleHubError;
 
-pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
+pub const BLEHUB_CONTRACT_VERSION: u32 = 6;
 
 #[uniffi::export]
 pub fn blehub_contract_version() -> u32 {

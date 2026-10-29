@@ -4,7 +4,7 @@
 //! the Stable UniFFI facade. Runtime-specific errors stay private; only this
 //! typed taxonomy crosses the BLeng API.
 
-use blehub::{BleEventError, BleHubError, CommandDispatchError};
+use blehub::{BleEventError, BleHubError, CommandDispatchError, CommandId};
 
 use crate::{cleanup, runtime, waiter};
 
@@ -53,6 +53,8 @@ pub enum BlengBusyReason {
 pub enum BlengResource {
     /// The bounded waiter registry cannot accept another pending operation.
     PendingWaiters,
+    /// The bounded submission mailbox cannot accept another entry right now.
+    SubmissionQueue,
     /// The monotonic command/session/connection ID allocator reached its limit.
     Identifiers,
 }
@@ -63,7 +65,7 @@ pub enum BlengResource {
 /// request without changing its identity or ownership is not expected to help.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum BlengContractFailure {
-    /// A command ID was reused or did not advance monotonically.
+    /// A command ID was zero or duplicated a live registration.
     InvalidCommandId,
     /// The same canonical BleHub object was attached more than once.
     DuplicateHubOwnership,
@@ -75,6 +77,14 @@ pub enum BlengError {
     Closed,
     #[error("BLeng operation was cancelled")]
     Cancelled,
+    #[error("BLeng operation was not found: {command_id:?}")]
+    OperationNotFound { command_id: CommandId },
+    #[error("BLeng operation already completed: {command_id:?}")]
+    OperationAlreadyCompleted { command_id: CommandId },
+    #[error("BLeng operation cannot be cancelled: {command_id:?}")]
+    OperationNotCancellable { command_id: CommandId },
+    #[error("BLeng operation result was already consumed")]
+    OperationResultConsumed,
     #[error("BLE connection was lost")]
     Disconnected,
     #[error("timeout must be between 1 ms and 24 hours")]
@@ -99,6 +109,8 @@ pub enum BlengError {
     Timeout,
     #[error("BLeng transport fault")]
     TransportFault,
+    /// Private runtime startup or worker execution failed unexpectedly.
+    /// Caller-side wait retirement does not produce this error or cancel native BLE work.
     #[error("BLeng worker stopped")]
     WorkerStopped,
 }
@@ -106,6 +118,20 @@ pub enum BlengError {
 // These conversions intentionally are not one-to-one. Private errors describe
 // runtime mechanics; `BlengError` exposes stable caller-facing semantics and
 // must not leak actor, waiter, cleanup, or backend-assembly implementation names.
+impl From<runtime::TaskFailure> for BlengError {
+    fn from(error: runtime::TaskFailure) -> Self {
+        // These are execution failures, not BLE timeouts or domain errors.
+        // The trace and FFI error omit payloads; the process panic hook is host-owned.
+        let cause = match error {
+            runtime::TaskFailure::Panicked => "panic",
+            runtime::TaskFailure::Cancelled => "cancelled",
+            runtime::TaskFailure::WorkerStopped => "worker_stopped",
+        };
+        tracing::error!(target: "bleng::runtime", cause, "private runtime task stopped");
+        Self::WorkerStopped
+    }
+}
+
 impl From<runtime::AssemblyError> for BlengError {
     fn from(error: runtime::AssemblyError) -> Self {
         match error {
@@ -149,6 +175,9 @@ impl From<waiter::WaiterError> for BlengError {
             waiter::WaiterError::InvalidCommandId => Self::ContractFailure {
                 reason: BlengContractFailure::InvalidCommandId,
             },
+            waiter::WaiterError::SubmissionQueueFull => Self::ResourceExhausted {
+                resource: BlengResource::SubmissionQueue,
+            },
             waiter::WaiterError::CapacityExceeded => Self::ResourceExhausted {
                 resource: BlengResource::PendingWaiters,
             },
@@ -180,6 +209,16 @@ impl From<waiter::WaiterError> for BlengError {
             waiter::WaiterError::BackendNotAssembled => Self::NotReady {
                 reason: BlengNotReadyReason::BackendNotAssembled,
             },
+            waiter::WaiterError::OperationNotFound(command_id) => {
+                Self::OperationNotFound { command_id }
+            }
+            waiter::WaiterError::OperationAlreadyCompleted(command_id) => {
+                Self::OperationAlreadyCompleted { command_id }
+            }
+            waiter::WaiterError::OperationNotCancellable(command_id) => {
+                Self::OperationNotCancellable { command_id }
+            }
+            waiter::WaiterError::OperationResultConsumed => Self::OperationResultConsumed,
             waiter::WaiterError::NotInitialized => Self::NotReady {
                 reason: BlengNotReadyReason::NotInitialized,
             },

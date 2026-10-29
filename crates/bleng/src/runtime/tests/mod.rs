@@ -2,6 +2,7 @@
 //! Actor-private assertions and fixture handlers live in the actor's test children.
 
 mod assembly;
+mod cancellation;
 mod characteristic_io;
 mod connection;
 mod gatt;

@@ -6,11 +6,11 @@ use blehub::{
     PeripheralId, SubscriptionId,
 };
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::{WaiterError, WaiterOutcome};
 
 use super::{
     connection::{ConnectionReservation, DispatchPendingRoute},
-    dispatch::{DispatchResolution, ReconciliationFault},
+    dispatch::{CancellationDecision, CompletionObserver, DispatchResolution, ReconciliationFault},
     gatt::GattAccess,
 };
 
@@ -77,6 +77,79 @@ impl ConnectionReservations {
             self.remove(peripheral_id);
         }
         Some(resolution)
+    }
+
+    /// Routes cancellation by command ID without maintaining a second index.
+    /// `None` means the command is not retained by any connection.
+    pub fn request_cancellation(&mut self, command_id: CommandId) -> Option<CancellationDecision> {
+        self.find_command_mut(command_id)
+            .and_then(|(_, connection)| connection.request_cancellation(command_id))
+    }
+
+    pub fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
+        self.by_peripheral
+            .values()
+            .find_map(|connection| connection.progress(command_id))
+            .map(|progress| progress.completion_observer())
+    }
+
+    pub fn allow_publication(
+        &mut self,
+        event: &BleEvent,
+    ) -> Result<Option<bool>, ReconciliationFault> {
+        // Domain/passive events identify their connection directly. A terminal
+        // has only its command ID, resolved through the existing owner inventory.
+        let connection = match event {
+            BleEvent::ConnectionStateChanged { connection_id, .. }
+            | BleEvent::CharacteristicRead { connection_id, .. }
+            | BleEvent::CharacteristicWritten { connection_id, .. }
+            | BleEvent::NotificationStateChanged { connection_id, .. }
+            | BleEvent::NotificationReceived { connection_id, .. }
+            | BleEvent::RssiRead { connection_id, .. } => self.find_mut(*connection_id),
+            BleEvent::GattDiscovered { database, .. } => self.find_mut(database.connection_id),
+            BleEvent::CommandCompleted { command_id, .. } => {
+                self.find_command_mut(*command_id).map(|(_, owner)| owner)
+            }
+            _ => None,
+        };
+        match connection {
+            Some(connection) => connection.allow_publication(event).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn take_cancellation_public_events(
+        &mut self,
+        command_id: CommandId,
+    ) -> Option<Vec<BleEvent>> {
+        self.find_command_mut(command_id)?
+            .1
+            .take_cancellation_public_events(command_id)
+    }
+
+    pub fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+        self.find_command_mut(command_id)
+            .is_some_and(|(_, connection)| connection.take_cancellation_dispatch(command_id))
+    }
+
+    pub fn resolve_cancellation(
+        &mut self,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) -> bool {
+        self.find_command_mut(command_id)
+            .is_some_and(|(_, connection)| connection.resolve_cancellation(command_id, result))
+    }
+
+    pub fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+        self.find_command_mut(command_id)
+            .is_some_and(|(_, connection)| connection.clear_cancellation(command_id))
+    }
+
+    pub fn cancellation_requested(&self, command_id: CommandId) -> bool {
+        self.by_peripheral
+            .values()
+            .any(|connection| connection.cancellation_requested(command_id))
     }
 
     pub fn is_foreign_disconnect(&self, event: &BleEvent) -> bool {
@@ -334,10 +407,7 @@ impl ConnectionReservations {
 
     /// Queries a deliverable result without advancing or retiring reservations.
     /// None means unowned or incomplete, not operation failure.
-    pub fn waiter_result(
-        &self,
-        command_id: CommandId,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    pub fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         self.by_peripheral
             .values()
             .find_map(|connection| connection.waiter_result(command_id))

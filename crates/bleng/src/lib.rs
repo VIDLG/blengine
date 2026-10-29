@@ -9,12 +9,18 @@
 
 #![deny(unsafe_code)]
 
-mod api;
 mod cleanup;
 mod error;
+mod facade;
 mod runtime;
 mod waiter;
 
 uniffi::setup_scaffolding!();
-pub use api::Bleng;
-pub use error::BlengError;
+pub use error::{
+    BlengBusyReason, BlengContractFailure, BlengError, BlengNotReadyReason, BlengResource,
+};
+pub use facade::{
+    Bleng, ConnectOperation, DisableNotificationsOperation, DisconnectOperation,
+    DiscoverGattOperation, EnableNotificationsOperation, InitializeOperation, ReadOperation,
+    ReadRssiOperation, StartScanOperation, StopScanOperation, WriteOperation,
+};

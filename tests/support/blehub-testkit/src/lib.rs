@@ -10,7 +10,7 @@ mod scenario;
 pub use conformance::{
     BackendConformanceTracker, BackendContractViolation, CommandEventKind, CompletionExpectation,
 };
-pub use fake_backend::{FakeBackend, FakeBackendHandle};
+pub use fake_backend::{CancellationPolicy, FakeBackend, FakeBackendHandle};
 pub use fixtures::{
     advertisement_observation_fixture, duplicate_gatt_database_fixture,
     unified_event_catalog_fixture,

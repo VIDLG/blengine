@@ -30,11 +30,11 @@ use blehub::{
     ScanStopResult,
 };
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
 use super::dispatch::{
-    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
-    ReconciliationFault,
+    BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
+    DispatchResolution, ReconciliationFault,
 };
 
 /// Owns the single scan slot, command admission, and correlated start/stop evidence.
@@ -42,7 +42,7 @@ use super::dispatch::{
 /// stopping, and stopped-but-unsettled sessions, not just active native scanning.
 ///
 /// The actor checks admission before registering a waiter and installs reservations
-/// only after claiming the caller handoff. Live events pass through gate_event();
+/// only after claiming the caller submission. Live events pass through gate_event();
 /// dispatch resolution transfers buffered callbacks for ordered replay. The actor
 /// records evidence and settles waiters before retire_completed() releases state,
 /// even when a caller has already timed out or cancelled. This owner neither
@@ -111,6 +111,92 @@ impl ScanState {
             .map(|stop| stop.progress.command_id())
     }
 
+    pub fn request_cancellation(&mut self, command_id: CommandId) -> Option<CancellationDecision> {
+        let scan = self.reserved_mut()?;
+        if scan.start_progress.owns_command(command_id) {
+            return Some(scan.start_progress.request_cancellation());
+        }
+        if scan
+            .stop
+            .as_ref()
+            .is_some_and(|stop| stop.progress.owns_command(command_id))
+        {
+            return Some(CancellationDecision::NotCancellable);
+        }
+        None
+    }
+
+    fn progress(&self, command_id: CommandId) -> Option<&CommandProgress> {
+        let scan = self.reserved()?;
+        if scan.start_progress.owns_command(command_id) {
+            return Some(&scan.start_progress);
+        }
+        scan.stop_for(command_id).map(|stop| &stop.progress)
+    }
+
+    pub fn completion_observer(
+        &self,
+        command_id: CommandId,
+    ) -> Option<super::dispatch::CompletionObserver> {
+        self.progress(command_id)
+            .map(CommandProgress::completion_observer)
+    }
+
+    pub fn allow_publication(
+        &mut self,
+        event: &BleEvent,
+    ) -> Result<Option<bool>, ReconciliationFault> {
+        let Some(scan) = self.reserved() else {
+            return Ok(None);
+        };
+        if !scan.matches_publication_scope(event) {
+            return Ok(None);
+        }
+        let accepted_target = event
+            .command_id()
+            .and_then(|id| self.progress(id))
+            .is_some_and(CommandProgress::cancellation_accepted);
+        let scan = self.reserved_mut().expect("matched scan publication scope");
+        let pending = scan.has_pending_cancellation();
+        scan.publication
+            .allow(event, pending, accepted_target)
+            .map(Some)
+    }
+
+    pub fn take_cancellation_public_events(
+        &mut self,
+        command_id: CommandId,
+    ) -> Option<Vec<BleEvent>> {
+        let accepted = self.progress(command_id)?.cancellation_accepted();
+        let scan = self.reserved_mut()?;
+        let pending = scan.has_pending_cancellation();
+        Some(scan.publication.resolve(command_id, accepted, pending))
+    }
+
+    pub fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+        self.reserved_mut()
+            .is_some_and(|scan| scan.take_cancellation_dispatch(command_id))
+    }
+
+    pub fn resolve_cancellation(
+        &mut self,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) -> bool {
+        self.reserved_mut()
+            .is_some_and(|scan| scan.resolve_cancellation(command_id, result))
+    }
+
+    pub fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+        self.reserved_mut()
+            .is_some_and(|scan| scan.clear_cancellation(command_id))
+    }
+
+    pub fn cancellation_requested(&self, command_id: CommandId) -> bool {
+        self.reserved()
+            .is_some_and(|scan| scan.cancellation_requested(command_id))
+    }
+
     pub fn require_scan_available(&self) -> Result<(), WaiterError> {
         match &self.phase {
             ScanPhase::Idle => Ok(()),
@@ -124,7 +210,7 @@ impl ScanState {
             .validate_stop(session_id)
     }
 
-    /// Admission and caller handoff must succeed before installation.
+    /// Admission and caller submission must succeed before installation.
     pub fn reserve_scan_start(&mut self, command_id: CommandId, session_id: ScanSessionId) {
         assert!(
             self.require_scan_available().is_ok(),
@@ -133,7 +219,7 @@ impl ScanState {
         self.phase = ScanPhase::Reserved(Box::new(ScanReservation::new(command_id, session_id)));
     }
 
-    /// Installs stop only after start completion, admission, and caller handoff.
+    /// Installs stop only after start completion, admission, and caller submission.
     /// Invalid installation is an invariant violation, not a normal error path.
     pub fn reserve_scan_stop(&mut self, command_id: CommandId) {
         self.reserved_mut()
@@ -169,10 +255,7 @@ impl ScanState {
 
     /// Queries a deliverable result without retiring the session or stop command.
     /// None means unowned or incomplete, not operation failure.
-    pub fn waiter_result(
-        &self,
-        command_id: CommandId,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    pub fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         self.reserved()?.waiter_result(command_id)
     }
 
@@ -195,6 +278,8 @@ impl ScanState {
 struct ScanReservation {
     // Start command progress; stop has its own command and acknowledgement.
     start_progress: CommandProgress,
+    // One 64-event publication cap covers start/stop and passive scan events.
+    publication: super::dispatch::ScopedPublication,
     session_id: ScanSessionId,
     // Session-level teardown evidence. ScanStopped::Err has no command ID and can
     // race start, so it must not be attributed to start as a start-domain error.
@@ -206,7 +291,87 @@ struct ScanReservation {
 }
 
 impl ScanReservation {
+    fn has_pending_cancellation(&self) -> bool {
+        self.start_progress.is_awaiting_cancellation_result()
+            || self
+                .stop
+                .as_ref()
+                .is_some_and(|stop| stop.progress.is_awaiting_cancellation_result())
+    }
+
+    fn matches_publication_scope(&self, event: &BleEvent) -> bool {
+        match event {
+            BleEvent::ScanStarted { scan_id, .. } | BleEvent::ScanStopped { scan_id, .. } => {
+                *scan_id == self.session_id
+            }
+            BleEvent::AdvertisementObserved { advertisement } => {
+                advertisement.scan_session_id == self.session_id
+            }
+            BleEvent::CommandCompleted { command_id, .. } => {
+                self.start_progress.owns_command(*command_id)
+                    || self.stop_for(*command_id).is_some()
+            }
+            _ => false,
+        }
+    }
+
     /// Routes unresolved start evidence before stop evidence within this session.
+    fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+        if self.start_progress.owns_command(command_id) {
+            return self.start_progress.take_cancellation_dispatch();
+        }
+        self.stop
+            .as_mut()
+            .filter(|stop| stop.progress.owns_command(command_id))
+            .is_some_and(|stop| stop.progress.take_cancellation_dispatch())
+    }
+
+    fn resolve_cancellation(
+        &mut self,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) -> bool {
+        if self.start_progress.owns_command(command_id) {
+            self.start_progress.resolve_cancellation(result);
+            return true;
+        }
+        let Some(stop) = self
+            .stop
+            .as_mut()
+            .filter(|stop| stop.progress.owns_command(command_id))
+        else {
+            return false;
+        };
+        stop.progress.resolve_cancellation(result);
+        true
+    }
+
+    fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+        if self.start_progress.owns_command(command_id) {
+            self.start_progress.clear_cancellation();
+            return true;
+        }
+        let Some(stop) = self
+            .stop
+            .as_mut()
+            .filter(|stop| stop.progress.owns_command(command_id))
+        else {
+            return false;
+        };
+        stop.progress.clear_cancellation();
+        true
+    }
+
+    fn cancellation_requested(&self, command_id: CommandId) -> bool {
+        if self.start_progress.owns_command(command_id) {
+            return self.start_progress.cancellation_requested();
+        }
+        self.stop
+            .as_ref()
+            .filter(|stop| stop.progress.owns_command(command_id))
+            .is_some_and(|stop| stop.progress.cancellation_requested())
+    }
+
     fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
         if self.should_buffer_start_event(&event) {
             self.start_progress.buffer(event)?;
@@ -282,6 +447,7 @@ impl ScanReservation {
     fn new(command_id: CommandId, session_id: ScanSessionId) -> Self {
         Self {
             start_progress: CommandProgress::new(command_id),
+            publication: super::dispatch::ScopedPublication::default(),
             session_id,
             stopped_evidence: false,
             started_evidence: false,
@@ -348,7 +514,7 @@ impl ScanReservation {
         false
     }
 
-    fn waiter_result(&self, command_id: CommandId) -> Option<Result<WaiterSuccess, WaiterError>> {
+    fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         if self.start_progress.owns_command(command_id) {
             if let Err(error) = self.start_progress.terminal_result()? {
                 return Some(Err(error));
@@ -364,6 +530,9 @@ impl ScanReservation {
     /// Pure session-retirement decision, evaluated after waiter settlement.
     /// Complete command evidence does not itself prove the session has ended.
     fn is_retirable(&self) -> bool {
+        if !self.publication.is_empty() {
+            return false;
+        }
         // Native end cannot release a start whose domain/terminal is still missing.
         if !self.start_progress.is_complete(self.started_evidence) {
             return false;
@@ -473,7 +642,7 @@ impl StopReservation {
         &self,
         session_id: ScanSessionId,
         stopped_evidence: bool,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    ) -> Option<WaiterOutcome> {
         if !self.is_complete(stopped_evidence) {
             return None;
         }

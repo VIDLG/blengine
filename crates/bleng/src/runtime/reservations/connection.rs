@@ -6,15 +6,15 @@ use blehub::{
     SubscriptionId,
 };
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
 use super::{
     dispatch::{
-        BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
-        ReconciliationFault,
+        BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
+        DispatchResolution, ReconciliationFault, ScopedPublication,
     },
     gatt::{GattAccess, GattReservation},
-    io::{ReadReservation, RssiReservation, WriteReservation},
+    io::{IoReservations, MAX_PENDING_NATIVE_OPERATIONS_PER_CONNECTION},
     subscription::{SubscriptionDisposition, SubscriptionReservation},
 };
 
@@ -33,6 +33,8 @@ pub(super) enum DispatchPendingRoute {
 /// Keeping these under one peripheral key prevents cross-device callback routing.
 pub(super) struct ConnectionReservation {
     progress: CommandProgress,
+    // Publication order and its 64-event cap belong to the whole connection.
+    publication: ScopedPublication,
     connection_id: ConnectionId,
     connected_evidence: bool,
     disconnected_evidence: bool,
@@ -41,9 +43,7 @@ pub(super) struct ConnectionReservation {
     connect_error_evidence: Option<BleEventError>,
     disconnect: Option<DisconnectReservation>,
     gatt: GattReservation,
-    read: Option<ReadReservation>,
-    rssi: Option<RssiReservation>,
-    write: Option<WriteReservation>,
+    io: IoReservations,
     subscriptions: HashMap<SubscriptionId, SubscriptionReservation>,
 }
 
@@ -73,19 +73,16 @@ impl ConnectionReservation {
                 .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
             DispatchPendingRoute::Rssi => self
-                .rssi
-                .as_mut()
-                .filter(|slot| slot.should_buffer_event(event, connection_id))
+                .io
+                .pending_rssi_mut(event, connection_id)
                 .map(|slot| &mut slot.progress),
             DispatchPendingRoute::Read => self
-                .read
-                .as_mut()
-                .filter(|slot| slot.should_buffer_event(event, connection_id))
+                .io
+                .pending_read_mut(event, connection_id)
                 .map(|slot| &mut slot.progress),
             DispatchPendingRoute::Write => self
-                .write
-                .as_mut()
-                .filter(|slot| slot.should_buffer_event(event, connection_id))
+                .io
+                .pending_write_mut(event, connection_id)
                 .map(|slot| &mut slot.progress),
             DispatchPendingRoute::Subscription => {
                 self.subscriptions
@@ -201,20 +198,10 @@ impl ConnectionReservation {
                     discovery.record_event(event, connection_id);
                 }
             }
-            BleEvent::RssiRead { .. } => {
-                if let Some(slot) = self.rssi.as_mut() {
-                    slot.record_event(event, connection_id);
-                }
-            }
-            BleEvent::CharacteristicRead { .. } => {
-                if let Some(read) = self.read.as_mut() {
-                    read.record_event(event, connection_id);
-                }
-            }
-            BleEvent::CharacteristicWritten { .. } => {
-                if let Some(write) = self.write.as_mut() {
-                    write.record_event(event, connection_id);
-                }
+            BleEvent::RssiRead { .. }
+            | BleEvent::CharacteristicRead { .. }
+            | BleEvent::CharacteristicWritten { .. } => {
+                self.io.record_event(event, connection_id);
             }
             BleEvent::NotificationStateChanged {
                 subscription_id, ..
@@ -244,26 +231,50 @@ impl ConnectionReservation {
         ) {
             return Some(resolution);
         }
-        if let Some(resolution) =
-            resolve_pending_slot(&mut self.rssi, command_id, result, connection_id, |slot| {
-                &mut slot.progress
-            })
-        {
-            return Some(resolution);
+        if self.io.rssi_mut(command_id).is_some() {
+            let resolution = resolve_pending_reservation(
+                self.io
+                    .rssi_mut(command_id)
+                    .expect("matching RSSI reservation"),
+                command_id,
+                result,
+                connection_id,
+                |slot| &mut slot.progress,
+            );
+            if result.is_err() {
+                self.io.remove_rssi(command_id);
+            }
+            return resolution;
         }
-        if let Some(resolution) =
-            resolve_pending_slot(&mut self.read, command_id, result, connection_id, |slot| {
-                &mut slot.progress
-            })
-        {
-            return Some(resolution);
+        if self.io.read_mut(command_id).is_some() {
+            let resolution = resolve_pending_reservation(
+                self.io
+                    .read_mut(command_id)
+                    .expect("matching read reservation"),
+                command_id,
+                result,
+                connection_id,
+                |slot| &mut slot.progress,
+            );
+            if result.is_err() {
+                self.io.remove_read(command_id);
+            }
+            return resolution;
         }
-        if let Some(resolution) =
-            resolve_pending_slot(&mut self.write, command_id, result, connection_id, |slot| {
-                &mut slot.progress
-            })
-        {
-            return Some(resolution);
+        if self.io.write_mut(command_id).is_some() {
+            let resolution = resolve_pending_reservation(
+                self.io
+                    .write_mut(command_id)
+                    .expect("matching write reservation"),
+                command_id,
+                result,
+                connection_id,
+                |slot| &mut slot.progress,
+            );
+            if result.is_err() {
+                self.io.remove_write(command_id);
+            }
+            return resolution;
         }
         if let Some(subscription_id) =
             self.subscriptions
@@ -319,9 +330,103 @@ impl ConnectionReservation {
         self.progress.owns_command(command_id)
     }
 
+    pub(super) fn progress(&self, command_id: CommandId) -> Option<&CommandProgress> {
+        self.command_progresses()
+            .find(|progress| progress.owns_command(command_id))
+    }
+
+    pub(super) fn allow_publication(
+        &mut self,
+        event: &BleEvent,
+    ) -> Result<bool, ReconciliationFault> {
+        let accepted_target = event
+            .command_id()
+            .and_then(|id| self.progress(id))
+            .is_some_and(CommandProgress::cancellation_accepted);
+        let pending = self
+            .command_progresses()
+            .any(CommandProgress::is_awaiting_cancellation_result);
+        self.publication.allow(event, pending, accepted_target)
+    }
+
+    pub(super) fn take_cancellation_public_events(
+        &mut self,
+        command_id: CommandId,
+    ) -> Option<Vec<BleEvent>> {
+        let accepted = self.progress(command_id)?.cancellation_accepted();
+        let pending = self
+            .command_progresses()
+            .any(CommandProgress::is_awaiting_cancellation_result);
+        Some(self.publication.resolve(command_id, accepted, pending))
+    }
+
     pub(super) fn contains_command(&self, command_id: CommandId) -> bool {
         self.command_progresses()
             .any(|dispatch| dispatch.owns_command(command_id))
+    }
+
+    /// Requests caller cancellation for a cancellable operation owned by this
+    /// connection. Disconnect is deliberately control-plane-only here: it is
+    /// the teardown authority and cannot be superseded by its own cancellation.
+    pub(super) fn request_cancellation(
+        &mut self,
+        command_id: CommandId,
+    ) -> Option<CancellationDecision> {
+        if self.progress.owns_command(command_id) {
+            return Some(self.progress.request_cancellation());
+        }
+        if let Some(slot) = self
+            .disconnect
+            .as_ref()
+            .filter(|slot| slot.owns_command(command_id))
+        {
+            return Some(if slot.is_complete() {
+                CancellationDecision::AlreadyCompleted
+            } else {
+                CancellationDecision::NotCancellable
+            });
+        }
+        self.cancellable_progresses_mut()
+            .find(|progress| progress.owns_command(command_id))
+            .map(CommandProgress::request_cancellation)
+    }
+
+    pub(super) fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+        self.command_progresses_mut()
+            .find(|progress| progress.owns_command(command_id))
+            .is_some_and(CommandProgress::take_cancellation_dispatch)
+    }
+
+    pub(super) fn resolve_cancellation(
+        &mut self,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) -> bool {
+        let Some(progress) = self
+            .command_progresses_mut()
+            .find(|progress| progress.owns_command(command_id))
+        else {
+            return false;
+        };
+        progress.resolve_cancellation(result);
+        true
+    }
+
+    pub(super) fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+        let Some(progress) = self
+            .command_progresses_mut()
+            .find(|progress| progress.owns_command(command_id))
+        else {
+            return false;
+        };
+        progress.clear_cancellation();
+        true
+    }
+
+    pub(super) fn cancellation_requested(&self, command_id: CommandId) -> bool {
+        self.command_progresses()
+            .find(|progress| progress.owns_command(command_id))
+            .is_some_and(CommandProgress::cancellation_requested)
     }
 
     fn require_connected(&self) -> Result<(), WaiterError> {
@@ -336,8 +441,26 @@ impl ConnectionReservation {
             .any(CommandProgress::is_awaiting_dispatch_result)
     }
 
-    fn has_characteristic_io(&self) -> bool {
-        self.read.is_some() || self.write.is_some()
+    fn pending_native_operation_count(&self) -> usize {
+        self.io.len()
+            + self
+                .subscriptions
+                .values()
+                .filter(|route| route.is_transitioning())
+                .count()
+    }
+
+    fn require_native_operation_capacity(&self) -> Result<(), WaiterError> {
+        if self.pending_native_operation_count() >= MAX_PENDING_NATIVE_OPERATIONS_PER_CONNECTION {
+            return Err(WaiterError::OperationBusy);
+        }
+        Ok(())
+    }
+
+    fn has_subscription_transition_for(&self, characteristic_id: GattCharacteristicId) -> bool {
+        self.subscriptions
+            .values()
+            .any(|route| route.is_transitioning() && route.characteristic_id == characteristic_id)
     }
 
     pub(super) fn validate_disconnect(&self) -> Result<(), WaiterError> {
@@ -358,12 +481,9 @@ impl ConnectionReservation {
     pub(super) fn validate_gatt_discovery(&self) -> Result<(), WaiterError> {
         self.require_connected()?;
         if self.disconnect.is_some()
-            || self
-                .rssi
-                .as_ref()
-                .is_some_and(|slot| slot.progress.is_awaiting_dispatch_result())
+            || self.io.rssi_is_awaiting_dispatch()
             || self.gatt.has_pending_discovery()
-            || self.has_characteristic_io()
+            || self.io.len() != 0
             || !self.subscriptions.is_empty()
         {
             return Err(WaiterError::GattBusy);
@@ -373,13 +493,13 @@ impl ConnectionReservation {
 
     pub(super) fn validate_rssi(&self) -> Result<(), WaiterError> {
         self.require_connected()?;
-        if self.rssi.is_some() || self.disconnect.is_some() || self.has_pending_child_handoff() {
+        if self.disconnect.is_some() || self.has_pending_child_handoff() {
             return Err(WaiterError::OperationBusy);
         }
-        Ok(())
+        self.require_native_operation_capacity()
     }
 
-    /// Keep error precedence explicit: connection, handoff, target, I/O, discovery.
+    /// Keep error precedence explicit: connection, submission, target, I/O, discovery.
     pub(super) fn validate_gatt_access(
         &self,
         session_id: GattSessionId,
@@ -387,12 +507,7 @@ impl ConnectionReservation {
         access: GattAccess,
     ) -> Result<(), WaiterError> {
         self.require_connected()?;
-        if self.disconnect.is_some()
-            || self
-                .rssi
-                .as_ref()
-                .is_some_and(|slot| slot.progress.is_awaiting_dispatch_result())
-        {
+        if self.disconnect.is_some() || self.has_pending_child_handoff() {
             return Err(WaiterError::OperationBusy);
         }
         let database = self
@@ -407,16 +522,14 @@ impl ConnectionReservation {
         }) {
             return Err(WaiterError::GattNotReady);
         }
-        if self.has_characteristic_io()
-            || self
-                .subscriptions
-                .values()
-                .any(SubscriptionReservation::is_transitioning)
+        if self.has_subscription_transition_for(characteristic_id)
             || (matches!(access, GattAccess::Read)
                 && self
                     .subscriptions
                     .values()
                     .any(|route| route.characteristic_id == characteristic_id))
+            || (matches!(access, GattAccess::EnableNotifications)
+                && self.io.has_characteristic_operation_for(characteristic_id))
         {
             return Err(WaiterError::OperationBusy);
         }
@@ -432,7 +545,7 @@ impl ConnectionReservation {
         {
             return Err(WaiterError::OperationBusy);
         }
-        Ok(())
+        self.require_native_operation_capacity()
     }
 
     pub(super) fn validate_notification_disable(
@@ -452,26 +565,25 @@ impl ConnectionReservation {
         self.require_connected()?;
         if self.disconnect.is_some()
             || self.gatt.has_pending_discovery()
-            || self.has_characteristic_io()
             || self.has_pending_child_handoff()
         {
             return Err(WaiterError::OperationBusy);
         }
+        self.require_native_operation_capacity()?;
         Ok(route.characteristic_id)
     }
 
     pub(super) fn new(command_id: CommandId, connection_id: ConnectionId) -> Self {
         Self {
             progress: CommandProgress::new(command_id),
+            publication: ScopedPublication::default(),
             connection_id,
             connected_evidence: false,
             disconnected_evidence: false,
             connect_error_evidence: None,
             disconnect: None,
             gatt: GattReservation::default(),
-            read: None,
-            rssi: None,
-            write: None,
+            io: IoReservations::default(),
             subscriptions: HashMap::new(),
         }
     }
@@ -493,7 +605,7 @@ impl ConnectionReservation {
     }
 
     pub(super) fn reserve_rssi(&mut self, command_id: CommandId) {
-        self.rssi = Some(RssiReservation::new(command_id));
+        self.io.reserve_rssi(command_id);
     }
 
     pub(super) fn reserve_read(
@@ -502,11 +614,8 @@ impl ConnectionReservation {
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
     ) {
-        self.read = Some(ReadReservation::new(
-            command_id,
-            session_id,
-            characteristic_id,
-        ));
+        self.io
+            .reserve_read(command_id, session_id, characteristic_id);
     }
 
     pub(super) fn reserve_write(
@@ -515,11 +624,8 @@ impl ConnectionReservation {
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
     ) {
-        self.write = Some(WriteReservation::new(
-            command_id,
-            session_id,
-            characteristic_id,
-        ));
+        self.io
+            .reserve_write(command_id, session_id, characteristic_id);
     }
 
     pub(super) fn reserve_notification_enable(
@@ -587,45 +693,26 @@ impl ConnectionReservation {
         {
             self.disconnect = None;
         }
-        if self
-            .rssi
-            .as_ref()
-            .is_some_and(RssiReservation::is_retirable)
-        {
-            self.rssi = None;
-        }
-        if self
-            .read
-            .as_ref()
-            .is_some_and(ReadReservation::is_retirable)
-        {
-            self.read = None;
-        }
-        if self
-            .write
-            .as_ref()
-            .is_some_and(WriteReservation::is_retirable)
-        {
-            self.write = None;
-        }
+        self.io.retire_completed();
         self.gatt.retire_completed_discovery();
     }
 
-    /// A disconnected connection cannot be removed until all dispatch handoffs
-    /// have resolved; an explicit disconnect also needs its own terminal/domain.
+    /// A disconnected connection cannot be removed until dispatch handoffs and
+    /// cancellation receipts resolve; an explicit disconnect needs its terminal/domain.
     pub(super) fn is_retirable(&self) -> bool {
         let disconnect_complete = self
             .disconnect
             .as_ref()
             .is_none_or(DisconnectReservation::is_complete);
         disconnect_complete
-            && !self
-                .command_progresses()
-                .any(CommandProgress::is_awaiting_dispatch_result)
+            && self.publication.is_empty()
+            && !self.command_progresses().any(|progress| {
+                progress.is_awaiting_dispatch_result() || progress.is_awaiting_cancellation_result()
+            })
             && (self.disconnected_evidence || self.has_failed() || self.progress.terminal_failed())
     }
 
-    fn connect_result(&self) -> Option<Result<WaiterSuccess, WaiterError>> {
+    fn connect_result(&self) -> Option<WaiterOutcome> {
         if self.progress.is_awaiting_dispatch_result() {
             return None;
         }
@@ -644,10 +731,7 @@ impl ConnectionReservation {
 
     /// Queries without consuming evidence; None means unowned or incomplete.
     /// Waiter settlement must precede any retirement that releases this evidence.
-    pub(super) fn waiter_result(
-        &self,
-        command_id: CommandId,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    pub(super) fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         if self.progress.owns_command(command_id) {
             return self.connect_result();
         }
@@ -666,26 +750,8 @@ impl ConnectionReservation {
         {
             return gatt.waiter_result();
         }
-        if let Some(rssi) = self
-            .rssi
-            .as_ref()
-            .filter(|rssi| rssi.progress.owns_command(command_id))
-        {
-            return rssi.waiter_result(self.connection_id);
-        }
-        if let Some(read) = self
-            .read
-            .as_ref()
-            .filter(|read| read.progress.owns_command(command_id))
-        {
-            return read.waiter_result(self.connection_id);
-        }
-        if let Some(write) = self
-            .write
-            .as_ref()
-            .filter(|write| write.progress.owns_command(command_id))
-        {
-            return write.waiter_result(self.connection_id);
+        if let Some(result) = self.io.waiter_result(command_id, self.connection_id) {
+            return Some(result);
         }
         self.subscriptions
             .iter()
@@ -723,12 +789,10 @@ impl ConnectionReservation {
         [
             self.disconnect.as_ref().map(|slot| &slot.progress),
             self.gatt.discovery.as_ref().map(|slot| &slot.progress),
-            self.rssi.as_ref().map(|slot| &slot.progress),
-            self.read.as_ref().map(|slot| &slot.progress),
-            self.write.as_ref().map(|slot| &slot.progress),
         ]
         .into_iter()
         .flatten()
+        .chain(self.io.progresses())
         .chain(
             self.subscriptions
                 .values()
@@ -740,17 +804,27 @@ impl ConnectionReservation {
         std::iter::once(&self.progress).chain(self.child_progresses())
     }
 
+    fn cancellable_progresses_mut(&mut self) -> impl Iterator<Item = &mut CommandProgress> {
+        [self.gatt.discovery.as_mut().map(|slot| &mut slot.progress)]
+            .into_iter()
+            .flatten()
+            .chain(self.io.progresses_mut())
+            .chain(
+                self.subscriptions
+                    .values_mut()
+                    .filter_map(SubscriptionReservation::progress_mut),
+            )
+    }
+
     fn command_progresses_mut(&mut self) -> impl Iterator<Item = &mut CommandProgress> {
         [
             Some(&mut self.progress),
             self.disconnect.as_mut().map(|slot| &mut slot.progress),
             self.gatt.discovery.as_mut().map(|slot| &mut slot.progress),
-            self.rssi.as_mut().map(|slot| &mut slot.progress),
-            self.read.as_mut().map(|slot| &mut slot.progress),
-            self.write.as_mut().map(|slot| &mut slot.progress),
         ]
         .into_iter()
         .flatten()
+        .chain(self.io.progresses_mut())
         .chain(
             self.subscriptions
                 .values_mut()
@@ -834,10 +908,7 @@ impl DisconnectReservation {
         }
     }
 
-    fn waiter_result(
-        &self,
-        connection_id: ConnectionId,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    fn waiter_result(&self, connection_id: ConnectionId) -> Option<WaiterOutcome> {
         if let Err(error) = self.progress.terminal_result()? {
             return Some(Err(error));
         }
@@ -872,6 +943,32 @@ fn passive_connection_lost(event: &BleEvent, expected: ConnectionId) -> bool {
             ..
         }
     ) && connection_lost(event, expected)
+}
+
+/// Resolves a keyed child reservation without owning its storage removal.
+/// The caller removes rejected map entries after this borrow ends.
+fn resolve_pending_reservation<T>(
+    slot: &mut T,
+    command_id: CommandId,
+    result: &Result<(), CommandDispatchError>,
+    connection_id: ConnectionId,
+    progress: impl FnOnce(&mut T) -> &mut CommandProgress,
+) -> Option<DispatchResolution> {
+    let command = progress(slot);
+    if !command.owns_command(command_id) {
+        return None;
+    }
+    Some(if result.is_err() {
+        command.rejected_resolution(DispatchAction::None, |event| {
+            if passive_connection_lost(event, connection_id) {
+                BufferedEventDisposition::Replay
+            } else {
+                BufferedEventDisposition::Conflict
+            }
+        })
+    } else {
+        command.accepted_resolution()
+    })
 }
 
 /// Ordinary child commands discard only their pending slot on rejection and

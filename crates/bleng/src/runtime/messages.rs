@@ -1,20 +1,12 @@
 //! Actor mailbox protocol: command requests, asynchronous inputs, and waiter control.
 //!
-//! `Begin*` requests and `BeginReply` establish caller admission and handoff.
-//! `IngressEvent` and `DispatchResolved` carry backend callbacks and synchronous
-//! dispatch outcomes. `RetireWaiter` ends caller delivery, not native work.
-//! Handlers use actor methods, never actor fields; state reconciliation stays
-//! in actor.rs, while deadlines and caller waiting stay in owner.rs.
-//!
-//! `Begin` requests establish a command's caller-to-actor handoff, install its
-//! reservation, and submit native dispatch. Their replies transfer the waiter
-//! receiver and any newly allocated resource ID; they do not acknowledge backend
-//! acceptance or BLE completion.
-//!
-//! Command handlers follow the same order: validate, allocate IDs/register the waiter,
-//! then call `launch_dispatch` to claim the handoff, install the reservation,
-//! and submit native dispatch. Operation-specific validation, waiter expectation,
-//! reservation installation, and native command construction remain explicit.
+//! `Begin*` messages own bounded eager submissions. Handlers validate BLE state,
+//! register the submission's original sender, claim dispatch, and install native
+//! reservations. Admission errors settle that same result channel; there is no
+//! admission reply channel or caller-side begin task. Resource metadata is written
+//! once by admission, before the actor can reconcile backend evidence.
+//! `IngressEvent` and `DispatchResolved` carry callbacks and native receipts;
+//! cancellation after claim and reservation retirement remain actor-owned.
 //!
 //! Success without a payload is `()`, not an invented acknowledgement object.
 //! In particular, backend dispatch `Ok(())` means accepted for dispatch, not BLE
@@ -33,34 +25,21 @@ use kameo::prelude::{Context, Message};
 
 use crate::waiter::{WaiterError, WaiterExpectation, WaiterSuccess};
 
-use super::{
-    actor::{BlengActor, WaiterReceiver},
-    owner::BeginHandoff,
-    reservations::GattAccess,
-};
+use super::{actor::BlengActor, reservations::GattAccess, shared::OperationSubmission};
 
-// Command requests and admission replies.
+// Command requests and typed result decoding.
 
-/// Actor-to-owner handoff metadata, not a native dispatch result.
-/// `Resource` is the newly allocated typed ID, or `()` for commands creating none.
-/// The result receiver remains distinct from the registry's waiting expectation.
-pub(super) struct BeginReply<Resource = ()> {
-    pub(super) command_id: CommandId,
-    pub(super) result_rx: WaiterReceiver,
-    pub(super) resource: Resource,
-}
-
-/// Ties a Begin request to its admission resource and caller-visible success.
+/// Ties a submitted request to its actor-allocated resource and typed success.
 ///
 /// Correlation is a bounded snapshot of request IDs, not native state or an
 /// operation result. The owner extracts it before moving the message into
-/// `actor.ask`, without retaining or cloning the request or its payload.
+/// bounded enqueue, without retaining or cloning the request payload.
 /// Decoding has no lifecycle dependency: the owner handles a rejected success.
-pub(super) trait OperationResult: Send + 'static {
-    /// Newly allocated ID returned by `BeginReply`, or `()` if none is allocated.
-    type Resource: Send + 'static;
-    type Output;
-    type Correlation: Send;
+pub(crate) trait OperationSpec: Send + 'static {
+    /// Actor-allocated ID, or `()` for commands creating no resource.
+    type Resource: Send + Sync + Copy + 'static;
+    type Output: Send + 'static;
+    type Correlation: Send + 'static;
 
     fn correlation(&self) -> Self::Correlation;
 
@@ -72,72 +51,72 @@ pub(super) trait OperationResult: Send + 'static {
     ) -> Option<Self::Output>;
 }
 
-pub(super) struct BeginInitialize {
-    pub(super) handoff: BeginHandoff,
+pub(crate) struct BeginInitialize {
+    pub(crate) submission: OperationSubmission,
 }
 
-pub(super) struct BeginScan {
-    pub(super) handoff: BeginHandoff,
-    pub(super) options: ScanOptions,
+pub(crate) struct BeginScan {
+    pub(crate) submission: OperationSubmission<ScanSessionId>,
+    pub(crate) options: ScanOptions,
 }
 
-pub(super) struct BeginStop {
-    pub(super) handoff: BeginHandoff,
-    pub(super) session: ScanSessionId,
+pub(crate) struct BeginStop {
+    pub(crate) submission: OperationSubmission,
+    pub(crate) session: ScanSessionId,
 }
 
-pub(super) struct BeginConnect {
-    pub(super) handoff: BeginHandoff,
-    pub(super) peripheral_id: PeripheralId,
+pub(crate) struct BeginConnect {
+    pub(crate) submission: OperationSubmission<ConnectionId>,
+    pub(crate) peripheral_id: PeripheralId,
 }
 
-pub(super) struct BeginDisconnect {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
+pub(crate) struct BeginDisconnect {
+    pub(crate) submission: OperationSubmission,
+    pub(crate) connection: ConnectionId,
 }
 
-pub(super) struct BeginDiscoverGatt {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
+pub(crate) struct BeginDiscoverGatt {
+    pub(crate) submission: OperationSubmission<GattSessionId>,
+    pub(crate) connection: ConnectionId,
 }
 
-pub(super) struct BeginRssi {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
+pub(crate) struct BeginRssi {
+    pub(crate) submission: OperationSubmission,
+    pub(crate) connection: ConnectionId,
 }
 
-pub(super) struct BeginRead {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
-    pub(super) session: GattSessionId,
-    pub(super) characteristic: GattCharacteristicId,
+pub(crate) struct BeginRead {
+    pub(crate) submission: OperationSubmission,
+    pub(crate) connection: ConnectionId,
+    pub(crate) session: GattSessionId,
+    pub(crate) characteristic: GattCharacteristicId,
 }
 
-pub(super) struct BeginWrite {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
-    pub(super) session: GattSessionId,
-    pub(super) characteristic: GattCharacteristicId,
-    pub(super) value: Vec<u8>,
-    pub(super) write_type: WriteType,
+pub(crate) struct BeginWrite {
+    pub(crate) submission: OperationSubmission,
+    pub(crate) connection: ConnectionId,
+    pub(crate) session: GattSessionId,
+    pub(crate) characteristic: GattCharacteristicId,
+    pub(crate) value: Vec<u8>,
+    pub(crate) write_type: WriteType,
 }
 
-pub(super) struct BeginEnableNotifications {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
-    pub(super) session: GattSessionId,
-    pub(super) characteristic: GattCharacteristicId,
-    pub(super) mode: NotificationModeRequest,
+pub(crate) struct BeginEnableNotifications {
+    pub(crate) submission: OperationSubmission<SubscriptionId>,
+    pub(crate) connection: ConnectionId,
+    pub(crate) session: GattSessionId,
+    pub(crate) characteristic: GattCharacteristicId,
+    pub(crate) mode: NotificationModeRequest,
 }
 
-pub(super) struct BeginDisableNotifications {
-    pub(super) handoff: BeginHandoff,
-    pub(super) connection: ConnectionId,
-    pub(super) session: GattSessionId,
-    pub(super) subscription: SubscriptionId,
+pub(crate) struct BeginDisableNotifications {
+    pub(crate) submission: OperationSubmission,
+    pub(crate) connection: ConnectionId,
+    pub(crate) session: GattSessionId,
+    pub(crate) subscription: SubscriptionId,
 }
 
-impl OperationResult for BeginInitialize {
+impl OperationSpec for BeginInitialize {
     type Resource = ();
     type Output = AdapterSnapshot;
     type Correlation = ();
@@ -156,7 +135,7 @@ impl OperationResult for BeginInitialize {
     }
 }
 
-impl OperationResult for BeginScan {
+impl OperationSpec for BeginScan {
     type Resource = ScanSessionId;
     type Output = ScanSessionId;
     type Correlation = ();
@@ -175,7 +154,7 @@ impl OperationResult for BeginScan {
     }
 }
 
-impl OperationResult for BeginStop {
+impl OperationSpec for BeginStop {
     type Resource = ();
     type Output = ();
     type Correlation = ScanSessionId;
@@ -196,7 +175,7 @@ impl OperationResult for BeginStop {
     }
 }
 
-impl OperationResult for BeginConnect {
+impl OperationSpec for BeginConnect {
     type Resource = ConnectionId;
     type Output = ConnectionId;
     type Correlation = ();
@@ -215,7 +194,7 @@ impl OperationResult for BeginConnect {
     }
 }
 
-impl OperationResult for BeginDisconnect {
+impl OperationSpec for BeginDisconnect {
     type Resource = ();
     type Output = ();
     type Correlation = ConnectionId;
@@ -236,7 +215,7 @@ impl OperationResult for BeginDisconnect {
     }
 }
 
-impl OperationResult for BeginDiscoverGatt {
+impl OperationSpec for BeginDiscoverGatt {
     type Resource = GattSessionId;
     type Output = GattDatabase;
     type Correlation = ConnectionId;
@@ -261,7 +240,7 @@ impl OperationResult for BeginDiscoverGatt {
     }
 }
 
-impl OperationResult for BeginRssi {
+impl OperationSpec for BeginRssi {
     type Resource = ();
     type Output = i16;
     type Correlation = ConnectionId;
@@ -284,7 +263,7 @@ impl OperationResult for BeginRssi {
     }
 }
 
-impl OperationResult for BeginRead {
+impl OperationSpec for BeginRead {
     type Resource = ();
     type Output = Vec<u8>;
     type Correlation = (ConnectionId, GattSessionId, GattCharacteristicId);
@@ -315,7 +294,7 @@ impl OperationResult for BeginRead {
     }
 }
 
-impl OperationResult for BeginWrite {
+impl OperationSpec for BeginWrite {
     type Resource = ();
     type Output = ();
     type Correlation = (ConnectionId, GattSessionId, GattCharacteristicId);
@@ -345,7 +324,7 @@ impl OperationResult for BeginWrite {
     }
 }
 
-impl OperationResult for BeginEnableNotifications {
+impl OperationSpec for BeginEnableNotifications {
     type Resource = SubscriptionId;
     type Output = (SubscriptionId, Option<NotificationMode>);
     type Correlation = (ConnectionId, GattSessionId, GattCharacteristicId);
@@ -378,7 +357,7 @@ impl OperationResult for BeginEnableNotifications {
     }
 }
 
-impl OperationResult for BeginDisableNotifications {
+impl OperationSpec for BeginDisableNotifications {
     type Resource = ();
     type Output = ();
     type Correlation = (ConnectionId, GattSessionId, SubscriptionId);
@@ -410,477 +389,486 @@ impl OperationResult for BeginDisableNotifications {
 }
 
 impl Message<BeginInitialize> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginInitialize,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_not_started()?;
-        let (command_id, result_rx) = self.register_waiter(WaiterExpectation::Initialized)?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_initialize(command_id);
-            },
-            move |hub| hub.initialize(InitializeCommand { command_id }),
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_not_started()?;
+            let command_id = self
+                .register_operation_waiter(&message.submission, WaiterExpectation::Initialized)?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_initialize(command_id);
+                },
+                move |hub| hub.initialize(InitializeCommand { command_id }),
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginScan> for BlengActor {
-    type Reply = Result<BeginReply<ScanSessionId>, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginScan,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        self.require_scan_available()?;
-        let session_id: ScanSessionId = self.allocate_resource_id()?.into();
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::ScanStarted(session_id))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_scan_start(command_id, session_id);
-            },
-            move |hub| {
-                hub.start_scan(StartScanCommand {
-                    command_id,
-                    scan_session_id: session_id,
-                    options: message.options,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: session_id,
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            self.require_scan_available()?;
+            let session_id: ScanSessionId = self.allocate_resource_id()?.into();
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::ScanStarted(session_id),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_scan_start(command_id, session_id);
+                },
+                move |hub| {
+                    hub.start_scan(StartScanCommand {
+                        command_id,
+                        scan_session_id: session_id,
+                        options: message.options,
+                    })
+                },
+            )?;
+            Ok(session_id)
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginStop> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginStop,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        self.validate_scan_stop(message.session)?;
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::ScanStopped(message.session))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_scan_stop(command_id);
-            },
-            move |hub| {
-                hub.stop_scan(StopScanCommand {
-                    command_id,
-                    scan_session_id: message.session,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            self.validate_scan_stop(message.session)?;
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::ScanStopped(message.session),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_scan_stop(command_id);
+                },
+                move |hub| {
+                    hub.stop_scan(StopScanCommand {
+                        command_id,
+                        scan_session_id: message.session,
+                    })
+                },
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginConnect> for BlengActor {
-    type Reply = Result<BeginReply<ConnectionId>, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginConnect,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        self.require_peripheral_available(message.peripheral_id)?;
-        let connection_id: ConnectionId = self.allocate_resource_id()?.into();
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::Connected(connection_id))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_connection(message.peripheral_id, command_id, connection_id);
-            },
-            move |hub| {
-                hub.connect(ConnectCommand {
-                    command_id,
-                    connection_id,
-                    peripheral_id: message.peripheral_id,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: connection_id,
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            self.require_peripheral_available(message.peripheral_id)?;
+            let connection_id: ConnectionId = self.allocate_resource_id()?.into();
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::Connected(connection_id),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_connection(message.peripheral_id, command_id, connection_id);
+                },
+                move |hub| {
+                    hub.connect(ConnectCommand {
+                        command_id,
+                        connection_id,
+                        peripheral_id: message.peripheral_id,
+                    })
+                },
+            )?;
+            Ok(connection_id)
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginDisconnect> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginDisconnect,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let peripheral_id = self.validate_disconnect(message.connection)?;
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::Disconnected(message.connection))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_disconnect(peripheral_id, command_id);
-            },
-            move |hub| {
-                hub.disconnect(DisconnectCommand {
-                    command_id,
-                    connection_id: message.connection,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let peripheral_id = self.validate_disconnect(message.connection)?;
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::Disconnected(message.connection),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_disconnect(peripheral_id, command_id);
+                },
+                move |hub| {
+                    hub.disconnect(DisconnectCommand {
+                        command_id,
+                        connection_id: message.connection,
+                    })
+                },
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginDiscoverGatt> for BlengActor {
-    type Reply = Result<BeginReply<GattSessionId>, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginDiscoverGatt,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let peripheral_id = self.validate_gatt_discovery(message.connection)?;
-        let session_id: GattSessionId = self.allocate_resource_id()?.into();
-        let (command_id, result_rx) = self.register_waiter(WaiterExpectation::GattDiscovered(
-            message.connection,
-            session_id,
-        ))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_gatt_discovery(peripheral_id, command_id, session_id);
-            },
-            move |hub| {
-                hub.discover_gatt(DiscoverGattCommand {
-                    command_id,
-                    connection_id: message.connection,
-                    gatt_session_id: session_id,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: session_id,
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let peripheral_id = self.validate_gatt_discovery(message.connection)?;
+            let session_id: GattSessionId = self.allocate_resource_id()?.into();
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::GattDiscovered(message.connection, session_id),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_gatt_discovery(peripheral_id, command_id, session_id);
+                },
+                move |hub| {
+                    hub.discover_gatt(DiscoverGattCommand {
+                        command_id,
+                        connection_id: message.connection,
+                        gatt_session_id: session_id,
+                    })
+                },
+            )?;
+            Ok(session_id)
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginRssi> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginRssi,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let peripheral_id = self.validate_rssi(message.connection)?;
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::RssiRead(message.connection))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_rssi(peripheral_id, command_id);
-            },
-            move |hub| {
-                hub.read_rssi(ReadRssiCommand {
-                    command_id,
-                    connection_id: message.connection,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let peripheral_id = self.validate_rssi(message.connection)?;
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::RssiRead(message.connection),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_rssi(peripheral_id, command_id);
+                },
+                move |hub| {
+                    hub.read_rssi(ReadRssiCommand {
+                        command_id,
+                        connection_id: message.connection,
+                    })
+                },
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginRead> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginRead,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let peripheral_id = self.validate_gatt_access(
-            message.connection,
-            message.session,
-            message.characteristic,
-            GattAccess::Read,
-        )?;
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::CharacteristicRead(
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let peripheral_id = self.validate_gatt_access(
                 message.connection,
                 message.session,
                 message.characteristic,
-            ))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_read(
-                    peripheral_id,
-                    command_id,
+                GattAccess::Read,
+            )?;
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::CharacteristicRead(
+                    message.connection,
                     message.session,
                     message.characteristic,
-                );
-            },
-            move |hub| {
-                hub.read_characteristic(ReadCharacteristicCommand {
-                    command_id,
-                    connection_id: message.connection,
-                    gatt_session_id: message.session,
-                    characteristic_id: message.characteristic,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+                ),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_read(
+                        peripheral_id,
+                        command_id,
+                        message.session,
+                        message.characteristic,
+                    );
+                },
+                move |hub| {
+                    hub.read_characteristic(ReadCharacteristicCommand {
+                        command_id,
+                        connection_id: message.connection,
+                        gatt_session_id: message.session,
+                        characteristic_id: message.characteristic,
+                    })
+                },
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginWrite> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginWrite,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let peripheral_id = self.validate_gatt_access(
-            message.connection,
-            message.session,
-            message.characteristic,
-            GattAccess::Write,
-        )?;
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::CharacteristicWritten(
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let peripheral_id = self.validate_gatt_access(
                 message.connection,
                 message.session,
                 message.characteristic,
-            ))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_write(
-                    peripheral_id,
-                    command_id,
+                GattAccess::Write,
+            )?;
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::CharacteristicWritten(
+                    message.connection,
                     message.session,
                     message.characteristic,
-                );
-            },
-            move |hub| {
-                hub.write_characteristic(WriteCharacteristicCommand {
-                    command_id,
-                    connection_id: message.connection,
-                    gatt_session_id: message.session,
-                    characteristic_id: message.characteristic,
-                    value: message.value,
-                    write_type: message.write_type,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+                ),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_write(
+                        peripheral_id,
+                        command_id,
+                        message.session,
+                        message.characteristic,
+                    );
+                },
+                move |hub| {
+                    hub.write_characteristic(WriteCharacteristicCommand {
+                        command_id,
+                        connection_id: message.connection,
+                        gatt_session_id: message.session,
+                        characteristic_id: message.characteristic,
+                        value: message.value,
+                        write_type: message.write_type,
+                    })
+                },
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginEnableNotifications> for BlengActor {
-    type Reply = Result<BeginReply<SubscriptionId>, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginEnableNotifications,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let peripheral_id = self.validate_notification_enable(
-            message.connection,
-            message.session,
-            message.characteristic,
-        )?;
-        let subscription: SubscriptionId = self.allocate_resource_id()?.into();
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::NotificationsEnabled(
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let peripheral_id = self.validate_notification_enable(
                 message.connection,
                 message.session,
-                subscription,
                 message.characteristic,
-            ))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_notification_enable(
-                    peripheral_id,
-                    command_id,
-                    subscription,
+            )?;
+            let subscription: SubscriptionId = self.allocate_resource_id()?.into();
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::NotificationsEnabled(
+                    message.connection,
                     message.session,
+                    subscription,
                     message.characteristic,
-                    message.mode,
-                );
-            },
-            move |hub| {
-                hub.set_notifications(SetNotificationsCommand {
-                    command_id,
-                    connection_id: message.connection,
-                    gatt_session_id: message.session,
-                    subscription_id: subscription,
-                    characteristic_id: message.characteristic,
-                    action: NotificationAction::Enable { mode: message.mode },
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: subscription,
-        })
+                ),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_notification_enable(
+                        peripheral_id,
+                        command_id,
+                        subscription,
+                        message.session,
+                        message.characteristic,
+                        message.mode,
+                    );
+                },
+                move |hub| {
+                    hub.set_notifications(SetNotificationsCommand {
+                        command_id,
+                        connection_id: message.connection,
+                        gatt_session_id: message.session,
+                        subscription_id: subscription,
+                        characteristic_id: message.characteristic,
+                        action: NotificationAction::Enable { mode: message.mode },
+                    })
+                },
+            )?;
+            Ok(subscription)
+        })();
+        submission.resolve(result);
     }
 }
 
 impl Message<BeginDisableNotifications> for BlengActor {
-    type Reply = Result<BeginReply, WaiterError>;
+    type Reply = ();
 
     async fn handle(
         &mut self,
         message: BeginDisableNotifications,
         ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
-        self.require_open()?;
-        self.require_initialized()?;
-        let (peripheral_id, characteristic) = self.validate_notification_disable(
-            message.connection,
-            message.session,
-            message.subscription,
-        )?;
-        let (command_id, result_rx) =
-            self.register_waiter(WaiterExpectation::NotificationsDisabled(
+        let submission = message.submission.clone();
+        let result = (|| {
+            self.require_open()?;
+            self.require_initialized()?;
+            let (peripheral_id, characteristic) = self.validate_notification_disable(
                 message.connection,
                 message.session,
                 message.subscription,
-                characteristic,
-            ))?;
-        self.launch_dispatch(
-            ctx,
-            &message.handoff,
-            command_id,
-            |actor| {
-                actor.reserve_notification_disable(peripheral_id, command_id, message.subscription);
-            },
-            move |hub| {
-                hub.set_notifications(SetNotificationsCommand {
-                    command_id,
-                    connection_id: message.connection,
-                    gatt_session_id: message.session,
-                    subscription_id: message.subscription,
-                    characteristic_id: characteristic,
-                    action: NotificationAction::Disable,
-                })
-            },
-        )?;
-        Ok(BeginReply {
-            command_id,
-            result_rx,
-            resource: (),
-        })
+            )?;
+            let command_id = self.register_operation_waiter(
+                &message.submission,
+                WaiterExpectation::NotificationsDisabled(
+                    message.connection,
+                    message.session,
+                    message.subscription,
+                    characteristic,
+                ),
+            )?;
+            self.launch_dispatch(
+                ctx,
+                &message.submission,
+                command_id,
+                |actor| {
+                    actor.reserve_notification_disable(
+                        peripheral_id,
+                        command_id,
+                        message.subscription,
+                    );
+                },
+                move |hub| {
+                    hub.set_notifications(SetNotificationsCommand {
+                        command_id,
+                        connection_id: message.connection,
+                        gatt_session_id: message.session,
+                        subscription_id: message.subscription,
+                        characteristic_id: characteristic,
+                        action: NotificationAction::Disable,
+                    })
+                },
+            )?;
+            Ok(())
+        })();
+        submission.resolve(result);
     }
 }
 
-// Backend ingress and native dispatch outcomes.
+// Backend ingress.
 
-/// One backend callback, distinct from native dispatch acknowledgement.
+/// One backend callback, distinct from native dispatch and cancellation acknowledgements.
 pub(super) struct IngressEvent(pub(super) BleEvent);
-
-/// Native dispatch acknowledgement delivered back through the actor mailbox.
-pub(super) struct DispatchResolved {
-    pub(super) id: CommandId,
-    pub(super) result: Result<(), CommandDispatchError>,
-}
-
-impl Message<DispatchResolved> for BlengActor {
-    type Reply = ();
-
-    async fn handle(&mut self, message: DispatchResolved, _: &mut Context<Self, Self::Reply>) {
-        self.handle_dispatch_result(message.id, message.result);
-    }
-}
 
 impl Message<IngressEvent> for BlengActor {
     type Reply = ();
@@ -894,392 +882,60 @@ impl Message<IngressEvent> for BlengActor {
     }
 }
 
-// Caller-side waiter retirement; native reservations keep their own lifetime.
+// Native dispatch acknowledgement.
 
-pub(super) struct RetireWaiter {
+/// Native dispatch acknowledgement delivered back through the actor mailbox.
+pub(super) struct DispatchResolved {
     pub(super) id: CommandId,
-    pub(super) timed_out: bool,
+    pub(super) result: Result<(), CommandDispatchError>,
 }
 
-impl Message<RetireWaiter> for BlengActor {
+impl Message<DispatchResolved> for BlengActor {
     type Reply = ();
 
-    async fn handle(&mut self, message: RetireWaiter, _: &mut Context<Self, Self::Reply>) {
-        self.retire_waiter(message.id, message.timed_out);
+    async fn handle(&mut self, message: DispatchResolved, ctx: &mut Context<Self, Self::Reply>) {
+        self.handle_dispatch_result(message.id, message.result, ctx.actor_ref().clone());
+    }
+}
+
+// Native cancellation acknowledgement.
+
+/// Native cancellation acknowledgement returned through the actor mailbox.
+/// The result covers backend acceptance of the control request, not BLE teardown.
+pub(super) struct CancellationResolved {
+    pub(super) id: CommandId,
+    pub(super) result: Result<(), WaiterError>,
+}
+
+impl Message<CancellationResolved> for BlengActor {
+    type Reply = ();
+
+    async fn handle(&mut self, message: CancellationResolved, _: &mut Context<Self, Self::Reply>) {
+        self.handle_cancellation_result(message.id, message.result);
+    }
+}
+
+// Caller-side explicit operation control.
+
+/// Requests cancellation of an existing command without allocating a new ID.
+/// The actor reply is a receipt channel for native control acceptance; native
+/// stop and recovery remain asynchronous and belong to the original reservation.
+pub(super) struct RequestCancellation {
+    pub(super) command_id: CommandId,
+}
+
+impl Message<RequestCancellation> for BlengActor {
+    type Reply = Result<super::reservations::CancellationReceiver, WaiterError>;
+
+    async fn handle(
+        &mut self,
+        message: RequestCancellation,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        self.request_operation_cancellation(message.command_id, ctx.actor_ref().clone())
     }
 }
 
 #[cfg(test)]
-mod operation_result_tests {
-    use super::{
-        BeginConnect, BeginDisableNotifications, BeginDisconnect, BeginDiscoverGatt,
-        BeginEnableNotifications, BeginInitialize, BeginRead, BeginRssi, BeginScan, BeginStop,
-        BeginWrite, OperationResult,
-    };
-    use crate::waiter::WaiterSuccess;
-    use blehub::{
-        AdapterSnapshot, AdapterState, AuthorizationState, BluetoothUuid, ConnectionId,
-        GattCharacteristicId, GattDatabase, GattService, GattServiceId, GattSessionId,
-        NotificationMode, ScanSessionId, SubscriptionId,
-    };
-
-    const CONNECTION: ConnectionId = ConnectionId { value: 11 };
-    const SESSION: GattSessionId = GattSessionId { value: 22 };
-    const CHARACTERISTIC: GattCharacteristicId = GattCharacteristicId { value: 33 };
-    const SUBSCRIPTION: SubscriptionId = SubscriptionId { value: 44 };
-    const SCAN: ScanSessionId = ScanSessionId { value: 55 };
-
-    #[test]
-    fn initialization_moves_snapshot_and_allocating_operations_require_their_resource() {
-        let snapshot = AdapterSnapshot {
-            state: AdapterState::PoweredOn,
-            scan_authorization: AuthorizationState::Authorized,
-            connection_authorization: AuthorizationState::Authorized,
-            name: Some("adapter payload".into()),
-        };
-        let name_ptr = snapshot.name.as_ref().unwrap().as_ptr();
-        let decoded =
-            BeginInitialize::decode_success((), (), WaiterSuccess::Initialized(snapshot)).unwrap();
-        assert_eq!(decoded.state, AdapterState::PoweredOn);
-        assert_eq!(decoded.scan_authorization, AuthorizationState::Authorized);
-        assert_eq!(
-            decoded.connection_authorization,
-            AuthorizationState::Authorized
-        );
-        assert_eq!(decoded.name.as_deref(), Some("adapter payload"));
-        assert_eq!(decoded.name.as_ref().unwrap().as_ptr(), name_ptr);
-        assert_eq!(
-            BeginInitialize::decode_success((), (), WaiterSuccess::ScanStarted(SCAN)),
-            None
-        );
-
-        assert_eq!(
-            BeginScan::decode_success((), SCAN, WaiterSuccess::ScanStarted(SCAN)),
-            Some(SCAN)
-        );
-        assert_eq!(
-            BeginScan::decode_success(
-                (),
-                ScanSessionId { value: 56 },
-                WaiterSuccess::ScanStarted(SCAN),
-            ),
-            None
-        );
-        assert_eq!(
-            BeginScan::decode_success((), SCAN, WaiterSuccess::ScanStopped(SCAN)),
-            None
-        );
-        assert_eq!(
-            BeginConnect::decode_success((), CONNECTION, WaiterSuccess::Connected(CONNECTION)),
-            Some(CONNECTION)
-        );
-        assert_eq!(
-            BeginConnect::decode_success(
-                (),
-                ConnectionId { value: 12 },
-                WaiterSuccess::Connected(CONNECTION),
-            ),
-            None
-        );
-        assert_eq!(
-            BeginConnect::decode_success((), CONNECTION, WaiterSuccess::Disconnected(CONNECTION)),
-            None
-        );
-    }
-
-    #[test]
-    fn connection_and_scan_operations_reject_foreign_identities_and_rssi_keeps_its_value() {
-        assert_eq!(
-            BeginDisconnect::decode_success(
-                ConnectionId { value: 12 },
-                (),
-                WaiterSuccess::Disconnected(CONNECTION),
-            ),
-            None
-        );
-        assert_eq!(
-            BeginStop::decode_success(
-                ScanSessionId { value: 56 },
-                (),
-                WaiterSuccess::ScanStopped(SCAN),
-            ),
-            None
-        );
-        assert_eq!(
-            BeginRssi::decode_success(CONNECTION, (), WaiterSuccess::RssiRead(CONNECTION, -73)),
-            Some(-73)
-        );
-        assert_eq!(
-            BeginRssi::decode_success(
-                ConnectionId { value: 12 },
-                (),
-                WaiterSuccess::RssiRead(CONNECTION, -73),
-            ),
-            None
-        );
-        assert_eq!(
-            BeginRssi::decode_success(CONNECTION, (), WaiterSuccess::Disconnected(CONNECTION)),
-            None
-        );
-    }
-
-    #[test]
-    fn discovery_requires_connection_and_allocated_session_and_moves_database() {
-        for (connection_id, gatt_session_id) in [
-            (ConnectionId { value: 12 }, SESSION),
-            (CONNECTION, GattSessionId { value: 23 }),
-        ] {
-            assert_eq!(
-                BeginDiscoverGatt::decode_success(
-                    CONNECTION,
-                    SESSION,
-                    WaiterSuccess::GattDiscovered(GattDatabase {
-                        connection_id,
-                        gatt_session_id,
-                        services: vec![],
-                    }),
-                ),
-                None
-            );
-        }
-        assert_eq!(
-            BeginDiscoverGatt::decode_success(
-                CONNECTION,
-                SESSION,
-                WaiterSuccess::Connected(CONNECTION),
-            ),
-            None
-        );
-        let database = GattDatabase {
-            connection_id: CONNECTION,
-            gatt_session_id: SESSION,
-            services: vec![GattService {
-                id: GattServiceId { value: 66 },
-                uuid: BluetoothUuid::canonicalize("180f").unwrap(),
-                primary: Some(true),
-                characteristics: vec![],
-            }],
-        };
-        let services_ptr = database.services.as_ptr();
-        let decoded = BeginDiscoverGatt::decode_success(
-            CONNECTION,
-            SESSION,
-            WaiterSuccess::GattDiscovered(database),
-        )
-        .unwrap();
-        assert_eq!(decoded.connection_id, CONNECTION);
-        assert_eq!(decoded.gatt_session_id, SESSION);
-        assert_eq!(decoded.services.as_ptr(), services_ptr);
-        assert_eq!(decoded.services.len(), 1);
-        assert_eq!(decoded.services[0].id, GattServiceId { value: 66 });
-        assert_eq!(
-            decoded.services[0].uuid,
-            BluetoothUuid::canonicalize("180f").unwrap()
-        );
-        assert_eq!(decoded.services[0].primary, Some(true));
-    }
-
-    #[test]
-    fn characteristic_operations_check_each_identity_axis_and_move_read_payload() {
-        let correlation = (CONNECTION, SESSION, CHARACTERISTIC);
-        for (connection_id, gatt_session_id, characteristic_id) in [
-            (ConnectionId { value: 12 }, SESSION, CHARACTERISTIC),
-            (CONNECTION, GattSessionId { value: 23 }, CHARACTERISTIC),
-            (CONNECTION, SESSION, GattCharacteristicId { value: 34 }),
-        ] {
-            assert_eq!(
-                BeginRead::decode_success(
-                    correlation,
-                    (),
-                    WaiterSuccess::CharacteristicRead {
-                        connection_id,
-                        gatt_session_id,
-                        characteristic_id,
-                        value: vec![0xde, 0xad],
-                    },
-                ),
-                None
-            );
-            assert_eq!(
-                BeginWrite::decode_success(
-                    correlation,
-                    (),
-                    WaiterSuccess::CharacteristicWritten(
-                        connection_id,
-                        gatt_session_id,
-                        characteristic_id,
-                    ),
-                ),
-                None
-            );
-            assert_eq!(
-                BeginEnableNotifications::decode_success(
-                    correlation,
-                    SUBSCRIPTION,
-                    WaiterSuccess::NotificationsEnabled {
-                        connection_id,
-                        gatt_session_id,
-                        subscription_id: SUBSCRIPTION,
-                        characteristic_id,
-                        actual_mode: Some(NotificationMode::Notification),
-                    },
-                ),
-                None
-            );
-        }
-        assert_eq!(
-            BeginRead::decode_success(
-                correlation,
-                (),
-                WaiterSuccess::CharacteristicWritten(CONNECTION, SESSION, CHARACTERISTIC),
-            ),
-            None
-        );
-        let value = vec![0xde, 0xad, 0xbe, 0xef];
-        let value_ptr = value.as_ptr();
-        let decoded = BeginRead::decode_success(
-            correlation,
-            (),
-            WaiterSuccess::CharacteristicRead {
-                connection_id: CONNECTION,
-                gatt_session_id: SESSION,
-                characteristic_id: CHARACTERISTIC,
-                value,
-            },
-        )
-        .unwrap();
-        assert_eq!(decoded, [0xde, 0xad, 0xbe, 0xef]);
-        assert_eq!(decoded.as_ptr(), value_ptr);
-    }
-
-    #[test]
-    fn enable_requires_allocated_subscription_and_preserves_optional_actual_mode() {
-        let correlation = (CONNECTION, SESSION, CHARACTERISTIC);
-        for actual_mode in [
-            None,
-            Some(NotificationMode::Notification),
-            Some(NotificationMode::Indication),
-        ] {
-            assert_eq!(
-                BeginEnableNotifications::decode_success(
-                    correlation,
-                    SUBSCRIPTION,
-                    WaiterSuccess::NotificationsEnabled {
-                        connection_id: CONNECTION,
-                        gatt_session_id: SESSION,
-                        subscription_id: SUBSCRIPTION,
-                        characteristic_id: CHARACTERISTIC,
-                        actual_mode,
-                    },
-                ),
-                Some((SUBSCRIPTION, actual_mode))
-            );
-        }
-        assert_eq!(
-            BeginEnableNotifications::decode_success(
-                correlation,
-                SubscriptionId { value: 45 },
-                WaiterSuccess::NotificationsEnabled {
-                    connection_id: CONNECTION,
-                    gatt_session_id: SESSION,
-                    subscription_id: SUBSCRIPTION,
-                    characteristic_id: CHARACTERISTIC,
-                    actual_mode: None,
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            BeginEnableNotifications::decode_success(
-                correlation,
-                SUBSCRIPTION,
-                WaiterSuccess::NotificationsDisabled(
-                    CONNECTION,
-                    SESSION,
-                    SUBSCRIPTION,
-                    CHARACTERISTIC
-                ),
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn disable_checks_each_request_identity_but_does_not_require_characteristic() {
-        let correlation = (CONNECTION, SESSION, SUBSCRIPTION);
-        for (connection, session, subscription) in [
-            (ConnectionId { value: 12 }, SESSION, SUBSCRIPTION),
-            (CONNECTION, GattSessionId { value: 23 }, SUBSCRIPTION),
-            (CONNECTION, SESSION, SubscriptionId { value: 45 }),
-        ] {
-            assert_eq!(
-                BeginDisableNotifications::decode_success(
-                    correlation,
-                    (),
-                    WaiterSuccess::NotificationsDisabled(
-                        connection,
-                        session,
-                        subscription,
-                        CHARACTERISTIC
-                    ),
-                ),
-                None
-            );
-        }
-        for characteristic in [CHARACTERISTIC, GattCharacteristicId { value: 34 }] {
-            assert_eq!(
-                BeginDisableNotifications::decode_success(
-                    correlation,
-                    (),
-                    WaiterSuccess::NotificationsDisabled(
-                        CONNECTION,
-                        SESSION,
-                        SUBSCRIPTION,
-                        characteristic
-                    ),
-                ),
-                Some(())
-            );
-        }
-    }
-
-    #[test]
-    fn unit_outputs_do_not_make_distinct_operations_interchangeable() {
-        for operation in 0..4 {
-            for (variant, success) in [
-                WaiterSuccess::ScanStopped(SCAN),
-                WaiterSuccess::Disconnected(CONNECTION),
-                WaiterSuccess::CharacteristicWritten(CONNECTION, SESSION, CHARACTERISTIC),
-                WaiterSuccess::NotificationsDisabled(
-                    CONNECTION,
-                    SESSION,
-                    SUBSCRIPTION,
-                    CHARACTERISTIC,
-                ),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let decoded = match operation {
-                    0 => BeginStop::decode_success(SCAN, (), success),
-                    1 => BeginDisconnect::decode_success(CONNECTION, (), success),
-                    2 => BeginWrite::decode_success(
-                        (CONNECTION, SESSION, CHARACTERISTIC),
-                        (),
-                        success,
-                    ),
-                    _ => BeginDisableNotifications::decode_success(
-                        (CONNECTION, SESSION, SUBSCRIPTION),
-                        (),
-                        success,
-                    ),
-                };
-                assert_eq!(
-                    decoded,
-                    (operation == variant).then_some(()),
-                    "operation {operation}, variant {variant}"
-                );
-            }
-        }
-    }
-}
+#[path = "tests/operation_results.rs"]
+mod operation_result_tests;

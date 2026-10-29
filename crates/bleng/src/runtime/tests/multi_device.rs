@@ -48,7 +48,7 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
         ),
         EventScenario::emit_before_return(
             RecordedCommand::StopScan(StopScanCommand {
-                command_id: CommandId { value: 3 },
+                command_id: CommandId { value: 4 },
                 scan_session_id: ScanSessionId { value: 1 },
             }),
             vec![
@@ -56,64 +56,64 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
                     scan_id: ScanSessionId { value: 1 },
                     result: ScanStopResult::Ok {
                         reason: ScanStopReason::Requested {
-                            command_id: CommandId { value: 3 },
+                            command_id: CommandId { value: 4 },
                         },
                     },
                 },
-                command_completed(3, None),
+                command_completed(4, None),
             ],
         ),
-        connect_scenario(4, 2, 10),
-        connect_scenario(5, 3, 20),
+        connect_scenario(5, 2, 10),
+        connect_scenario(6, 3, 20),
         EventScenario::emit_before_return(
             RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-                command_id: CommandId { value: 6 },
+                command_id: CommandId { value: 8 },
                 connection_id: ConnectionId { value: 2 },
                 gatt_session_id: GattSessionId { value: 4 },
             }),
             vec![
                 BleEvent::GattDiscovered {
-                    command_id: CommandId { value: 6 },
+                    command_id: CommandId { value: 8 },
                     database: database_a,
                 },
-                command_completed(6, None),
+                command_completed(8, None),
             ],
         ),
         EventScenario::emit_before_return(
             RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-                command_id: CommandId { value: 7 },
+                command_id: CommandId { value: 9 },
                 connection_id: ConnectionId { value: 3 },
                 gatt_session_id: GattSessionId { value: 5 },
             }),
             vec![
                 BleEvent::GattDiscovered {
-                    command_id: CommandId { value: 7 },
+                    command_id: CommandId { value: 9 },
                     database: database_b,
                 },
-                command_completed(7, None),
+                command_completed(9, None),
             ],
         ),
         EventScenario::emit_before_return(
             RecordedCommand::ReadCharacteristic(ReadCharacteristicCommand {
-                command_id: CommandId { value: 8 },
+                command_id: CommandId { value: 10 },
                 connection_id: ConnectionId { value: 2 },
                 gatt_session_id: GattSessionId { value: 4 },
                 characteristic_id: a,
             }),
             vec![
                 BleEvent::CharacteristicRead {
-                    command_id: CommandId { value: 8 },
+                    command_id: CommandId { value: 10 },
                     connection_id: ConnectionId { value: 2 },
                     gatt_session_id: GattSessionId { value: 4 },
                     characteristic_id: a,
                     value: vec![0xa0],
                 },
-                command_completed(8, None),
+                command_completed(10, None),
             ],
         ),
         EventScenario::emit_before_return(
             RecordedCommand::SetNotifications(SetNotificationsCommand {
-                command_id: CommandId { value: 9 },
+                command_id: CommandId { value: 11 },
                 connection_id: ConnectionId { value: 3 },
                 gatt_session_id: GattSessionId { value: 5 },
                 subscription_id: SubscriptionId { value: 6 },
@@ -124,7 +124,7 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
             }),
             vec![
                 BleEvent::NotificationStateChanged {
-                    command_id: CommandId { value: 9 },
+                    command_id: CommandId { value: 11 },
                     connection_id: ConnectionId { value: 3 },
                     gatt_session_id: GattSessionId { value: 5 },
                     subscription_id: SubscriptionId { value: 6 },
@@ -133,12 +133,12 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
                         actual_mode: Some(NotificationMode::Notification),
                     },
                 },
-                command_completed(9, None),
+                command_completed(11, None),
             ],
         ),
         EventScenario::emit_before_return(
             RecordedCommand::WriteCharacteristic(WriteCharacteristicCommand {
-                command_id: CommandId { value: 10 },
+                command_id: CommandId { value: 12 },
                 connection_id: ConnectionId { value: 2 },
                 gatt_session_id: GattSessionId { value: 4 },
                 characteristic_id: a,
@@ -147,17 +147,17 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
             }),
             vec![
                 BleEvent::CharacteristicWritten {
-                    command_id: CommandId { value: 10 },
+                    command_id: CommandId { value: 12 },
                     connection_id: ConnectionId { value: 2 },
                     gatt_session_id: GattSessionId { value: 4 },
                     characteristic_id: a,
                 },
-                command_completed(10, None),
+                command_completed(12, None),
             ],
         ),
         EventScenario::accept(RecordedCommand::WriteCharacteristic(
             WriteCharacteristicCommand {
-                command_id: CommandId { value: 11 },
+                command_id: CommandId { value: 13 },
                 connection_id: ConnectionId { value: 3 },
                 gatt_session_id: GattSessionId { value: 5 },
                 characteristic_id: b,
@@ -167,16 +167,16 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
         )),
         EventScenario::accept(RecordedCommand::ReadCharacteristic(
             ReadCharacteristicCommand {
-                command_id: CommandId { value: 12 },
+                command_id: CommandId { value: 14 },
                 connection_id: ConnectionId { value: 2 },
                 gatt_session_id: GattSessionId { value: 4 },
                 characteristic_id: a,
             },
         )),
-        connect_scenario(13, 7, 10),
+        connect_scenario(16, 7, 10),
         EventScenario::emit_before_return(
             RecordedCommand::SetNotifications(SetNotificationsCommand {
-                command_id: CommandId { value: 14 },
+                command_id: CommandId { value: 18 },
                 connection_id: ConnectionId { value: 3 },
                 gatt_session_id: GattSessionId { value: 5 },
                 subscription_id: SubscriptionId { value: 6 },
@@ -185,32 +185,32 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
             }),
             vec![
                 BleEvent::NotificationStateChanged {
-                    command_id: CommandId { value: 14 },
+                    command_id: CommandId { value: 18 },
                     connection_id: ConnectionId { value: 3 },
                     gatt_session_id: GattSessionId { value: 5 },
                     subscription_id: SubscriptionId { value: 6 },
                     characteristic_id: b,
                     state: NotificationState::Disabled,
                 },
-                command_completed(14, None),
+                command_completed(18, None),
             ],
         ),
         EventScenario::emit_before_return(
             RecordedCommand::ReadCharacteristic(ReadCharacteristicCommand {
-                command_id: CommandId { value: 15 },
+                command_id: CommandId { value: 19 },
                 connection_id: ConnectionId { value: 3 },
                 gatt_session_id: GattSessionId { value: 5 },
                 characteristic_id: b,
             }),
             vec![
                 BleEvent::CharacteristicRead {
-                    command_id: CommandId { value: 15 },
+                    command_id: CommandId { value: 19 },
                     connection_id: ConnectionId { value: 3 },
                     gatt_session_id: GattSessionId { value: 5 },
                     characteristic_id: b,
                     value: vec![0xb3],
                 },
-                command_completed(15, None),
+                command_completed(19, None),
             ],
         ),
     ]);
@@ -359,7 +359,7 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
             );
             assert_eq!(
                 handle.emit(BleEvent::CharacteristicWritten {
-                    command_id: CommandId { value: 11 },
+                    command_id: CommandId { value: 13 },
                     connection_id: connection_b,
                     gatt_session_id: session_b,
                     characteristic_id: b,
@@ -367,7 +367,7 @@ fn one_hub_two_peripherals_keep_gatt_operations_and_notification_routes_independ
                 EventIngressStatus::Delivered
             );
             assert_eq!(
-                handle.emit(command_completed(11, None)),
+                handle.emit(command_completed(13, None)),
                 EventIngressStatus::Delivered
             );
             assert_eq!(write_b.await, Ok(()));

@@ -2,12 +2,22 @@
 //! only inside owner tests; they do not add production methods or field access.
 
 use crate::runtime::{
+    BlengActor, OperationHandoff, ResultSlot,
+    messages::{
+        BeginConnect, BeginDisableNotifications, BeginDisconnect, BeginDiscoverGatt,
+        BeginEnableNotifications, BeginInitialize, BeginRead, BeginRssi, BeginScan, BeginStop,
+        BeginWrite, OperationSpec,
+    },
+    shared::OperationSubmission,
+};
+use crate::runtime::{
     RuntimePhase,
     actor::{AssumeInitialized, RegisterWaiter},
     messages::DispatchResolved,
     owner::WaiterTicket,
 };
-use kameo::error::SendError;
+use kameo::{error::SendError, message::Message};
+use tokio::time::Instant;
 
 pub(super) use crate::runtime::actor::HoldActor;
 
@@ -19,24 +29,257 @@ pub(super) use crate::{
 pub(super) use blehub::{
     AdapterSnapshot, AdapterState, AdvertisementObservation, AuthorizationState,
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleErrorCategory, BleEvent,
-    BleEventError, BleEventSink, BleHub, BleHubError, BluetoothUuid, CharacteristicProperties,
-    CommandDispatchError, CommandId, ConnectCommand, ConnectionId, ConnectionState,
-    ConnectionStateResult, DisconnectCommand, DiscoverGattCommand, EventIngressStatus,
-    GattCharacteristic, GattCharacteristicId, GattDatabase, GattService, GattServiceId,
-    GattSessionId, InitializeCommand, NotificationAction, NotificationMode,
+    BleEventError, BleEventSink, BleHub, BleHubError, BluetoothUuid, CancelOperationRequest,
+    CharacteristicProperties, CommandDispatchError, CommandId, ConnectCommand, ConnectionId,
+    ConnectionState, ConnectionStateResult, DisconnectCommand, DiscoverGattCommand,
+    EventIngressStatus, GattCharacteristic, GattCharacteristicId, GattDatabase, GattService,
+    GattServiceId, GattSessionId, InitializeCommand, NotificationAction, NotificationMode,
     NotificationModeRequest, NotificationState, PeripheralId, ReadCharacteristicCommand,
     ReadRssiCommand, ScanOptions, ScanSessionId, ScanStopReason, ScanStopResult,
     SetNotificationsCommand, StartScanCommand, StopScanCommand, SubscriptionId,
     WriteCharacteristicCommand, WriteType,
 };
-pub(super) use blehub_testkit::{EventScenario, FakeBackend, RecordedCommand};
+pub(super) use blehub_testkit::{CancellationPolicy, EventScenario, FakeBackend, RecordedCommand};
 pub(super) use std::{
     sync::{Arc, Mutex, mpsc},
     time::Duration,
 };
 pub(super) use tokio::sync::{Notify, oneshot};
 
+// A barrier ask runs after submitted ingress and any dispatch acknowledgement
+// needed to settle buffered read evidence.
+struct ReadCompletionBarrier(ResultSlot<BeginRead>);
+
+impl Message<ReadCompletionBarrier> for BlengActor {
+    type Reply = bool;
+
+    async fn handle(
+        &mut self,
+        message: ReadCompletionBarrier,
+        _: &mut kameo::message::Context<Self, Self::Reply>,
+    ) -> Self::Reply {
+        message.0.is_completed()
+    }
+}
+
+// Operation-specific shorthands belong only to owner/actor tests. These tests
+// intentionally bypass the foreign facade to inject admission and lifecycle races.
 impl RuntimeOwner {
+    pub(crate) fn fault_read_runtime_for_test(&self) {
+        self.lifecycle.fault();
+    }
+
+    pub(crate) async fn read_settlement_barrier(
+        &self,
+        slot: ResultSlot<BeginRead>,
+        completed: bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if self
+                    .actor
+                    .ask(ReadCompletionBarrier(slot.clone()))
+                    .await
+                    .unwrap()
+                    == completed
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("actor did not reach the expected read settlement");
+    }
+    pub(super) fn begin_operation<M: OperationSpec>(
+        &self,
+        make_message: impl FnOnce(OperationSubmission<M::Resource>) -> M,
+    ) -> Result<OperationHandoff<M>, WaiterError>
+    where
+        BlengActor: Message<M>,
+    {
+        self.submit_operation(true, make_message)
+    }
+
+    /// Runs admission and evidence waiting under one absolute deadline.
+    pub(super) async fn run_operation<M: OperationSpec>(
+        &self,
+        timeout: Duration,
+        make_message: impl FnOnce(OperationSubmission<M::Resource>) -> M,
+    ) -> Result<M::Output, WaiterError>
+    where
+        BlengActor: Message<M>,
+    {
+        let deadline = Instant::now() + timeout;
+        let pending = self.submit_operation(false, make_message)?;
+        pending.result_slot().wait_until(deadline).await
+    }
+
+    pub(super) async fn initialize(
+        &self,
+        timeout: Duration,
+    ) -> Result<AdapterSnapshot, WaiterError> {
+        self.run_operation(timeout, |submission| BeginInitialize { submission })
+            .await
+    }
+
+    pub(super) async fn start_scan(
+        &self,
+        options: ScanOptions,
+        timeout: Duration,
+    ) -> Result<ScanSessionId, WaiterError> {
+        self.run_operation(timeout, |submission| BeginScan {
+            submission,
+            options,
+        })
+        .await
+    }
+
+    pub(super) async fn connect(
+        &self,
+        peripheral_id: PeripheralId,
+        timeout: Duration,
+    ) -> Result<ConnectionId, WaiterError> {
+        self.run_operation(timeout, |submission| BeginConnect {
+            submission,
+            peripheral_id,
+        })
+        .await
+    }
+
+    pub(super) async fn disconnect(
+        &self,
+        connection: ConnectionId,
+        timeout: Duration,
+    ) -> Result<(), WaiterError> {
+        self.run_operation(timeout, |submission| BeginDisconnect {
+            submission,
+            connection,
+        })
+        .await
+    }
+
+    pub(super) async fn discover_gatt(
+        &self,
+        connection: ConnectionId,
+        timeout: Duration,
+    ) -> Result<GattDatabase, WaiterError> {
+        self.run_operation(timeout, |submission| BeginDiscoverGatt {
+            submission,
+            connection,
+        })
+        .await
+    }
+
+    pub(super) async fn read_rssi(
+        &self,
+        connection: ConnectionId,
+        timeout: Duration,
+    ) -> Result<i16, WaiterError> {
+        self.run_operation(timeout, |submission| BeginRssi {
+            submission,
+            connection,
+        })
+        .await
+    }
+
+    pub(super) async fn read_characteristic(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, WaiterError> {
+        self.run_operation(timeout, |submission| BeginRead {
+            submission,
+            connection,
+            session,
+            characteristic,
+        })
+        .await
+    }
+
+    pub(super) async fn write_characteristic(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        value: Vec<u8>,
+        write_type: WriteType,
+        timeout: Duration,
+    ) -> Result<(), WaiterError> {
+        self.run_operation(timeout, |submission| BeginWrite {
+            submission,
+            connection,
+            session,
+            characteristic,
+            value,
+            write_type,
+        })
+        .await
+    }
+
+    pub(super) async fn stop_scan(
+        &self,
+        session: ScanSessionId,
+        timeout: Duration,
+    ) -> Result<(), WaiterError> {
+        self.run_operation(timeout, |submission| BeginStop {
+            submission,
+            session,
+        })
+        .await
+    }
+
+    pub(super) async fn enable_notifications(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        mode: NotificationModeRequest,
+        timeout: Duration,
+    ) -> Result<(SubscriptionId, Option<NotificationMode>), WaiterError> {
+        self.run_operation(timeout, |submission| BeginEnableNotifications {
+            submission,
+            connection,
+            session,
+            characteristic,
+            mode,
+        })
+        .await
+    }
+
+    pub(super) async fn disable_notifications(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        subscription: SubscriptionId,
+        timeout: Duration,
+    ) -> Result<(), WaiterError> {
+        self.run_operation(timeout, |submission| BeginDisableNotifications {
+            submission,
+            connection,
+            session,
+            subscription,
+        })
+        .await
+    }
+
+    pub(crate) async fn hold_actor_for_test(&self) -> Arc<Notify> {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        self.actor
+            .tell(HoldActor {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            })
+            .try_send()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("actor did not enter the submission gate");
+        release
+    }
+
     pub(super) fn new_assuming_initialized() -> std::io::Result<Self> {
         let owner = Self::new()?;
         owner
@@ -68,7 +311,12 @@ impl RuntimeOwner {
                 });
             }
         };
-        Ok(self.ticket(id, result_rx))
+        Ok(WaiterTicket::new(
+            id,
+            result_rx,
+            self.actor.clone(),
+            Arc::clone(&self.lifecycle),
+        ))
     }
 
     pub(super) fn resolve_dispatch(&self, id: CommandId, result: Result<(), CommandDispatchError>) {
@@ -127,6 +375,7 @@ pub(super) struct BlockingDispatchBackend {
     pub(super) blocked: BlockedDispatch,
     pub(super) entered: Arc<Notify>,
     pub(super) release_rx: Arc<Mutex<mpsc::Receiver<()>>>,
+    // Selected inner submission returned (Ok or Err), not actor acknowledgement.
     pub(super) finished: Arc<Notify>,
 }
 
@@ -138,7 +387,6 @@ impl BlockingDispatchBackend {
             .unwrap()
             .recv()
             .expect("blocking dispatch release sender dropped");
-        self.finished.notify_one();
     }
 }
 
@@ -155,6 +403,7 @@ impl BleBackend for BlockingDispatchBackend {
             fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError>;
             fn read_characteristic(&self, command: ReadCharacteristicCommand) -> Result<(), CommandDispatchError>;
             fn write_characteristic(&self, command: WriteCharacteristicCommand) -> Result<(), CommandDispatchError>;
+            fn cancel_operation(&self, request: CancelOperationRequest) -> Result<(), CommandDispatchError>;
             fn dispose(&self) -> Result<(), BleHubError>;
         }
     }
@@ -173,14 +422,23 @@ impl BleBackend for BlockingDispatchBackend {
         if should_block {
             self.wait();
         }
-        self.inner.set_notifications(command)
+        let result = self.inner.set_notifications(command);
+        if should_block {
+            self.finished.notify_one();
+        }
+        result
     }
 
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
-        if matches!(self.blocked, BlockedDispatch::Rssi) {
+        let should_block = matches!(self.blocked, BlockedDispatch::Rssi);
+        if should_block {
             self.wait();
         }
-        self.inner.read_rssi(command)
+        let result = self.inner.read_rssi(command);
+        if should_block {
+            self.finished.notify_one();
+        }
+        result
     }
 }
 
@@ -353,44 +611,44 @@ pub(super) fn read_database() -> GattDatabase {
     }
 }
 
-pub(super) fn read_discovery() -> EventScenario {
+pub(super) fn read_discovery(command: u64) -> EventScenario {
     EventScenario::emit_before_return(
         RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-            command_id: CommandId { value: 2 },
+            command_id: command.into(),
             connection_id: ConnectionId { value: 1 },
             gatt_session_id: GattSessionId { value: 2 },
         }),
         vec![
             BleEvent::GattDiscovered {
-                command_id: CommandId { value: 2 },
+                command_id: command.into(),
                 database: read_database(),
             },
             BleEvent::CommandCompleted {
-                command_id: CommandId { value: 2 },
+                command_id: command.into(),
                 error: None,
             },
         ],
     )
 }
 
-pub(super) fn notification_discovery() -> EventScenario {
+pub(super) fn notification_discovery(command: u64) -> EventScenario {
     let mut database = read_database();
     let properties = &mut database.services[0].characteristics[0].properties;
     properties.notifiable = true;
     properties.indicatable = true;
     EventScenario::emit_before_return(
         RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-            command_id: CommandId { value: 2 },
+            command_id: command.into(),
             connection_id: ConnectionId { value: 1 },
             gatt_session_id: GattSessionId { value: 2 },
         }),
         vec![
             BleEvent::GattDiscovered {
-                command_id: CommandId { value: 2 },
+                command_id: command.into(),
                 database,
             },
             BleEvent::CommandCompleted {
-                command_id: CommandId { value: 2 },
+                command_id: command.into(),
                 error: None,
             },
         ],
@@ -505,20 +763,20 @@ pub(super) fn notification_enabled_scenario(command: u64, subscription: u64) -> 
     )
 }
 
-pub(super) fn started_scan() -> EventScenario {
+pub(super) fn started_scan(command: u64) -> EventScenario {
     EventScenario::emit_before_return(
         RecordedCommand::StartScan(StartScanCommand {
-            command_id: CommandId { value: 1 },
+            command_id: command.into(),
             scan_session_id: ScanSessionId { value: 1 },
             options: ScanOptions::default(),
         }),
         vec![
             BleEvent::ScanStarted {
-                command_id: CommandId { value: 1 },
+                command_id: command.into(),
                 scan_id: ScanSessionId { value: 1 },
             },
             BleEvent::CommandCompleted {
-                command_id: CommandId { value: 1 },
+                command_id: command.into(),
                 error: None,
             },
         ],

@@ -1,10 +1,10 @@
 use blehub::{AdapterSnapshot, BleEvent, BleEventError, CommandDispatchError, CommandId};
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
 use super::dispatch::{
-    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
-    ReconciliationFault,
+    BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
+    DispatchResolution, ReconciliationFault,
 };
 
 /// Owns initialization admission, correlated evidence, and readiness transitions.
@@ -14,7 +14,7 @@ use super::dispatch::{
 /// A Pending record survives waiter retirement so late callbacks remain correlated.
 ///
 /// The actor checks admission before registering a waiter, then installs the
-/// reservation only after claiming the caller handoff. Live callbacks pass through
+/// reservation only after claiming the caller submission. Live callbacks pass through
 /// gate_event() before publication and evidence recording; buffered callbacks are
 /// replayed after resolve_dispatch(). After recording evidence, the actor settles
 /// any caller waiter before advance_after_settlement() can release pending state.
@@ -52,6 +52,7 @@ impl InitializationState {
             && init.should_buffer_event(&event)
         {
             init.progress.buffer(event)?;
+            init.buffering_adapter_updates = true;
             return Ok(None);
         }
         Ok(Some(event))
@@ -90,7 +91,7 @@ impl InitializationState {
         })
     }
 
-    /// Installs the reservation after admission and caller handoff succeed.
+    /// Installs the reservation after admission and caller submission succeed.
     /// A second installation is an invariant violation, not a normal error path.
     pub fn reserve_initialize(&mut self, command_id: CommandId) {
         assert!(
@@ -105,6 +106,20 @@ impl InitializationState {
             return Err(WaiterError::OperationBusy);
         }
         Ok(())
+    }
+
+    pub fn completion_observer(
+        &self,
+        command_id: CommandId,
+    ) -> Option<super::dispatch::CompletionObserver> {
+        self.pending()
+            .filter(|init| init.progress.owns_command(command_id))
+            .map(|init| init.progress.completion_observer())
+    }
+
+    pub fn request_cancellation(&mut self, command_id: CommandId) -> Option<CancellationDecision> {
+        self.pending_for_mut(command_id)?;
+        Some(CancellationDecision::NotCancellable)
     }
 
     pub fn require_initialized(&self) -> Result<(), WaiterError> {
@@ -156,10 +171,7 @@ impl InitializationState {
     /// Returns a deliverable result without advancing or releasing pending state.
     /// None means either the command is not owned or its evidence is incomplete;
     /// it is not a command-ownership probe. The actor owns waiter delivery.
-    pub fn waiter_result(
-        &self,
-        command_id: CommandId,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    pub fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         let init = self.pending_for(command_id)?;
         if let Err(error) = init.progress.terminal_result()? {
             return Some(Err(error));
@@ -193,20 +205,33 @@ impl InitializationState {
 struct InitReservation {
     progress: CommandProgress,
     snapshot_evidence: Option<AdapterSnapshot>,
+    // Once own evidence is withheld, later passive snapshots must share its
+    // existing pre-ack buffer rather than overtake it in the public stream.
+    buffering_adapter_updates: bool,
 }
 
 impl InitReservation {
-    /// Buffering needs both unresolved dispatch and command correlation.
-    /// Rejected-phase late callbacks are checked by InitializationState before this.
+    /// Earlier passive observations remain immediate. After correlated evidence,
+    /// preserve received snapshot order until dispatch resolves. Rejected-phase
+    /// late callbacks are checked by InitializationState before this.
     fn should_buffer_event(&self, event: &BleEvent) -> bool {
         self.progress.is_awaiting_dispatch_result()
-            && matches_initialization_event(event, self.progress.command_id())
+            && (matches_initialization_event(event, self.progress.command_id())
+                || (self.buffering_adapter_updates
+                    && matches!(
+                        event,
+                        BleEvent::AdapterSnapshotChanged {
+                            command_id: None,
+                            ..
+                        }
+                    )))
     }
 
     fn new(command_id: CommandId) -> Self {
         Self {
             progress: CommandProgress::new(command_id),
             snapshot_evidence: None,
+            buffering_adapter_updates: false,
         }
     }
 }

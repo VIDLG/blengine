@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use blehub::{
-    BleEvent, BleEventError, CommandId, CommandKind, ConnectionStateResult, NotificationAction,
-    NotificationMode, NotificationModeRequest, NotificationState, ScanStopReason, ScanStopResult,
+    BleEvent, BleEventError, CommandId, CommandKind, ConnectionState, ConnectionStateResult,
+    NotificationAction, NotificationMode, NotificationModeRequest, NotificationState,
+    ScanStopReason, ScanStopResult,
 };
 
 use crate::RecordedCommand;
@@ -185,8 +186,10 @@ impl BackendConformanceTracker {
                 violations.push(BackendContractViolation::EventAfterTerminalAttempt { command_id });
             }
             if command_matches_event(&command.command, event) {
-                command.domain_event_attempt_count += 1;
-                command.domain_error = command_domain_error(event).cloned();
+                if !command_event_is_progress(&command.command, event) {
+                    command.domain_event_attempt_count += 1;
+                    command.domain_error = command_domain_error(event).cloned();
+                }
             } else {
                 violations.push(BackendContractViolation::CommandEventMismatch {
                     command_id,
@@ -356,6 +359,29 @@ fn command_domain_error(event: &BleEvent) -> Option<&BleEventError> {
     }
 }
 
+fn command_event_is_progress(command: &RecordedCommand, event: &BleEvent) -> bool {
+    matches!(
+        (command, event),
+        (
+            RecordedCommand::Connect(_),
+            BleEvent::ConnectionStateChanged {
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Connecting
+                },
+                ..
+            },
+        ) | (
+            RecordedCommand::Disconnect(_),
+            BleEvent::ConnectionStateChanged {
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Disconnecting
+                },
+                ..
+            },
+        )
+    )
+}
+
 pub(crate) fn command_matches_event(command: &RecordedCommand, event: &BleEvent) -> bool {
     match (command, event) {
         (
@@ -387,17 +413,35 @@ pub(crate) fn command_matches_event(command: &RecordedCommand, event: &BleEvent)
             BleEvent::ConnectionStateChanged {
                 command_id: Some(command_id),
                 connection_id,
-                ..
+                result,
             },
-        ) => command.command_id == *command_id && command.connection_id == *connection_id,
+        ) => {
+            command.command_id == *command_id
+                && command.connection_id == *connection_id
+                && matches!(
+                    result,
+                    ConnectionStateResult::Ok {
+                        state: ConnectionState::Connecting | ConnectionState::Connected,
+                    } | ConnectionStateResult::Err { .. }
+                )
+        }
         (
             RecordedCommand::Disconnect(command),
             BleEvent::ConnectionStateChanged {
                 command_id: Some(command_id),
                 connection_id,
-                ..
+                result,
             },
-        ) => command.command_id == *command_id && command.connection_id == *connection_id,
+        ) => {
+            command.command_id == *command_id
+                && command.connection_id == *connection_id
+                && matches!(
+                    result,
+                    ConnectionStateResult::Ok {
+                        state: ConnectionState::Disconnecting | ConnectionState::Disconnected,
+                    } | ConnectionStateResult::Err { .. }
+                )
+        }
         (
             RecordedCommand::DiscoverGatt(command),
             BleEvent::GattDiscovered {
@@ -519,6 +563,214 @@ mod tests {
         });
         tracker.finish_completion(command_id, CompletionExpectation::SucceededWithDomain);
         assert_eq!(tracker.violations(), &[]);
+    }
+
+    fn connection_commands() -> [RecordedCommand; 2] {
+        let command_id = CommandId { value: 1 };
+        let connection_id = ConnectionId { value: 2 };
+        [
+            RecordedCommand::Connect(ConnectCommand {
+                command_id,
+                connection_id,
+                peripheral_id: PeripheralId { value: 3 },
+            }),
+            RecordedCommand::Disconnect(DisconnectCommand {
+                command_id,
+                connection_id,
+            }),
+        ]
+    }
+
+    fn connection_event(command: &RecordedCommand, state: ConnectionState) -> BleEvent {
+        let connection_id = match command {
+            RecordedCommand::Connect(command) => command.connection_id,
+            RecordedCommand::Disconnect(command) => command.connection_id,
+            _ => unreachable!(),
+        };
+        BleEvent::ConnectionStateChanged {
+            command_id: Some(command.command_id()),
+            connection_id,
+            result: ConnectionStateResult::Ok { state },
+        }
+    }
+
+    #[test]
+    fn connection_progress_before_success_preserves_one_final_domain() {
+        for (command, progress, final_state) in [
+            (
+                connection_commands()[0].clone(),
+                ConnectionState::Connecting,
+                ConnectionState::Connected,
+            ),
+            (
+                connection_commands()[1].clone(),
+                ConnectionState::Disconnecting,
+                ConnectionState::Disconnected,
+            ),
+        ] {
+            let command_id = command.command_id();
+            let mut tracker = BackendConformanceTracker::default();
+            tracker.begin_dispatch(command.clone());
+            tracker.record_event_attempt(&connection_event(&command, progress));
+            tracker.finish_dispatch(command_id, true);
+            tracker.record_event_attempt(&connection_event(&command, final_state));
+            tracker.record_event_attempt(&BleEvent::CommandCompleted {
+                command_id,
+                error: None,
+            });
+            tracker.finish_completion(command_id, CompletionExpectation::SucceededWithDomain);
+            assert_eq!(tracker.violations(), &[], "{command:?}");
+        }
+    }
+
+    fn assert_connection_success_rejects_states(
+        command: RecordedCommand,
+        states: &[ConnectionState],
+    ) {
+        for &state in states {
+            let command_id = command.command_id();
+            let mut tracker = BackendConformanceTracker::default();
+            tracker.begin_dispatch(command.clone());
+            tracker.finish_dispatch(command_id, true);
+            tracker.record_event_attempt(&connection_event(&command, state));
+            tracker.record_event_attempt(&BleEvent::CommandCompleted {
+                command_id,
+                error: None,
+            });
+            tracker.finish_completion(command_id, CompletionExpectation::SucceededWithDomain);
+            assert!(
+                tracker.violations().contains(
+                    &BackendContractViolation::MissingDomainEventAttempt {
+                        command_id,
+                        operation: command.operation(),
+                    }
+                ),
+                "{command:?} must not complete successfully with only {state:?}: {:?}",
+                tracker.violations()
+            );
+        }
+    }
+
+    #[test]
+    fn connect_success_requires_connected_final_state() {
+        assert_connection_success_rejects_states(
+            connection_commands()[0].clone(),
+            &[
+                ConnectionState::Connecting,
+                ConnectionState::Disconnected,
+                ConnectionState::Disconnecting,
+            ],
+        );
+    }
+
+    #[test]
+    fn disconnect_success_requires_disconnected_final_state() {
+        assert_connection_success_rejects_states(
+            connection_commands()[1].clone(),
+            &[
+                ConnectionState::Disconnecting,
+                ConnectionState::Connected,
+                ConnectionState::Connecting,
+            ],
+        );
+    }
+
+    #[test]
+    fn connection_progress_before_failure_preserves_failure_state_and_error_checks() {
+        for (command, progress) in [
+            (
+                connection_commands()[0].clone(),
+                ConnectionState::Connecting,
+            ),
+            (
+                connection_commands()[1].clone(),
+                ConnectionState::Disconnecting,
+            ),
+        ] {
+            for mismatch in [false, true] {
+                let command_id = command.command_id();
+                let error = BleEventError {
+                    category: BleErrorCategory::Connection,
+                    message: "connection failed".to_owned(),
+                    platform_details: None,
+                };
+                let mut tracker = BackendConformanceTracker::default();
+                tracker.begin_dispatch(command.clone());
+                tracker.finish_dispatch(command_id, true);
+                tracker.record_event_attempt(&connection_event(&command, progress));
+                let mut failure = connection_event(&command, progress);
+                let BleEvent::ConnectionStateChanged { result, .. } = &mut failure else {
+                    unreachable!();
+                };
+                *result = ConnectionStateResult::Err {
+                    error: error.clone(),
+                };
+                tracker.record_event_attempt(&failure);
+                tracker.record_event_attempt(&BleEvent::CommandCompleted {
+                    command_id,
+                    error: Some(if mismatch {
+                        BleEventError {
+                            message: "different error".to_owned(),
+                            ..error
+                        }
+                    } else {
+                        error
+                    }),
+                });
+                tracker.finish_completion(command_id, CompletionExpectation::Failed);
+                let expected = if mismatch {
+                    vec![BackendContractViolation::FailureEventErrorMismatch { command_id }]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(tracker.violations(), expected, "{command:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn connection_progress_still_violates_dispatch_rejection_and_terminal_order() {
+        for (command, progress) in [
+            (
+                connection_commands()[0].clone(),
+                ConnectionState::Connecting,
+            ),
+            (
+                connection_commands()[1].clone(),
+                ConnectionState::Disconnecting,
+            ),
+        ] {
+            let command_id = command.command_id();
+            let event = connection_event(&command, progress);
+            let mut rejected = BackendConformanceTracker::default();
+            rejected.begin_dispatch(command.clone());
+            rejected.record_event_attempt(&event);
+            rejected.finish_dispatch(command_id, false);
+            rejected.record_event_attempt(&event);
+            assert_eq!(
+                rejected.violations(),
+                &[
+                    BackendContractViolation::EventEmissionBeforeDispatchRejection {
+                        operation: command.operation(),
+                        emitted_event_count: 1,
+                    },
+                    BackendContractViolation::EventAfterDispatchRejection { command_id },
+                ]
+            );
+
+            let mut completed = BackendConformanceTracker::default();
+            completed.begin_dispatch(command);
+            completed.finish_dispatch(command_id, true);
+            completed.record_event_attempt(&BleEvent::CommandCompleted {
+                command_id,
+                error: None,
+            });
+            completed.record_event_attempt(&event);
+            assert_eq!(
+                completed.violations(),
+                &[BackendContractViolation::EventAfterTerminalAttempt { command_id }]
+            );
+        }
     }
 
     #[test]

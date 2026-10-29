@@ -2,8 +2,8 @@
 //!
 //! These actor-confined values record dispatch acknowledgements and correlated
 //! native evidence. They own neither runtime lifecycle, caller waiters, executors,
-//! synchronization, nor foreign cleanup. Commands/events own transport; the actor
-//! owns registration and caller delivery.
+//! nor foreign cleanup. Their shared completion bit is observation only; the actor
+//! remains the sole authority for evidence, retirement and caller delivery.
 //!
 //! Implementation modules stay private. Their public owner APIs are exposed only
 //! through the runtime-scoped re-exports below; shared implementation details use
@@ -18,14 +18,14 @@
 //! `subscription` records. Collection ownership is distinct from record-local
 //! evidence and retirement; there is no second command-routing map. The collection
 //! resolves identities; connection-local validators preserve each operation's error
-//! precedence and share child-command handoff facts, not a universal busy policy.
+//! precedence and share child-command submission facts, not a universal busy policy.
 //!
 //! A connection always owns its GATT state; committed database and discovery are
 //! independently optional so rediscovery can preserve the old database. Subscription
 //! routes use Enabling/Active/Disabling states; rejection and retirement explicitly
 //! choose Keep/Remove, and failed disable restores the active route.
 //!
-//! Commands win the caller handoff before installing a reservation, then spawn
+//! Commands win the caller submission before installing a reservation, then spawn
 //! native dispatch without an intervening await. Losing cancellation creates
 //! no reservation to roll back. Accepted native work outlives caller waiters.
 //!
@@ -66,7 +66,10 @@ mod tests;
 
 pub(super) use connection::connection_lost;
 pub(super) use connections::ConnectionReservations;
-pub(super) use dispatch::{DispatchAction, DispatchResolution, ReconciliationFault};
+pub(super) use dispatch::{
+    CancellationDecision, CancellationReceiver, CompletionObserver, DispatchAction,
+    DispatchResolution, ReconciliationFault,
+};
 pub(super) use gatt::GattAccess;
 pub(super) use initialization::InitializationState;
 pub(super) use scan::ScanState;

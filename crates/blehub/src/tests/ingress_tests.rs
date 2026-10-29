@@ -1,7 +1,7 @@
 use std::{
     sync::{
-        Arc, Barrier,
-        atomic::{AtomicBool, Ordering},
+        Arc, Barrier, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -42,6 +42,32 @@ impl BleEventSink for BlockingSink {
     fn on_event(&self, _: BleEvent) -> Result<(), EventSinkError> {
         self.entered.wait();
         self.release.wait();
+        Ok(())
+    }
+}
+
+struct GatedConcurrentSink {
+    active: AtomicUsize,
+    maximum_active: AtomicUsize,
+    entered: mpsc::Sender<usize>,
+    releases: Vec<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl BleEventSink for GatedConcurrentSink {
+    fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError> {
+        let BleEvent::CommandCompleted { command_id, .. } = event else {
+            panic!("unexpected concurrent ingress event: {event:?}");
+        };
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active.fetch_max(active, Ordering::SeqCst);
+        self.entered.send(command_id.value as usize).unwrap();
+        // Each callback has its own gate; the fixture must not serialize sink calls itself.
+        self.releases[command_id.value as usize]
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        self.active.fetch_sub(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -104,6 +130,72 @@ fn downstream_panic_is_contained_without_poisoning_ingress() {
         }
     );
     assert_eq!(handle.push(scan_started()), EventIngressStatus::Delivered);
+    state.close();
+}
+
+#[test]
+fn concurrent_handle_pushes_never_overlap_sink_calls() {
+    const PUSHES: usize = 5;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (started_tx, started_rx) = mpsc::sync_channel(0);
+    let (done_tx, done_rx) = mpsc::channel();
+    let (release_txs, release_rxs): (Vec<_>, Vec<_>) = (0..PUSHES).map(|_| mpsc::channel()).unzip();
+    let sink = Arc::new(GatedConcurrentSink {
+        active: AtomicUsize::new(0),
+        maximum_active: AtomicUsize::new(0),
+        entered: entered_tx,
+        releases: release_rxs.into_iter().map(Mutex::new).collect(),
+    });
+    let state = active_state(sink.clone());
+    let handle = Arc::new(BackendEventIngressHandle::new(Arc::downgrade(&state)));
+    let mut pushes = Vec::new();
+    for id in 0..PUSHES {
+        let handle = Arc::clone(&handle);
+        let started_tx = started_tx.clone();
+        let done_tx = done_tx.clone();
+        pushes.push(thread::spawn(move || {
+            started_tx.send(id).unwrap();
+            let status = handle.push(BleEvent::CommandCompleted {
+                command_id: CommandId { value: id as u64 },
+                error: None,
+            });
+            done_tx.send((id, status)).unwrap();
+        }));
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(5)).unwrap(), id);
+        if id == 0 {
+            assert_eq!(entered_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
+        }
+    }
+
+    // All competing callers have rendezvoused while the first callback holds its gate.
+    assert_eq!(
+        entered_rx.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    );
+    assert_eq!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    assert_eq!(sink.active.load(Ordering::SeqCst), 1);
+    release_txs[0].send(()).unwrap();
+    let mut entered_ids = vec![0];
+    for _ in 1..PUSHES {
+        let id = entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        entered_ids.push(id);
+        release_txs[id].send(()).unwrap();
+    }
+    let mut completed_ids = Vec::new();
+    for _ in 0..PUSHES {
+        let (id, status) = done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(status, EventIngressStatus::Delivered);
+        completed_ids.push(id);
+    }
+    for push in pushes {
+        push.join().unwrap();
+    }
+    entered_ids.sort_unstable();
+    completed_ids.sort_unstable();
+    assert_eq!(entered_ids, (0..PUSHES).collect::<Vec<_>>());
+    assert_eq!(completed_ids, entered_ids);
+    assert_eq!(sink.maximum_active.load(Ordering::SeqCst), 1);
+    assert_eq!(sink.active.load(Ordering::SeqCst), 0);
     state.close();
 }
 

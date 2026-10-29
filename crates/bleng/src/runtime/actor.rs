@@ -3,11 +3,11 @@
 //! # Ownership and responsibilities
 //!
 //! ```text
-//! RuntimeOwner (private Tokio runtime, actor handle, event_rx, shutdown_result_tx)
+//! RuntimeOwner (private Tokio runtime, actor handle, public_event_rx, shutdown_result_rx)
 //! +-- BlengActor (serialized orchestration state)
-//! |   +-- event_tx -> bounded BLE event FIFO -> RuntimeOwner::next_event()
+//! |   +-- public_event_tx -> bounded BLE event FIFO -> RuntimeOwner::next_event()
 //! |   +-- waiters: CommandId -> expectation + oneshot result_tx
-//! |   +-- command_id_gen: monotonic command ID allocation
+//! |   +-- test-only direct-waiter allocator (release builds omit it)
 //! |   +-- resource_id_gen: independent scan/connection/GATT/subscription ID allocation
 //! |   +-- initialization: private NotStarted / Pending / Ready / Rejected phases
 //! |   +-- scan: private Idle / Reserved phases (one reusable scan slot)
@@ -34,21 +34,22 @@
 //! ```
 //!
 //! BackendPort implements the sink; BlengActor processes its mailbox messages.
-//! The actor publishes BLE events through event_tx, records correlated evidence,
+//! The actor publishes BLE events through public_event_tx, records correlated evidence,
 //! settles eligible waiters, then retires completed native reservations.
-//! RuntimeOwner owns event_rx; concurrent next_event() calls serialize on it
+//! RuntimeOwner owns public_event_rx; concurrent next_event() calls serialize on it
 //! and divide one FIFO stream rather than receiving broadcast copies. Mailbox
 //! or event-FIFO overflow faults the lifecycle instead of silently losing work.
 //!
 //! # Channel roles
 //!
-//! - event_tx / event_rx: the shared bounded BleEvent stream exposed by next_event().
+//! - public_event_tx / public_event_rx: the shared bounded BleEvent stream exposed by next_event().
 //! - result_tx / result_rx: one command's exactly-once waiter result, not an event stream.
 //! - phase_tx / phase_rx: lifecycle wake-ups; the atomic RuntimePhase is authoritative.
 //! - cleanup_signal_tx / cleanup_signal_rx: cleanup wake-ups; locked cleanup state
 //!   decides completion, not a particular signal value.
-//! - shutdown_result_tx / shutdown_result_rx: the retained shared outcome of actor
-//!   shutdown plus native cleanup, independent of cancellation of one close caller.
+//! - shutdown_result_tx / shutdown_result_rx: the coordinator alone publishes the
+//!   retained actor-shutdown/cleanup outcome; if it exits early, receiver closure
+//!   wakes close callers with WorkerStopped instead of leaving them pending.
 //!
 //! Channel endpoint variables use a semantic name plus _tx / _rx. Payloads,
 //! actor handles, Notify values, and receiver type aliases are not endpoints to
@@ -66,7 +67,7 @@
 //! # Cancellation before mutation
 //!
 //! Commands finish fallible checks and waiter registration before launch_dispatch.
-//! The atomic caller handoff is checked before invoking a synchronous reservation
+//! The atomic caller submission is checked before invoking a synchronous reservation
 //! closure. Losing that race cancels only the waiter; no native reservation exists
 //! to roll back. The winning path registers state before spawning native dispatch,
 //! with no intervening await or normal-error return.
@@ -77,12 +78,16 @@
 //! Local evidence and transitions live together in reservations/. The actor
 //! keeps its lifecycle and reservation roots private. messages.rs uses admission,
 //! registration, and input-processing methods, never mutable state getters.
-//! This root owns dispatch handoff, event reconciliation, and coordination between
+//! This root owns dispatch submission, event reconciliation, and coordination between
 //! reservations and caller delivery. The mailbox protocol defines requests,
 //! asynchronous inputs, and waiter control without a second command index.
 //! Imports are explicit rather than parent globs.
-//! Timeout/cancellation retires only the waiter, not already-dispatched BLE work.
-//! Late callbacks must still reconcile and retire the retained reservation.
+//! Timeout retires only the waiter, not already-dispatched BLE work.
+//! Explicit cancellation first latches the original command, waits for native control
+//! acceptance, and only then settles its waiter as cancelled. A rejected control
+//! request clears the latch so the original operation can continue. Late callbacks
+//! still reconcile and retire the retained reservation; caller cancellation is
+//! never used as a native-retirement signal.
 //! Initialization becomes Ready only after dispatch acceptance, a correlated
 //! snapshot, and a successful terminal; success is settled before its evidence
 //! is released. Readiness is distinct from adapter power and runtime phase.
@@ -97,21 +102,22 @@ use blehub::{
     GattCharacteristicId, GattSessionId, NotificationModeRequest, PeripheralId, ScanSessionId,
     SubscriptionId,
 };
-use kameo::prelude::{Actor, Context};
-use tokio::sync::{mpsc, oneshot};
+use kameo::prelude::{Actor, ActorRef, Context};
+use tokio::sync::mpsc;
 
 use crate::waiter::{
-    WaiterCloseReason, WaiterError, WaiterExpectation, WaiterRegistry, WaiterSuccess,
+    WaiterCloseReason, WaiterError, WaiterExpectation, WaiterOutcome, WaiterRegistry,
 };
 
 use super::{
     RuntimeLifecycle, RuntimePhase,
-    messages::DispatchResolved,
-    owner::BeginHandoff,
+    messages::{CancellationResolved, DispatchResolved},
     reservations::{
-        ConnectionReservations, DispatchAction, DispatchResolution, GattAccess,
-        InitializationState, ReconciliationFault, ScanState, connection_lost,
+        CancellationDecision, CancellationReceiver, ConnectionReservations, DispatchAction,
+        DispatchResolution, GattAccess, InitializationState, ReconciliationFault, ScanState,
+        connection_lost,
     },
+    shared::{IdGenerator, OperationSubmission},
 };
 
 #[cfg(test)]
@@ -128,38 +134,18 @@ pub(super) use test_support::{
     CancelledConnectionLeaf, CancelledRediscovery, CheckConsumedIds, HoldActor, RegisterWaiter,
 };
 
-pub(super) type WaiterReceiver = oneshot::Receiver<Result<WaiterSuccess, WaiterError>>;
-
-/// Actor-local, nonzero IDs. Exhaustion never wraps or reuses a value.
-/// Allocation is not rolled back when subsequent admission or dispatch fails.
-#[derive(Default)]
-struct IdGenerator {
-    last_issued: u64,
-}
-
-impl IdGenerator {
-    fn allocate(&mut self) -> Result<u64, WaiterError> {
-        let value = self
-            .last_issued
-            .checked_add(1)
-            .ok_or(WaiterError::IdExhausted)?;
-        self.last_issued = value;
-        Ok(value)
-    }
-}
-
 /// Single serialized owner of BLeng orchestration state.
 ///
 /// Native callbacks arrive through the actor mailbox. Reservations record the
 /// correlation state needed to reconcile dispatch, domain, terminal, and late
 /// events without exposing runtime state through UniFFI.
 #[derive(Actor)]
-pub(super) struct BlengActor {
+pub(crate) struct BlengActor {
     // Accessed only by publish_event(); process_event() uses that policy.
-    // RuntimeOwner owns event_rx; public Bleng::next_event() reads through it.
+    // RuntimeOwner owns public_event_rx; public Bleng::next_event() reads through it.
     // This is neither backend ingress nor the per-command waiter result channel.
     // try_send is non-blocking; a full or closed queue faults the lifecycle.
-    event_tx: mpsc::Sender<BleEvent>,
+    public_event_tx: mpsc::Sender<BleEvent>,
     // Runtime-internal shared capability, not exposed lifecycle/cleanup storage.
     // Dispatch tasks must clone it; actor failure closes this same gate and
     // starts cleanup even if the actor mailbox is unusable.
@@ -167,9 +153,10 @@ pub(super) struct BlengActor {
     // Caller delivery only; actor confinement linearizes admission and settlement
     // without a lock. Retiring a waiter does not retire its native reservation.
     waiters: WaiterRegistry,
-    // Independent namespaces: equal command/resource values are valid.
-    // Gaps are allowed; issued IDs are never rolled back, reused, or wrapped.
-    command_id_gen: IdGenerator,
+    // Direct actor tests register waiters without RuntimeOwner submission.
+    // This per-instance allocator is compiled out of production builds.
+    #[cfg(test)]
+    test_command_id_gen: Arc<IdGenerator>,
     resource_id_gen: IdGenerator,
     // Only actor methods mutate these roots. Mailbox handlers use admission
     // and input-processing methods, never state getters.
@@ -182,12 +169,17 @@ pub(super) struct BlengActor {
 }
 
 impl BlengActor {
-    pub(super) fn new(event_tx: mpsc::Sender<BleEvent>, lifecycle: Arc<RuntimeLifecycle>) -> Self {
+    pub(super) fn with_ids(
+        public_event_tx: mpsc::Sender<BleEvent>,
+        lifecycle: Arc<RuntimeLifecycle>,
+        _command_id_gen: Arc<IdGenerator>,
+    ) -> Self {
         Self {
-            event_tx,
+            public_event_tx,
             lifecycle,
             waiters: WaiterRegistry::new(),
-            command_id_gen: IdGenerator::default(),
+            #[cfg(test)]
+            test_command_id_gen: _command_id_gen,
             resource_id_gen: IdGenerator::default(),
             initialization: InitializationState::default(),
             scan: ScanState::default(),
@@ -309,26 +301,41 @@ impl BlengActor {
         }
     }
 
-    /// Allocates a command ID and registers caller delivery. Commands creating
-    /// resources allocate their typed resource ID separately, before this call.
-    /// Registration failure may leave a gap; no issued ID is reused.
-    pub(super) fn register_waiter(
-        &mut self,
-        expectation: WaiterExpectation,
-    ) -> Result<(CommandId, WaiterReceiver), WaiterError> {
-        let id = self.command_id_gen.allocate()?.into();
-        let result_rx = self.waiters.register(id, expectation)?;
-        Ok((id, result_rx))
+    /// Commands creating resources allocate their typed resource ID separately,
+    /// before this call.
+    fn completion_observer(
+        &self,
+        command_id: CommandId,
+    ) -> Option<super::reservations::CompletionObserver> {
+        self.initialization
+            .completion_observer(command_id)
+            .or_else(|| self.scan.completion_observer(command_id))
+            .or_else(|| self.connections.completion_observer(command_id))
     }
 
-    /// Acquires the dispatch root before claiming the atomic caller handoff.
+    pub(super) fn register_operation_waiter<R>(
+        &mut self,
+        submission: &OperationSubmission<R>,
+        expectation: WaiterExpectation,
+    ) -> Result<CommandId, WaiterError> {
+        if !submission.state.is_cancelled() {
+            self.waiters.register_sender(
+                submission.id,
+                expectation,
+                submission.state.result_tx.clone(),
+            )?;
+        }
+        Ok(submission.id)
+    }
+
+    /// Acquires the dispatch root before the atomic cancel-versus-claim point.
     /// Preparation failure settles the waiter without installing a reservation.
-    /// After handoff, registration is synchronous/infallible and precedes dispatch;
-    /// no await or normal-error path may intervene. Detached work owns lifecycle.
-    pub(super) fn launch_dispatch<R: kameo::Reply>(
+    /// After claim, reservation installation is synchronous/infallible and precedes
+    /// native dispatch; no await or normal-error path may intervene.
+    pub(super) fn launch_dispatch<R: kameo::Reply, Resource>(
         &mut self,
         actor_context: &Context<Self, R>,
-        handoff: &BeginHandoff,
+        submission: &OperationSubmission<Resource>,
         command_id: CommandId,
         reserve: impl FnOnce(&mut Self),
         dispatch: impl FnOnce(Arc<BleHub>) -> Result<(), CommandDispatchError> + Send + 'static,
@@ -336,17 +343,23 @@ impl BlengActor {
         let hub = match self.lifecycle.hub_for_dispatch() {
             Ok(hub) => hub,
             Err(error) => {
-                self.waiters.finish(command_id, Err(error.clone()));
+                // Do not publish before rejection wins the submission CAS.
+                // The shared sender remains available to cancellation/resolve.
+                self.waiters.discard(command_id);
                 return Err(error);
             }
         };
-        // Claim only after fallible preparation. Claiming first would make a
-        // missing Hub look like an abandoned native operation to the caller guard.
-        if !handoff.try_claim() {
+        // CAS is the cancellation-versus-dispatch linearization point. Only
+        // explicit cancellation can revoke an unclaimed eager request.
+        if !submission.try_claim() {
             self.waiters.cancel(command_id);
             return Err(WaiterError::Cancelled);
         }
         reserve(self);
+        submission.observe_completion(
+            self.completion_observer(command_id)
+                .expect("reserved progress"),
+        );
         let lifecycle = Arc::clone(&self.lifecycle);
         let actor = actor_context.actor_ref().clone();
         tokio::task::spawn_blocking(move || {
@@ -370,13 +383,139 @@ impl BlengActor {
         Ok(())
     }
 
-    /// Retires caller delivery only; already-dispatched native work stays reserved.
-    pub(super) fn retire_waiter(&mut self, command_id: CommandId, timed_out: bool) {
-        if timed_out {
-            self.waiters.timeout(command_id);
-        } else {
-            self.waiters.cancel(command_id);
+    /// Starts native cancellation without conflating it with caller waiter
+    /// retirement. The caller waits for the native control receipt; the waiter is
+    /// settled only after that receipt succeeds, while the reservation remains
+    /// until native terminal evidence permits retirement.
+    pub(super) fn request_operation_cancellation(
+        &mut self,
+        command_id: CommandId,
+        actor: ActorRef<Self>,
+    ) -> Result<CancellationReceiver, WaiterError> {
+        self.require_open()?;
+        let decision = self
+            .initialization
+            .request_cancellation(command_id)
+            .or_else(|| self.scan.request_cancellation(command_id))
+            .or_else(|| self.connections.request_cancellation(command_id))
+            .ok_or(WaiterError::OperationNotFound(command_id))?;
+        match decision {
+            CancellationDecision::Accepted(receiver)
+            | CancellationDecision::AlreadyRequested(receiver) => {
+                if self.take_cancellation_dispatch(command_id) {
+                    self.dispatch_native_cancellation(command_id, actor);
+                }
+                Ok(receiver)
+            }
+            CancellationDecision::AlreadyCompleted => {
+                Err(WaiterError::OperationAlreadyCompleted(command_id))
+            }
+            CancellationDecision::NotCancellable => {
+                Err(WaiterError::OperationNotCancellable(command_id))
+            }
         }
+    }
+
+    fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+        self.scan.take_cancellation_dispatch(command_id)
+            || self.connections.take_cancellation_dispatch(command_id)
+    }
+
+    /// Native cancellation is a detached control-plane call. Its return value
+    /// confirms only that the backend accepted the control request; the original
+    /// reservation still waits for its own callback/recovery evidence.
+    fn dispatch_native_cancellation(&mut self, command_id: CommandId, actor: ActorRef<Self>) {
+        let hub = match self.lifecycle.hub_for_dispatch() {
+            Ok(hub) => hub,
+            Err(error) => {
+                self.handle_cancellation_result(command_id, Err(error));
+                self.lifecycle.fault();
+                return;
+            }
+        };
+        let lifecycle = Arc::clone(&self.lifecycle);
+        tokio::task::spawn_blocking(move || {
+            let result = match catch_unwind(AssertUnwindSafe(|| hub.cancel_operation(command_id))) {
+                Ok(result) => result.map_err(Self::map_cancellation_dispatch_error),
+                Err(_) => {
+                    lifecycle.fault();
+                    Err(WaiterError::TransportFault)
+                }
+            };
+            if actor
+                .tell(CancellationResolved {
+                    id: command_id,
+                    result,
+                })
+                .try_send()
+                .is_err()
+                && lifecycle.is_open()
+            {
+                lifecycle.fault();
+            }
+        });
+    }
+
+    fn map_cancellation_dispatch_error(error: CommandDispatchError) -> WaiterError {
+        match error {
+            CommandDispatchError::OperationNotFound { target_command_id } => {
+                WaiterError::OperationNotFound(target_command_id)
+            }
+            CommandDispatchError::OperationAlreadyCompleted { target_command_id } => {
+                WaiterError::OperationAlreadyCompleted(target_command_id)
+            }
+            CommandDispatchError::OperationNotCancellable { target_command_id } => {
+                WaiterError::OperationNotCancellable(target_command_id)
+            }
+            error => WaiterError::DispatchRejected(error),
+        }
+    }
+
+    pub(super) fn handle_cancellation_result(
+        &mut self,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) {
+        self.resolve_cancellation(command_id, result.clone());
+        let public_events = self
+            .scan
+            .take_cancellation_public_events(command_id)
+            .or_else(|| self.connections.take_cancellation_public_events(command_id))
+            .unwrap_or_default();
+        // Evidence was already recorded. Publish only, preserving arrival order;
+        // replaying process_event here would settle/reconcile the same callback twice.
+        for event in public_events {
+            if self.publish_event(&event).is_err() {
+                return;
+            }
+        }
+        if result.is_ok() {
+            self.waiters.cancel(command_id);
+        } else {
+            self.clear_cancellation(command_id);
+            self.try_settle_waiter(command_id);
+        }
+        // Native completion may already be recorded while its control receipt
+        // was pending. Settle caller delivery before releasing that evidence.
+        self.advance_and_retire_state();
+    }
+
+    fn resolve_cancellation(
+        &mut self,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) -> bool {
+        self.scan.resolve_cancellation(command_id, result.clone())
+            || self.connections.resolve_cancellation(command_id, result)
+    }
+
+    fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+        self.scan.clear_cancellation(command_id) || self.connections.clear_cancellation(command_id)
+    }
+
+    fn cancellation_requested(&self, command_id: CommandId) -> bool {
+        self.scan.cancellation_requested(command_id)
+            || self.connections.cancellation_requested(command_id)
     }
 
     /// Reconciles one backend callback without exposing reservation state to handlers.
@@ -385,7 +524,8 @@ impl BlengActor {
             return;
         }
         // Foreign-command disconnects remain visible publicly, but must neither
-        // enter another command's buffer nor mutate its native lifecycle.
+        // enter another command's dispatch buffer nor mutate its native lifecycle.
+        // Its own connection's publication order still applies.
         if self.connections.is_foreign_disconnect(&event) {
             self.process_event(event);
             return;
@@ -408,8 +548,18 @@ impl BlengActor {
         &mut self,
         command_id: CommandId,
         result: Result<(), CommandDispatchError>,
+        actor: ActorRef<Self>,
     ) {
+        let cancellation_requested = result.is_err() && self.cancellation_requested(command_id);
+        if cancellation_requested {
+            // A rejected native dispatch never became cancellable. Complete the
+            // cancellation receipt before resolution can remove the reservation.
+            self.handle_cancellation_result(command_id, Ok(()));
+        }
         let resolution = self.resolve_dispatch(command_id, &result);
+        if result.is_ok() && self.take_cancellation_dispatch(command_id) {
+            self.dispatch_native_cancellation(command_id, actor);
+        }
         match resolution.action {
             DispatchAction::None => {}
             DispatchAction::StartCleanup => self.lifecycle.start_cleanup(),
@@ -422,7 +572,9 @@ impl BlengActor {
                 self.lifecycle.fault();
             }
         }
-        if let Err(error) = result {
+        if let Err(error) = result
+            && !cancellation_requested
+        {
             // Rejection wins before replayed passive loss can affect this waiter.
             self.waiters
                 .finish(command_id, Err(WaiterError::DispatchRejected(error)));
@@ -435,9 +587,31 @@ impl BlengActor {
         }
     }
 
+    /// The connection/scan owner delays its entire publication scope while
+    /// any cancellation is undecided. Evidence still records exactly once.
+    fn allow_publication(&mut self, event: &BleEvent) -> Result<bool, ReconciliationFault> {
+        if let Some(allow) = self.scan.allow_publication(event)? {
+            return Ok(allow);
+        }
+        Ok(self.connections.allow_publication(event)?.unwrap_or(true))
+    }
+
     fn process_event(&mut self, event: BleEvent) {
-        if self.publish_event(&event).is_err() {
-            return;
+        match self.allow_publication(&event) {
+            Ok(true) => {
+                if self.publish_event(&event).is_err() {
+                    return;
+                }
+            }
+            Ok(false) => {}
+            Err(fault) => {
+                tracing::error!(
+                    ?fault,
+                    "BLE public evidence overflowed pending cancellation; closing runtime"
+                );
+                self.lifecycle.fault();
+                return;
+            }
         }
         // Publication cannot be retracted if admission raced concurrent shutdown.
         if !self.lifecycle.is_open() || self.connections.is_foreign_disconnect(&event) {
@@ -477,8 +651,9 @@ impl BlengActor {
         if let BleEvent::ConnectionStateChanged { connection_id, .. } = event
             && connection_lost(event, *connection_id)
         {
-            // Only accepted connection-bound commands lose their waiters here;
-            // dispatch-pending callbacks stay buffered until dispatch resolves.
+            // Dispatch-pending callbacks stay buffered until dispatch resolves.
+            // Completed results survive in the waiter owner; all unfinished
+            // connection-bound waiters still fail immediately, even during cancel.
             self.waiters
                 .disconnect_commands(self.connections.accepted_command_ids(*connection_id));
             // Passive loss may complete an explicit disconnect's domain evidence,
@@ -544,7 +719,7 @@ impl BlengActor {
     /// processing evidence. Queue failure faults the lifecycle.
     fn publish_event(&self, event: &BleEvent) -> Result<(), WaiterError> {
         self.require_open()?;
-        if self.event_tx.try_send(event.clone()).is_err() {
+        if self.public_event_tx.try_send(event.clone()).is_err() {
             self.lifecycle.fault();
             return Err(WaiterError::TransportFault);
         }
@@ -557,12 +732,32 @@ impl BlengActor {
     /// this method is therefore intentionally a no-op when no result is ready
     /// or when the waiter has already retired.
     fn try_settle_waiter(&mut self, command_id: CommandId) {
-        // Avoid materializing reservation results after caller delivery has retired.
-        if !self.waiters.contains(command_id) {
+        let has_waiter = self.waiters.contains(command_id);
+        let cancellation_requested = self.cancellation_requested(command_id);
+        if !cancellation_requested && self.waiters.finish_deferred(command_id) {
+            return;
+        }
+        let completion = self.completion_observer(command_id);
+        if !has_waiter
+            && completion
+                .as_ref()
+                .is_none_or(|observer| observer.is_completed())
+        {
             return;
         }
         if let Some(result) = self.waiter_result(command_id) {
-            self.waiters.finish(command_id, result);
+            if let Some(completion) = completion {
+                completion.confirm_completed();
+            }
+            // Control owns delivery while pending or accepted, but not the
+            // authoritative native completion observation retained by the handle.
+            if has_waiter {
+                if cancellation_requested {
+                    self.waiters.defer_result(command_id, result);
+                } else {
+                    self.waiters.finish(command_id, result);
+                }
+            }
         }
     }
 
@@ -582,7 +777,7 @@ impl BlengActor {
 
     /// Returns the first ready outcome, whether success or failure. `None` means
     /// no outcome is ready, either because the ID is absent or evidence is incomplete.
-    fn waiter_result(&self, command_id: CommandId) -> Option<Result<WaiterSuccess, WaiterError>> {
+    fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         if let Some(result) = self.initialization.waiter_result(command_id) {
             return Some(result);
         }

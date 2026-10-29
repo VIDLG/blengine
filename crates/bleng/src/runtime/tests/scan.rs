@@ -214,7 +214,7 @@ fn stop_scan_requires_matching_domain_and_terminal_then_allows_new_scan() {
             events.reverse();
         }
         let (backend, handle) = FakeBackend::scripted([
-            started_scan(),
+            started_scan(1),
             EventScenario::emit_before_return(stop_command(2), events.clone()),
             EventScenario::emit_before_return(
                 RecordedCommand::StartScan(StartScanCommand {
@@ -304,20 +304,20 @@ fn foreign_scan_error_cannot_retire_suspended_stop_awaiting_terminal() {
         },
     };
     let (backend, handle) = FakeBackend::scripted([
-        started_scan(),
+        started_scan(1),
         EventScenario::emit_before_return(stop_command(2), vec![suspended.clone()]),
         EventScenario::emit_before_return(
             RecordedCommand::StartScan(StartScanCommand {
-                command_id: 3.into(),
+                command_id: 5.into(),
                 scan_session_id: 2.into(),
                 options: ScanOptions::default(),
             }),
             vec![
                 BleEvent::ScanStarted {
-                    command_id: 3.into(),
+                    command_id: 5.into(),
                     scan_id: 2.into(),
                 },
-                command_completed(3, None),
+                command_completed(5, None),
             ],
         ),
     ]);
@@ -416,7 +416,7 @@ fn rejected_stop_keeps_scan_active_unless_requested_evidence_contradicts_rejecti
         };
         let scenario =
             EventScenario::emit_before_reject(stop_command(2), callbacks, rejection.clone());
-        let (backend, handle) = FakeBackend::scripted([started_scan(), scenario]);
+        let (backend, handle) = FakeBackend::scripted([started_scan(1), scenario]);
         owner
             .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
             .unwrap();
@@ -481,11 +481,11 @@ fn passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart(
             result,
         };
         let restarted = BleEvent::ScanStarted {
-            command_id: 3.into(),
+            command_id: 4.into(),
             scan_id: 2.into(),
         };
         let (backend, handle) = FakeBackend::scripted([
-            started_scan(),
+            started_scan(1),
             EventScenario::emit_before_reject(
                 stop_command(2),
                 vec![
@@ -497,11 +497,11 @@ fn passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart(
             ),
             EventScenario::emit_before_return(
                 RecordedCommand::StartScan(StartScanCommand {
-                    command_id: 3.into(),
+                    command_id: 4.into(),
                     scan_session_id: 2.into(),
                     options: ScanOptions::default(),
                 }),
-                vec![restarted.clone(), command_completed(3, None)],
+                vec![restarted.clone(), command_completed(4, None)],
             ),
         ]);
         owner
@@ -540,7 +540,7 @@ fn passive_scan_end_before_rejected_stop_preserves_rejection_and_allows_restart(
                 owner.start_scan(ScanOptions::default(), timeout).await,
                 Ok(2.into())
             );
-            for expected in [restarted, command_completed(3, None)] {
+            for expected in [restarted, command_completed(4, None)] {
                 assert_eq!(owner.next_event(timeout).await, Ok(Some(expected)));
             }
             // Old-session teardown and the rejected command's late terminal cannot
@@ -580,27 +580,27 @@ fn native_stop_error_retires_scan_and_cannot_poison_next_session() {
             },
         }];
         if include_terminal {
-            stop_events.push(command_completed(2, None));
+            stop_events.push(command_completed(3, None));
         }
         if terminal_first {
             stop_events.reverse();
         }
         let (backend, handle) = FakeBackend::scripted([
-            started_scan(),
-            EventScenario::emit_before_return(stop_command(2), stop_events),
+            started_scan(1),
+            EventScenario::emit_before_return(stop_command(3), stop_events),
             EventScenario::emit_before_return(
                 RecordedCommand::StartScan(StartScanCommand {
-                    command_id: CommandId { value: 3 },
+                    command_id: CommandId { value: 5 },
                     scan_session_id: ScanSessionId { value: 2 },
                     options: ScanOptions::default(),
                 }),
                 vec![
                     BleEvent::ScanStarted {
-                        command_id: CommandId { value: 3 },
+                        command_id: CommandId { value: 5 },
                         scan_id: ScanSessionId { value: 2 },
                     },
                     BleEvent::CommandCompleted {
-                        command_id: CommandId { value: 3 },
+                        command_id: CommandId { value: 5 },
                         error: None,
                     },
                 ],
@@ -640,7 +640,7 @@ fn native_stop_error_retires_scan_and_cannot_poison_next_session() {
             );
             // Missing or duplicate old terminals must not release the new scan slot.
             assert_eq!(
-                handle.emit(command_completed(2, None)),
+                handle.emit(command_completed(3, None)),
                 EventIngressStatus::Delivered
             );
             assert_eq!(
@@ -677,7 +677,7 @@ fn failed_stop_terminal_without_native_stop_keeps_scan_for_retry() {
         platform_details: None,
     };
     let (backend, handle) = FakeBackend::scripted([
-        started_scan(),
+        started_scan(1),
         EventScenario::emit_before_return(
             stop_command(2),
             vec![BleEvent::CommandCompleted {
@@ -686,11 +686,11 @@ fn failed_stop_terminal_without_native_stop_keeps_scan_for_retry() {
             }],
         ),
         EventScenario::emit_before_return(
-            stop_command(3),
+            stop_command(4),
             vec![
-                requested_stop(3),
+                requested_stop(4),
                 BleEvent::CommandCompleted {
-                    command_id: CommandId { value: 3 },
+                    command_id: CommandId { value: 4 },
                     error: None,
                 },
             ],
@@ -731,7 +731,7 @@ fn failed_stop_terminal_without_native_stop_keeps_scan_for_retry() {
 fn passive_scan_error_retires_session_without_a_stop_command() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        started_scan(),
+        started_scan(1),
         EventScenario::emit_before_return(
             RecordedCommand::StartScan(StartScanCommand {
                 command_id: CommandId { value: 2 },
@@ -838,16 +838,16 @@ fn native_stop_retains_live_start_until_domain_and_terminal_settle() {
                 ),
                 EventScenario::emit_before_return(
                     RecordedCommand::StartScan(StartScanCommand {
-                        command_id: 2.into(),
+                        command_id: 4.into(),
                         scan_session_id: 2.into(),
                         options: ScanOptions::default(),
                     }),
                     vec![
                         BleEvent::ScanStarted {
-                            command_id: 2.into(),
+                            command_id: 4.into(),
                             scan_id: 2.into(),
                         },
-                        command_completed(2, None),
+                        command_completed(4, None),
                     ],
                 ),
             ]);
@@ -911,21 +911,21 @@ fn native_stop_retains_live_start_until_domain_and_terminal_settle() {
 fn timed_out_stop_waits_for_matching_late_native_stop() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
-        started_scan(),
+        started_scan(1),
         EventScenario::accept(stop_command(2)),
         EventScenario::emit_before_return(
             RecordedCommand::StartScan(StartScanCommand {
-                command_id: CommandId { value: 3 },
+                command_id: CommandId { value: 5 },
                 scan_session_id: ScanSessionId { value: 2 },
                 options: ScanOptions::default(),
             }),
             vec![
                 BleEvent::ScanStarted {
-                    command_id: CommandId { value: 3 },
+                    command_id: CommandId { value: 5 },
                     scan_id: ScanSessionId { value: 2 },
                 },
                 BleEvent::CommandCompleted {
-                    command_id: CommandId { value: 3 },
+                    command_id: CommandId { value: 5 },
                     error: None,
                 },
             ],
@@ -954,7 +954,7 @@ fn timed_out_stop_waits_for_matching_late_native_stop() {
             Err(WaiterError::ScanBusy)
         );
         assert_eq!(
-            handle.emit(requested_stop(99)),
+            handle.emit(requested_stop(101)),
             EventIngressStatus::Delivered
         );
         assert_eq!(
@@ -988,16 +988,16 @@ fn stop_requires_completed_start_and_never_dispatches_for_unknown_session() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         EventScenario::accept(RecordedCommand::StartScan(StartScanCommand {
-            command_id: CommandId { value: 1 },
+            command_id: CommandId { value: 2 },
             scan_session_id: ScanSessionId { value: 1 },
             options: ScanOptions::default(),
         })),
         EventScenario::emit_before_return(
-            stop_command(2),
+            stop_command(4),
             vec![
-                requested_stop(2),
+                requested_stop(4),
                 BleEvent::CommandCompleted {
-                    command_id: CommandId { value: 2 },
+                    command_id: CommandId { value: 4 },
                     error: None,
                 },
             ],
@@ -1031,11 +1031,11 @@ fn stop_requires_completed_start_and_never_dispatches_for_unknown_session() {
         );
         for event in [
             BleEvent::ScanStarted {
-                command_id: CommandId { value: 1 },
+                command_id: CommandId { value: 2 },
                 scan_id: ScanSessionId { value: 1 },
             },
             BleEvent::CommandCompleted {
-                command_id: CommandId { value: 1 },
+                command_id: CommandId { value: 2 },
                 error: None,
             },
         ] {
@@ -1060,7 +1060,7 @@ fn stop_requires_completed_start_and_never_dispatches_for_unknown_session() {
 #[test]
 fn cancelling_stop_ask_before_actor_handles_it_never_dispatches() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
-    let (backend, handle) = FakeBackend::scripted([started_scan()]);
+    let (backend, handle) = FakeBackend::scripted([started_scan(1)]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
         .unwrap();
@@ -1354,17 +1354,17 @@ fn timeout_keeps_scan_slot_until_matching_native_stop() {
         })),
         EventScenario::emit_before_return(
             RecordedCommand::StartScan(StartScanCommand {
-                command_id: CommandId { value: 2 },
+                command_id: CommandId { value: 4 },
                 scan_session_id: ScanSessionId { value: 2 },
                 options: options.clone(),
             }),
             vec![
                 BleEvent::ScanStarted {
-                    command_id: CommandId { value: 2 },
+                    command_id: CommandId { value: 4 },
                     scan_id: ScanSessionId { value: 2 },
                 },
                 BleEvent::CommandCompleted {
-                    command_id: CommandId { value: 2 },
+                    command_id: CommandId { value: 4 },
                     error: None,
                 },
             ],

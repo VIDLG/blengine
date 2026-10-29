@@ -53,10 +53,10 @@ fn disable_active_subscription_rejects_during_other_characteristic_enable_dispat
         notification_enabled_scenario(3, 3),
         EventScenario::accept(RecordedCommand::SetNotifications(enable_a)),
         EventScenario::emit_before_return(
-            notification_command(5, 3, NotificationAction::Disable),
+            notification_command(6, 3, NotificationAction::Disable),
             vec![
-                notification_state(5, 3, NotificationState::Disabled),
-                read_terminal(5, None),
+                notification_state(6, 3, NotificationState::Disabled),
+                read_terminal(6, None),
             ],
         ),
     ]);
@@ -164,7 +164,7 @@ fn notification_enable_requires_state_and_terminal_and_value_does_not_complete_i
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::accept(notification_command(
             3,
             3,
@@ -244,7 +244,7 @@ fn notification_transition_blocks_read_and_write_and_read_or_write_blocks_enable
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::accept(notification_command(
             3,
             3,
@@ -253,14 +253,14 @@ fn notification_transition_blocks_read_and_write_and_read_or_write_blocks_enable
             },
         )),
         EventScenario::emit_before_return(
-            notification_command(4, 3, NotificationAction::Disable),
+            notification_command(6, 3, NotificationAction::Disable),
             vec![
-                notification_state(4, 3, NotificationState::Disabled),
-                read_terminal(4, None),
+                notification_state(6, 3, NotificationState::Disabled),
+                read_terminal(6, None),
             ],
         ),
-        EventScenario::accept(read_command(5)),
-        EventScenario::accept(write_command(6, &[2], WriteType::WithResponse)),
+        EventScenario::accept(read_command(7)),
+        EventScenario::accept(write_command(9, &[2], WriteType::WithResponse)),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -375,11 +375,11 @@ fn notification_transition_blocks_read_and_write_and_read_or_write_blocks_enable
                 Err(WaiterError::OperationBusy)
             );
             assert_eq!(
-                handle.emit(read_value(5, &[0x01])),
+                handle.emit(read_value(7, &[0x01])),
                 EventIngressStatus::Delivered
             );
             assert_eq!(
-                handle.emit(read_terminal(5, None)),
+                handle.emit(read_terminal(7, None)),
                 EventIngressStatus::Delivered
             );
             assert_eq!(reading.await, Ok(vec![0x01]));
@@ -411,9 +411,9 @@ fn notification_transition_blocks_read_and_write_and_read_or_write_blocks_enable
                     .await,
                 Err(WaiterError::OperationBusy)
             );
-            assert_eq!(handle.emit(written(6)), EventIngressStatus::Delivered);
+            assert_eq!(handle.emit(written(9)), EventIngressStatus::Delivered);
             assert_eq!(
-                handle.emit(read_terminal(6, None)),
+                handle.emit(read_terminal(9, None)),
                 EventIngressStatus::Delivered
             );
             assert_eq!(writing.await, Ok(()));
@@ -433,7 +433,7 @@ fn notification_disable_failure_releases_transition_for_retry() {
     };
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::emit_before_return(
             notification_command(
                 3,
@@ -458,13 +458,13 @@ fn notification_disable_failure_releases_transition_for_retry() {
             vec![read_terminal(4, Some(error.clone()))],
         ),
         EventScenario::emit_before_return(
-            notification_command(5, 3, NotificationAction::Disable),
+            notification_command(6, 3, NotificationAction::Disable),
             vec![
-                notification_state(5, 3, NotificationState::Disabled),
-                read_terminal(5, None),
+                notification_state(6, 3, NotificationState::Disabled),
+                read_terminal(6, None),
             ],
         ),
-        gatt_scenario(6, 1, 4),
+        gatt_scenario(7, 1, 4),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -552,7 +552,7 @@ fn notification_enable_timeout_keeps_native_slot_until_late_failure_then_retries
     };
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::accept(notification_command(
             3,
             3,
@@ -562,7 +562,7 @@ fn notification_enable_timeout_keeps_native_slot_until_late_failure_then_retries
         )),
         EventScenario::emit_before_return(
             notification_command(
-                4,
+                5,
                 4,
                 NotificationAction::Enable {
                     mode: NotificationModeRequest::PlatformDefault,
@@ -570,13 +570,13 @@ fn notification_enable_timeout_keeps_native_slot_until_late_failure_then_retries
             ),
             vec![
                 notification_state(
-                    4,
+                    5,
                     4,
                     NotificationState::Enabled {
                         actual_mode: Some(NotificationMode::Notification),
                     },
                 ),
-                read_terminal(4, None),
+                read_terminal(5, None),
             ],
         ),
     ]);
@@ -649,7 +649,7 @@ fn notification_enable_is_completed_as_disconnected_and_connection_is_retired() 
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::accept(notification_command(
             3,
             3,
@@ -657,7 +657,7 @@ fn notification_enable_is_completed_as_disconnected_and_connection_is_retired() 
                 mode: NotificationModeRequest::PlatformDefault,
             },
         )),
-        connect_scenario(4, 4, 10),
+        connect_scenario(5, 4, 10),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -727,7 +727,7 @@ fn notification_enable_is_completed_as_disconnected_and_connection_is_retired() 
 fn notification_callbacks_before_rejected_enable_or_disable_fail_closed() {
     for disabling in [false, true] {
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
-        let mut scenarios = vec![connect_scenario(1, 1, 10), notification_discovery()];
+        let mut scenarios = vec![connect_scenario(1, 1, 10), notification_discovery(2)];
         if disabling {
             scenarios.push(notification_enabled_scenario(3, 3));
         }
@@ -833,7 +833,7 @@ fn notification_disconnect_before_rejected_enable_preserves_rejection_and_allows
     };
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::emit_before_reject(
             notification_command(
                 3,
@@ -898,7 +898,7 @@ fn notification_require_indication_mismatch_faults_instead_of_succeeding() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         EventScenario::emit_before_return(
             notification_command(
                 3,
@@ -960,7 +960,7 @@ fn stale_notification_after_disable_cannot_revive_route_or_complete_read() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         notification_enabled_scenario(3, 3),
         EventScenario::emit_before_return(
             notification_command(4, 3, NotificationAction::Disable),
@@ -1049,32 +1049,32 @@ fn notification_rediscovery_invalidates_old_subscription_and_gatt_session() {
     database.gatt_session_id = GattSessionId { value: 4 };
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         notification_enabled_scenario(3, 3),
         EventScenario::emit_before_return(
-            notification_command(4, 3, NotificationAction::Disable),
+            notification_command(5, 3, NotificationAction::Disable),
             vec![
-                notification_state(4, 3, NotificationState::Disabled),
-                read_terminal(4, None),
+                notification_state(5, 3, NotificationState::Disabled),
+                read_terminal(5, None),
             ],
         ),
         EventScenario::emit_before_return(
             RecordedCommand::DiscoverGatt(DiscoverGattCommand {
-                command_id: CommandId { value: 5 },
+                command_id: CommandId { value: 6 },
                 connection_id: ConnectionId { value: 1 },
                 gatt_session_id: GattSessionId { value: 4 },
             }),
             vec![
                 BleEvent::GattDiscovered {
-                    command_id: CommandId { value: 5 },
+                    command_id: CommandId { value: 6 },
                     database,
                 },
-                read_terminal(5, None),
+                read_terminal(6, None),
             ],
         ),
         EventScenario::accept(RecordedCommand::ReadCharacteristic(
             ReadCharacteristicCommand {
-                command_id: CommandId { value: 6 },
+                command_id: CommandId { value: 10 },
                 connection_id: ConnectionId { value: 1 },
                 gatt_session_id: GattSessionId { value: 4 },
                 characteristic_id: GattCharacteristicId { value: 30 },
@@ -1185,7 +1185,7 @@ fn notification_rediscovery_invalidates_old_subscription_and_gatt_session() {
             );
             assert_eq!(
                 handle.emit(BleEvent::CharacteristicRead {
-                    command_id: CommandId { value: 6 },
+                    command_id: CommandId { value: 10 },
                     connection_id: connection,
                     gatt_session_id: new_session,
                     characteristic_id: GattCharacteristicId { value: 30 },
@@ -1194,7 +1194,7 @@ fn notification_rediscovery_invalidates_old_subscription_and_gatt_session() {
                 EventIngressStatus::Delivered
             );
             assert_eq!(
-                handle.emit(read_terminal(6, None)),
+                handle.emit(read_terminal(10, None)),
                 EventIngressStatus::Delivered
             );
             assert_eq!(reading.await, Ok(vec![0x80, 0xff]));
@@ -1211,13 +1211,13 @@ fn notification_rediscovery_waits_for_late_disable_without_blocking_other_device
             let owner = RuntimeOwner::new_assuming_initialized().unwrap();
             let (backend, handle) = FakeBackend::scripted([
                 connect_scenario(1, 1, 10),
-                notification_discovery(),
+                notification_discovery(2),
                 notification_enabled_scenario(3, 3),
                 connect_scenario(4, 4, 20),
                 gatt_scenario(5, 4, 5),
                 EventScenario::accept(notification_command(6, 3, NotificationAction::Disable)),
-                gatt_scenario(7, 4, 6),
-                gatt_scenario(8, 1, 7),
+                gatt_scenario(8, 4, 6),
+                gatt_scenario(10, 1, 7),
             ]);
             owner
                 .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -1363,26 +1363,26 @@ fn notification_active_route_blocks_read_but_allows_both_write_modes() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
-        notification_discovery(),
+        notification_discovery(2),
         notification_enabled_scenario(3, 3),
         EventScenario::emit_before_return(
-            write_command(4, &[0x10], WriteType::WithResponse),
-            vec![written(4), read_terminal(4, None)],
+            write_command(5, &[0x10], WriteType::WithResponse),
+            vec![written(5), read_terminal(5, None)],
         ),
         EventScenario::emit_before_return(
-            write_command(5, &[0x20], WriteType::WithoutResponse),
-            vec![read_terminal(5, None), written(5)],
+            write_command(7, &[0x20], WriteType::WithoutResponse),
+            vec![read_terminal(7, None), written(7)],
         ),
         EventScenario::emit_before_return(
-            notification_command(6, 3, NotificationAction::Disable),
+            notification_command(9, 3, NotificationAction::Disable),
             vec![
-                notification_state(6, 3, NotificationState::Disabled),
-                read_terminal(6, None),
+                notification_state(9, 3, NotificationState::Disabled),
+                read_terminal(9, None),
             ],
         ),
         EventScenario::emit_before_return(
-            read_command(7),
-            vec![read_value(7, &[0x30]), read_terminal(7, None)],
+            read_command(10),
+            vec![read_value(10, &[0x30]), read_terminal(10, None)],
         ),
     ]);
     owner
@@ -1470,10 +1470,10 @@ fn notification_disable_timeout_retains_transition_until_late_state_and_terminal
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
         let (backend, handle) = FakeBackend::scripted([
             connect_scenario(1, 1, 10),
-            notification_discovery(),
+            notification_discovery(2),
             notification_enabled_scenario(3, 3),
             EventScenario::accept(notification_command(4, 3, NotificationAction::Disable)),
-            notification_enabled_scenario(5, 4),
+            notification_enabled_scenario(9, 4),
         ]);
         owner
             .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())

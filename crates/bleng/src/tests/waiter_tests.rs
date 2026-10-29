@@ -33,23 +33,27 @@ fn registry_delivers_one_explicit_result_and_ignores_late_results() {
 }
 
 #[test]
-fn registry_rejects_non_monotonic_command_ids_without_advancing_watermark() {
+fn registry_accepts_out_of_order_unique_ids_but_rejects_live_duplicates() {
     let mut registry = WaiterRegistry::new();
-    let _result_rx = registry
+    let mut second = registry
         .register(id(2), WaiterExpectation::Initialized)
         .unwrap();
-
+    let mut first = registry
+        .register(id(1), WaiterExpectation::Initialized)
+        .unwrap();
     assert!(matches!(
-        registry.register(id(1), WaiterExpectation::Initialized),
+        registry.register(id(2), WaiterExpectation::Initialized),
         Err(WaiterError::InvalidCommandId)
     ));
-    let _result_rx = registry
-        .register(id(3), WaiterExpectation::Initialized)
-        .unwrap();
+    registry.cancel(id(1));
+    assert_eq!(first.try_recv(), Ok(Err(WaiterError::Cancelled)));
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty));
+    registry.timeout(id(2));
+    assert_eq!(second.try_recv(), Ok(Err(WaiterError::Timeout)));
 }
 
 #[test]
-fn registry_rejects_wrapped_and_reused_command_ids_after_maximum() {
+fn registry_retirement_at_maximum_keeps_independent_outcomes_and_rejects_zero() {
     let mut registry = WaiterRegistry::new();
     let mut penultimate = registry
         .register(
@@ -65,12 +69,16 @@ fn registry_rejects_wrapped_and_reused_command_ids_after_maximum() {
     assert_eq!(penultimate.try_recv(), Ok(Err(WaiterError::Cancelled)));
     assert_eq!(last.try_recv(), Ok(Err(WaiterError::Timeout)));
 
-    for reused in [0, 1, u64::MAX - 1, u64::MAX] {
-        assert!(matches!(
-            registry.register(id(reused), WaiterExpectation::Connected(connection(3))),
-            Err(WaiterError::InvalidCommandId)
-        ));
-    }
+    assert!(matches!(
+        registry.register(id(0), WaiterExpectation::Initialized),
+        Err(WaiterError::InvalidCommandId)
+    ));
+    // Non-reuse/wrap belongs to the shared allocator, not registry tombstones.
+    let mut earlier_submission = registry
+        .register(id(1), WaiterExpectation::Initialized)
+        .unwrap();
+    registry.cancel(id(u64::MAX));
+    assert_eq!(earlier_submission.try_recv(), Err(TryRecvError::Empty));
 }
 
 #[test]
@@ -114,12 +122,6 @@ fn cancellation_and_timeout_only_retire_the_waiter() {
 
     assert_eq!(cancelled_rx.try_recv(), Ok(Err(WaiterError::Cancelled)));
     assert_eq!(timed_out_rx.try_recv(), Ok(Err(WaiterError::Timeout)));
-    for retired in [id(1), id(2)] {
-        assert!(matches!(
-            registry.register(retired, WaiterExpectation::Initialized),
-            Err(WaiterError::InvalidCommandId)
-        ));
-    }
     let mut next_rx = registry
         .register(id(3), WaiterExpectation::Initialized)
         .unwrap();
@@ -147,6 +149,48 @@ fn close_fails_all_waiters_and_rejects_future_registration() {
         registry.register(id(3), WaiterExpectation::Initialized),
         Err(WaiterError::TransportFault)
     ));
+}
+
+#[test]
+fn completed_loss_deferred_results_release_on_caller_retirement_or_transport_fault() {
+    for mode in 0..4 {
+        let mut registry = WaiterRegistry::new();
+        let mut result_rx = registry
+            .register(id(1), WaiterExpectation::Connected(connection(10)))
+            .unwrap();
+        registry.defer_result(id(1), Ok(WaiterSuccess::Connected(connection(10))));
+        assert_eq!(result_rx.try_recv(), Err(TryRecvError::Empty));
+        if mode == 3 {
+            drop(result_rx);
+            let mut next = registry
+                .register(id(2), WaiterExpectation::Initialized)
+                .unwrap();
+            assert!(!registry.finish_deferred(id(1)));
+            assert_eq!(next.try_recv(), Err(TryRecvError::Empty));
+        } else {
+            let error = match mode {
+                0 => {
+                    registry.timeout(id(1));
+                    WaiterError::Timeout
+                }
+                1 => {
+                    registry.cancel(id(1));
+                    WaiterError::Cancelled
+                }
+                _ => {
+                    registry.close(WaiterCloseReason::TransportFault);
+                    WaiterError::TransportFault
+                }
+            };
+            assert_eq!(result_rx.try_recv(), Ok(Err(error)));
+            assert_eq!(result_rx.try_recv(), Err(TryRecvError::Closed));
+        }
+        registry.defer_result(id(1), Ok(WaiterSuccess::Connected(connection(10))));
+        assert!(
+            !registry.finish_deferred(id(1)),
+            "retired results must not be reinserted"
+        );
+    }
 }
 
 #[test]

@@ -1,8 +1,9 @@
 use blehub::{
-    BleErrorCategory, BleEvent, BleEventError, BluetoothUuid, CharacteristicProperties, CommandId,
-    ConnectionId, ConnectionState, ConnectionStateResult, GattCharacteristic, GattCharacteristicId,
-    GattDatabase, GattService, GattServiceId, GattSessionId, NotificationMode,
-    NotificationModeRequest, NotificationState, PeripheralId, SubscriptionId,
+    BleErrorCategory, BleEvent, BleEventError, BluetoothUuid, CharacteristicProperties,
+    CommandDispatchError, CommandId, ConnectionId, ConnectionState, ConnectionStateResult,
+    GattCharacteristic, GattCharacteristicId, GattDatabase, GattService, GattServiceId,
+    GattSessionId, NotificationMode, NotificationModeRequest, NotificationState, PeripheralId,
+    SubscriptionId,
 };
 
 use crate::{
@@ -265,7 +266,7 @@ fn pre_ack_connect_fallback_is_broad_but_replayed_evidence_is_exact() {
 }
 
 #[test]
-fn gatt_admission_checks_stale_targets_before_io_and_discovery_busy() {
+fn gatt_admission_checks_stale_targets_and_preserves_native_lane_barriers() {
     for operation in [
         Operation::Discovery,
         Operation::Read,
@@ -274,11 +275,7 @@ fn gatt_admission_checks_stale_targets_before_io_and_discovery_busy() {
     ] {
         let mut connections = ready_connections();
         reserve_operation(&mut connections, operation);
-        let busy = if matches!(operation, Operation::Discovery) {
-            WaiterError::GattBusy
-        } else {
-            WaiterError::OperationBusy
-        };
+        accept(&mut connections, 4.into());
         for (session, characteristic, expected) in [
             (
                 GattSessionId::from(99),
@@ -290,7 +287,6 @@ fn gatt_admission_checks_stale_targets_before_io_and_discovery_busy() {
                 GattCharacteristicId::from(99),
                 WaiterError::GattNotReady,
             ),
-            (SESSION, CHARACTERISTIC, busy),
         ] {
             for access in [
                 GattAccess::Read,
@@ -309,7 +305,105 @@ fn gatt_admission_checks_stale_targets_before_io_and_discovery_busy() {
                 "{operation:?} notification enable"
             );
         }
+
+        let expected_access = match operation {
+            Operation::Discovery => [
+                (GattAccess::Read, WaiterError::GattBusy),
+                (GattAccess::Write, WaiterError::GattBusy),
+                (GattAccess::EnableNotifications, WaiterError::GattBusy),
+            ],
+            Operation::Read | Operation::Write => [
+                (GattAccess::Read, WaiterError::OperationBusy),
+                (GattAccess::Write, WaiterError::OperationBusy),
+                (GattAccess::EnableNotifications, WaiterError::OperationBusy),
+            ],
+            Operation::Subscription | Operation::Rssi => [
+                (GattAccess::Read, WaiterError::OperationBusy),
+                (GattAccess::Write, WaiterError::OperationBusy),
+                (GattAccess::EnableNotifications, WaiterError::OperationBusy),
+            ],
+        };
+        for (access, expected) in expected_access {
+            let actual =
+                connections.validate_gatt_access(CONNECTION, SESSION, CHARACTERISTIC, access);
+            if matches!(operation, Operation::Read | Operation::Write)
+                && matches!(access, GattAccess::Read | GattAccess::Write)
+            {
+                assert_eq!(actual, Ok(PERIPHERAL), "{operation:?}, access={access:?}");
+            } else {
+                assert_eq!(actual, Err(expected), "{operation:?}, access={access:?}");
+            }
+        }
+        let expected_enable = if matches!(operation, Operation::Discovery) {
+            WaiterError::GattBusy
+        } else {
+            WaiterError::OperationBusy
+        };
+        assert_eq!(
+            connections.validate_notification_enable(CONNECTION, SESSION, CHARACTERISTIC),
+            Err(expected_enable),
+            "{operation:?} notification enable"
+        );
     }
+}
+
+#[test]
+fn characteristic_admission_keeps_pre_dispatch_handoff_exclusive() {
+    let mut connections = ready_connections();
+    connections.reserve_read(PERIPHERAL, 4.into(), SESSION, CHARACTERISTIC);
+    assert_eq!(
+        connections.validate_gatt_access(CONNECTION, SESSION, CHARACTERISTIC, GattAccess::Read),
+        Err(WaiterError::OperationBusy)
+    );
+    assert_eq!(
+        connections.validate_rssi(CONNECTION),
+        Err(WaiterError::OperationBusy)
+    );
+
+    accept(&mut connections, 4.into());
+    assert_eq!(
+        connections.validate_gatt_access(CONNECTION, SESSION, CHARACTERISTIC, GattAccess::Read),
+        Ok(PERIPHERAL)
+    );
+    assert_eq!(
+        connections.validate_gatt_access(CONNECTION, SESSION, CHARACTERISTIC, GattAccess::Write),
+        Ok(PERIPHERAL)
+    );
+}
+
+#[test]
+fn native_lane_capacity_counts_io_and_subscription_transitions() {
+    let mut connections = ready_connections();
+    for offset in 0..1_023_u64 {
+        let command_id = CommandId::from(1_000 + offset);
+        connections.reserve_read(PERIPHERAL, command_id, SESSION, CHARACTERISTIC);
+        accept(&mut connections, command_id);
+    }
+
+    assert_eq!(connections.validate_rssi(CONNECTION), Ok(PERIPHERAL));
+    connections.reserve_notification_enable(
+        PERIPHERAL,
+        9_999.into(),
+        9_999.into(),
+        SESSION,
+        CHARACTERISTIC,
+        NotificationModeRequest::PlatformDefault,
+    );
+    accept(&mut connections, 9_999.into());
+    assert_eq!(
+        connections.validate_rssi(CONNECTION),
+        Err(WaiterError::OperationBusy)
+    );
+
+    let rejection = CommandDispatchError::InvalidState {
+        detail: "queue full in test".to_owned(),
+    };
+    assert!(
+        connections
+            .resolve_dispatch(9_999.into(), &Err(rejection))
+            .is_some()
+    );
+    assert_eq!(connections.validate_rssi(CONNECTION), Ok(PERIPHERAL));
 }
 
 #[test]
@@ -453,6 +547,154 @@ fn io_keeps_first_terminal_while_domain_is_missing() {
             );
         }
     }
+}
+
+#[test]
+fn cancellation_routes_only_cancellable_connection_operations_and_waits_for_native_terminal() {
+    use crate::runtime::reservations::CancellationDecision;
+
+    let mut connections = ready_connections();
+    connections.reserve_read(PERIPHERAL, 4.into(), SESSION, CHARACTERISTIC);
+    assert!(matches!(
+        connections.request_cancellation(4.into()),
+        Some(CancellationDecision::Accepted(_))
+    ));
+    assert!(!connections.take_cancellation_dispatch(4.into()));
+
+    accept(&mut connections, 4.into());
+    assert!(connections.take_cancellation_dispatch(4.into()));
+    assert!(!connections.take_cancellation_dispatch(4.into()));
+    connections.retire_completed();
+    assert!(matches!(
+        connections.request_cancellation(4.into()),
+        Some(CancellationDecision::AlreadyRequested(_))
+    ));
+    terminal(
+        &mut connections,
+        4.into(),
+        Err(BleEventError {
+            category: BleErrorCategory::Cancelled,
+            message: "cancelled".to_owned(),
+            platform_details: None,
+        }),
+    );
+    connections.retire_completed();
+    assert!(matches!(
+        connections.request_cancellation(4.into()),
+        Some(CancellationDecision::AlreadyRequested(_))
+    ));
+    assert!(connections.resolve_cancellation(4.into(), Ok(())));
+    connections.retire_completed();
+    assert!(connections.request_cancellation(4.into()).is_none());
+
+    let mut connections = ready_connections();
+    connections.reserve_disconnect(PERIPHERAL, 4.into());
+    assert!(matches!(
+        connections.request_cancellation(4.into()),
+        Some(CancellationDecision::NotCancellable)
+    ));
+    assert!(connections.request_cancellation(99.into()).is_none());
+}
+
+#[test]
+fn terminal_retirement_preserves_pending_cancellation_receipts_across_connection_operations() {
+    use crate::runtime::reservations::CancellationDecision;
+
+    for operation in [
+        Operation::Discovery,
+        Operation::Rssi,
+        Operation::Read,
+        Operation::Write,
+        Operation::Subscription,
+    ] {
+        for disconnected in [false, true] {
+            let mut connections = ready_connections();
+            reserve_operation(&mut connections, operation);
+            accept(&mut connections, 4.into());
+            let receipt = match connections.request_cancellation(4.into()) {
+                Some(CancellationDecision::Accepted(receipt)) => receipt,
+                _ => panic!("{operation:?}: cancellation must be admitted"),
+            };
+            assert!(connections.take_cancellation_dispatch(4.into()));
+            terminal(
+                &mut connections,
+                4.into(),
+                Err(BleEventError {
+                    category: BleErrorCategory::Cancelled,
+                    message: "cancelled before control returned".to_owned(),
+                    platform_details: None,
+                }),
+            );
+            if disconnected {
+                record(
+                    &mut connections,
+                    connection_event(None, CONNECTION, ConnectionState::Disconnected),
+                );
+            }
+            connections.retire_completed();
+            assert!(
+                matches!(receipt.has_changed(), Ok(false)),
+                "{operation:?}, disconnected={disconnected}: receipt owner must survive"
+            );
+            assert_eq!(
+                connections.require_peripheral_available(PERIPHERAL),
+                Err(WaiterError::PeripheralBusy)
+            );
+            assert!(connections.resolve_cancellation(4.into(), Ok(())));
+            assert_eq!(*receipt.borrow(), Some(Ok(())));
+            connections.retire_completed();
+            connections.retire_completed();
+            assert!(connections.request_cancellation(4.into()).is_none());
+            assert_eq!(
+                connections.require_peripheral_available(PERIPHERAL),
+                if disconnected {
+                    Ok(())
+                } else {
+                    Err(WaiterError::PeripheralBusy)
+                }
+            );
+            if !disconnected {
+                assert_eq!(
+                    connections.validate_gatt_discovery(CONNECTION),
+                    Ok(PERIPHERAL)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_connect_retirement_preserves_pending_cancellation_receipt() {
+    use crate::runtime::reservations::CancellationDecision;
+
+    let mut connections = ConnectionReservations::default();
+    connections.reserve_connection(PERIPHERAL, 1.into(), CONNECTION);
+    accept(&mut connections, 1.into());
+    let receipt = match connections.request_cancellation(1.into()) {
+        Some(CancellationDecision::Accepted(receipt)) => receipt,
+        _ => panic!("pending connect must be cancellable"),
+    };
+    assert!(connections.take_cancellation_dispatch(1.into()));
+    terminal(
+        &mut connections,
+        1.into(),
+        Err(BleEventError {
+            category: BleErrorCategory::Cancelled,
+            message: "connect cancelled before control returned".to_owned(),
+            platform_details: None,
+        }),
+    );
+    connections.retire_completed();
+    assert!(matches!(receipt.has_changed(), Ok(false)));
+    assert_eq!(
+        connections.require_peripheral_available(PERIPHERAL),
+        Err(WaiterError::PeripheralBusy)
+    );
+    assert!(connections.resolve_cancellation(1.into(), Ok(())));
+    connections.retire_completed();
+    assert_eq!(*receipt.borrow(), Some(Ok(())));
+    assert_eq!(connections.require_peripheral_available(PERIPHERAL), Ok(()));
+    assert!(connections.request_cancellation(1.into()).is_none());
 }
 
 #[test]

@@ -11,7 +11,7 @@ fn late_initialize_success_enables_operations_and_ignores_duplicate_evidence() {
     let owner = RuntimeOwner::new().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         EventScenario::accept(init_command(1)),
-        connect_scenario(2, 1, 10),
+        connect_scenario(3, 1, 10),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -125,6 +125,141 @@ fn initialize_requires_correlated_snapshot_and_terminal_in_either_order() {
         });
         assert_eq!(handle.commands(), vec![init_command(1)]);
         assert_eq!(handle.dispose_count(), 1);
+    }
+}
+
+fn init_publication_passive_snapshot(denied: bool, name: &str) -> BleEvent {
+    let mut snapshot = init_snapshot();
+    snapshot.name = Some(name.to_owned());
+    if denied {
+        snapshot.scan_authorization = AuthorizationState::Denied;
+        snapshot.connection_authorization = AuthorizationState::Denied;
+    } else {
+        snapshot.state = AdapterState::PoweredOff;
+    }
+    BleEvent::AdapterSnapshotChanged {
+        command_id: None,
+        snapshot,
+    }
+}
+
+#[test]
+fn init_publication_preserves_off_update_after_correlated_evidence() {
+    accepted_init_publication(&[false]);
+}
+
+#[test]
+fn init_publication_preserves_denied_update_after_correlated_evidence() {
+    accepted_init_publication(&[true]);
+}
+
+fn accepted_init_publication(denied_states: &[bool]) {
+    for &denied in denied_states {
+        for terminal_first in [false, true] {
+            let owner = RuntimeOwner::new().unwrap();
+            let first = init_publication_passive_snapshot(denied, "before initialization evidence");
+            let later = init_publication_passive_snapshot(denied, "after initialization evidence");
+            let domain = init_snapshot_event(Some(1));
+            let terminal = command_completed(1, None);
+            let mut events = vec![first];
+            if terminal_first {
+                events.extend([terminal, domain]);
+            } else {
+                events.extend([domain, terminal]);
+            }
+            events.push(later);
+            let (backend, handle) = FakeBackend::scripted([EventScenario::emit_before_return(
+                init_command(1),
+                events.clone(),
+            )]);
+            owner
+                .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+                .unwrap();
+            let host = tokio::runtime::Builder::new_multi_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            host.block_on(async {
+                assert_eq!(owner.initialize(Duration::from_secs(2)).await, Ok(init_snapshot()),
+                    "only the correlated snapshot supplies the initialization result");
+                for expected in events {
+                    assert_eq!(owner.next_event(Duration::from_secs(2)).await, Ok(Some(expected)),
+                        "denied={denied}, terminal_first={terminal_first}: preserve observed order, not an invented platform order");
+                }
+                let after_ack = init_publication_passive_snapshot(denied, "after dispatch acknowledgement");
+                assert_eq!(handle.emit(after_ack.clone()), EventIngressStatus::Delivered);
+                assert_eq!(owner.next_event(Duration::from_secs(2)).await, Ok(Some(after_ack)));
+                owner.close().await.unwrap();
+            });
+            assert_eq!(handle.commands(), vec![init_command(1)]);
+            assert_eq!(handle.dispose_count(), 1);
+        }
+    }
+}
+
+#[test]
+fn init_publication_rejected_dispatch_does_not_leak_later_off_update() {
+    rejected_init_publication(&[false]);
+}
+
+#[test]
+fn init_publication_rejected_dispatch_does_not_leak_later_denied_update() {
+    rejected_init_publication(&[true]);
+}
+
+fn rejected_init_publication(denied_states: &[bool]) {
+    for &denied in denied_states {
+        for terminal_first in [false, true] {
+            let owner = RuntimeOwner::new().unwrap();
+            let first = init_publication_passive_snapshot(denied, "before initialization evidence");
+            let domain = init_snapshot_event(Some(1));
+            let terminal = command_completed(1, None);
+            let mut events = vec![first.clone()];
+            if terminal_first {
+                events.extend([terminal, domain]);
+            } else {
+                events.extend([domain, terminal]);
+            }
+            events.push(init_publication_passive_snapshot(
+                denied,
+                "after initialization evidence",
+            ));
+            let (backend, handle) = FakeBackend::scripted([EventScenario::emit_before_reject(
+                init_command(1),
+                events,
+                CommandDispatchError::InvalidState {
+                    detail: "initialization rejected after synchronous callbacks".into(),
+                },
+            )]);
+            owner
+                .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+                .unwrap();
+            let host = tokio::runtime::Builder::new_multi_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            host.block_on(async {
+                assert_eq!(owner.initialize(Duration::from_secs(2)).await, Err(WaiterError::TransportFault));
+                assert!(owner.faulted_for_test());
+                assert_eq!(owner.next_event(Duration::from_secs(2)).await, Err(EventReadError::Fault));
+                owner.close().await.unwrap();
+                // The fault gate hides queued events from next_event(). Inspect
+                // the actual FIFO after teardown to detect premature publication.
+                let mut published = Vec::new();
+                let mut rx = owner.public_event_rx.lock().await;
+                while let Ok(event) = rx.try_recv() {
+                    published.push(event);
+                }
+                assert_eq!(published, vec![first],
+                    "denied={denied}, terminal_first={terminal_first}: only the earlier passive observation may escape");
+            });
+            assert_eq!(handle.commands(), vec![init_command(1)]);
+            assert_eq!(handle.dispose_count(), 1);
+            assert_eq!(
+                handle.emit(init_snapshot_event(Some(1))),
+                EventIngressStatus::Closed
+            );
+        }
     }
 }
 
@@ -483,23 +618,23 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
     let owner = RuntimeOwner::new().unwrap();
     let options = ScanOptions::default();
     let scan_command = RecordedCommand::StartScan(StartScanCommand {
-        command_id: CommandId { value: 2 },
+        command_id: CommandId { value: 7 },
         scan_session_id: ScanSessionId { value: 1 },
         options: options.clone(),
     });
     let (backend, handle) = FakeBackend::scripted([
         EventScenario::complete(
-            init_command(1),
-            vec![init_snapshot_event(Some(1)), command_completed(1, None)],
+            init_command(3),
+            vec![init_snapshot_event(Some(3)), command_completed(3, None)],
         ),
         EventScenario::emit_before_return(
             scan_command.clone(),
             vec![
                 BleEvent::ScanStarted {
-                    command_id: CommandId { value: 2 },
+                    command_id: CommandId { value: 7 },
                     scan_id: ScanSessionId { value: 1 },
                 },
-                command_completed(2, None),
+                command_completed(7, None),
             ],
         ),
     ]);
@@ -528,7 +663,7 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
                     result = &mut initialize => panic!("init finished before callbacks: {result:?}"),
                     _ = tokio::task::yield_now() => {}
                 }
-                if handle.commands() == vec![init_command(1)] && handle.pending_event_count() == 2 {
+                if handle.commands() == vec![init_command(3)] && handle.pending_event_count() == 2 {
                     break;
                 }
             }
@@ -543,7 +678,7 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
             owner.connect(PeripheralId { value: 10 }, Duration::from_secs(1)).await,
             Err(WaiterError::NotInitialized)
         );
-        assert_eq!(handle.commands(), vec![init_command(1)]);
+        assert_eq!(handle.commands(), vec![init_command(3)]);
         assert_eq!(handle.advance(), Some(EventIngressStatus::Delivered));
         assert_eq!(
             owner.start_scan(options.clone(), Duration::from_secs(1)).await,
@@ -555,7 +690,7 @@ fn operations_require_completed_initialization_and_preserve_next_ids() {
             owner.start_scan(options, Duration::from_secs(2)).await,
             Ok(ScanSessionId { value: 1 })
         );
-        assert_eq!(handle.commands(), vec![init_command(1), scan_command]);
+        assert_eq!(handle.commands(), vec![init_command(3), scan_command]);
         owner.close().await.unwrap();
     });
     assert_eq!(handle.dispose_count(), 1);

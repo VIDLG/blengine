@@ -3,9 +3,10 @@ use super::{
 };
 use blehub::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleEventSink, BleHub,
-    BleHubError, CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
-    EventSinkError, InitializeCommand, ReadCharacteristicCommand, ReadRssiCommand,
-    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    BleHubError, CancelOperationRequest, CommandDispatchError, ConnectCommand, DisconnectCommand,
+    DiscoverGattCommand, EventSinkError, InitializeCommand, ReadCharacteristicCommand,
+    ReadRssiCommand, SetNotificationsCommand, StartScanCommand, StopScanCommand,
+    WriteCharacteristicCommand,
 };
 use blehub_testkit::FakeBackend;
 
@@ -59,6 +60,7 @@ impl BleBackend for BlockingDisposeBackend {
             fn write_characteristic(&self, command: WriteCharacteristicCommand) -> Result<(), CommandDispatchError>;
             fn set_notifications(&self, command: SetNotificationsCommand) -> Result<(), CommandDispatchError>;
             fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+            fn cancel_operation(&self, request: CancelOperationRequest) -> Result<(), CommandDispatchError>;
         }
     }
 

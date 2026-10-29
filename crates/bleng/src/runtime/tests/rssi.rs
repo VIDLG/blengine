@@ -107,15 +107,12 @@ fn read_rssi_synchronous_callbacks_before_rejected_dispatch_fail_closed() {
 }
 
 #[test]
-fn read_rssi_timeout_keeps_slot_until_late_completion_then_retries() {
+fn read_rssi_timeout_does_not_block_a_sibling_rssi_operation() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         connect_scenario(1, 1, 10),
         EventScenario::accept(rssi_command(2, 1)),
-        EventScenario::emit_before_return(
-            rssi_command(3, 1),
-            vec![rssi_value(3, 1, -52), rssi_terminal(3)],
-        ),
+        EventScenario::accept(rssi_command(3, 1)),
     ]);
     owner
         .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
@@ -133,24 +130,23 @@ fn read_rssi_timeout_keeps_slot_until_late_completion_then_retries() {
             owner.read_rssi(connection, Duration::from_millis(20)).await,
             Err(WaiterError::Timeout)
         );
-        assert_eq!(
-            owner.read_rssi(connection, Duration::from_secs(1)).await,
-            Err(WaiterError::OperationBusy)
-        );
+        let sibling = owner.read_rssi(connection, Duration::from_secs(2));
+        tokio::pin!(sibling);
+        tokio::select! {
+            result = &mut sibling => panic!("sibling RSSI completed before callbacks: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
         assert_eq!(
             handle.emit(rssi_value(2, 1, -53)),
             EventIngressStatus::Delivered
         );
         assert_eq!(handle.emit(rssi_terminal(2)), EventIngressStatus::Delivered);
-        // Drain the connect and late RSSI events to establish that the late
-        // native completion retired the timed-out reservation.
-        for _ in 0..4 {
-            let _ = owner.next_event(Duration::from_secs(2)).await;
-        }
         assert_eq!(
-            owner.read_rssi(connection, Duration::from_secs(2)).await,
-            Ok(-52)
+            handle.emit(rssi_value(3, 1, -52)),
+            EventIngressStatus::Delivered
         );
+        assert_eq!(handle.emit(rssi_terminal(3)), EventIngressStatus::Delivered);
+        assert_eq!(sibling.await, Ok(-52));
         owner.close().await.unwrap();
     });
     assert_eq!(handle.commands().len(), 3);

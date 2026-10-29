@@ -12,11 +12,11 @@ pub use capabilities::{
     BackendCapabilities, Platform, blehub_contract_version,
 };
 pub use commands::{
-    CommandKind, ConnectCommand, DisconnectCommand, DiscoverGattCommand, InitializeCommand,
-    MAX_SCAN_NAME_PREFIX_BYTES, MAX_WRITE_VALUE_BYTES, NotificationAction, NotificationMode,
-    NotificationModeRequest, ReadCharacteristicCommand, ReadRssiCommand, ScanOptions,
-    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
-    WriteType,
+    CancelOperationRequest, CommandKind, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
+    InitializeCommand, MAX_SCAN_NAME_PREFIX_BYTES, MAX_WRITE_VALUE_BYTES, NotificationAction,
+    NotificationMode, NotificationModeRequest, ReadCharacteristicCommand, ReadRssiCommand,
+    ScanOptions, SetNotificationsCommand, StartScanCommand, StopScanCommand,
+    WriteCharacteristicCommand, WriteType,
 };
 pub use errors::{
     BleErrorCategory, BleEventError, BleHubError, CommandDispatchError, PlatformErrorDetails,

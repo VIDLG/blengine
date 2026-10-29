@@ -194,21 +194,26 @@ impl EventIngressState {
     /// Closes the ingress, waits for any admitted delivery to return, and
     /// releases the downstream sink before returning.
     pub(crate) fn close(&self) {
-        let mut inner = match self.inner.lock() {
-            Ok(inner) => inner,
-            Err(error) => {
-                tracing::error!(
-                    target: "blehub::ingress",
-                    diagnostic = "ingress_mutex_poisoned",
-                    operation = "close",
-                    error_class = "mutex_poisoned",
-                    "recovered poisoned event ingress mutex"
-                );
-                error.into_inner()
-            }
+        let downstream = {
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(error) => {
+                    tracing::error!(
+                        target: "blehub::ingress",
+                        diagnostic = "ingress_mutex_poisoned",
+                        operation = "close",
+                        error_class = "mutex_poisoned",
+                        "recovered poisoned event ingress mutex"
+                    );
+                    error.into_inner()
+                }
+            };
+            inner.phase = EventIngressPhase::Closed;
+            inner.downstream.take()
         };
-        inner.phase = EventIngressPhase::Closed;
-        inner.downstream.take();
+        // The sink may re-enter assembly or cleanup from Drop. Never run that
+        // user-owned destructor while the ingress mutex is held.
+        drop(downstream);
     }
 }
 

@@ -3,7 +3,7 @@ use blehub::{
     NotificationModeRequest, NotificationState, SubscriptionId,
 };
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::{WaiterOutcome, WaiterSuccess};
 
 use super::{
     connection::connection_lost,
@@ -71,7 +71,7 @@ impl SubscriptionReservation {
         command_id: CommandId,
         connection_id: ConnectionId,
         subscription_id: SubscriptionId,
-    ) -> Option<Result<WaiterSuccess, WaiterError>> {
+    ) -> Option<WaiterOutcome> {
         let transition = self.transition()?;
         if !transition.progress.owns_command(command_id) {
             return None;
@@ -111,7 +111,7 @@ impl SubscriptionReservation {
             && self.matches_related_event(event, expected, subscription_id)
     }
 
-    /// Correlates transition state, terminal, or connection loss, not enable success.
+    /// Correlates transition state/data, terminal, or connection loss, not enable success.
     /// record_event() separately checks the domain variant and required mode.
     fn matches_related_event(
         &self,
@@ -133,6 +133,20 @@ impl SubscriptionReservation {
             } => {
                 transition.progress.owns_command(*command_id)
                     && expected == *connection_id
+                    && self.session_id == *gatt_session_id
+                    && subscription_id == *event_subscription
+                    && self.characteristic_id == *characteristic_id
+            }
+            // Data has no command ID, but must not overtake earlier state or
+            // terminal callbacks in this transition's existing dispatch buffer.
+            BleEvent::NotificationReceived {
+                connection_id,
+                gatt_session_id,
+                subscription_id: event_subscription,
+                characteristic_id,
+                ..
+            } => {
+                expected == *connection_id
                     && self.session_id == *gatt_session_id
                     && subscription_id == *event_subscription
                     && self.characteristic_id == *characteristic_id

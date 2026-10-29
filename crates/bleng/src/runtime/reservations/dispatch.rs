@@ -1,6 +1,12 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use blehub::{BleEvent, BleEventError, CommandId};
 
 use crate::waiter::WaiterError;
+use tokio::sync::watch;
 
 #[derive(Debug)]
 pub enum ReconciliationFault {
@@ -31,23 +37,160 @@ pub(super) enum BufferedEventDisposition {
     Conflict,
 }
 
+pub(crate) type CancellationReceiver = watch::Receiver<Option<Result<(), WaiterError>>>;
+type CancellationReceiptSender = watch::Sender<Option<Result<(), WaiterError>>>;
+
+// watch publishes the receipt; protocol phase and acceptance stay actor-owned.
+#[derive(Clone, Copy)]
+enum CancellationPhase {
+    Requested,
+    // Native control dispatch has been claimed, not native teardown completed.
+    Dispatched,
+    // Local resolution can precede original dispatch rejection. Preserve whether
+    // dispatch was claimed independently of the observable receipt's value.
+    AcceptedUnclaimed,
+    RejectedUnclaimed,
+    AcceptedClaimed,
+    RejectedClaimed,
+}
+
+struct CancellationRequest {
+    phase: CancellationPhase,
+    receipt: CancellationReceiptSender,
+}
+
+#[derive(Default)]
+enum CancellationState {
+    #[default]
+    Idle,
+    // One allocation per request cycle keeps every idle command compact.
+    // Transitions reuse this block; clear/retirement releases it and its sender.
+    Active(Box<CancellationRequest>),
+}
+
+impl CancellationState {
+    fn phase(&self) -> Option<CancellationPhase> {
+        match self {
+            Self::Idle => None,
+            Self::Active(request) => Some(request.phase),
+        }
+    }
+
+    fn subscribe(&self) -> Option<CancellationReceiver> {
+        match self {
+            Self::Idle => None,
+            Self::Active(request) => Some(request.receipt.subscribe()),
+        }
+    }
+}
+
+pub(crate) enum CancellationDecision {
+    Accepted(CancellationReceiver),
+    AlreadyRequested(CancellationReceiver),
+    AlreadyCompleted,
+    NotCancellable,
+}
+
+/// Handle-local observation of actor-confirmed completion, independent of delivery.
+/// Only the actor's evidence/retirement path writes this monotonic bit.
+#[derive(Clone, Default)]
+pub(crate) struct CompletionObserver(Arc<AtomicBool>);
+
+impl CompletionObserver {
+    pub(crate) fn is_completed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub(in crate::runtime) fn confirm_completed(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Publication only, owned by one connection or scan session. Pending control
+/// delays the whole scope so passive teardown cannot overtake earlier success.
+/// Owners supply their existing progress facts; this is not a routing registry.
+#[derive(Default)]
+pub(super) struct ScopedPublication {
+    events: Vec<BleEvent>,
+}
+
+impl ScopedPublication {
+    pub(super) fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    pub(super) fn allow(
+        &mut self,
+        event: &BleEvent,
+        pending_control: bool,
+        accepted_target: bool,
+    ) -> Result<bool, ReconciliationFault> {
+        if accepted_target && !matches!(event, BleEvent::CommandCompleted { .. }) {
+            return Ok(false);
+        }
+        if pending_control || !self.events.is_empty() {
+            // One aggregate hard cap per connection/scan, not per command.
+            const MAX_DEFERRED_PUBLIC_EVENTS_PER_SCOPE: usize = 64;
+            if self.events.len() >= MAX_DEFERRED_PUBLIC_EVENTS_PER_SCOPE {
+                return Err(ReconciliationFault::BufferOverflow);
+            }
+            self.events.push(event.clone());
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub(super) fn resolve(
+        &mut self,
+        command_id: CommandId,
+        accepted: bool,
+        pending_control: bool,
+    ) -> Vec<BleEvent> {
+        if accepted {
+            self.events.retain(|event| {
+                event.command_id() != Some(command_id)
+                    || matches!(event, BleEvent::CommandCompleted { .. })
+            });
+        }
+        if pending_control {
+            return Vec::new();
+        }
+        std::mem::take(&mut self.events)
+    }
+}
+
 /// Common dispatch and terminal progress, not a generic BLE operation.
 /// Domain evidence and operation-specific error precedence remain in each record.
 pub(super) struct CommandProgress {
     command_id: CommandId,
+    completion: CompletionObserver,
     dispatch_accepted: bool,
     buffered_events: Vec<BleEvent>,
     terminal_result: Option<Result<(), BleEventError>>,
+    cancellation: CancellationState,
 }
 
 impl CommandProgress {
     pub(super) fn new(command_id: CommandId) -> Self {
         Self {
             command_id,
+            completion: CompletionObserver::default(),
             dispatch_accepted: false,
             buffered_events: Vec::new(),
             terminal_result: None,
+            cancellation: CancellationState::Idle,
         }
+    }
+
+    pub(super) fn completion_observer(&self) -> CompletionObserver {
+        self.completion.clone()
+    }
+
+    pub(super) fn cancellation_accepted(&self) -> bool {
+        matches!(
+            self.cancellation.phase(),
+            Some(CancellationPhase::AcceptedUnclaimed | CancellationPhase::AcceptedClaimed)
+        )
     }
 
     pub(super) fn command_id(&self) -> CommandId {
@@ -60,6 +203,73 @@ impl CommandProgress {
 
     pub(super) fn is_awaiting_dispatch_result(&self) -> bool {
         !self.dispatch_accepted
+    }
+
+    pub(super) fn cancellation_requested(&self) -> bool {
+        !matches!(self.cancellation, CancellationState::Idle)
+    }
+
+    pub(super) fn is_awaiting_cancellation_result(&self) -> bool {
+        matches!(
+            self.cancellation.phase(),
+            Some(CancellationPhase::Requested | CancellationPhase::Dispatched)
+        )
+    }
+
+    pub(super) fn request_cancellation(&mut self) -> CancellationDecision {
+        if let Some(receipt) = self.cancellation.subscribe() {
+            return CancellationDecision::AlreadyRequested(receipt);
+        }
+        if self.terminal_result.is_some() {
+            return CancellationDecision::AlreadyCompleted;
+        }
+        let (result_tx, result_rx) = watch::channel(None);
+        self.cancellation = CancellationState::Active(Box::new(CancellationRequest {
+            phase: CancellationPhase::Requested,
+            receipt: result_tx,
+        }));
+        CancellationDecision::Accepted(result_rx)
+    }
+
+    pub(super) fn resolve_cancellation(&mut self, result: Result<(), WaiterError>) {
+        let CancellationState::Active(request) = &mut self.cancellation else {
+            return;
+        };
+        let claimed = matches!(
+            request.phase,
+            CancellationPhase::Dispatched
+                | CancellationPhase::AcceptedClaimed
+                | CancellationPhase::RejectedClaimed
+        );
+        request.phase = match (claimed, result.is_ok()) {
+            (false, true) => CancellationPhase::AcceptedUnclaimed,
+            (false, false) => CancellationPhase::RejectedUnclaimed,
+            (true, true) => CancellationPhase::AcceptedClaimed,
+            (true, false) => CancellationPhase::RejectedClaimed,
+        };
+        request.receipt.send_replace(Some(result));
+    }
+
+    pub(super) fn clear_cancellation(&mut self) {
+        self.cancellation = CancellationState::Idle;
+    }
+
+    /// Claims the one native cancellation dispatch after acceptance.
+    /// A pre-dispatch cancellation remains latched until dispatch resolves.
+    pub(super) fn take_cancellation_dispatch(&mut self) -> bool {
+        if self.is_awaiting_dispatch_result() {
+            return false;
+        }
+        let CancellationState::Active(request) = &mut self.cancellation else {
+            return false;
+        };
+        request.phase = match request.phase {
+            CancellationPhase::Requested => CancellationPhase::Dispatched,
+            CancellationPhase::AcceptedUnclaimed => CancellationPhase::AcceptedClaimed,
+            CancellationPhase::RejectedUnclaimed => CancellationPhase::RejectedClaimed,
+            _ => return false,
+        };
+        true
     }
 
     pub(super) fn buffer(&mut self, event: BleEvent) -> Result<(), ReconciliationFault> {
@@ -79,6 +289,10 @@ impl CommandProgress {
     /// Acknowledges acceptance and transfers early callbacks for ordered replay.
     /// Normal acceptance requests no cleanup or fault action.
     pub(super) fn accepted_resolution(&mut self) -> DispatchResolution {
+        if self.dispatch_accepted {
+            // A duplicate acknowledgement cannot replay early callbacks again.
+            return DispatchResolution::default();
+        }
         self.dispatch_accepted = true;
         DispatchResolution {
             events_to_replay: self.take_buffered_events(),
@@ -144,9 +358,10 @@ impl CommandProgress {
 
     /// Command evidence is complete after accepted dispatch and a terminal failure,
     /// or a terminal success with all required correlated domain evidence.
-    /// This neither depends on a live waiter nor proves native resources can retire.
+    /// Keep the receipt owner alive if native evidence beats its cancellation
+    /// control result. This neither depends on a live waiter nor proves native rollback.
     pub(super) fn is_complete(&self, domain_evidence_ready: bool) -> bool {
-        if !self.dispatch_accepted {
+        if !self.dispatch_accepted || self.is_awaiting_cancellation_result() {
             return false;
         }
         match self.terminal_result.as_ref() {
@@ -154,5 +369,13 @@ impl CommandProgress {
             Some(Err(_)) => true,
             Some(Ok(())) => domain_evidence_ready,
         }
+    }
+}
+
+impl Drop for CommandProgress {
+    fn drop(&mut self) {
+        // Actor-owned retirement/rejection/loss ends the command even if its
+        // caller receiver is gone. Close/Fault still take precedence in control.
+        self.completion.confirm_completed();
     }
 }

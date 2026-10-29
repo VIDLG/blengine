@@ -5,9 +5,10 @@ use std::sync::{
 
 use blehub::{
     BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleHubError,
-    CommandDispatchError, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
-    EventIngressStatus, InitializeCommand, Platform, ReadCharacteristicCommand, ReadRssiCommand,
-    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    CancelOperationRequest, CommandDispatchError, ConnectCommand, DisconnectCommand,
+    DiscoverGattCommand, EventIngressStatus, InitializeCommand, Platform,
+    ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand, StartScanCommand,
+    StopScanCommand, WriteCharacteristicCommand,
 };
 
 use crate::{
@@ -19,12 +20,19 @@ struct FakeBackendState {
     capabilities: BackendCapabilities,
     ingress: Mutex<Option<Arc<BackendEventIngressHandle>>>,
     runner: ScenarioRunner,
+    cancellation_policy: CancellationPolicy,
     disposed: AtomicBool,
     dispose_count: AtomicUsize,
 }
 
 pub struct FakeBackend {
     state: Arc<FakeBackendState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancellationPolicy {
+    Reject,
+    Accept,
 }
 
 #[derive(Clone)]
@@ -36,7 +44,14 @@ impl FakeBackend {
     pub fn scripted(
         scenarios: impl IntoIterator<Item = EventScenario>,
     ) -> (Self, FakeBackendHandle) {
-        Self::scripted_with_capabilities(
+        Self::scripted_with_cancellation(scenarios, CancellationPolicy::Reject)
+    }
+
+    pub fn scripted_with_cancellation(
+        scenarios: impl IntoIterator<Item = EventScenario>,
+        cancellation_policy: CancellationPolicy,
+    ) -> (Self, FakeBackendHandle) {
+        Self::scripted_with_capabilities_and_cancellation(
             BackendCapabilities {
                 supports_duplicate_scan_results: true,
                 supports_connectable_flag: true,
@@ -47,6 +62,7 @@ impl FakeBackend {
                 ..BackendCapabilities::new(Platform::Test)
             },
             scenarios,
+            cancellation_policy,
         )
     }
 
@@ -54,10 +70,23 @@ impl FakeBackend {
         capabilities: BackendCapabilities,
         scenarios: impl IntoIterator<Item = EventScenario>,
     ) -> (Self, FakeBackendHandle) {
+        Self::scripted_with_capabilities_and_cancellation(
+            capabilities,
+            scenarios,
+            CancellationPolicy::Reject,
+        )
+    }
+
+    pub fn scripted_with_capabilities_and_cancellation(
+        capabilities: BackendCapabilities,
+        scenarios: impl IntoIterator<Item = EventScenario>,
+        cancellation_policy: CancellationPolicy,
+    ) -> (Self, FakeBackendHandle) {
         let state = Arc::new(FakeBackendState {
             capabilities,
             ingress: Mutex::new(None),
             runner: ScenarioRunner::new(scenarios),
+            cancellation_policy,
             disposed: AtomicBool::new(false),
             dispose_count: AtomicUsize::new(0),
         });
@@ -151,6 +180,18 @@ impl BleBackend for FakeBackend {
 
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
         self.dispatch(RecordedCommand::ReadRssi(command))
+    }
+
+    fn cancel_operation(
+        &self,
+        request: CancelOperationRequest,
+    ) -> Result<(), CommandDispatchError> {
+        match self.state.cancellation_policy {
+            CancellationPolicy::Accept => Ok(()),
+            CancellationPolicy::Reject => Err(CommandDispatchError::OperationNotCancellable {
+                target_command_id: request.target_command_id,
+            }),
+        }
     }
 
     fn dispose(&self) -> Result<(), BleHubError> {

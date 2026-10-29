@@ -1,6 +1,6 @@
 use blehub::{BleEvent, CommandId, ConnectionId, GattDatabase, GattSessionId};
 
-use crate::waiter::{WaiterError, WaiterSuccess};
+use crate::waiter::{WaiterOutcome, WaiterSuccess};
 
 use super::{connection::connection_lost, dispatch::CommandProgress};
 
@@ -115,7 +115,7 @@ impl GattDiscoveryReservation {
 
     /// Queries this already-selected discovery; None means incomplete evidence.
     /// Does not commit the draft or retire discovery; settlement must happen first.
-    pub(super) fn waiter_result(&self) -> Option<Result<WaiterSuccess, WaiterError>> {
+    pub(super) fn waiter_result(&self) -> Option<WaiterOutcome> {
         if let Err(error) = self.progress.terminal_result()? {
             return Some(Err(error));
         }
