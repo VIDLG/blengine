@@ -8,15 +8,16 @@ use blehub::{
 
 use crate::waiter::{WaiterError, WaiterOutcome};
 
+use super::super::{command::ConnectionOperationKind, shared::CompletionObserver};
 use super::{
-    connection::{ConnectionReservation, DispatchPendingRoute},
-    dispatch::{CancellationDecision, CompletionObserver, DispatchResolution, ReconciliationFault},
+    connection::ConnectionReservation,
+    dispatch::{CancellationDecision, DispatchResolution, ReconciliationFault},
     gatt::GattAccess,
 };
 
 /// Actor-local ownership of connection lifecycles, keyed only by peripheral.
-/// Lookups by connection or command ID traverse the same records; there is no
-/// second index to keep synchronized. Only this container inserts/removes roots.
+/// Production command routing supplies the connection identity; low-level fallback
+/// queries remain available for reservation tests. Only this container inserts/removes roots.
 #[derive(Default)]
 pub struct ConnectionReservations {
     by_peripheral: HashMap<PeripheralId, ConnectionReservation>,
@@ -29,20 +30,35 @@ impl ConnectionReservations {
     pub fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
         // Category priority is global, not per connection. A malformed callback
         // can identify one connection by command and another by connection ID.
-        for route in [
-            DispatchPendingRoute::Disconnect,
-            DispatchPendingRoute::Discovery,
-            DispatchPendingRoute::Rssi,
-            DispatchPendingRoute::Read,
-            DispatchPendingRoute::Write,
-            DispatchPendingRoute::Subscription,
-            DispatchPendingRoute::Connect,
+        for kind in [
+            ConnectionOperationKind::Disconnect,
+            ConnectionOperationKind::DiscoverGatt,
+            ConnectionOperationKind::ReadRssi,
+            ConnectionOperationKind::Read,
+            ConnectionOperationKind::Write,
+            ConnectionOperationKind::EnableNotifications,
+            ConnectionOperationKind::Connect,
         ] {
             for connection in self.by_peripheral.values_mut() {
-                if connection.buffer_pending_dispatch_event(route, &event)? {
+                if connection.buffer_pending_dispatch_event(kind, &event)? {
                     return Ok(None);
                 }
             }
+        }
+        Ok(Some(event))
+    }
+
+    pub fn gate_event_for(
+        &mut self,
+        connection_id: ConnectionId,
+        kind: ConnectionOperationKind,
+        event: BleEvent,
+    ) -> Result<Option<BleEvent>, ReconciliationFault> {
+        let Some(connection) = self.find_mut(connection_id) else {
+            return Ok(Some(event));
+        };
+        if connection.buffer_pending_dispatch_event(kind, &event)? {
+            return Ok(None);
         }
         Ok(Some(event))
     }
@@ -65,6 +81,7 @@ impl ConnectionReservations {
 
     /// Returns None when no retained connection command owns this dispatch result.
     /// Otherwise updates reservations and returns ordered replay plus actor actions.
+    #[cfg(test)]
     pub fn resolve_dispatch(
         &mut self,
         command_id: CommandId,
@@ -79,13 +96,46 @@ impl ConnectionReservations {
         Some(resolution)
     }
 
-    /// Routes cancellation by command ID without maintaining a second index.
-    /// `None` means the command is not retained by any connection.
+    /// Resolves a command through its actor-provided connection route.
+    /// The route avoids scanning every peripheral; the connection still owns
+    /// the operation-specific evidence and command progress.
+    pub fn resolve_dispatch_for(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+        result: &Result<(), CommandDispatchError>,
+    ) -> Option<DispatchResolution> {
+        let (peripheral_id, root_rejected, resolution) = {
+            let (peripheral_id, connection) = self.find_mut_with_key(connection_id)?;
+            let root_rejected = result.is_err() && connection.owns_root_command(command_id);
+            let resolution = connection.resolve_dispatch(command_id, result)?;
+            (peripheral_id, root_rejected, resolution)
+        };
+        if root_rejected {
+            self.remove(peripheral_id);
+        }
+        Some(resolution)
+    }
+
+    /// Low-level fallback used by reservation tests and generic diagnostics.
+    /// Actor command handling uses `request_cancellation_for` after route lookup.
+    #[cfg(test)]
     pub fn request_cancellation(&mut self, command_id: CommandId) -> Option<CancellationDecision> {
         self.find_command_mut(command_id)
             .and_then(|(_, connection)| connection.request_cancellation(command_id))
     }
 
+    pub fn completion_observer_for(
+        &self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> Option<CompletionObserver> {
+        self.find(connection_id)
+            .and_then(|(_, connection)| connection.progress(command_id))
+            .map(|progress| progress.completion_observer())
+    }
+
+    #[cfg(test)]
     pub fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
         self.by_peripheral
             .values()
@@ -118,20 +168,33 @@ impl ConnectionReservations {
         }
     }
 
-    pub fn take_cancellation_public_events(
+    pub fn allow_publication_for(
         &mut self,
+        connection_id: ConnectionId,
+        event: &BleEvent,
+    ) -> Result<Option<bool>, ReconciliationFault> {
+        match self.find_mut(connection_id) {
+            Some(connection) => connection.allow_publication(event).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub fn take_cancellation_public_events_for(
+        &mut self,
+        connection_id: ConnectionId,
         command_id: CommandId,
     ) -> Option<Vec<BleEvent>> {
-        self.find_command_mut(command_id)?
-            .1
+        self.find_mut(connection_id)?
             .take_cancellation_public_events(command_id)
     }
 
+    #[cfg(test)]
     pub fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
         self.find_command_mut(command_id)
             .is_some_and(|(_, connection)| connection.take_cancellation_dispatch(command_id))
     }
 
+    #[cfg(test)]
     pub fn resolve_cancellation(
         &mut self,
         command_id: CommandId,
@@ -139,17 +202,6 @@ impl ConnectionReservations {
     ) -> bool {
         self.find_command_mut(command_id)
             .is_some_and(|(_, connection)| connection.resolve_cancellation(command_id, result))
-    }
-
-    pub fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
-        self.find_command_mut(command_id)
-            .is_some_and(|(_, connection)| connection.clear_cancellation(command_id))
-    }
-
-    pub fn cancellation_requested(&self, command_id: CommandId) -> bool {
-        self.by_peripheral
-            .values()
-            .any(|connection| connection.cancellation_requested(command_id))
     }
 
     pub fn is_foreign_disconnect(&self, event: &BleEvent) -> bool {
@@ -378,6 +430,16 @@ impl ConnectionReservations {
             .find(|connection| connection.matches_connection_id(connection_id))
     }
 
+    fn find_mut_with_key(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Option<(PeripheralId, &mut ConnectionReservation)> {
+        self.by_peripheral
+            .iter_mut()
+            .find(|(_, connection)| connection.matches_connection_id(connection_id))
+            .map(|(peripheral_id, connection)| (*peripheral_id, connection))
+    }
+
     fn find_command_mut(
         &mut self,
         command_id: CommandId,
@@ -397,6 +459,7 @@ impl ConnectionReservations {
 
     /// Records the first terminal in its owning command, ignoring unowned IDs.
     /// No ownership result is needed: this collection is the actor's final route.
+    #[cfg(test)]
     pub fn record_terminal(&mut self, command_id: CommandId, result: &Result<(), BleEventError>) {
         for connection in self.by_peripheral.values_mut() {
             if connection.record_terminal(command_id, result) {
@@ -405,21 +468,94 @@ impl ConnectionReservations {
         }
     }
 
+    pub fn record_terminal_for(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+        result: &Result<(), BleEventError>,
+    ) {
+        if let Some(connection) = self.find_mut(connection_id) {
+            connection.record_terminal(command_id, result);
+        }
+    }
+
     /// Queries a deliverable result without advancing or retiring reservations.
     /// None means unowned or incomplete, not operation failure.
+    #[cfg(test)]
     pub fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         self.by_peripheral
             .values()
             .find_map(|connection| connection.waiter_result(command_id))
     }
 
+    pub fn waiter_result_for(
+        &self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> Option<WaiterOutcome> {
+        self.find(connection_id)
+            .and_then(|(_, connection)| connection.waiter_result(command_id))
+    }
+
+    pub fn request_cancellation_for(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> Option<CancellationDecision> {
+        self.find_mut(connection_id)
+            .and_then(|connection| connection.request_cancellation(command_id))
+    }
+
+    pub fn take_cancellation_dispatch_for(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> bool {
+        self.find_mut(connection_id)
+            .is_some_and(|connection| connection.take_cancellation_dispatch(command_id))
+    }
+
+    pub fn resolve_cancellation_for(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+        result: Result<(), WaiterError>,
+    ) -> bool {
+        self.find_mut(connection_id)
+            .is_some_and(|connection| connection.resolve_cancellation(command_id, result))
+    }
+
+    pub fn clear_cancellation_for(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> bool {
+        self.find_mut(connection_id)
+            .is_some_and(|connection| connection.clear_cancellation(command_id))
+    }
+
+    pub fn cancellation_requested_for(
+        &self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> bool {
+        self.find(connection_id)
+            .is_some_and(|(_, connection)| connection.cancellation_requested(command_id))
+    }
+
     /// Call only after settling affected waiters, including after late callbacks.
-    /// Retires completed child operations before removing retirable connection roots;
-    /// caller timeout or cancellation alone permits neither kind of retirement.
-    pub fn retire_completed(&mut self) {
+    /// Returns every command whose child or connection reservation was released.
+    pub fn retire_completed(&mut self) -> Vec<CommandId> {
+        let mut retired = Vec::new();
         self.by_peripheral.retain(|_, connection| {
-            connection.retire_completed_operations();
-            !connection.is_retirable()
+            retired.extend(connection.retire_completed_operations());
+            if connection.is_retirable() {
+                retired.extend(connection.command_ids());
+                false
+            } else {
+                true
+            }
         });
+        retired
     }
 }

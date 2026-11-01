@@ -2,14 +2,29 @@
 
 use std::sync::{
     Arc, OnceLock,
-    atomic::{AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
 };
 
 use blehub::CommandId;
 
 use crate::waiter::{WaiterError, WaiterSender};
 
-use super::reservations::CompletionObserver;
+/// Cloneable observation of actor-confirmed native completion.
+///
+/// The actor/reservation retirement path is the only writer. Readers may outlive
+/// caller delivery, so this latch is separate from waiter/result ownership.
+#[derive(Clone, Default)]
+pub(crate) struct CompletionObserver(Arc<AtomicBool>);
+
+impl CompletionObserver {
+    pub(crate) fn is_completed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub(in crate::runtime) fn confirm_completed(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 
 /// Nonzero IDs. Separate command and actor-owned resource allocators never
 /// wrap or reuse IDs; allocation is not rolled back after failed admission.

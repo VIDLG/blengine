@@ -1,5 +1,5 @@
 use super::super::dispatch::{
-    CancellationDecision, CancellationReceiver, CommandProgress, DispatchAction,
+    CancellationDecision, CancellationReceiver, CommandProgress, DispatchAction, ScopedPublication,
 };
 use crate::waiter::WaiterError;
 use blehub::{BleErrorCategory, BleEventError};
@@ -320,7 +320,7 @@ fn typed_boundary_duplicate_dispatch_ack_does_not_drain_pending_public_evidence(
         command_id: 1.into(),
         error: None,
     };
-    let mut publication = super::super::dispatch::ScopedPublication::default();
+    let mut publication = ScopedPublication::default();
     assert!(!publication.allow(&event, true, false).unwrap());
     assert!(
         progress.accepted_resolution().events_to_replay.is_empty(),

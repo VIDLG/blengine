@@ -37,20 +37,21 @@ impl GattReservation {
     }
 
     /// Retires discovery only after dispatch acknowledgement and completion.
-    /// Success requires both a database draft and a successful terminal; failure
-    /// preserves the committed database. Callers settle the waiter before calling this.
-    pub(super) fn retire_completed_discovery(&mut self) {
+    /// Returns the retired command while preserving the committed database rules.
+    pub(super) fn retire_completed_discovery(&mut self) -> Option<CommandId> {
         if !self
             .discovery
             .as_ref()
             .is_some_and(GattDiscoveryReservation::is_retirable)
         {
-            return;
+            return None;
         }
         let discovery = self.discovery.take().expect("completed discovery exists");
+        let command_id = discovery.progress.command_id();
         if discovery.is_successful() {
             self.database = discovery.draft_database;
         }
+        Some(command_id)
     }
 }
 

@@ -99,10 +99,16 @@ fn reserve_connect(
     let (id, result) = actor
         .register_waiter(WaiterExpectation::Connected(connection.into()))
         .unwrap();
+    actor.reservations.test_connections().reserve_connection(
+        peripheral.into(),
+        id,
+        connection.into(),
+    );
     actor
-        .connections
-        .reserve_connection(peripheral.into(), id, connection.into());
-    actor.connections.resolve_dispatch(id, &Ok(())).unwrap();
+        .reservations
+        .test_connections()
+        .resolve_dispatch(id, &Ok(()))
+        .unwrap();
     (id, result)
 }
 
@@ -124,19 +130,35 @@ fn reserve_read(actor: &mut BlengActor, characteristic: u64) -> (CommandId, Resu
             characteristic.into(),
         ))
         .unwrap();
+    actor.reservations.test_connections().reserve_read(
+        20.into(),
+        id,
+        30.into(),
+        characteristic.into(),
+    );
     actor
-        .connections
-        .reserve_read(20.into(), id, 30.into(), characteristic.into());
-    actor.connections.resolve_dispatch(id, &Ok(())).unwrap();
+        .reservations
+        .test_connections()
+        .resolve_dispatch(id, &Ok(()))
+        .unwrap();
     (id, result)
 }
 
 fn cancel(actor: &mut BlengActor, command_id: CommandId) -> CancellationReceiver {
-    let receipt = match actor.connections.request_cancellation(command_id) {
+    let receipt = match actor
+        .reservations
+        .test_connections()
+        .request_cancellation(command_id)
+    {
         Some(CancellationDecision::Accepted(receipt)) => receipt,
         _ => panic!("cancellation must be admitted"),
     };
-    assert!(actor.connections.take_cancellation_dispatch(command_id));
+    assert!(
+        actor
+            .reservations
+            .test_connections()
+            .take_cancellation_dispatch(command_id)
+    );
     receipt
 }
 
@@ -193,17 +215,21 @@ fn reserve_notification_transition(
     let (id, result) = actor.register_waiter(expectation).unwrap();
     if disabling {
         actor
-            .connections
+            .reservations
+            .test_connections()
             .reserve_notification_disable(20.into(), id, 50.into());
     } else {
-        actor.connections.reserve_notification_enable(
-            20.into(),
-            id,
-            50.into(),
-            30.into(),
-            40.into(),
-            blehub::NotificationModeRequest::PlatformDefault,
-        );
+        actor
+            .reservations
+            .test_connections()
+            .reserve_notification_enable(
+                20.into(),
+                id,
+                50.into(),
+                30.into(),
+                40.into(),
+                blehub::NotificationModeRequest::PlatformDefault,
+            );
     }
     (id, result)
 }
@@ -409,7 +435,11 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
         let (id, mut result) = reserve_notification_transition(&mut actor, true);
         resolve_notification_dispatch(&mut actor, id, Ok(()));
         drain(&mut rx);
-        let completion = actor.connections.completion_observer(id).unwrap();
+        let completion = actor
+            .reservations
+            .test_connections()
+            .completion_observer(id)
+            .unwrap();
         let receipt = cancel(&mut actor, id);
         let error = blehub::BleEventError {
             category: if accepted {
@@ -451,7 +481,8 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
             assert!(matches!(receipt.has_changed(), Ok(false)));
             assert_eq!(
                 actor
-                    .connections
+                    .reservations
+                    .test_connections()
                     .validate_notification_disable(10.into(), 30.into(), 50.into()),
                 Err(WaiterError::OperationBusy),
                 "terminal must not release the disable transition before its receipt"
@@ -464,11 +495,20 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
             }
         }
         assert!(completion.is_completed());
-        let retry_receipt = match actor.connections.request_cancellation(id) {
+        let retry_receipt = match actor
+            .reservations
+            .test_connections()
+            .request_cancellation(id)
+        {
             Some(CancellationDecision::AlreadyRequested(receipt)) => receipt,
             _ => panic!("terminal must not retire the pending receipt owner"),
         };
-        assert!(!actor.connections.take_cancellation_dispatch(id));
+        assert!(
+            !actor
+                .reservations
+                .test_connections()
+                .take_cancellation_dispatch(id)
+        );
         let control_result = control(id, accepted);
         actor.handle_cancellation_result(id, control_result.clone());
         assert_eq!(*receipt.borrow(), Some(control_result.clone()));
@@ -489,7 +529,13 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
             })
         );
         assert_eq!(result.try_recv(), Err(oneshot::error::TryRecvError::Closed));
-        assert!(actor.connections.completion_observer(id).is_none());
+        assert!(
+            actor
+                .reservations
+                .test_connections()
+                .completion_observer(id)
+                .is_none()
+        );
         actor.handle_cancellation_result(id, control_result.clone());
         assert!(
             drain(&mut rx).is_empty(),
@@ -502,12 +548,16 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
             // new enable. Only a fresh explicit disable may retire that route.
             assert_eq!(
                 actor
-                    .connections
+                    .reservations
+                    .test_connections()
                     .validate_notification_disable(10.into(), 30.into(), 50.into()),
                 Ok((20.into(), 40.into()))
             );
             assert_eq!(
-                actor.connections.validate_gatt_discovery(10.into()),
+                actor
+                    .reservations
+                    .test_connections()
+                    .validate_gatt_discovery(10.into()),
                 Err(WaiterError::GattBusy)
             );
             let observed = notification(10.into());
@@ -524,7 +574,8 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
                 .unwrap();
             assert_ne!(retry, id);
             actor
-                .connections
+                .reservations
+                .test_connections()
                 .reserve_notification_disable(20.into(), retry, 50.into());
             resolve_notification_dispatch(&mut actor, retry, Ok(()));
             actor.handle_cancellation_result(id, control_result);
@@ -549,16 +600,23 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
         }
         assert_eq!(
             actor
-                .connections
+                .reservations
+                .test_connections()
                 .validate_notification_disable(10.into(), 30.into(), 50.into()),
             Err(WaiterError::SubscriptionNotActive)
         );
         assert_eq!(
-            actor.connections.validate_gatt_discovery(10.into()),
+            actor
+                .reservations
+                .test_connections()
+                .validate_gatt_discovery(10.into()),
             Ok(20.into())
         );
         assert_eq!(
-            actor.connections.require_peripheral_available(20.into()),
+            actor
+                .reservations
+                .test_connections()
+                .require_peripheral_available(20.into()),
             Err(WaiterError::PeripheralBusy)
         );
         assert!(
@@ -611,7 +669,8 @@ fn publication_order_connection_teardown_cannot_overtake_pending_connect_evidenc
             );
             assert_eq!(
                 actor
-                    .connections
+                    .reservations
+                    .test_connections()
                     .require_peripheral_available(PeripheralId::from(20)),
                 Ok(())
             );
@@ -633,13 +692,25 @@ fn publication_order_scan_stop_cannot_overtake_pending_start_evidence() {
             let (id, mut result) = actor
                 .register_waiter(WaiterExpectation::ScanStarted(1.into()))
                 .unwrap();
-            actor.scan.reserve_scan_start(id, 1.into());
-            actor.scan.resolve_dispatch(id, &Ok(())).unwrap();
-            let receipt = match actor.scan.request_cancellation(id) {
+            actor
+                .reservations
+                .test_scan()
+                .reserve_scan_start(id, 1.into());
+            actor
+                .reservations
+                .test_scan()
+                .resolve_dispatch(id, &Ok(()))
+                .unwrap();
+            let receipt = match actor.reservations.test_scan().request_cancellation(id) {
                 Some(CancellationDecision::Accepted(receipt)) => receipt,
                 _ => panic!("scan cancellation must be admitted"),
             };
-            assert!(actor.scan.take_cancellation_dispatch(id));
+            assert!(
+                actor
+                    .reservations
+                    .test_scan()
+                    .take_cancellation_dispatch(id)
+            );
             let domain = BleEvent::ScanStarted {
                 command_id: id,
                 scan_id: 1.into(),
@@ -676,7 +747,10 @@ fn publication_order_scan_stop_cannot_overtake_pending_start_evidence() {
                     Ok(WaiterSuccess::ScanStarted(1.into()))
                 })
             );
-            assert_eq!(actor.scan.require_scan_available(), Ok(()));
+            assert_eq!(
+                actor.reservations.test_scan().require_scan_available(),
+                Ok(())
+            );
             actor.handle_cancellation_result(id, control(id, accepted));
             assert!(drain(&mut rx).is_empty());
             assert!(lifecycle.is_open());
@@ -715,8 +789,15 @@ fn publication_order_multiple_controls_share_one_connection_order_without_blocki
                 let (scan, mut scan_result) = actor
                     .register_waiter(WaiterExpectation::ScanStarted(1.into()))
                     .unwrap();
-                actor.scan.reserve_scan_start(scan, 1.into());
-                actor.scan.resolve_dispatch(scan, &Ok(())).unwrap();
+                actor
+                    .reservations
+                    .test_scan()
+                    .reserve_scan_start(scan, 1.into());
+                actor
+                    .reservations
+                    .test_scan()
+                    .resolve_dispatch(scan, &Ok(()))
+                    .unwrap();
                 let scan_events = [
                     BleEvent::ScanStarted {
                         command_id: scan,
@@ -819,13 +900,23 @@ fn publication_order_dispatch_rejection_finishes_pending_control_without_strandi
             ))
             .unwrap();
         actor
-            .connections
+            .reservations
+            .test_connections()
             .reserve_read(20.into(), a, 30.into(), 40.into());
-        let receipt_a = match actor.connections.request_cancellation(a) {
+        let receipt_a = match actor
+            .reservations
+            .test_connections()
+            .request_cancellation(a)
+        {
             Some(CancellationDecision::Accepted(receipt)) => receipt,
             _ => panic!("pre-dispatch cancellation must be admitted"),
         };
-        assert!(!actor.connections.take_cancellation_dispatch(a));
+        assert!(
+            !actor
+                .reservations
+                .test_connections()
+                .take_cancellation_dispatch(a)
+        );
         let sibling = other_pending.then(|| {
             let (b, result_b) = reserve_read(&mut actor, 41);
             let receipt_b = cancel(&mut actor, b);
@@ -876,7 +967,11 @@ fn connect_result_after_rejected_control(stages: &[u8]) {
     for &stage in stages {
         let (mut actor, mut rx, lifecycle) = fixture();
         let (id, mut result) = reserve_connect(&mut actor, 20, 10);
-        let completion = actor.connections.completion_observer(id).unwrap();
+        let completion = actor
+            .reservations
+            .test_connections()
+            .completion_observer(id)
+            .unwrap();
         let receipt = cancel(&mut actor, id);
         let error = blehub::BleEventError {
             category: blehub::BleErrorCategory::Connection,
@@ -917,7 +1012,10 @@ fn connect_result_after_rejected_control(stages: &[u8]) {
         actor.handle_ingress_event(loss.clone());
         events.push(loss);
         assert_eq!(
-            actor.connections.validate_rssi(10.into()),
+            actor
+                .reservations
+                .test_connections()
+                .validate_rssi(10.into()),
             Err(WaiterError::ConnectionNotActive)
         );
         if expected.is_some() {
@@ -947,7 +1045,10 @@ fn connect_result_after_rejected_control(stages: &[u8]) {
         }
         assert_eq!(drain(&mut rx), events);
         assert_eq!(
-            actor.connections.require_peripheral_available(20.into()),
+            actor
+                .reservations
+                .test_connections()
+                .require_peripheral_available(20.into()),
             Ok(())
         );
         actor.handle_cancellation_result(id, control(id, false));
@@ -974,7 +1075,11 @@ fn read_result_after_rejected_control(stages: &[u8]) {
         drain(&mut rx);
         let (id, mut result) = reserve_read(&mut actor, 40);
         let (_, mut sibling_result) = reserve_read(&mut actor, 41);
-        let completion = actor.connections.completion_observer(id).unwrap();
+        let completion = actor
+            .reservations
+            .test_connections()
+            .completion_observer(id)
+            .unwrap();
         let receipt = cancel(&mut actor, id);
         let error = blehub::BleEventError {
             category: blehub::BleErrorCategory::Permission,
@@ -1022,7 +1127,10 @@ fn read_result_after_rejected_control(stages: &[u8]) {
             Ok(Err(WaiterError::Disconnected))
         );
         assert_eq!(
-            actor.connections.validate_rssi(10.into()),
+            actor
+                .reservations
+                .test_connections()
+                .validate_rssi(10.into()),
             Err(WaiterError::ConnectionNotActive)
         );
         if expected.is_some() {
@@ -1052,7 +1160,10 @@ fn read_result_after_rejected_control(stages: &[u8]) {
         }
         assert_eq!(drain(&mut rx), events);
         assert_eq!(
-            actor.connections.require_peripheral_available(20.into()),
+            actor
+                .reservations
+                .test_connections()
+                .require_peripheral_available(20.into()),
             Ok(())
         );
         actor.handle_cancellation_result(id, rejection);
@@ -1099,7 +1210,10 @@ fn cancel_loss_cancelled_terminal_before_loss_preserves_target_without_delaying_
                     "loss must settle an unfinished sibling before the next callback or receipt"
                 );
                 assert_eq!(
-                    actor.connections.validate_rssi(10.into()),
+                    actor
+                        .reservations
+                        .test_connections()
+                        .validate_rssi(10.into()),
                     Err(WaiterError::ConnectionNotActive),
                     "pending cancellation must not postpone recording connection loss"
                 );
@@ -1131,7 +1245,10 @@ fn cancel_loss_cancelled_terminal_before_loss_preserves_target_without_delaying_
             "public evidence retains its FIFO order"
         );
         assert_eq!(
-            actor.connections.require_peripheral_available(20.into()),
+            actor
+                .reservations
+                .test_connections()
+                .require_peripheral_available(20.into()),
             Ok(())
         );
         actor.handle_cancellation_result(target, Ok(()));
@@ -1144,7 +1261,13 @@ fn cancel_loss_cancelled_terminal_before_loss_preserves_target_without_delaying_
             sibling_result.try_recv(),
             Err(oneshot::error::TryRecvError::Closed)
         );
-        assert!(actor.connections.request_cancellation(sibling).is_none());
+        assert!(
+            actor
+                .reservations
+                .test_connections()
+                .request_cancellation(sibling)
+                .is_none()
+        );
         assert!(lifecycle.is_open());
     }
 }
@@ -1158,15 +1281,22 @@ fn cancel_loss_completed_disconnect_is_completed_while_sibling_control_retains_r
         let (read, mut read_result) = reserve_read(&mut actor, 40);
         let receipt = cancel(&mut actor, read);
         assert_eq!(
-            actor.connections.validate_disconnect(10.into()),
+            actor
+                .reservations
+                .test_connections()
+                .validate_disconnect(10.into()),
             Ok(20.into())
         );
         let (disconnect, mut disconnect_result) = actor
             .register_waiter(WaiterExpectation::Disconnected(10.into()))
             .unwrap();
-        actor.connections.reserve_disconnect(20.into(), disconnect);
         actor
-            .connections
+            .reservations
+            .test_connections()
+            .reserve_disconnect(20.into(), disconnect);
+        actor
+            .reservations
+            .test_connections()
             .resolve_dispatch(disconnect, &Ok(()))
             .unwrap();
         let prepared = kameo::actor::PreparedActor::<BlengActor>::new(kameo::mailbox::bounded(1));
@@ -1177,7 +1307,11 @@ fn cancel_loss_completed_disconnect_is_completed_while_sibling_control_retains_r
             request_cancel(&mut actor),
             Err(WaiterError::OperationNotCancellable(id)) if id == disconnect
         ));
-        let completion = actor.connections.completion_observer(disconnect).unwrap();
+        let completion = actor
+            .reservations
+            .test_connections()
+            .completion_observer(disconnect)
+            .unwrap();
         let domain = BleEvent::ConnectionStateChanged {
             command_id: Some(disconnect),
             connection_id: 10.into(),
@@ -1208,7 +1342,10 @@ fn cancel_loss_completed_disconnect_is_completed_while_sibling_control_retains_r
         assert!(completion.is_completed());
         assert!(receipt.borrow().is_none());
         assert_eq!(
-            actor.connections.require_peripheral_available(20.into()),
+            actor
+                .reservations
+                .test_connections()
+                .require_peripheral_available(20.into()),
             Err(WaiterError::PeripheralBusy),
             "the unresolved sibling receipt still owns the retired connection root"
         );
@@ -1221,7 +1358,10 @@ fn cancel_loss_completed_disconnect_is_completed_while_sibling_control_retains_r
         assert_eq!(*receipt.borrow(), Some(control(read, false)));
         assert_eq!(drain(&mut rx), events);
         assert_eq!(
-            actor.connections.require_peripheral_available(20.into()),
+            actor
+                .reservations
+                .test_connections()
+                .require_peripheral_available(20.into()),
             Ok(())
         );
         actor.handle_cancellation_result(read, control(read, false));
@@ -1281,13 +1421,25 @@ fn publication_order_scan_has_a_64_event_bound_including_passive_stop() {
     let (id, mut result) = actor
         .register_waiter(WaiterExpectation::ScanStarted(1.into()))
         .unwrap();
-    actor.scan.reserve_scan_start(id, 1.into());
-    actor.scan.resolve_dispatch(id, &Ok(())).unwrap();
+    actor
+        .reservations
+        .test_scan()
+        .reserve_scan_start(id, 1.into());
+    actor
+        .reservations
+        .test_scan()
+        .resolve_dispatch(id, &Ok(()))
+        .unwrap();
     assert!(matches!(
-        actor.scan.request_cancellation(id),
+        actor.reservations.test_scan().request_cancellation(id),
         Some(CancellationDecision::Accepted(_))
     ));
-    assert!(actor.scan.take_cancellation_dispatch(id));
+    assert!(
+        actor
+            .reservations
+            .test_scan()
+            .take_cancellation_dispatch(id)
+    );
     for _ in 0..64 {
         actor.handle_ingress_event(stopped());
     }

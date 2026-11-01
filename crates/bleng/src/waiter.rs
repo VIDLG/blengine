@@ -172,6 +172,25 @@ impl From<WaiterCloseReason> for WaiterError {
     }
 }
 
+impl WaiterError {
+    /// Maps the backend receipt for an explicit cancellation request.
+    /// Ordinary operation dispatches must keep using `DispatchRejected`.
+    pub(crate) fn from_cancellation_dispatch(error: CommandDispatchError) -> Self {
+        match error {
+            CommandDispatchError::OperationNotFound { target_command_id } => {
+                Self::OperationNotFound(target_command_id)
+            }
+            CommandDispatchError::OperationAlreadyCompleted { target_command_id } => {
+                Self::OperationAlreadyCompleted(target_command_id)
+            }
+            CommandDispatchError::OperationNotCancellable { target_command_id } => {
+                Self::OperationNotCancellable(target_command_id)
+            }
+            error => Self::DispatchRejected(error),
+        }
+    }
+}
+
 /// Shared access to one sender, never a second delivery channel. Local queued
 /// cancellation and actor settlement compete to take it exactly once.
 #[derive(Clone)]

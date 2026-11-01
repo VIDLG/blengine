@@ -23,6 +23,7 @@
 
 mod actor;
 mod backend_port;
+mod command;
 mod lifecycle;
 mod messages;
 mod operation;
@@ -32,6 +33,8 @@ mod shared;
 
 use actor::BlengActor;
 pub(super) use backend_port::{AssemblyError, BackendPort};
+
+pub(super) use command::{CommandDirectory, CommandRoute};
 pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
 pub(crate) use messages::{
     BeginConnect, BeginDisableNotifications, BeginDisconnect, BeginDiscoverGatt,

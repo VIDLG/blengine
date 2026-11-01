@@ -6,7 +6,7 @@
 
 use blehub::{BleEventError, BleHubError, CommandDispatchError, CommandId};
 
-use crate::{cleanup, runtime, waiter};
+use super::{cleanup, runtime, waiter};
 
 /// Identifies the missing lifecycle prerequisite for an accepted BLeng object.
 ///

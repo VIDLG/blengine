@@ -8,6 +8,8 @@ use blehub::{
 
 use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
+use super::super::command::ConnectionOperationKind;
+
 use super::{
     dispatch::{
         BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
@@ -17,17 +19,6 @@ use super::{
     io::{IoReservations, MAX_PENDING_NATIVE_OPERATIONS_PER_CONNECTION},
     subscription::{SubscriptionDisposition, SubscriptionReservation},
 };
-
-#[derive(Clone, Copy)]
-pub(super) enum DispatchPendingRoute {
-    Disconnect,
-    Discovery,
-    Rssi,
-    Read,
-    Write,
-    Subscription,
-    Connect,
-}
 
 /// A connection owns its GATT session, I/O slots, and subscriptions.
 /// Keeping these under one peripheral key prevents cross-device callback routing.
@@ -56,46 +47,46 @@ impl ConnectionReservation {
     /// None means no pending buffer target, not that this connection is unrelated.
     fn pending_dispatch_target(
         &mut self,
-        route: DispatchPendingRoute,
+        kind: ConnectionOperationKind,
         event: &BleEvent,
     ) -> Option<&mut CommandProgress> {
         let connection_id = self.connection_id;
-        match route {
-            DispatchPendingRoute::Disconnect => self
+        match kind {
+            ConnectionOperationKind::Disconnect => self
                 .disconnect
                 .as_mut()
                 .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
-            DispatchPendingRoute::Discovery => self
+            ConnectionOperationKind::DiscoverGatt => self
                 .gatt
                 .discovery
                 .as_mut()
                 .filter(|slot| slot.should_buffer_event(event, connection_id))
                 .map(|slot| &mut slot.progress),
-            DispatchPendingRoute::Rssi => self
+            ConnectionOperationKind::ReadRssi => self
                 .io
                 .pending_rssi_mut(event, connection_id)
                 .map(|slot| &mut slot.progress),
-            DispatchPendingRoute::Read => self
+            ConnectionOperationKind::Read => self
                 .io
                 .pending_read_mut(event, connection_id)
                 .map(|slot| &mut slot.progress),
-            DispatchPendingRoute::Write => self
+            ConnectionOperationKind::Write => self
                 .io
                 .pending_write_mut(event, connection_id)
                 .map(|slot| &mut slot.progress),
-            DispatchPendingRoute::Subscription => {
-                self.subscriptions
-                    .iter_mut()
-                    .find_map(|(subscription_id, route)| {
-                        if route.should_buffer_event(event, connection_id, *subscription_id) {
-                            route.progress_mut()
-                        } else {
-                            None
-                        }
-                    })
-            }
-            DispatchPendingRoute::Connect => {
+            ConnectionOperationKind::EnableNotifications
+            | ConnectionOperationKind::DisableNotifications => self
+                .subscriptions
+                .iter_mut()
+                .find_map(|(subscription_id, route)| {
+                    if route.should_buffer_event(event, connection_id, *subscription_id) {
+                        route.progress_mut()
+                    } else {
+                        None
+                    }
+                }),
+            ConnectionOperationKind::Connect => {
                 if self.should_buffer_connect_event(event) {
                     Some(&mut self.progress)
                 } else {
@@ -110,10 +101,10 @@ impl ConnectionReservation {
     /// progress mutation and therefore does not expose it to the collection.
     pub(super) fn buffer_pending_dispatch_event(
         &mut self,
-        route: DispatchPendingRoute,
+        kind: ConnectionOperationKind,
         event: &BleEvent,
     ) -> Result<bool, ReconciliationFault> {
-        let Some(progress) = self.pending_dispatch_target(route, event) else {
+        let Some(progress) = self.pending_dispatch_target(kind, event) else {
             return Ok(false);
         };
         progress.buffer(event.clone())?;
@@ -683,18 +674,36 @@ impl ConnectionReservation {
     }
 
     /// Called after waiter settlement, even when the caller already retired.
-    pub(super) fn retire_completed_operations(&mut self) {
-        self.subscriptions
-            .retain(|_, route| matches!(route.retire_transition(), SubscriptionDisposition::Keep));
+    /// Returns every child command whose native reservation was released.
+    pub(super) fn retire_completed_operations(&mut self) -> Vec<CommandId> {
+        let mut retired = Vec::new();
+        self.subscriptions.retain(|_, route| {
+            let command_id = route.progress().map(CommandProgress::command_id);
+            let keep = matches!(route.retire_transition(), SubscriptionDisposition::Keep);
+            if !keep && let Some(command_id) = command_id {
+                retired.push(command_id);
+            }
+            keep
+        });
         if self
             .disconnect
             .as_ref()
             .is_some_and(DisconnectReservation::can_retire_after_failure)
         {
+            retired.push(
+                self.disconnect
+                    .as_ref()
+                    .expect("disconnect reservation exists")
+                    .progress
+                    .command_id(),
+            );
             self.disconnect = None;
         }
-        self.io.retire_completed();
-        self.gatt.retire_completed_discovery();
+        retired.extend(self.io.retire_completed());
+        if let Some(command_id) = self.gatt.retire_completed_discovery() {
+            retired.push(command_id);
+        }
+        retired
     }
 
     /// A disconnected connection cannot be removed until dispatch handoffs and
@@ -798,6 +807,10 @@ impl ConnectionReservation {
                 .values()
                 .filter_map(SubscriptionReservation::progress),
         )
+    }
+
+    pub(super) fn command_ids(&self) -> impl Iterator<Item = CommandId> + '_ {
+        self.command_progresses().map(CommandProgress::command_id)
     }
 
     fn command_progresses(&self) -> impl Iterator<Item = &CommandProgress> {

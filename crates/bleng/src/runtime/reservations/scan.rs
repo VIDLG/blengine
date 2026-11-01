@@ -30,6 +30,7 @@ use blehub::{
     ScanStopResult,
 };
 
+use super::super::shared::CompletionObserver;
 use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
 use super::dispatch::{
@@ -134,10 +135,7 @@ impl ScanState {
         scan.stop_for(command_id).map(|stop| &stop.progress)
     }
 
-    pub fn completion_observer(
-        &self,
-        command_id: CommandId,
-    ) -> Option<super::dispatch::CompletionObserver> {
+    pub fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
         self.progress(command_id)
             .map(CommandProgress::completion_observer)
     }
@@ -260,17 +258,20 @@ impl ScanState {
     }
 
     /// Called after waiter settlement, including when the caller already retired.
-    /// Removes the session only when native end and outstanding command evidence
-    /// permit it; otherwise retains the session or retires only a failed stop.
-    pub fn retire_completed(&mut self) {
+    /// Returns every command whose reservation was actually released.
+    pub fn retire_completed(&mut self) -> Vec<CommandId> {
         let Some(scan) = self.reserved_mut() else {
-            return;
+            return Vec::new();
         };
         if scan.is_retirable() {
+            let mut retired = vec![scan.start_progress.command_id()];
+            if let Some(stop) = &scan.stop {
+                retired.push(stop.progress.command_id());
+            }
             self.phase = ScanPhase::Idle;
-            return;
+            return retired;
         }
-        scan.retire_failed_stop();
+        scan.retire_failed_stop().into_iter().collect()
     }
 }
 
@@ -548,14 +549,14 @@ impl ScanReservation {
 
     /// Releases only a failed stop command, leaving the session available to retry.
     /// The caller has already settled its waiter and checked whole-session retirement.
-    fn retire_failed_stop(&mut self) {
-        let Some(stop) = &self.stop else {
-            return;
-        };
+    fn retire_failed_stop(&mut self) -> Option<CommandId> {
+        let stop = self.stop.as_ref()?;
         if !stop.can_retire_after_failure() {
-            return;
+            return None;
         }
+        let command_id = stop.progress.command_id();
         self.stop = None;
+        Some(command_id)
     }
 }
 

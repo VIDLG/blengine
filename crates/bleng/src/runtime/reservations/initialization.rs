@@ -1,10 +1,11 @@
 use blehub::{AdapterSnapshot, BleEvent, BleEventError, CommandDispatchError, CommandId};
 
+use super::super::shared::CompletionObserver;
 use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
 use super::dispatch::{
-    BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
-    DispatchResolution, ReconciliationFault,
+    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
+    ReconciliationFault,
 };
 
 /// Owns initialization admission, correlated evidence, and readiness transitions.
@@ -108,18 +109,10 @@ impl InitializationState {
         Ok(())
     }
 
-    pub fn completion_observer(
-        &self,
-        command_id: CommandId,
-    ) -> Option<super::dispatch::CompletionObserver> {
+    pub fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
         self.pending()
             .filter(|init| init.progress.owns_command(command_id))
             .map(|init| init.progress.completion_observer())
-    }
-
-    pub fn request_cancellation(&mut self, command_id: CommandId) -> Option<CancellationDecision> {
-        self.pending_for_mut(command_id)?;
-        Some(CancellationDecision::NotCancellable)
     }
 
     pub fn require_initialized(&self) -> Result<(), WaiterError> {
@@ -184,19 +177,22 @@ impl InitializationState {
     /// Advances readiness after waiter settlement, even when no caller remains.
     /// Incomplete evidence stays pending; success with a snapshot enters Ready.
     /// Accepted terminal failure is returned for actor-owned runtime faulting.
-    /// Ok(()) does not imply readiness: it also covers pending or inactive phases.
-    pub fn advance_after_settlement(&mut self) -> Result<(), WaiterError> {
+    /// `None` means the reservation remains pending or the phase is inactive.
+    /// `Some` identifies the command whose native reservation just retired.
+    pub fn advance_after_settlement(&mut self) -> Result<Option<CommandId>, WaiterError> {
         let Some(init) = self.pending() else {
-            return Ok(());
+            return Ok(None);
         };
         let Some(terminal) = init.progress.terminal_result() else {
-            return Ok(());
+            return Ok(None);
         };
         terminal?;
         if init.snapshot_evidence.is_some() {
+            let command_id = init.progress.command_id();
             self.phase = InitializationPhase::Ready;
+            return Ok(Some(command_id));
         }
-        Ok(())
+        Ok(None)
     }
 }
 

@@ -9,13 +9,14 @@
 //! |   +-- waiters: CommandId -> expectation + oneshot result_tx
 //! |   +-- test-only direct-waiter allocator (release builds omit it)
 //! |   +-- resource_id_gen: independent scan/connection/GATT/subscription ID allocation
-//! |   +-- initialization: private NotStarted / Pending / Ready / Rejected phases
-//! |   +-- scan: private Idle / Reserved phases (one reusable scan slot)
-//! |   +-- connections: ConnectionReservations (private peripheral-keyed map)
-//! |       +-- connect/disconnect correlation
-//! |       +-- GATT: committed database + pending discovery
-//! |       +-- read/write/RSSI operation slots
-//! |       +-- subscriptions: SubscriptionId -> route + pending transition
+//! |   +-- reservations: ReservationCoordinator (route-directed reservation coordination)
+//! |       +-- initialization: private NotStarted / Pending / Ready / Rejected phases
+//! |       +-- scan: private Idle / Reserved phases (one reusable scan slot)
+//! |       +-- connections: ConnectionReservations (private peripheral-keyed map)
+//! |           +-- connect/disconnect correlation
+//! |           +-- GATT: committed database + pending discovery
+//! |           +-- read/write/RSSI operation slots
+//! |           +-- subscriptions: SubscriptionId -> route + pending transition
 //! +-- RuntimeLifecycle (also shared by actor, backend port, and dispatch tasks)
 //!     +-- atomic phase + watch phase_tx
 //!     +-- HubCleanup: admission, Hub ownership, disposal, completion accounting
@@ -98,24 +99,20 @@ use std::{
 };
 
 use blehub::{
-    BleEvent, BleEventError, BleHub, CommandDispatchError, CommandId, ConnectionId,
-    GattCharacteristicId, GattSessionId, NotificationModeRequest, PeripheralId, ScanSessionId,
-    SubscriptionId,
+    BleEvent, BleHub, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId,
+    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId,
 };
 use kameo::prelude::{Actor, ActorRef, Context};
 use tokio::sync::mpsc;
 
-use crate::waiter::{
-    WaiterCloseReason, WaiterError, WaiterExpectation, WaiterOutcome, WaiterRegistry,
-};
+use crate::waiter::{WaiterCloseReason, WaiterError, WaiterExpectation, WaiterRegistry};
 
 use super::{
-    RuntimeLifecycle, RuntimePhase,
+    CommandRoute, RuntimeLifecycle, RuntimePhase,
     messages::{CancellationResolved, DispatchResolved},
     reservations::{
-        CancellationDecision, CancellationReceiver, ConnectionReservations, DispatchAction,
-        DispatchResolution, GattAccess, InitializationState, ReconciliationFault, ScanState,
-        connection_lost,
+        CancellationDecision, CancellationReceiver, DispatchAction, GattAccess,
+        ReservationCoordinator, connection_lost,
     },
     shared::{IdGenerator, OperationSubmission},
 };
@@ -158,14 +155,9 @@ pub(crate) struct BlengActor {
     #[cfg(test)]
     test_command_id_gen: Arc<IdGenerator>,
     resource_id_gen: IdGenerator,
-    // Only actor methods mutate these roots. Mailbox handlers use admission
-    // and input-processing methods, never state getters.
-    // Readiness is independent of adapter power; Pending survives waiter retirement.
-    initialization: InitializationState,
-    // At most one scan session, retained while late start/stop evidence is unresolved.
-    scan: ScanState,
-    // One connection lifecycle per peripheral; each owns its GATT/I/O/subscriptions.
-    connections: ConnectionReservations,
+    // ReservationCoordinator owns the domain roots and route-directed coordination;
+    // waiter settlement remains here because it combines reservations with waiters.
+    reservations: ReservationCoordinator,
 }
 
 impl BlengActor {
@@ -181,9 +173,7 @@ impl BlengActor {
             #[cfg(test)]
             test_command_id_gen: _command_id_gen,
             resource_id_gen: IdGenerator::default(),
-            initialization: InitializationState::default(),
-            scan: ScanState::default(),
-            connections: ConnectionReservations::default(),
+            reservations: ReservationCoordinator::default(),
         }
     }
 
@@ -199,15 +189,12 @@ impl BlengActor {
         }
 
 
-        to self.initialization {
+        to self.reservations {
             pub(super) fn require_initialized(&self) -> Result<(), WaiterError>;
 
             pub(super) fn require_not_started(&self) -> Result<(), WaiterError>;
 
-            pub(super) fn reserve_initialize(&mut self, command_id: CommandId);
-        }
 
-        to self.connections {
             pub(super) fn require_peripheral_available(&self, peripheral_id: PeripheralId) -> Result<(), WaiterError>;
 
             pub(super) fn validate_disconnect(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
@@ -238,79 +225,13 @@ impl BlengActor {
                 subscription_id: SubscriptionId,
             ) -> Result<(PeripheralId, GattCharacteristicId), WaiterError>;
 
-            pub(super) fn reserve_connection(
-                &mut self,
-                peripheral_id: PeripheralId,
-                command_id: CommandId,
-                connection_id: ConnectionId,
-            );
 
-            pub(super) fn reserve_disconnect(&mut self, peripheral_id: PeripheralId, command_id: CommandId);
-
-            pub(super) fn reserve_gatt_discovery(
-                &mut self,
-                peripheral_id: PeripheralId,
-                command_id: CommandId,
-                session_id: GattSessionId,
-            );
-
-            pub(super) fn reserve_rssi(&mut self, peripheral_id: PeripheralId, command_id: CommandId);
-
-            pub(super) fn reserve_read(
-                &mut self,
-                peripheral_id: PeripheralId,
-                command_id: CommandId,
-                session_id: GattSessionId,
-                characteristic_id: GattCharacteristicId,
-            );
-
-            pub(super) fn reserve_write(
-                &mut self,
-                peripheral_id: PeripheralId,
-                command_id: CommandId,
-                session_id: GattSessionId,
-                characteristic_id: GattCharacteristicId,
-            );
-
-            pub(super) fn reserve_notification_enable(
-                &mut self,
-                peripheral_id: PeripheralId,
-                command_id: CommandId,
-                subscription_id: SubscriptionId,
-                session_id: GattSessionId,
-                characteristic_id: GattCharacteristicId,
-                mode: NotificationModeRequest,
-            );
-
-            pub(super) fn reserve_notification_disable(
-                &mut self,
-                peripheral_id: PeripheralId,
-                command_id: CommandId,
-                subscription_id: SubscriptionId,
-            );
-        }
-
-        to self.scan {
             pub(super) fn require_scan_available(&self) -> Result<(), WaiterError>;
 
             pub(super) fn validate_scan_stop(&self, session_id: ScanSessionId) -> Result<(), WaiterError>;
 
-            pub(super) fn reserve_scan_start(&mut self, command_id: CommandId, session_id: ScanSessionId);
 
-            pub(super) fn reserve_scan_stop(&mut self, command_id: CommandId);
         }
-    }
-
-    /// Commands creating resources allocate their typed resource ID separately,
-    /// before this call.
-    fn completion_observer(
-        &self,
-        command_id: CommandId,
-    ) -> Option<super::reservations::CompletionObserver> {
-        self.initialization
-            .completion_observer(command_id)
-            .or_else(|| self.scan.completion_observer(command_id))
-            .or_else(|| self.connections.completion_observer(command_id))
     }
 
     pub(super) fn register_operation_waiter<R>(
@@ -324,6 +245,8 @@ impl BlengActor {
                 expectation,
                 submission.state.result_tx.clone(),
             )?;
+            self.reservations
+                .register_command(submission.id, CommandRoute::from(expectation));
         }
         Ok(submission.id)
     }
@@ -337,7 +260,7 @@ impl BlengActor {
         actor_context: &Context<Self, R>,
         submission: &OperationSubmission<Resource>,
         command_id: CommandId,
-        reserve: impl FnOnce(&mut Self),
+        reserve: impl FnOnce(&mut ReservationCoordinator),
         dispatch: impl FnOnce(Arc<BleHub>) -> Result<(), CommandDispatchError> + Send + 'static,
     ) -> Result<(), WaiterError> {
         let hub = match self.lifecycle.hub_for_dispatch() {
@@ -346,6 +269,7 @@ impl BlengActor {
                 // Do not publish before rejection wins the submission CAS.
                 // The shared sender remains available to cancellation/resolve.
                 self.waiters.discard(command_id);
+                self.reservations.remove_commands([command_id]);
                 return Err(error);
             }
         };
@@ -353,13 +277,12 @@ impl BlengActor {
         // explicit cancellation can revoke an unclaimed eager request.
         if !submission.try_claim() {
             self.waiters.cancel(command_id);
+            self.reservations.remove_commands([command_id]);
             return Err(WaiterError::Cancelled);
         }
-        reserve(self);
-        submission.observe_completion(
-            self.completion_observer(command_id)
-                .expect("reserved progress"),
-        );
+        reserve(&mut self.reservations);
+        let completion = self.reservations.attach_completion_observer(command_id);
+        submission.observe_completion(completion);
         let lifecycle = Arc::clone(&self.lifecycle);
         let actor = actor_context.actor_ref().clone();
         tokio::task::spawn_blocking(move || {
@@ -394,15 +317,13 @@ impl BlengActor {
     ) -> Result<CancellationReceiver, WaiterError> {
         self.require_open()?;
         let decision = self
-            .initialization
+            .reservations
             .request_cancellation(command_id)
-            .or_else(|| self.scan.request_cancellation(command_id))
-            .or_else(|| self.connections.request_cancellation(command_id))
             .ok_or(WaiterError::OperationNotFound(command_id))?;
         match decision {
             CancellationDecision::Accepted(receiver)
             | CancellationDecision::AlreadyRequested(receiver) => {
-                if self.take_cancellation_dispatch(command_id) {
+                if self.reservations.take_cancellation_dispatch(command_id) {
                     self.dispatch_native_cancellation(command_id, actor);
                 }
                 Ok(receiver)
@@ -414,11 +335,6 @@ impl BlengActor {
                 Err(WaiterError::OperationNotCancellable(command_id))
             }
         }
-    }
-
-    fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
-        self.scan.take_cancellation_dispatch(command_id)
-            || self.connections.take_cancellation_dispatch(command_id)
     }
 
     /// Native cancellation is a detached control-plane call. Its return value
@@ -436,7 +352,7 @@ impl BlengActor {
         let lifecycle = Arc::clone(&self.lifecycle);
         tokio::task::spawn_blocking(move || {
             let result = match catch_unwind(AssertUnwindSafe(|| hub.cancel_operation(command_id))) {
-                Ok(result) => result.map_err(Self::map_cancellation_dispatch_error),
+                Ok(result) => result.map_err(WaiterError::from_cancellation_dispatch),
                 Err(_) => {
                     lifecycle.fault();
                     Err(WaiterError::TransportFault)
@@ -456,32 +372,14 @@ impl BlengActor {
         });
     }
 
-    fn map_cancellation_dispatch_error(error: CommandDispatchError) -> WaiterError {
-        match error {
-            CommandDispatchError::OperationNotFound { target_command_id } => {
-                WaiterError::OperationNotFound(target_command_id)
-            }
-            CommandDispatchError::OperationAlreadyCompleted { target_command_id } => {
-                WaiterError::OperationAlreadyCompleted(target_command_id)
-            }
-            CommandDispatchError::OperationNotCancellable { target_command_id } => {
-                WaiterError::OperationNotCancellable(target_command_id)
-            }
-            error => WaiterError::DispatchRejected(error),
-        }
-    }
-
     pub(super) fn handle_cancellation_result(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
     ) {
-        self.resolve_cancellation(command_id, result.clone());
         let public_events = self
-            .scan
-            .take_cancellation_public_events(command_id)
-            .or_else(|| self.connections.take_cancellation_public_events(command_id))
-            .unwrap_or_default();
+            .reservations
+            .resolve_cancellation_and_drain_events(command_id, result.clone());
         // Evidence was already recorded. Publish only, preserving arrival order;
         // replaying process_event here would settle/reconcile the same callback twice.
         for event in public_events {
@@ -492,30 +390,12 @@ impl BlengActor {
         if result.is_ok() {
             self.waiters.cancel(command_id);
         } else {
-            self.clear_cancellation(command_id);
+            self.reservations.clear_cancellation(command_id);
             self.try_settle_waiter(command_id);
         }
         // Native completion may already be recorded while its control receipt
         // was pending. Settle caller delivery before releasing that evidence.
-        self.advance_and_retire_state();
-    }
-
-    fn resolve_cancellation(
-        &mut self,
-        command_id: CommandId,
-        result: Result<(), WaiterError>,
-    ) -> bool {
-        self.scan.resolve_cancellation(command_id, result.clone())
-            || self.connections.resolve_cancellation(command_id, result)
-    }
-
-    fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
-        self.scan.clear_cancellation(command_id) || self.connections.clear_cancellation(command_id)
-    }
-
-    fn cancellation_requested(&self, command_id: CommandId) -> bool {
-        self.scan.cancellation_requested(command_id)
-            || self.connections.cancellation_requested(command_id)
+        self.advance_and_retire_reservations();
     }
 
     /// Reconciles one backend callback without exposing reservation state to handlers.
@@ -526,11 +406,11 @@ impl BlengActor {
         // Foreign-command disconnects remain visible publicly, but must neither
         // enter another command's dispatch buffer nor mutate its native lifecycle.
         // Its own connection's publication order still applies.
-        if self.connections.is_foreign_disconnect(&event) {
+        if self.reservations.is_foreign_disconnect(&event) {
             self.process_event(event);
             return;
         }
-        match self.gate_event(event) {
+        match self.reservations.gate_event(event) {
             Ok(Some(event)) => self.process_event(event),
             Ok(None) => {}
             Err(fault) => {
@@ -550,14 +430,15 @@ impl BlengActor {
         result: Result<(), CommandDispatchError>,
         actor: ActorRef<Self>,
     ) {
-        let cancellation_requested = result.is_err() && self.cancellation_requested(command_id);
+        let cancellation_requested =
+            result.is_err() && self.reservations.cancellation_requested(command_id);
         if cancellation_requested {
             // A rejected native dispatch never became cancellable. Complete the
             // cancellation receipt before resolution can remove the reservation.
             self.handle_cancellation_result(command_id, Ok(()));
         }
-        let resolution = self.resolve_dispatch(command_id, &result);
-        if result.is_ok() && self.take_cancellation_dispatch(command_id) {
+        let resolution = self.reservations.resolve_dispatch(command_id, &result);
+        if result.is_ok() && self.reservations.take_cancellation_dispatch(command_id) {
             self.dispatch_native_cancellation(command_id, actor);
         }
         match resolution.action {
@@ -585,19 +466,11 @@ impl BlengActor {
             }
             self.process_event(event);
         }
-    }
-
-    /// The connection/scan owner delays its entire publication scope while
-    /// any cancellation is undecided. Evidence still records exactly once.
-    fn allow_publication(&mut self, event: &BleEvent) -> Result<bool, ReconciliationFault> {
-        if let Some(allow) = self.scan.allow_publication(event)? {
-            return Ok(allow);
-        }
-        Ok(self.connections.allow_publication(event)?.unwrap_or(true))
+        self.advance_and_retire_reservations();
     }
 
     fn process_event(&mut self, event: BleEvent) {
-        match self.allow_publication(&event) {
+        match self.reservations.allow_publication(&event) {
             Ok(true) => {
                 if self.publish_event(&event).is_err() {
                     return;
@@ -614,10 +487,10 @@ impl BlengActor {
             }
         }
         // Publication cannot be retracted if admission raced concurrent shutdown.
-        if !self.lifecycle.is_open() || self.connections.is_foreign_disconnect(&event) {
+        if !self.lifecycle.is_open() || self.reservations.is_foreign_disconnect(&event) {
             return;
         }
-        if let Err(fault) = self.record_event_evidence(&event) {
+        if let Err(fault) = self.reservations.record_event_evidence(&event) {
             tracing::error!(
                 ?fault,
                 "BLE event evidence conflicted with reserved state; closing runtime"
@@ -629,21 +502,7 @@ impl BlengActor {
             return;
         }
         self.settle_event_waiters(&event);
-        self.advance_and_retire_state();
-    }
-
-    fn record_event_evidence(&mut self, event: &BleEvent) -> Result<(), ReconciliationFault> {
-        match event {
-            BleEvent::AdapterSnapshotChanged { .. } => self.initialization.record_event(event),
-            BleEvent::ScanStarted { .. } | BleEvent::ScanStopped { .. } => {
-                self.scan.record_event(event)
-            }
-            BleEvent::CommandCompleted { command_id, error } => {
-                self.record_terminal(*command_id, error.clone());
-            }
-            _ => return self.connections.record_event(event),
-        }
-        Ok(())
+        self.advance_and_retire_reservations();
     }
 
     /// Settle caller delivery before retiring native reservations, including for late callbacks.
@@ -655,10 +514,10 @@ impl BlengActor {
             // Completed results survive in the waiter owner; all unfinished
             // connection-bound waiters still fail immediately, even during cancel.
             self.waiters
-                .disconnect_commands(self.connections.accepted_command_ids(*connection_id));
+                .disconnect_commands(self.reservations.accepted_command_ids(*connection_id));
             // Passive loss may complete an explicit disconnect's domain evidence,
             // but its own terminal is still required for successful settlement.
-            if let Some(command_id) = self.connections.disconnect_command(*connection_id) {
+            if let Some(command_id) = self.reservations.disconnect_command(*connection_id) {
                 self.try_settle_waiter(command_id);
             }
         }
@@ -666,52 +525,18 @@ impl BlengActor {
             self.try_settle_waiter(command_id);
         }
         if matches!(event, BleEvent::ScanStopped { .. })
-            && let Some(command_id) = self.scan.stop_command()
+            && let Some(command_id) = self.reservations.stop_command()
         {
             self.try_settle_waiter(command_id);
         }
     }
 
-    /// Advance initialization and retire completed native reservations after waiter settlement.
-    fn advance_and_retire_state(&mut self) {
-        if self.initialization.advance_after_settlement().is_err() {
+    /// Advances and retires reservations after waiter settlement.
+    fn advance_and_retire_reservations(&mut self) {
+        if self.reservations.advance_and_retire().is_err() {
             // Accepted initialization failure invalidates even a caller-retired Hub.
             self.lifecycle.fault();
-            return;
         }
-        self.connections.retire_completed();
-        self.scan.retire_completed();
-    }
-
-    /// Probes owners before publication: Some passes through, None is buffered,
-    /// and an error prevents publication and requires runtime faulting.
-    fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
-        // These are ownership probes, not broadcasts. Each connection owner also
-        // preserves global operation-category priority within its collection.
-        let Some(event) = self.initialization.gate_event(event)? else {
-            return Ok(None);
-        };
-        let Some(event) = self.connections.gate_event(event)? else {
-            return Ok(None);
-        };
-        self.scan.gate_event(event)
-    }
-
-    fn resolve_dispatch(
-        &mut self,
-        command_id: CommandId,
-        result: &Result<(), CommandDispatchError>,
-    ) -> DispatchResolution {
-        // Unique command IDs permit stopping at the first owning reservation.
-        if let Some(resolution) = self.initialization.resolve_dispatch(command_id, result) {
-            return resolution;
-        }
-        if let Some(resolution) = self.scan.resolve_dispatch(command_id, result) {
-            return resolution;
-        }
-        self.connections
-            .resolve_dispatch(command_id, result)
-            .unwrap_or_default()
     }
 
     /// Checks admission and enqueues one outward event before evidence processing.
@@ -733,11 +558,16 @@ impl BlengActor {
     /// or when the waiter has already retired.
     fn try_settle_waiter(&mut self, command_id: CommandId) {
         let has_waiter = self.waiters.contains(command_id);
-        let cancellation_requested = self.cancellation_requested(command_id);
+        let cancellation_requested = self.reservations.cancellation_requested(command_id);
         if !cancellation_requested && self.waiters.finish_deferred(command_id) {
             return;
         }
-        let completion = self.completion_observer(command_id);
+        // Direct actor tests may install reservations without launch_dispatch;
+        // production submissions always have the directory-owned observer.
+        let completion = self
+            .reservations
+            .command_completion(command_id)
+            .or_else(|| self.reservations.completion_observer(command_id));
         if !has_waiter
             && completion
                 .as_ref()
@@ -745,7 +575,7 @@ impl BlengActor {
         {
             return;
         }
-        if let Some(result) = self.waiter_result(command_id) {
+        if let Some(result) = self.reservations.waiter_result(command_id) {
             if let Some(completion) = completion {
                 completion.confirm_completed();
             }
@@ -759,32 +589,6 @@ impl BlengActor {
                 }
             }
         }
-    }
-
-    /// Routes a terminal callback to the reservation owning `command_id`.
-    /// Command IDs are unique within this actor. Stop at the first matching owner,
-    /// including for duplicate terminals; a match does not mean operation success.
-    fn record_terminal(&mut self, command_id: CommandId, error: Option<BleEventError>) {
-        let result = error.map_or(Ok(()), Err);
-        if self.initialization.record_terminal(command_id, &result) {
-            return;
-        }
-        if self.scan.record_terminal(command_id, &result) {
-            return;
-        }
-        self.connections.record_terminal(command_id, &result);
-    }
-
-    /// Returns the first ready outcome, whether success or failure. `None` means
-    /// no outcome is ready, either because the ID is absent or evidence is incomplete.
-    fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
-        if let Some(result) = self.initialization.waiter_result(command_id) {
-            return Some(result);
-        }
-        if let Some(result) = self.scan.waiter_result(command_id) {
-            return Some(result);
-        }
-        self.connections.waiter_result(command_id)
     }
 }
 

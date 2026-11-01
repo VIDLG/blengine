@@ -21,9 +21,11 @@ fn explicit_cancellation_retains_pre_dispatch_reservation_until_dispatch_resolve
     let session_id = GattSessionId { value: 30 };
     let characteristic_id = GattCharacteristicId { value: 40 };
 
-    actor
-        .connections
-        .reserve_connection(peripheral_id, 0.into(), connection_id);
+    actor.reservations.test_connections().reserve_connection(
+        peripheral_id,
+        0.into(),
+        connection_id,
+    );
     let (command_id, mut result_rx) = actor
         .register_waiter(WaiterExpectation::CharacteristicRead(
             connection_id,
@@ -31,21 +33,36 @@ fn explicit_cancellation_retains_pre_dispatch_reservation_until_dispatch_resolve
             characteristic_id,
         ))
         .unwrap();
-    actor
-        .connections
-        .reserve_read(peripheral_id, command_id, session_id, characteristic_id);
+    actor.reservations.test_connections().reserve_read(
+        peripheral_id,
+        command_id,
+        session_id,
+        characteristic_id,
+    );
 
-    let receiver = match actor.connections.request_cancellation(command_id) {
+    let receiver = match actor
+        .reservations
+        .test_connections()
+        .request_cancellation(command_id)
+    {
         Some(crate::runtime::reservations::CancellationDecision::Accepted(receiver)) => receiver,
         _ => panic!("unexpected cancellation decision"),
     };
     assert!(result_rx.try_recv().is_err());
     assert!(receiver.borrow().is_none());
     assert!(matches!(
-        actor.connections.request_cancellation(command_id),
+        actor
+            .reservations
+            .test_connections()
+            .request_cancellation(command_id),
         Some(crate::runtime::reservations::CancellationDecision::AlreadyRequested(_))
     ));
-    assert!(!actor.connections.take_cancellation_dispatch(command_id));
+    assert!(
+        !actor
+            .reservations
+            .test_connections()
+            .take_cancellation_dispatch(command_id)
+    );
 }
 
 #[test]
@@ -103,11 +120,14 @@ fn cancellation_receipt_survives_early_terminal(
     let peripheral_id = PeripheralId { value: 20 };
     let session_id = GattSessionId { value: 30 };
     let characteristic_id = GattCharacteristicId { value: 40 };
+    actor.reservations.test_connections().reserve_connection(
+        peripheral_id,
+        0.into(),
+        connection_id,
+    );
     actor
-        .connections
-        .reserve_connection(peripheral_id, 0.into(), connection_id);
-    actor
-        .connections
+        .reservations
+        .test_connections()
         .resolve_dispatch(0.into(), &Ok(()))
         .unwrap();
     actor.handle_ingress_event(BleEvent::ConnectionStateChanged {
@@ -129,11 +149,15 @@ fn cancellation_receipt_survives_early_terminal(
             characteristic_id,
         ))
         .unwrap();
+    actor.reservations.test_connections().reserve_read(
+        peripheral_id,
+        command_id,
+        session_id,
+        characteristic_id,
+    );
     actor
-        .connections
-        .reserve_read(peripheral_id, command_id, session_id, characteristic_id);
-    actor
-        .connections
+        .reservations
+        .test_connections()
         .resolve_dispatch(command_id, &Ok(()))
         .unwrap();
     assert!(event_rx.try_recv().is_ok());
@@ -142,16 +166,34 @@ fn cancellation_receipt_survives_early_terminal(
         event_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     );
-    let receipt = match actor.connections.request_cancellation(command_id) {
+    let receipt = match actor
+        .reservations
+        .test_connections()
+        .request_cancellation(command_id)
+    {
         Some(CancellationDecision::Accepted(receipt)) => receipt,
         _ => panic!("first cancellation must have its own receipt"),
     };
-    assert!(actor.connections.take_cancellation_dispatch(command_id));
-    let repeated_receipt = match actor.connections.request_cancellation(command_id) {
+    assert!(
+        actor
+            .reservations
+            .test_connections()
+            .take_cancellation_dispatch(command_id)
+    );
+    let repeated_receipt = match actor
+        .reservations
+        .test_connections()
+        .request_cancellation(command_id)
+    {
         Some(CancellationDecision::AlreadyRequested(receipt)) => receipt,
         _ => panic!("concurrent cancellation must share the receipt"),
     };
-    assert!(!actor.connections.take_cancellation_dispatch(command_id));
+    assert!(
+        !actor
+            .reservations
+            .test_connections()
+            .take_cancellation_dispatch(command_id)
+    );
 
     let domain = BleEvent::CharacteristicRead {
         command_id,
@@ -220,9 +262,18 @@ fn cancellation_receipt_survives_early_terminal(
         })
     };
     assert_eq!(result_rx.try_recv(), Ok(expected));
-    assert!(actor.connections.request_cancellation(command_id).is_none());
+    assert!(
+        actor
+            .reservations
+            .test_connections()
+            .request_cancellation(command_id)
+            .is_none()
+    );
     assert_eq!(
-        actor.connections.validate_gatt_discovery(connection_id),
+        actor
+            .reservations
+            .test_connections()
+            .validate_gatt_discovery(connection_id),
         Ok(peripheral_id),
         "completed native reservation must retire after receipt settlement"
     );
@@ -254,7 +305,8 @@ fn typed_boundary_pending_public_evidence_and_release_overflow_fail_closed() {
         );
         let peripheral = PeripheralId { value: 20 };
         actor
-            .connections
+            .reservations
+            .test_connections()
             .reserve_connection(peripheral, 0.into(), 10.into());
         let (command_id, mut result_rx) = actor
             .register_waiter(WaiterExpectation::CharacteristicRead(
@@ -263,18 +315,31 @@ fn typed_boundary_pending_public_evidence_and_release_overflow_fail_closed() {
                 40.into(),
             ))
             .unwrap();
+        actor.reservations.test_connections().reserve_read(
+            peripheral,
+            command_id,
+            30.into(),
+            40.into(),
+        );
         actor
-            .connections
-            .reserve_read(peripheral, command_id, 30.into(), 40.into());
-        actor
-            .connections
+            .reservations
+            .test_connections()
             .resolve_dispatch(command_id, &Ok(()))
             .unwrap();
-        let receipt = match actor.connections.request_cancellation(command_id) {
+        let receipt = match actor
+            .reservations
+            .test_connections()
+            .request_cancellation(command_id)
+        {
             Some(CancellationDecision::Accepted(receipt)) => receipt,
             _ => panic!("cancellation must be admitted"),
         };
-        assert!(actor.connections.take_cancellation_dispatch(command_id));
+        assert!(
+            actor
+                .reservations
+                .test_connections()
+                .take_cancellation_dispatch(command_id)
+        );
         let domain = BleEvent::CharacteristicRead {
             command_id,
             connection_id: 10.into(),

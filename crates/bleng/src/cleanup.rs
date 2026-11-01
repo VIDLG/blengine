@@ -125,8 +125,8 @@
 //! paths report `WorkerStopped`; they do not claim successful resource release.
 //!
 //! Detailed rationale, ownership tables, race cases, and test evidence are in
-//! [`docs/research/bleng-cleanup-design-2026-10-07.md`](../../../docs/research/bleng-cleanup-design-2026-10-07.md).
-//! A [Chinese version](../../../docs/research/bleng-cleanup-design-2026-10-07.zh-CN.md) is also available.
+//! [`docs/research/bleng/bleng-cleanup-design-2026-10-07.md`](../../../docs/research/bleng/bleng-cleanup-design-2026-10-07.md).
+//! A [Chinese version](../../../docs/research/bleng/bleng-cleanup-design-2026-10-07.zh-CN.md) is also available.
 
 use std::{
     mem::ManuallyDrop,

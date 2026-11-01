@@ -357,10 +357,30 @@ impl IoReservations {
         }
     }
 
-    pub(super) fn retire_completed(&mut self) {
-        self.rssi.retain(|_, slot| !slot.is_retirable());
-        self.read.retain(|_, slot| !slot.is_retirable());
-        self.write.retain(|_, slot| !slot.is_retirable());
+    pub(super) fn retire_completed(&mut self) -> Vec<CommandId> {
+        let mut retired = Vec::new();
+        self.rssi.retain(|command_id, slot| {
+            let keep = !slot.is_retirable();
+            if !keep {
+                retired.push(*command_id);
+            }
+            keep
+        });
+        self.read.retain(|command_id, slot| {
+            let keep = !slot.is_retirable();
+            if !keep {
+                retired.push(*command_id);
+            }
+            keep
+        });
+        self.write.retain(|command_id, slot| {
+            let keep = !slot.is_retirable();
+            if !keep {
+                retired.push(*command_id);
+            }
+            keep
+        });
+        retired
     }
 
     pub(super) fn waiter_result(

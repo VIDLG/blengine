@@ -1,12 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
 use blehub::{BleEvent, BleEventError, CommandId};
 
 use crate::waiter::WaiterError;
 use tokio::sync::watch;
+
+use super::super::shared::CompletionObserver;
 
 #[derive(Debug)]
 pub enum ReconciliationFault {
@@ -89,21 +86,6 @@ pub(crate) enum CancellationDecision {
     AlreadyRequested(CancellationReceiver),
     AlreadyCompleted,
     NotCancellable,
-}
-
-/// Handle-local observation of actor-confirmed completion, independent of delivery.
-/// Only the actor's evidence/retirement path writes this monotonic bit.
-#[derive(Clone, Default)]
-pub(crate) struct CompletionObserver(Arc<AtomicBool>);
-
-impl CompletionObserver {
-    pub(crate) fn is_completed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-
-    pub(in crate::runtime) fn confirm_completed(&self) {
-        self.0.store(true, Ordering::Release);
-    }
 }
 
 /// Publication only, owned by one connection or scan session. Pending control

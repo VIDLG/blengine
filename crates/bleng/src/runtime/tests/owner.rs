@@ -202,7 +202,7 @@ impl Message<InitializeBeforeClaim> for BlengActor {
                 ctx,
                 &submission,
                 id,
-                |actor| actor.reserve_initialize(id),
+                |reservations| reservations.reserve_initialize(id),
                 move |hub| hub.initialize(InitializeCommand { command_id: id }),
             )?;
             Ok(())

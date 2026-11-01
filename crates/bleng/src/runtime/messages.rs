@@ -406,8 +406,8 @@ impl Message<BeginInitialize> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_initialize(command_id);
+                |reservations| {
+                    reservations.reserve_initialize(command_id);
                 },
                 move |hub| hub.initialize(InitializeCommand { command_id }),
             )?;
@@ -439,8 +439,8 @@ impl Message<BeginScan> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_scan_start(command_id, session_id);
+                |reservations| {
+                    reservations.reserve_scan_start(command_id, session_id);
                 },
                 move |hub| {
                     hub.start_scan(StartScanCommand {
@@ -477,8 +477,8 @@ impl Message<BeginStop> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_scan_stop(command_id);
+                |reservations| {
+                    reservations.reserve_scan_stop(command_id);
                 },
                 move |hub| {
                     hub.stop_scan(StopScanCommand {
@@ -515,8 +515,12 @@ impl Message<BeginConnect> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_connection(message.peripheral_id, command_id, connection_id);
+                |reservations| {
+                    reservations.reserve_connection(
+                        message.peripheral_id,
+                        command_id,
+                        connection_id,
+                    );
                 },
                 move |hub| {
                     hub.connect(ConnectCommand {
@@ -553,8 +557,8 @@ impl Message<BeginDisconnect> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_disconnect(peripheral_id, command_id);
+                |reservations| {
+                    reservations.reserve_disconnect(peripheral_id, command_id);
                 },
                 move |hub| {
                     hub.disconnect(DisconnectCommand {
@@ -591,8 +595,8 @@ impl Message<BeginDiscoverGatt> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_gatt_discovery(peripheral_id, command_id, session_id);
+                |reservations| {
+                    reservations.reserve_gatt_discovery(peripheral_id, command_id, session_id);
                 },
                 move |hub| {
                     hub.discover_gatt(DiscoverGattCommand {
@@ -629,8 +633,8 @@ impl Message<BeginRssi> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_rssi(peripheral_id, command_id);
+                |reservations| {
+                    reservations.reserve_rssi(peripheral_id, command_id);
                 },
                 move |hub| {
                     hub.read_rssi(ReadRssiCommand {
@@ -675,8 +679,8 @@ impl Message<BeginRead> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_read(
+                |reservations| {
+                    reservations.reserve_read(
                         peripheral_id,
                         command_id,
                         message.session,
@@ -728,8 +732,8 @@ impl Message<BeginWrite> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_write(
+                |reservations| {
+                    reservations.reserve_write(
                         peripheral_id,
                         command_id,
                         message.session,
@@ -784,8 +788,8 @@ impl Message<BeginEnableNotifications> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_notification_enable(
+                |reservations| {
+                    reservations.reserve_notification_enable(
                         peripheral_id,
                         command_id,
                         subscription,
@@ -841,8 +845,8 @@ impl Message<BeginDisableNotifications> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                |actor| {
-                    actor.reserve_notification_disable(
+                |reservations| {
+                    reservations.reserve_notification_disable(
                         peripheral_id,
                         command_id,
                         message.subscription,

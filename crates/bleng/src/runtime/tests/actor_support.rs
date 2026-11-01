@@ -1,6 +1,6 @@
 use crate::{
     runtime::{
-        BlengActor, RuntimePhase, messages::OperationSpec, reservations::GattAccess,
+        BlengActor, CommandRoute, RuntimePhase, messages::OperationSpec, reservations::GattAccess,
         shared::OperationSubmission,
     },
     waiter::{WaiterError, WaiterExpectation, WaiterOutcome, WaiterSuccess},
@@ -28,6 +28,8 @@ impl BlengActor {
     ) -> Result<(CommandId, WaiterReceiver), WaiterError> {
         let id = self.test_command_id_gen.allocate()?.into();
         let result_rx = self.waiters.register(id, expectation)?;
+        self.reservations
+            .register_command(id, CommandRoute::from(expectation));
         Ok((id, result_rx))
     }
 }
@@ -41,11 +43,15 @@ impl Message<AssumeInitialized> for BlengActor {
         // Establish fixture readiness through the production state transitions,
         // without consuming caller command IDs or publishing synthetic events.
         let command_id = CommandId::from(0);
-        self.initialization.reserve_initialize(command_id);
-        self.initialization
+        self.reservations
+            .test_initialization()
+            .reserve_initialize(command_id);
+        self.reservations
+            .test_initialization()
             .resolve_dispatch(command_id, &Ok(()))
             .unwrap();
-        self.initialization
+        self.reservations
+            .test_initialization()
             .record_event(&BleEvent::AdapterSnapshotChanged {
                 command_id: Some(command_id),
                 snapshot: AdapterSnapshot {
@@ -55,9 +61,19 @@ impl Message<AssumeInitialized> for BlengActor {
                     name: None,
                 },
             });
-        assert!(self.initialization.record_terminal(command_id, &Ok(())));
-        self.initialization.advance_after_settlement().unwrap();
-        self.initialization.require_initialized().unwrap();
+        assert!(
+            self.reservations
+                .test_initialization()
+                .record_terminal(command_id, &Ok(()))
+        );
+        self.reservations
+            .test_initialization()
+            .advance_after_settlement()
+            .unwrap();
+        self.reservations
+            .test_initialization()
+            .require_initialized()
+            .unwrap();
     }
 }
 
@@ -131,7 +147,12 @@ impl Message<BeginInitializeWithBlockedReservation> for BlengActor {
         let submission = message.submission.clone();
         let result = async {
             self.require_open()?;
-            if self.initialization.require_not_started().is_err() {
+            if self
+                .reservations
+                .test_initialization()
+                .require_not_started()
+                .is_err()
+            {
                 return Err(WaiterError::OperationBusy);
             }
             let command_id = self
@@ -140,8 +161,10 @@ impl Message<BeginInitializeWithBlockedReservation> for BlengActor {
                 ctx,
                 &message.submission,
                 command_id,
-                move |actor| {
-                    actor.initialization.reserve_initialize(command_id);
+                move |reservations| {
+                    reservations
+                        .test_initialization()
+                        .reserve_initialize(command_id);
                     message
                         .entered_tx
                         .send(())
@@ -193,7 +216,10 @@ impl Message<CancelledRediscovery> for BlengActor {
             message.gate.entered.notify_one();
             message.gate.release.notified().await;
             let connection_id = message.database.connection_id;
-            let key = self.connections.validate_gatt_discovery(connection_id)?;
+            let key = self
+                .reservations
+                .test_connections()
+                .validate_gatt_discovery(connection_id)?;
             let session_id = self.allocate_resource_id()?.into();
             let command_id = self.register_operation_waiter(
                 &message.submission,
@@ -205,10 +231,10 @@ impl Message<CancelledRediscovery> for BlengActor {
                     ctx,
                     &message.submission,
                     command_id,
-                    |actor| {
+                    |reservations| {
                         reserved = true;
-                        actor
-                            .connections
+                        reservations
+                            .test_connections()
                             .reserve_gatt_discovery(key, command_id, session_id);
                     },
                     move |hub| {
@@ -227,12 +253,14 @@ impl Message<CancelledRediscovery> for BlengActor {
             );
             assert!(!self.waiters.contains(command_id));
             assert_eq!(
-                self.connections.validate_gatt_discovery(connection_id),
+                self.reservations
+                    .test_connections()
+                    .validate_gatt_discovery(connection_id),
                 Ok(key)
             );
             let characteristic_id = message.database.services[0].characteristics[0].id;
             assert_eq!(
-                self.connections.validate_gatt_access(
+                self.reservations.test_connections().validate_gatt_access(
                     connection_id,
                     message.database.gatt_session_id,
                     characteristic_id,
@@ -242,7 +270,7 @@ impl Message<CancelledRediscovery> for BlengActor {
                 "the committed session remains readable without a pending discovery"
             );
             assert_eq!(
-                self.connections.validate_gatt_access(
+                self.reservations.test_connections().validate_gatt_access(
                     connection_id,
                     session_id,
                     characteristic_id,
@@ -252,7 +280,8 @@ impl Message<CancelledRediscovery> for BlengActor {
                 "the cancelled draft session must not become usable"
             );
             assert!(
-                self.connections
+                self.reservations
+                    .test_connections()
                     .resolve_dispatch(command_id, &Ok(()))
                     .is_none()
             );
@@ -311,10 +340,16 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
             let (sibling_id, mut sibling_rx) = self.register_waiter(sibling_expectation)?;
             // Retain an unrelated pending sibling without dispatching native work.
             if cancelling_rssi {
-                self.connections
-                    .reserve_read(key, sibling_id, session_id, characteristic_id);
+                self.reservations.test_connections().reserve_read(
+                    key,
+                    sibling_id,
+                    session_id,
+                    characteristic_id,
+                );
             } else {
-                self.connections.reserve_rssi(key, sibling_id);
+                self.reservations
+                    .test_connections()
+                    .reserve_rssi(key, sibling_id);
             }
             message.gate.entered.notify_one();
             message.gate.release.notified().await;
@@ -325,23 +360,23 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                     ctx,
                     &message.submission,
                     command_id,
-                    |actor| {
+                    |reservations| {
                         reserved = true;
                         match expectation {
-                            WaiterExpectation::RssiRead(_) => {
-                                actor.connections.reserve_rssi(key, command_id)
-                            }
-                            WaiterExpectation::CharacteristicRead(..) => actor
-                                .connections
+                            WaiterExpectation::RssiRead(_) => reservations
+                                .test_connections()
+                                .reserve_rssi(key, command_id),
+                            WaiterExpectation::CharacteristicRead(..) => reservations
+                                .test_connections()
                                 .reserve_read(key, command_id, session_id, characteristic_id),
-                            WaiterExpectation::CharacteristicWritten(..) => actor
-                                .connections
+                            WaiterExpectation::CharacteristicWritten(..) => reservations
+                                .test_connections()
                                 .reserve_write(key, command_id, session_id, characteristic_id),
-                            WaiterExpectation::Disconnected(_) => {
-                                actor.connections.reserve_disconnect(key, command_id)
-                            }
+                            WaiterExpectation::Disconnected(_) => reservations
+                                .test_connections()
+                                .reserve_disconnect(key, command_id),
                             WaiterExpectation::NotificationsEnabled(..) => {
-                                actor.connections.reserve_notification_enable(
+                                reservations.test_connections().reserve_notification_enable(
                                     key,
                                     command_id,
                                     provisional_subscription,
@@ -350,13 +385,13 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                                     NotificationModeRequest::PlatformDefault,
                                 )
                             }
-                            WaiterExpectation::NotificationsDisabled(..) => {
-                                actor.connections.reserve_notification_disable(
+                            WaiterExpectation::NotificationsDisabled(..) => reservations
+                                .test_connections()
+                                .reserve_notification_disable(
                                     key,
                                     command_id,
                                     message.active_subscription,
-                                )
-                            }
+                                ),
                             _ => unreachable!(),
                         }
                     },
@@ -374,11 +409,12 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                 Err(oneshot::error::TryRecvError::Empty)
             ));
             assert_eq!(
-                self.connections.waiter_result(1.into()),
+                self.reservations.test_connections().waiter_result(1.into()),
                 Some(Ok(WaiterSuccess::Connected(connection_id)))
             );
             assert!(
-                self.connections
+                self.reservations
+                    .test_connections()
                     .resolve_dispatch(command_id, &Ok(()))
                     .is_none()
             );
@@ -410,10 +446,22 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                     WaiterSuccess::RssiRead(connection_id, -42),
                 )
             };
-            assert_eq!(self.connections.gate_event(callback.clone()).unwrap(), None);
-            assert_eq!(self.connections.waiter_result(sibling_id), None);
+            assert_eq!(
+                self.reservations
+                    .test_connections()
+                    .gate_event(callback.clone())
+                    .unwrap(),
+                None
+            );
+            assert_eq!(
+                self.reservations
+                    .test_connections()
+                    .waiter_result(sibling_id),
+                None
+            );
             let resolution = self
-                .connections
+                .reservations
+                .test_connections()
                 .resolve_dispatch(sibling_id, &Ok(()))
                 .unwrap();
             assert!(matches!(
@@ -422,21 +470,43 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
             ));
             assert_eq!(resolution.events_to_replay, vec![callback]);
             for event in &resolution.events_to_replay {
-                self.connections.record_event(event).unwrap();
+                self.reservations
+                    .test_connections()
+                    .record_event(event)
+                    .unwrap();
             }
-            assert_eq!(self.connections.waiter_result(sibling_id), None);
-            self.connections.record_terminal(sibling_id, &Ok(()));
             assert_eq!(
-                self.connections.waiter_result(sibling_id),
+                self.reservations
+                    .test_connections()
+                    .waiter_result(sibling_id),
+                None
+            );
+            self.reservations
+                .test_connections()
+                .record_terminal(sibling_id, &Ok(()));
+            assert_eq!(
+                self.reservations
+                    .test_connections()
+                    .waiter_result(sibling_id),
                 Some(Ok(expected.clone()))
             );
             self.try_settle_waiter(sibling_id);
             assert_eq!(sibling_rx.try_recv(), Ok(Ok(expected)));
-            self.connections.retire_completed();
-            assert_eq!(self.connections.waiter_result(sibling_id), None);
-            assert_eq!(self.connections.validate_rssi(connection_id), Ok(key));
+            self.reservations.test_connections().retire_completed();
             assert_eq!(
-                self.connections.validate_gatt_access(
+                self.reservations
+                    .test_connections()
+                    .waiter_result(sibling_id),
+                None
+            );
+            assert_eq!(
+                self.reservations
+                    .test_connections()
+                    .validate_rssi(connection_id),
+                Ok(key)
+            );
+            assert_eq!(
+                self.reservations.test_connections().validate_gatt_access(
                     connection_id,
                     session_id,
                     characteristic_id,
@@ -446,33 +516,35 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                 "the committed database remains usable without a draft or cancelled I/O slot"
             );
             assert_eq!(
-                self.connections.validate_notification_disable(
-                    connection_id,
-                    session_id,
-                    provisional_subscription
-                ),
+                self.reservations
+                    .test_connections()
+                    .validate_notification_disable(
+                        connection_id,
+                        session_id,
+                        provisional_subscription
+                    ),
                 Err(WaiterError::SubscriptionNotActive)
             );
             assert_eq!(
-                self.connections.validate_notification_disable(
-                    connection_id,
-                    session_id,
-                    message.active_subscription
-                ),
+                self.reservations
+                    .test_connections()
+                    .validate_notification_disable(
+                        connection_id,
+                        session_id,
+                        message.active_subscription
+                    ),
                 Ok((key, characteristic_id)),
                 "the active route keeps its exact session/characteristic and no disable transition"
             );
             assert_eq!(
-                self.connections.validate_notification_enable(
-                    connection_id,
-                    session_id,
-                    characteristic_id
-                ),
+                self.reservations
+                    .test_connections()
+                    .validate_notification_enable(connection_id, session_id, characteristic_id),
                 Err(WaiterError::OperationBusy),
                 "the existing route still excludes a duplicate enable"
             );
             assert_eq!(
-                self.connections.validate_gatt_access(
+                self.reservations.test_connections().validate_gatt_access(
                     connection_id,
                     session_id,
                     characteristic_id,
@@ -482,7 +554,9 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                 "the active route still excludes reads of its characteristic"
             );
             assert_eq!(
-                self.connections.validate_gatt_discovery(connection_id),
+                self.reservations
+                    .test_connections()
+                    .validate_gatt_discovery(connection_id),
                 Err(WaiterError::GattBusy)
             );
             message.checked_tx.send(()).unwrap();
@@ -522,7 +596,9 @@ impl Message<BeginInitializeAfterCleanup> for BlengActor {
         let submission = message.submission.clone();
         let result = async {
             self.require_open()?;
-            self.initialization.require_not_started()?;
+            self.reservations
+                .test_initialization()
+                .require_not_started()?;
             let command_id = self
                 .register_operation_waiter(&message.submission, WaiterExpectation::Initialized)?;
             match message.phase {
@@ -544,7 +620,12 @@ impl Message<BeginInitializeAfterCleanup> for BlengActor {
                 .expect_err("cleanup before launch must reject dispatch");
             assert_eq!(error, message.expected_error);
             assert!(!self.waiters.contains(command_id));
-            assert_eq!(self.initialization.require_not_started(), Ok(()));
+            assert_eq!(
+                self.reservations
+                    .test_initialization()
+                    .require_not_started(),
+                Ok(())
+            );
             assert_eq!(self.lifecycle.phase(), message.phase);
             // A handler error leaves guard retirement to run_operation, without acknowledging launch.
             Err(error)
