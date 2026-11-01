@@ -1,6 +1,7 @@
 pub mod assembly;
 pub mod backend;
 pub mod contract;
+pub mod ffi;
 mod hub;
 pub mod ingress;
 pub mod types;

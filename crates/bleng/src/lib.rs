@@ -12,6 +12,7 @@
 mod cleanup;
 mod error;
 mod facade;
+pub mod ffi;
 mod runtime;
 mod waiter;
 
