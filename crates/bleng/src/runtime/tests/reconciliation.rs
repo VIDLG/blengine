@@ -43,7 +43,7 @@ fn pre_ack_buffer_is_bounded_and_replays_correlated_evidence_in_order() {
     ));
 
     let resolution = initialization.resolve_dispatch(1.into(), &Ok(())).unwrap();
-    assert!(matches!(resolution.action, DispatchAction::None));
+    assert!(matches!(resolution.action, DispatchAction::NoAction));
     assert_eq!(resolution.events_to_replay, events);
     for event in &resolution.events_to_replay {
         initialization.record_event(event);
@@ -105,7 +105,7 @@ fn init_publication_uses_one_64_event_buffer_and_keeps_earlier_passive_snapshots
             Err(ReconciliationFault::BufferOverflow)
         ));
         let resolution = initialization.resolve_dispatch(1.into(), &Ok(())).unwrap();
-        assert!(matches!(resolution.action, DispatchAction::None));
+        assert!(matches!(resolution.action, DispatchAction::NoAction));
         assert_eq!(resolution.events_to_replay, events);
         for event in &resolution.events_to_replay[..63] {
             if let BleEvent::CommandCompleted { command_id, .. } = event {
@@ -248,7 +248,7 @@ fn scan_stop_rejection_discards_terminals_and_preserves_replay_order_across_conf
                 DispatchAction::FaultRuntime(ReconciliationFault::DispatchEvidenceConflict)
             ));
         } else {
-            assert!(matches!(resolution.action, DispatchAction::None));
+            assert!(matches!(resolution.action, DispatchAction::NoAction));
         }
         assert_eq!(scan.stop_command(), None);
         assert_eq!(scan.validate_scan_stop(10.into()), Ok(()));
@@ -273,9 +273,11 @@ fn rejection_replay_preserves_distinct_io_and_subscription_loss_policies() {
     {
         let mut connections = ConnectionReservations::default();
         connections.reserve_connection(1.into(), 1.into(), 10.into());
-        connections.resolve_dispatch(1.into(), &Ok(())).unwrap();
+        connections
+            .resolve_dispatch_for_conn(10.into(), 1.into(), &Ok(()))
+            .unwrap();
         connections.record_event(&connected_event(1, 10)).unwrap();
-        connections.record_terminal(1.into(), &Ok(()));
+        connections.record_terminal_for_conn(10.into(), 1.into(), &Ok(()));
         if subscription {
             connections.reserve_notification_enable(
                 1.into(),
@@ -307,17 +309,23 @@ fn rejection_replay_preserves_distinct_io_and_subscription_loss_policies() {
         let rejection = Err(CommandDispatchError::InvalidState {
             detail: "rejected after native connection loss".to_owned(),
         });
-        let resolution = connections.resolve_dispatch(2.into(), &rejection).unwrap();
+        let resolution = connections
+            .resolve_dispatch_for_conn(10.into(), 2.into(), &rejection)
+            .unwrap();
         // A conflict must not stop classification of subsequent passive events.
         assert_eq!(resolution.events_to_replay, expected_replay);
         assert_eq!(
-            connections.waiter_result(1.into()),
+            connections.waiter_result_for_conn(10.into(), 1.into()),
             Some(Ok(WaiterSuccess::Connected(10.into())))
         );
         assert_eq!(connections.validate_gatt_discovery(10.into()), Ok(1.into()));
-        assert!(connections.resolve_dispatch(2.into(), &Ok(())).is_none());
+        assert!(
+            connections
+                .resolve_dispatch_for_conn(10.into(), 2.into(), &Ok(()))
+                .is_none()
+        );
         if subscription {
-            assert!(matches!(resolution.action, DispatchAction::None));
+            assert!(matches!(resolution.action, DispatchAction::NoAction));
 
             assert_eq!(
                 connections.validate_notification_disable(10.into(), 20.into(), 40.into()),

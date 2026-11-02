@@ -104,11 +104,7 @@ fn reserve_connect(
         id,
         connection.into(),
     );
-    actor
-        .reservations
-        .test_connections()
-        .resolve_dispatch(id, &Ok(()))
-        .unwrap();
+    actor.reservations.resolve_dispatch(id, &Ok(()));
     (id, result)
 }
 
@@ -136,28 +132,19 @@ fn reserve_read(actor: &mut BlengActor, characteristic: u64) -> (CommandId, Resu
         30.into(),
         characteristic.into(),
     );
-    actor
-        .reservations
-        .test_connections()
-        .resolve_dispatch(id, &Ok(()))
-        .unwrap();
+    actor.reservations.resolve_dispatch(id, &Ok(()));
     (id, result)
 }
 
 fn cancel(actor: &mut BlengActor, command_id: CommandId) -> CancellationReceiver {
-    let receipt = match actor
-        .reservations
-        .test_connections()
-        .request_cancellation(command_id)
-    {
+    let receipt = match actor.reservations.request_cancellation(command_id) {
         Some(CancellationDecision::Accepted(receipt)) => receipt,
         _ => panic!("cancellation must be admitted"),
     };
     assert!(
         actor
             .reservations
-            .test_connections()
-            .take_cancellation_dispatch(command_id)
+            .try_claim_cancellation_dispatch(command_id)
     );
     receipt
 }
@@ -435,11 +422,7 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
         let (id, mut result) = reserve_notification_transition(&mut actor, true);
         resolve_notification_dispatch(&mut actor, id, Ok(()));
         drain(&mut rx);
-        let completion = actor
-            .reservations
-            .test_connections()
-            .completion_observer(id)
-            .unwrap();
+        let completion = actor.reservations.completion_observer(id).unwrap();
         let receipt = cancel(&mut actor, id);
         let error = blehub::BleEventError {
             category: if accepted {
@@ -495,20 +478,11 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
             }
         }
         assert!(completion.is_completed());
-        let retry_receipt = match actor
-            .reservations
-            .test_connections()
-            .request_cancellation(id)
-        {
+        let retry_receipt = match actor.reservations.request_cancellation(id) {
             Some(CancellationDecision::AlreadyRequested(receipt)) => receipt,
             _ => panic!("terminal must not retire the pending receipt owner"),
         };
-        assert!(
-            !actor
-                .reservations
-                .test_connections()
-                .take_cancellation_dispatch(id)
-        );
+        assert!(!actor.reservations.try_claim_cancellation_dispatch(id));
         let control_result = control(id, accepted);
         actor.handle_cancellation_result(id, control_result.clone());
         assert_eq!(*receipt.borrow(), Some(control_result.clone()));
@@ -529,13 +503,7 @@ fn disable_cancellation_receipt_retains_transition_and_applies_original_outcome_
             })
         );
         assert_eq!(result.try_recv(), Err(oneshot::error::TryRecvError::Closed));
-        assert!(
-            actor
-                .reservations
-                .test_connections()
-                .completion_observer(id)
-                .is_none()
-        );
+        assert!(actor.reservations.completion_observer(id).is_none());
         actor.handle_cancellation_result(id, control_result.clone());
         assert!(
             drain(&mut rx).is_empty(),
@@ -696,21 +664,12 @@ fn publication_order_scan_stop_cannot_overtake_pending_start_evidence() {
                 .reservations
                 .test_scan()
                 .reserve_scan_start(id, 1.into());
-            actor
-                .reservations
-                .test_scan()
-                .resolve_dispatch(id, &Ok(()))
-                .unwrap();
-            let receipt = match actor.reservations.test_scan().request_cancellation(id) {
+            actor.reservations.resolve_dispatch(id, &Ok(()));
+            let receipt = match actor.reservations.request_cancellation(id) {
                 Some(CancellationDecision::Accepted(receipt)) => receipt,
                 _ => panic!("scan cancellation must be admitted"),
             };
-            assert!(
-                actor
-                    .reservations
-                    .test_scan()
-                    .take_cancellation_dispatch(id)
-            );
+            assert!(actor.reservations.try_claim_cancellation_dispatch(id));
             let domain = BleEvent::ScanStarted {
                 command_id: id,
                 scan_id: 1.into(),
@@ -793,11 +752,7 @@ fn publication_order_multiple_controls_share_one_connection_order_without_blocki
                     .reservations
                     .test_scan()
                     .reserve_scan_start(scan, 1.into());
-                actor
-                    .reservations
-                    .test_scan()
-                    .resolve_dispatch(scan, &Ok(()))
-                    .unwrap();
+                actor.reservations.resolve_dispatch(scan, &Ok(()));
                 let scan_events = [
                     BleEvent::ScanStarted {
                         command_id: scan,
@@ -903,20 +858,11 @@ fn publication_order_dispatch_rejection_finishes_pending_control_without_strandi
             .reservations
             .test_connections()
             .reserve_read(20.into(), a, 30.into(), 40.into());
-        let receipt_a = match actor
-            .reservations
-            .test_connections()
-            .request_cancellation(a)
-        {
+        let receipt_a = match actor.reservations.request_cancellation(a) {
             Some(CancellationDecision::Accepted(receipt)) => receipt,
             _ => panic!("pre-dispatch cancellation must be admitted"),
         };
-        assert!(
-            !actor
-                .reservations
-                .test_connections()
-                .take_cancellation_dispatch(a)
-        );
+        assert!(!actor.reservations.try_claim_cancellation_dispatch(a));
         let sibling = other_pending.then(|| {
             let (b, result_b) = reserve_read(&mut actor, 41);
             let receipt_b = cancel(&mut actor, b);
@@ -967,11 +913,7 @@ fn connect_result_after_rejected_control(stages: &[u8]) {
     for &stage in stages {
         let (mut actor, mut rx, lifecycle) = fixture();
         let (id, mut result) = reserve_connect(&mut actor, 20, 10);
-        let completion = actor
-            .reservations
-            .test_connections()
-            .completion_observer(id)
-            .unwrap();
+        let completion = actor.reservations.completion_observer(id).unwrap();
         let receipt = cancel(&mut actor, id);
         let error = blehub::BleEventError {
             category: blehub::BleErrorCategory::Connection,
@@ -1075,11 +1017,7 @@ fn read_result_after_rejected_control(stages: &[u8]) {
         drain(&mut rx);
         let (id, mut result) = reserve_read(&mut actor, 40);
         let (_, mut sibling_result) = reserve_read(&mut actor, 41);
-        let completion = actor
-            .reservations
-            .test_connections()
-            .completion_observer(id)
-            .unwrap();
+        let completion = actor.reservations.completion_observer(id).unwrap();
         let receipt = cancel(&mut actor, id);
         let error = blehub::BleEventError {
             category: blehub::BleErrorCategory::Permission,
@@ -1261,13 +1199,7 @@ fn cancel_loss_cancelled_terminal_before_loss_preserves_target_without_delaying_
             sibling_result.try_recv(),
             Err(oneshot::error::TryRecvError::Closed)
         );
-        assert!(
-            actor
-                .reservations
-                .test_connections()
-                .request_cancellation(sibling)
-                .is_none()
-        );
+        assert!(actor.reservations.request_cancellation(sibling).is_none());
         assert!(lifecycle.is_open());
     }
 }
@@ -1294,11 +1226,7 @@ fn cancel_loss_completed_disconnect_is_completed_while_sibling_control_retains_r
             .reservations
             .test_connections()
             .reserve_disconnect(20.into(), disconnect);
-        actor
-            .reservations
-            .test_connections()
-            .resolve_dispatch(disconnect, &Ok(()))
-            .unwrap();
+        actor.reservations.resolve_dispatch(disconnect, &Ok(()));
         let prepared = kameo::actor::PreparedActor::<BlengActor>::new(kameo::mailbox::bounded(1));
         let request_cancel = |actor: &mut BlengActor| {
             actor.request_operation_cancellation(disconnect, prepared.actor_ref().clone())
@@ -1307,11 +1235,7 @@ fn cancel_loss_completed_disconnect_is_completed_while_sibling_control_retains_r
             request_cancel(&mut actor),
             Err(WaiterError::OperationNotCancellable(id)) if id == disconnect
         ));
-        let completion = actor
-            .reservations
-            .test_connections()
-            .completion_observer(disconnect)
-            .unwrap();
+        let completion = actor.reservations.completion_observer(disconnect).unwrap();
         let domain = BleEvent::ConnectionStateChanged {
             command_id: Some(disconnect),
             connection_id: 10.into(),
@@ -1425,21 +1349,12 @@ fn publication_order_scan_has_a_64_event_bound_including_passive_stop() {
         .reservations
         .test_scan()
         .reserve_scan_start(id, 1.into());
-    actor
-        .reservations
-        .test_scan()
-        .resolve_dispatch(id, &Ok(()))
-        .unwrap();
+    actor.reservations.resolve_dispatch(id, &Ok(()));
     assert!(matches!(
-        actor.reservations.test_scan().request_cancellation(id),
+        actor.reservations.request_cancellation(id),
         Some(CancellationDecision::Accepted(_))
     ));
-    assert!(
-        actor
-            .reservations
-            .test_scan()
-            .take_cancellation_dispatch(id)
-    );
+    assert!(actor.reservations.try_claim_cancellation_dispatch(id));
     for _ in 0..64 {
         actor.handle_ingress_event(stopped());
     }

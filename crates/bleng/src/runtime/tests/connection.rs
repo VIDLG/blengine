@@ -27,7 +27,11 @@ fn connection_container_preserves_owned_roots_and_isolates_late_terminals_after_
         Err(WaiterError::PeripheralBusy)
     );
     assert_eq!(connections.require_peripheral_available(20.into()), Ok(()));
-    assert!(connections.resolve_dispatch(2.into(), &Ok(())).is_none());
+    assert!(
+        connections
+            .resolve_dispatch_for_conn(2.into(), 2.into(), &Ok(()))
+            .is_none()
+    );
     assert_eq!(
         connections.validate_disconnect(2.into()),
         Err(WaiterError::ConnectionNotActive)
@@ -35,16 +39,18 @@ fn connection_container_preserves_owned_roots_and_isolates_late_terminals_after_
 
     connections.reserve_connection(20.into(), 2.into(), 2.into());
     for id in [1, 2] {
-        connections.resolve_dispatch(id.into(), &Ok(())).unwrap();
+        connections
+            .resolve_dispatch_for_conn(id.into(), id.into(), &Ok(()))
+            .unwrap();
         connections.record_event(&connected_event(id, id)).unwrap();
         assert_eq!(connections.validate_rssi(id.into()), Ok((id * 10).into()));
     }
-    connections.record_terminal(1.into(), &Ok(()));
+    connections.record_terminal_for_conn(1.into(), 1.into(), &Ok(()));
     assert_eq!(
-        connections.waiter_result(1.into()),
+        connections.waiter_result_for_conn(1.into(), 1.into()),
         Some(Ok(WaiterSuccess::Connected(1.into())))
     );
-    assert_eq!(connections.waiter_result(2.into()), None);
+    assert_eq!(connections.waiter_result_for_conn(2.into(), 2.into()), None);
 
     connections
         .record_event(&disconnected_event(None, 1))
@@ -56,20 +62,22 @@ fn connection_container_preserves_owned_roots_and_isolates_late_terminals_after_
         Err(WaiterError::PeripheralBusy)
     );
     connections.reserve_connection(10.into(), 3.into(), 3.into());
-    connections.resolve_dispatch(3.into(), &Ok(())).unwrap();
+    connections
+        .resolve_dispatch_for_conn(3.into(), 3.into(), &Ok(()))
+        .unwrap();
     connections.record_event(&connected_event(3, 3)).unwrap();
     assert_eq!(connections.validate_rssi(3.into()), Ok(10.into()));
 
     // Reusing a peripheral never reuses its old connection or command identity.
-    connections.record_terminal(1.into(), &Ok(()));
-    assert_eq!(connections.waiter_result(3.into()), None);
-    assert_eq!(connections.waiter_result(2.into()), None);
-    connections.record_terminal(3.into(), &Ok(()));
+    connections.record_terminal_for_conn(1.into(), 1.into(), &Ok(()));
+    assert_eq!(connections.waiter_result_for_conn(3.into(), 3.into()), None);
+    assert_eq!(connections.waiter_result_for_conn(2.into(), 2.into()), None);
+    connections.record_terminal_for_conn(3.into(), 3.into(), &Ok(()));
     assert_eq!(
-        connections.waiter_result(3.into()),
+        connections.waiter_result_for_conn(3.into(), 3.into()),
         Some(Ok(WaiterSuccess::Connected(3.into())))
     );
-    assert_eq!(connections.waiter_result(2.into()), None);
+    assert_eq!(connections.waiter_result_for_conn(2.into(), 2.into()), None);
 }
 
 #[test]

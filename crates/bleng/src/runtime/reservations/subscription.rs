@@ -5,10 +5,7 @@ use blehub::{
 
 use crate::waiter::{WaiterOutcome, WaiterSuccess};
 
-use super::{
-    connection::connection_lost,
-    dispatch::{CommandProgress, ReconciliationFault},
-};
+use super::{CommandProgress, ReconciliationFault, connection::connection_lost};
 
 /// A subscription becomes active only after dispatch acknowledgement, a successful
 /// terminal, and matching domain evidence. Disabling preserves its active route.
@@ -236,7 +233,7 @@ impl SubscriptionReservation {
         {
             return SubscriptionDisposition::Keep;
         }
-        if transition.progress.terminal_failed() {
+        if transition.progress.is_terminal_failed() {
             return self.reject_transition();
         }
         match self.state {

@@ -9,9 +9,11 @@
 //! through the runtime-scoped re-exports below; shared implementation details use
 //! `pub(super)`, and record-local fields and helpers remain private.
 //!
-//! Read `dispatch` first: `CommandProgress` owns acknowledgement, bounded buffering,
-//! and the authoritative first terminal; typed domain evidence stays in each record.
-//! Follow it with
+//! Read `command_progress`, `cancellation`, and `publication` first:
+//! `CommandProgress` owns acknowledgement, bounded dispatch buffering, and the
+//! authoritative first terminal; cancellation owns its control receipt; publication
+//! owns scope-level public event ordering. Typed domain evidence stays in each record.
+//! Follow these shared coordination modules with
 //! `initialization` and `scan`. `connections` owns the peripheral-keyed collection
 //! and global dispatch-pending routing priority; command-correlated lookup is
 //! provided by the actor command directory. `connection` owns one connection record
@@ -67,26 +69,32 @@ use crate::{
 
 use super::{CommandDirectory, CommandRoute};
 
+mod cancellation;
+mod command_progress;
 mod connection;
 mod connections;
-mod dispatch;
 mod gatt;
 mod initialization;
 mod io;
+mod publication;
 mod scan;
 mod subscription;
 
 #[cfg(test)]
 mod tests;
 
-pub(super) use connection::connection_lost;
-pub(super) use connections::ConnectionReservations;
-pub(super) use dispatch::{
-    CancellationDecision, CancellationReceiver, DispatchAction, DispatchResolution,
+pub(super) use cancellation::{CancellationDecision, CancellationReceiver};
+pub(super) use command_progress::{
+    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
     ReconciliationFault,
 };
+pub(super) use connection::connection_lost;
+pub(super) use connections::ConnectionReservations;
 pub(super) use gatt::GattAccess;
 pub(super) use initialization::InitializationState;
+pub(super) use publication::{
+    PublicationDecision, PublicationGate, PublicationRelease, ScopedPublication,
+};
 pub(super) use scan::ScanState;
 
 /// The command directory and three actor-owned reservation roots.
@@ -101,6 +109,14 @@ pub(super) struct ReservationCoordinator {
     initialization: InitializationState,
     scan: ScanState,
     connections: ConnectionReservations,
+}
+
+#[derive(Clone, Copy)]
+enum PublicationTarget {
+    Publish,
+    Scan,
+    Connection(ConnectionId),
+    Command(CommandId),
 }
 
 impl ReservationCoordinator {
@@ -220,7 +236,7 @@ impl ReservationCoordinator {
             }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .completion_observer_for(connection_id, command_id),
+                .completion_observer_for_conn(connection_id, command_id),
             #[cfg(test)]
             CommandRoute::Test => None,
         }
@@ -251,30 +267,30 @@ impl ReservationCoordinator {
             }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .request_cancellation_for(connection_id, command_id),
+                .request_cancellation_for_conn(connection_id, command_id),
             #[cfg(test)]
             CommandRoute::Test => None,
         }
     }
 
-    pub(super) fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+    pub(super) fn try_claim_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
         let Some(route) = self.commands.route(command_id) else {
             return false;
         };
         match route {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
-                self.scan.take_cancellation_dispatch(command_id)
+                self.scan.try_claim_cancellation_dispatch(command_id)
             }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .take_cancellation_dispatch_for(connection_id, command_id),
+                .try_claim_cancellation_dispatch_for_conn(connection_id, command_id),
             CommandRoute::Initialization => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
     }
 
-    pub(super) fn resolve_cancellation(
+    pub(super) fn try_resolve_cancellation(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -284,45 +300,45 @@ impl ReservationCoordinator {
         };
         match route {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
-                self.scan.resolve_cancellation(command_id, result)
+                self.scan.try_resolve_cancellation(command_id, result)
             }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .resolve_cancellation_for(connection_id, command_id, result),
+                .try_resolve_cancellation_for_conn(connection_id, command_id, result),
             CommandRoute::Initialization => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
     }
 
-    pub(super) fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+    pub(super) fn try_clear_cancellation(&mut self, command_id: CommandId) -> bool {
         let Some(route) = self.commands.route(command_id) else {
             return false;
         };
         match route {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
-                self.scan.clear_cancellation(command_id)
+                self.scan.try_clear_cancellation(command_id)
             }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .clear_cancellation_for(connection_id, command_id),
+                .try_clear_cancellation_for_conn(connection_id, command_id),
             CommandRoute::Initialization => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
     }
 
-    pub(super) fn cancellation_requested(&self, command_id: CommandId) -> bool {
+    pub(super) fn is_cancellation_requested(&self, command_id: CommandId) -> bool {
         let Some(route) = self.commands.route(command_id) else {
             return false;
         };
         match route {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
-                self.scan.cancellation_requested(command_id)
+                self.scan.is_cancellation_requested(command_id)
             }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .cancellation_requested_for(connection_id, command_id),
+                .is_cancellation_requested_for_conn(connection_id, command_id),
             CommandRoute::Initialization => false,
             #[cfg(test)]
             CommandRoute::Test => false,
@@ -334,14 +350,12 @@ impl ReservationCoordinator {
             return Vec::new();
         };
         match route {
-            CommandRoute::ScanStart | CommandRoute::ScanStop => self
-                .scan
-                .take_cancellation_public_events(command_id)
-                .unwrap_or_default(),
+            CommandRoute::ScanStart | CommandRoute::ScanStop => {
+                self.scan.take_cancellation_public_events(command_id)
+            }
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .take_cancellation_public_events_for(connection_id, command_id)
-                .unwrap_or_default(),
+                .take_cancellation_public_events_for_conn(connection_id, command_id),
             CommandRoute::Initialization => Vec::new(),
             #[cfg(test)]
             CommandRoute::Test => Vec::new(),
@@ -355,27 +369,64 @@ impl ReservationCoordinator {
         command_id: CommandId,
         result: Result<(), WaiterError>,
     ) -> Vec<BleEvent> {
-        self.resolve_cancellation(command_id, result);
+        self.try_resolve_cancellation(command_id, result);
         self.take_cancellation_public_events(command_id)
     }
 
-    pub(super) fn allow_publication(
-        &mut self,
-        event: &BleEvent,
-    ) -> Result<bool, ReconciliationFault> {
-        if let Some(CommandRoute::Connection { connection_id, .. }) = event
+    fn route_for_event(&self, event: &BleEvent) -> Option<CommandRoute> {
+        event
             .command_id()
             .and_then(|command_id| self.commands.route(command_id))
-        {
-            return Ok(self
+    }
+
+    fn publication_target(&self, event: &BleEvent) -> PublicationTarget {
+        match self.route_for_event(event) {
+            Some(CommandRoute::Connection { connection_id, .. }) => {
+                PublicationTarget::Connection(connection_id)
+            }
+            Some(CommandRoute::ScanStart | CommandRoute::ScanStop) => PublicationTarget::Scan,
+            Some(CommandRoute::Initialization) => PublicationTarget::Publish,
+            #[cfg(test)]
+            Some(CommandRoute::Test) => PublicationTarget::Publish,
+            None => match event {
+                BleEvent::ScanStarted { .. }
+                | BleEvent::AdvertisementObserved { .. }
+                | BleEvent::ScanStopped { .. } => PublicationTarget::Scan,
+                BleEvent::ConnectionStateChanged { connection_id, .. }
+                | BleEvent::CharacteristicRead { connection_id, .. }
+                | BleEvent::CharacteristicWritten { connection_id, .. }
+                | BleEvent::NotificationStateChanged { connection_id, .. }
+                | BleEvent::NotificationReceived { connection_id, .. }
+                | BleEvent::RssiRead { connection_id, .. } => {
+                    PublicationTarget::Connection(*connection_id)
+                }
+                BleEvent::GattDiscovered { database, .. } => {
+                    PublicationTarget::Connection(database.connection_id)
+                }
+                BleEvent::CommandCompleted { command_id, .. } => {
+                    PublicationTarget::Command(*command_id)
+                }
+                BleEvent::AdapterSnapshotChanged { .. } | BleEvent::BackendError { .. } => {
+                    PublicationTarget::Publish
+                }
+            },
+        }
+    }
+
+    pub(super) fn decide_publication(
+        &mut self,
+        event: &BleEvent,
+    ) -> Result<PublicationDecision, ReconciliationFault> {
+        match self.publication_target(event) {
+            PublicationTarget::Publish => Ok(PublicationDecision::Publish),
+            PublicationTarget::Scan => self.scan.decide_publication(event),
+            PublicationTarget::Connection(connection_id) => self
                 .connections
-                .allow_publication_for(connection_id, event)?
-                .unwrap_or(true));
+                .decide_publication_for_conn(connection_id, event),
+            PublicationTarget::Command(command_id) => self
+                .connections
+                .decide_publication_for_cmd(command_id, event),
         }
-        if let Some(allow) = self.scan.allow_publication(event)? {
-            return Ok(allow);
-        }
-        Ok(self.connections.allow_publication(event)?.unwrap_or(true))
     }
 
     pub(super) fn gate_event(
@@ -385,21 +436,19 @@ impl ReservationCoordinator {
         let Some(event) = self.initialization.gate_event(event)? else {
             return Ok(None);
         };
-        let Some(event) = (match event
-            .command_id()
-            .and_then(|command_id| self.commands.route(command_id))
-        {
+        let event = match self.route_for_event(&event) {
             Some(CommandRoute::Connection {
                 connection_id,
                 kind,
             }) => self
                 .connections
-                .gate_event_for(connection_id, kind, event)?,
+                .gate_event_for_conn(connection_id, kind, event)?,
             _ => self.connections.gate_event(event)?,
-        }) else {
-            return Ok(None);
         };
-        self.scan.gate_event(event)
+        match event {
+            Some(event) => self.scan.gate_event(event),
+            None => Ok(None),
+        }
     }
 
     pub(super) fn record_event_evidence(
@@ -438,7 +487,7 @@ impl ReservationCoordinator {
                 .unwrap_or_default(),
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .resolve_dispatch_for(connection_id, command_id, result)
+                .resolve_dispatch_for_conn(connection_id, command_id, result)
                 .unwrap_or_default(),
             #[cfg(test)]
             CommandRoute::Test => DispatchResolution::default(),
@@ -459,7 +508,7 @@ impl ReservationCoordinator {
             }
             CommandRoute::Connection { connection_id, .. } => {
                 self.connections
-                    .record_terminal_for(connection_id, command_id, &result);
+                    .record_terminal_for_conn(connection_id, command_id, &result);
             }
             #[cfg(test)]
             CommandRoute::Test => {}
@@ -473,21 +522,30 @@ impl ReservationCoordinator {
             CommandRoute::ScanStart | CommandRoute::ScanStop => self.scan.waiter_result(command_id),
             CommandRoute::Connection { connection_id, .. } => self
                 .connections
-                .waiter_result_for(connection_id, command_id),
+                .waiter_result_for_conn(connection_id, command_id),
             #[cfg(test)]
             CommandRoute::Test => None,
         }
     }
 
+    /// Finishes state transitions enabled by settled evidence and releases completed
+    /// reservation records from the initialization, connection, and scan roots.
+    ///
+    /// `advance` means changing a root's logical phase, such as initialization
+    /// becoming ready. `release` means removing a reservation and its command route
+    /// after its native/domain lifecycle is complete; it does not cancel native work
+    /// or erase an already delivered waiter result.
     pub(super) fn advance_and_retire(&mut self) -> Result<(), WaiterError> {
-        let mut retired = self
-            .initialization
-            .advance_after_settlement()?
-            .into_iter()
-            .collect::<Vec<_>>();
+        // An initialization failure faults the runtime, but completed reservations in the other
+        // roots can still be released in this actor turn before the error is returned.
+        let (mut retired, initialization_error) =
+            match self.initialization.advance_after_settlement() {
+                Ok(command_id) => (command_id.into_iter().collect::<Vec<_>>(), None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
         retired.extend(self.connections.retire_completed());
         retired.extend(self.scan.retire_completed());
         self.remove_commands(retired);
-        Ok(())
+        initialization_error.map_or(Ok(()), Err)
     }
 }

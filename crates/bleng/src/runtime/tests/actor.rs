@@ -40,28 +40,20 @@ fn explicit_cancellation_retains_pre_dispatch_reservation_until_dispatch_resolve
         characteristic_id,
     );
 
-    let receiver = match actor
-        .reservations
-        .test_connections()
-        .request_cancellation(command_id)
-    {
+    let receiver = match actor.reservations.request_cancellation(command_id) {
         Some(crate::runtime::reservations::CancellationDecision::Accepted(receiver)) => receiver,
         _ => panic!("unexpected cancellation decision"),
     };
     assert!(result_rx.try_recv().is_err());
     assert!(receiver.borrow().is_none());
     assert!(matches!(
-        actor
-            .reservations
-            .test_connections()
-            .request_cancellation(command_id),
+        actor.reservations.request_cancellation(command_id),
         Some(crate::runtime::reservations::CancellationDecision::AlreadyRequested(_))
     ));
     assert!(
         !actor
             .reservations
-            .test_connections()
-            .take_cancellation_dispatch(command_id)
+            .try_claim_cancellation_dispatch(command_id)
     );
 }
 
@@ -128,8 +120,7 @@ fn cancellation_receipt_survives_early_terminal(
     actor
         .reservations
         .test_connections()
-        .resolve_dispatch(0.into(), &Ok(()))
-        .unwrap();
+        .resolve_dispatch_for_conn(connection_id, 0.into(), &Ok(()));
     actor.handle_ingress_event(BleEvent::ConnectionStateChanged {
         command_id: Some(0.into()),
         connection_id,
@@ -155,44 +146,30 @@ fn cancellation_receipt_survives_early_terminal(
         session_id,
         characteristic_id,
     );
-    actor
-        .reservations
-        .test_connections()
-        .resolve_dispatch(command_id, &Ok(()))
-        .unwrap();
+    actor.reservations.resolve_dispatch(command_id, &Ok(()));
     assert!(event_rx.try_recv().is_ok());
     assert!(event_rx.try_recv().is_ok());
     assert_eq!(
         event_rx.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     );
-    let receipt = match actor
-        .reservations
-        .test_connections()
-        .request_cancellation(command_id)
-    {
+    let receipt = match actor.reservations.request_cancellation(command_id) {
         Some(CancellationDecision::Accepted(receipt)) => receipt,
         _ => panic!("first cancellation must have its own receipt"),
     };
     assert!(
         actor
             .reservations
-            .test_connections()
-            .take_cancellation_dispatch(command_id)
+            .try_claim_cancellation_dispatch(command_id)
     );
-    let repeated_receipt = match actor
-        .reservations
-        .test_connections()
-        .request_cancellation(command_id)
-    {
+    let repeated_receipt = match actor.reservations.request_cancellation(command_id) {
         Some(CancellationDecision::AlreadyRequested(receipt)) => receipt,
         _ => panic!("concurrent cancellation must share the receipt"),
     };
     assert!(
         !actor
             .reservations
-            .test_connections()
-            .take_cancellation_dispatch(command_id)
+            .try_claim_cancellation_dispatch(command_id)
     );
 
     let domain = BleEvent::CharacteristicRead {
@@ -265,7 +242,6 @@ fn cancellation_receipt_survives_early_terminal(
     assert!(
         actor
             .reservations
-            .test_connections()
             .request_cancellation(command_id)
             .is_none()
     );
@@ -321,24 +297,15 @@ fn typed_boundary_pending_public_evidence_and_release_overflow_fail_closed() {
             30.into(),
             40.into(),
         );
-        actor
-            .reservations
-            .test_connections()
-            .resolve_dispatch(command_id, &Ok(()))
-            .unwrap();
-        let receipt = match actor
-            .reservations
-            .test_connections()
-            .request_cancellation(command_id)
-        {
+        actor.reservations.resolve_dispatch(command_id, &Ok(()));
+        let receipt = match actor.reservations.request_cancellation(command_id) {
             Some(CancellationDecision::Accepted(receipt)) => receipt,
             _ => panic!("cancellation must be admitted"),
         };
         assert!(
             actor
                 .reservations
-                .test_connections()
-                .take_cancellation_dispatch(command_id)
+                .try_claim_cancellation_dispatch(command_id)
         );
         let domain = BleEvent::CharacteristicRead {
             command_id,

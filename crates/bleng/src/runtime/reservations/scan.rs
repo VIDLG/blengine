@@ -33,9 +33,9 @@ use blehub::{
 use super::super::shared::CompletionObserver;
 use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
-use super::dispatch::{
+use super::{
     BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
-    DispatchResolution, ReconciliationFault,
+    DispatchResolution, PublicationGate, PublicationRelease, ReconciliationFault,
 };
 
 /// Owns the single scan slot, command admission, and correlated start/stop evidence.
@@ -49,7 +49,7 @@ use super::dispatch::{
 /// even when a caller has already timed out or cancelled. This owner neither
 /// publishes events nor owns waiter delivery or runtime lifecycle actions.
 #[derive(Default)]
-pub struct ScanState {
+pub(crate) struct ScanState {
     phase: ScanPhase,
 }
 
@@ -65,14 +65,17 @@ impl ScanState {
     /// Gates live callbacks before publication; this is not an ownership query.
     /// Some(event) passes through, including owned events needing no buffering.
     /// None retains the event pending dispatch resolution; overflow is an error.
-    pub fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
+    pub(crate) fn gate_event(
+        &mut self,
+        event: BleEvent,
+    ) -> Result<Option<BleEvent>, ReconciliationFault> {
         let Some(scan) = self.reserved_mut() else {
             return Ok(Some(event));
         };
         scan.gate_event(event)
     }
 
-    pub fn record_event(&mut self, event: &BleEvent) {
+    pub(crate) fn record_event(&mut self, event: &BleEvent) {
         if let Some(scan) = self.reserved_mut() {
             scan.record_event(event);
         }
@@ -80,7 +83,7 @@ impl ScanState {
 
     /// Returns None when neither the scan start nor its stop owns this command.
     /// Otherwise updates reservations and returns ordered replay plus actor actions.
-    pub fn resolve_dispatch(
+    pub(crate) fn resolve_dispatch(
         &mut self,
         command_id: CommandId,
         result: &Result<(), CommandDispatchError>,
@@ -93,7 +96,9 @@ impl ScanState {
             // A rejected start with correlated callbacks may already own a native scan.
             let resolution = scan
                 .start_progress
-                .rejected_resolution(DispatchAction::None, |_| BufferedEventDisposition::Conflict);
+                .rejected_resolution(DispatchAction::NoAction, |_| {
+                    BufferedEventDisposition::Conflict
+                });
             self.phase = ScanPhase::Idle;
             return Some(resolution);
         }
@@ -105,14 +110,17 @@ impl ScanState {
         Some(resolution)
     }
 
-    pub fn stop_command(&self) -> Option<CommandId> {
+    pub(crate) fn stop_command(&self) -> Option<CommandId> {
         self.reserved()?
             .stop
             .as_ref()
             .map(|stop| stop.progress.command_id())
     }
 
-    pub fn request_cancellation(&mut self, command_id: CommandId) -> Option<CancellationDecision> {
+    pub(crate) fn request_cancellation(
+        &mut self,
+        command_id: CommandId,
+    ) -> Option<CancellationDecision> {
         let scan = self.reserved_mut()?;
         if scan.start_progress.owns_command(command_id) {
             return Some(scan.start_progress.request_cancellation());
@@ -135,81 +143,95 @@ impl ScanState {
         scan.stop_for(command_id).map(|stop| &stop.progress)
     }
 
-    pub fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
+    pub(crate) fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
         self.progress(command_id)
             .map(CommandProgress::completion_observer)
     }
 
-    pub fn allow_publication(
+    pub(crate) fn decide_publication(
         &mut self,
         event: &BleEvent,
-    ) -> Result<Option<bool>, ReconciliationFault> {
+    ) -> Result<super::PublicationDecision, ReconciliationFault> {
         let Some(scan) = self.reserved() else {
-            return Ok(None);
+            return Ok(super::PublicationDecision::Publish);
         };
         if !scan.matches_publication_scope(event) {
-            return Ok(None);
+            return Ok(super::PublicationDecision::Publish);
         }
-        let accepted_target = event
+        let cancellation_accepted = event
             .command_id()
             .and_then(|id| self.progress(id))
-            .is_some_and(CommandProgress::cancellation_accepted);
+            .is_some_and(CommandProgress::is_cancellation_accepted);
         let scan = self.reserved_mut().expect("matched scan publication scope");
-        let pending = scan.has_pending_cancellation();
-        scan.publication
-            .allow(event, pending, accepted_target)
-            .map(Some)
+        let gate = PublicationGate {
+            cancellation_accepted_for_event: cancellation_accepted,
+            cancellation_pending: scan.has_pending_cancellation(),
+        };
+        scan.publication.decide(event, gate)
     }
 
-    pub fn take_cancellation_public_events(
+    pub(crate) fn take_cancellation_public_events(
         &mut self,
         command_id: CommandId,
-    ) -> Option<Vec<BleEvent>> {
-        let accepted = self.progress(command_id)?.cancellation_accepted();
-        let scan = self.reserved_mut()?;
+    ) -> Vec<BleEvent> {
+        let Some(accepted) = self
+            .progress(command_id)
+            .map(|progress| progress.is_cancellation_accepted())
+        else {
+            return Vec::new();
+        };
+        let Some(scan) = self.reserved_mut() else {
+            return Vec::new();
+        };
         let pending = scan.has_pending_cancellation();
-        Some(scan.publication.resolve(command_id, accepted, pending))
+        scan.publication.resolve(
+            command_id,
+            PublicationRelease {
+                cancellation_accepted: accepted,
+                another_cancellation_pending: pending,
+            },
+        )
     }
 
-    pub fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+    pub(crate) fn try_claim_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
         self.reserved_mut()
-            .is_some_and(|scan| scan.take_cancellation_dispatch(command_id))
+            .is_some_and(|scan| scan.try_claim_cancellation_dispatch(command_id))
     }
 
-    pub fn resolve_cancellation(
+    pub(crate) fn try_resolve_cancellation(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
     ) -> bool {
         self.reserved_mut()
-            .is_some_and(|scan| scan.resolve_cancellation(command_id, result))
+            .is_some_and(|scan| scan.try_resolve_cancellation(command_id, result))
     }
 
-    pub fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+    pub(crate) fn try_clear_cancellation(&mut self, command_id: CommandId) -> bool {
         self.reserved_mut()
-            .is_some_and(|scan| scan.clear_cancellation(command_id))
+            .is_some_and(|scan| scan.try_clear_cancellation(command_id))
     }
 
-    pub fn cancellation_requested(&self, command_id: CommandId) -> bool {
+    pub(crate) fn is_cancellation_requested(&self, command_id: CommandId) -> bool {
         self.reserved()
-            .is_some_and(|scan| scan.cancellation_requested(command_id))
+            .is_some_and(|scan| scan.is_cancellation_requested(command_id))
     }
 
-    pub fn require_scan_available(&self) -> Result<(), WaiterError> {
+    pub(crate) fn require_scan_available(&self) -> Result<(), WaiterError> {
         match &self.phase {
             ScanPhase::Idle => Ok(()),
             ScanPhase::Reserved(_) => Err(WaiterError::ScanBusy),
         }
     }
 
-    pub fn validate_scan_stop(&self, session_id: ScanSessionId) -> Result<(), WaiterError> {
+    pub(crate) fn validate_scan_stop(&self, session_id: ScanSessionId) -> Result<(), WaiterError> {
         self.reserved()
             .ok_or(WaiterError::ScanNotActive)?
             .validate_stop(session_id)
     }
 
     /// Admission and caller submission must succeed before installation.
-    pub fn reserve_scan_start(&mut self, command_id: CommandId, session_id: ScanSessionId) {
+    pub(crate) fn reserve_scan_start(&mut self, command_id: CommandId, session_id: ScanSessionId) {
         assert!(
             self.require_scan_available().is_ok(),
             "validated scan slot is occupied"
@@ -219,7 +241,7 @@ impl ScanState {
 
     /// Installs stop only after start completion, admission, and caller submission.
     /// Invalid installation is an invariant violation, not a normal error path.
-    pub fn reserve_scan_stop(&mut self, command_id: CommandId) {
+    pub(crate) fn reserve_scan_stop(&mut self, command_id: CommandId) {
         self.reserved_mut()
             .expect("validated scan reservation")
             .reserve_scan_stop(command_id);
@@ -240,7 +262,7 @@ impl ScanState {
     }
 
     /// Returns command ownership, including duplicates, not operation success.
-    pub fn record_terminal(
+    pub(crate) fn record_terminal(
         &mut self,
         command_id: CommandId,
         result: &Result<(), BleEventError>,
@@ -253,13 +275,13 @@ impl ScanState {
 
     /// Queries a deliverable result without retiring the session or stop command.
     /// None means unowned or incomplete, not operation failure.
-    pub fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
+    pub(crate) fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         self.reserved()?.waiter_result(command_id)
     }
 
     /// Called after waiter settlement, including when the caller already retired.
-    /// Returns every command whose reservation was actually released.
-    pub fn retire_completed(&mut self) -> Vec<CommandId> {
+    /// Releases completed scan/session reservations and returns their command routes.
+    pub(crate) fn retire_completed(&mut self) -> Vec<CommandId> {
         let Some(scan) = self.reserved_mut() else {
             return Vec::new();
         };
@@ -280,7 +302,7 @@ struct ScanReservation {
     // Start command progress; stop has its own command and acknowledgement.
     start_progress: CommandProgress,
     // One 64-event publication cap covers start/stop and passive scan events.
-    publication: super::dispatch::ScopedPublication,
+    publication: super::ScopedPublication,
     session_id: ScanSessionId,
     // Session-level teardown evidence. ScanStopped::Err has no command ID and can
     // race start, so it must not be attributed to start as a start-domain error.
@@ -317,17 +339,17 @@ impl ScanReservation {
     }
 
     /// Routes unresolved start evidence before stop evidence within this session.
-    fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+    fn try_claim_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
         if self.start_progress.owns_command(command_id) {
-            return self.start_progress.take_cancellation_dispatch();
+            return self.start_progress.try_claim_cancellation_dispatch();
         }
         self.stop
             .as_mut()
             .filter(|stop| stop.progress.owns_command(command_id))
-            .is_some_and(|stop| stop.progress.take_cancellation_dispatch())
+            .is_some_and(|stop| stop.progress.try_claim_cancellation_dispatch())
     }
 
-    fn resolve_cancellation(
+    fn try_resolve_cancellation(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -347,7 +369,7 @@ impl ScanReservation {
         true
     }
 
-    fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+    fn try_clear_cancellation(&mut self, command_id: CommandId) -> bool {
         if self.start_progress.owns_command(command_id) {
             self.start_progress.clear_cancellation();
             return true;
@@ -363,25 +385,25 @@ impl ScanReservation {
         true
     }
 
-    fn cancellation_requested(&self, command_id: CommandId) -> bool {
+    fn is_cancellation_requested(&self, command_id: CommandId) -> bool {
         if self.start_progress.owns_command(command_id) {
-            return self.start_progress.cancellation_requested();
+            return self.start_progress.is_cancellation_requested();
         }
         self.stop
             .as_ref()
             .filter(|stop| stop.progress.owns_command(command_id))
-            .is_some_and(|stop| stop.progress.cancellation_requested())
+            .is_some_and(|stop| stop.progress.is_cancellation_requested())
     }
 
     fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
         if self.should_buffer_start_event(&event) {
-            self.start_progress.buffer(event)?;
+            self.start_progress.buffer_pre_dispatch_event(event)?;
             return Ok(None);
         }
         if let Some(stop) = self.stop.as_mut()
             && stop.should_buffer_event(&event, self.session_id)
         {
-            stop.progress.buffer(event)?;
+            stop.progress.buffer_pre_dispatch_event(event)?;
             return Ok(None);
         }
         Ok(Some(event))
@@ -448,7 +470,7 @@ impl ScanReservation {
     fn new(command_id: CommandId, session_id: ScanSessionId) -> Self {
         Self {
             start_progress: CommandProgress::new(command_id),
-            publication: super::dispatch::ScopedPublication::default(),
+            publication: super::ScopedPublication::default(),
             session_id,
             stopped_evidence: false,
             started_evidence: false,
@@ -457,7 +479,7 @@ impl ScanReservation {
     }
 
     fn validate_stop(&self, session: ScanSessionId) -> Result<(), WaiterError> {
-        if self.session_id != session || self.start_failed() || self.stopped_evidence {
+        if self.session_id != session || self.is_start_failed() || self.stopped_evidence {
             return Err(WaiterError::ScanNotActive);
         }
         // Completion here means the start command is confirmed, not the scan has ended:
@@ -481,8 +503,8 @@ impl ScanReservation {
         });
     }
 
-    fn start_failed(&self) -> bool {
-        self.start_progress.terminal_failed()
+    fn is_start_failed(&self) -> bool {
+        self.start_progress.is_terminal_failed()
     }
 
     fn stop_for(&self, command_id: CommandId) -> Option<&StopReservation> {
@@ -544,7 +566,7 @@ impl ScanReservation {
             return false;
         }
         // A failed stop alone leaves the scan running; retire only its child slot.
-        self.start_failed() || self.stopped_evidence
+        self.is_start_failed() || self.stopped_evidence
     }
 
     /// Releases only a failed stop command, leaving the session available to retry.
@@ -576,7 +598,7 @@ impl StopReservation {
             return self.progress.accepted_resolution();
         }
         self.progress
-            .rejected_resolution(DispatchAction::None, |event| match event {
+            .rejected_resolution(DispatchAction::NoAction, |event| match event {
                 // Passive native teardown does not prove the rejected stop ran.
                 BleEvent::ScanStopped {
                     result:
@@ -636,7 +658,7 @@ impl StopReservation {
     /// A confirmed terminal failure can release this slot after waiter settlement.
     /// The parent has already checked whether the entire session should retire.
     fn can_retire_after_failure(&self) -> bool {
-        !self.progress.is_awaiting_dispatch_result() && self.progress.terminal_failed()
+        !self.progress.is_awaiting_dispatch_result() && self.progress.is_terminal_failed()
     }
 
     fn waiter_result(

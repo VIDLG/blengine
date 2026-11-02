@@ -92,7 +92,7 @@ impl SubmissionState {
                 .is_some_and(CompletionObserver::is_completed)
     }
 
-    pub(super) fn cancel_before_claim(&self) -> bool {
+    pub(super) fn try_cancel_before_claim(&self) -> bool {
         if self
             .phase
             .compare_exchange(

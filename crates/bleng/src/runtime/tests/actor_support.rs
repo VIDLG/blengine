@@ -279,12 +279,12 @@ impl Message<CancelledRediscovery> for BlengActor {
                 Err(WaiterError::GattNotReady),
                 "the cancelled draft session must not become usable"
             );
-            assert!(
-                self.reservations
-                    .test_connections()
-                    .resolve_dispatch(command_id, &Ok(()))
-                    .is_none()
-            );
+            let resolution = self.reservations.resolve_dispatch(command_id, &Ok(()));
+            assert!(resolution.events_to_replay.is_empty());
+            assert!(matches!(
+                resolution.action,
+                crate::runtime::reservations::DispatchAction::NoAction
+            ));
             message.checked_tx.send((command_id, session_id)).unwrap();
             Err(WaiterError::Cancelled)
         }
@@ -409,15 +409,15 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                 Err(oneshot::error::TryRecvError::Empty)
             ));
             assert_eq!(
-                self.reservations.test_connections().waiter_result(1.into()),
+                self.reservations.waiter_result(1.into()),
                 Some(Ok(WaiterSuccess::Connected(connection_id)))
             );
-            assert!(
-                self.reservations
-                    .test_connections()
-                    .resolve_dispatch(command_id, &Ok(()))
-                    .is_none()
-            );
+            let unresolved = self.reservations.resolve_dispatch(command_id, &Ok(()));
+            assert!(unresolved.events_to_replay.is_empty());
+            assert!(matches!(
+                unresolved.action,
+                crate::runtime::reservations::DispatchAction::NoAction
+            ));
             // A real correlated callback must still belong to the sibling's unresolved submission.
             let (callback, expected) = if cancelling_rssi {
                 let value = vec![0x56, 0x78];
@@ -453,52 +453,26 @@ impl Message<CancelledConnectionLeaf> for BlengActor {
                     .unwrap(),
                 None
             );
-            assert_eq!(
-                self.reservations
-                    .test_connections()
-                    .waiter_result(sibling_id),
-                None
-            );
-            let resolution = self
-                .reservations
-                .test_connections()
-                .resolve_dispatch(sibling_id, &Ok(()))
-                .unwrap();
+            assert_eq!(self.reservations.waiter_result(sibling_id), None);
+            let resolution = self.reservations.resolve_dispatch(sibling_id, &Ok(()));
             assert!(matches!(
                 resolution.action,
-                crate::runtime::reservations::DispatchAction::None
+                crate::runtime::reservations::DispatchAction::NoAction
             ));
             assert_eq!(resolution.events_to_replay, vec![callback]);
             for event in &resolution.events_to_replay {
-                self.reservations
-                    .test_connections()
-                    .record_event(event)
-                    .unwrap();
+                self.reservations.record_event_evidence(event).unwrap();
             }
+            assert_eq!(self.reservations.waiter_result(sibling_id), None);
+            self.reservations.record_terminal(sibling_id, None);
             assert_eq!(
-                self.reservations
-                    .test_connections()
-                    .waiter_result(sibling_id),
-                None
-            );
-            self.reservations
-                .test_connections()
-                .record_terminal(sibling_id, &Ok(()));
-            assert_eq!(
-                self.reservations
-                    .test_connections()
-                    .waiter_result(sibling_id),
+                self.reservations.waiter_result(sibling_id),
                 Some(Ok(expected.clone()))
             );
-            self.try_settle_waiter(sibling_id);
+            self.settle_waiter_if_ready(sibling_id);
             assert_eq!(sibling_rx.try_recv(), Ok(Ok(expected)));
             self.reservations.test_connections().retire_completed();
-            assert_eq!(
-                self.reservations
-                    .test_connections()
-                    .waiter_result(sibling_id),
-                None
-            );
+            assert_eq!(self.reservations.waiter_result(sibling_id), None);
             assert_eq!(
                 self.reservations
                     .test_connections()

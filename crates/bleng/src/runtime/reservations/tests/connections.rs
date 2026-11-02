@@ -38,7 +38,7 @@ fn record(connections: &mut ConnectionReservations, event: BleEvent) {
         .expect("fixture dispatch was already accepted");
     connections.record_event(&event).unwrap();
     if let BleEvent::CommandCompleted { command_id, error } = event {
-        connections.record_terminal(command_id, &error.map_or(Ok(()), Err));
+        connections.record_terminal_for_conn(CONNECTION, command_id, &error.map_or(Ok(()), Err));
     }
 }
 
@@ -57,8 +57,10 @@ fn terminal(
 }
 
 fn accept(connections: &mut ConnectionReservations, command_id: CommandId) {
-    let resolution = connections.resolve_dispatch(command_id, &Ok(())).unwrap();
-    assert!(matches!(resolution.action, DispatchAction::None));
+    let resolution = connections
+        .resolve_dispatch_for_conn(CONNECTION, command_id, &Ok(()))
+        .unwrap();
+    assert!(matches!(resolution.action, DispatchAction::NoAction));
     assert!(resolution.events_to_replay.is_empty());
 }
 
@@ -113,7 +115,7 @@ fn install_ready_connection(connections: &mut ConnectionReservations) {
     );
     terminal(connections, 2.into(), Ok(()));
     assert_eq!(
-        connections.waiter_result(2.into()),
+        connections.waiter_result_for_conn(CONNECTION, 2.into()),
         Some(Ok(WaiterSuccess::GattDiscovered(database())))
     );
     connections.retire_completed();
@@ -224,14 +226,21 @@ fn pre_ack_operation_priority_is_global_across_connections() {
                 let event =
                     connection_event(Some(3.into()), CONNECTION, ConnectionState::Disconnected);
                 assert_eq!(connections.gate_event(event.clone()).unwrap(), None);
-                let connect = connections.resolve_dispatch(3.into(), &Ok(())).unwrap();
-                assert!(matches!(connect.action, DispatchAction::None));
+                let connect = connections
+                    .resolve_dispatch_for_conn(11.into(), 3.into(), &Ok(()))
+                    .unwrap();
+                assert!(matches!(connect.action, DispatchAction::NoAction));
                 assert!(
                     connect.events_to_replay.is_empty(),
                     "connect stole {operation:?} loss"
                 );
-                let operation_resolution = connections.resolve_dispatch(4.into(), &Ok(())).unwrap();
-                assert!(matches!(operation_resolution.action, DispatchAction::None));
+                let operation_resolution = connections
+                    .resolve_dispatch_for_conn(CONNECTION, 4.into(), &Ok(()))
+                    .unwrap();
+                assert!(matches!(
+                    operation_resolution.action,
+                    DispatchAction::NoAction
+                ));
                 assert_eq!(
                     operation_resolution.events_to_replay,
                     vec![event],
@@ -250,14 +259,19 @@ fn pre_ack_connect_fallback_is_broad_but_replayed_evidence_is_exact() {
         connections.reserve_connection(PERIPHERAL, 1.into(), CONNECTION);
         let event = connection_event(command_id, connection_id, ConnectionState::Connected);
         assert_eq!(connections.gate_event(event.clone()).unwrap(), None);
-        let resolution = connections.resolve_dispatch(1.into(), &Ok(())).unwrap();
-        assert!(matches!(resolution.action, DispatchAction::None));
+        let resolution = connections
+            .resolve_dispatch_for_conn(CONNECTION, 1.into(), &Ok(()))
+            .unwrap();
+        assert!(matches!(resolution.action, DispatchAction::NoAction));
         assert_eq!(resolution.events_to_replay, vec![event]);
         for event in resolution.events_to_replay {
             record(&mut connections, event);
         }
         terminal(&mut connections, 1.into(), Ok(()));
-        assert_eq!(connections.waiter_result(1.into()), None);
+        assert_eq!(
+            connections.waiter_result_for_conn(CONNECTION, 1.into()),
+            None
+        );
         assert_eq!(
             connections.validate_gatt_discovery(CONNECTION),
             Err(WaiterError::ConnectionNotActive)
@@ -400,7 +414,7 @@ fn native_lane_capacity_counts_io_and_subscription_transitions() {
     };
     assert!(
         connections
-            .resolve_dispatch(9_999.into(), &Err(rejection))
+            .resolve_dispatch_for_conn(CONNECTION, 9_999.into(), &Err(rejection))
             .is_some()
     );
     assert_eq!(connections.validate_rssi(CONNECTION), Ok(PERIPHERAL));
@@ -479,13 +493,19 @@ fn io_keeps_first_terminal_while_domain_is_missing() {
             } else {
                 Some(Err(WaiterError::Operation(error.clone())))
             };
-            assert_eq!(connections.waiter_result(4.into()), pending_or_failure);
+            assert_eq!(
+                connections.waiter_result_for_conn(CONNECTION, 4.into()),
+                pending_or_failure
+            );
             terminal(
                 &mut connections,
                 4.into(),
                 if success_first { failure } else { Ok(()) },
             );
-            assert_eq!(connections.waiter_result(4.into()), pending_or_failure);
+            assert_eq!(
+                connections.waiter_result_for_conn(CONNECTION, 4.into()),
+                pending_or_failure
+            );
             if success_first {
                 connections.retire_completed();
                 assert!(
@@ -532,7 +552,7 @@ fn io_keeps_first_terminal_while_domain_is_missing() {
             };
             record(&mut connections, event);
             assert_eq!(
-                connections.waiter_result(4.into()),
+                connections.waiter_result_for_conn(CONNECTION, 4.into()),
                 Some(if success_first {
                     Ok(success)
                 } else {
@@ -556,17 +576,17 @@ fn cancellation_routes_only_cancellable_connection_operations_and_waits_for_nati
     let mut connections = ready_connections();
     connections.reserve_read(PERIPHERAL, 4.into(), SESSION, CHARACTERISTIC);
     assert!(matches!(
-        connections.request_cancellation(4.into()),
+        connections.request_cancellation_for_conn(CONNECTION, 4.into()),
         Some(CancellationDecision::Accepted(_))
     ));
-    assert!(!connections.take_cancellation_dispatch(4.into()));
+    assert!(!connections.try_claim_cancellation_dispatch_for_conn(CONNECTION, 4.into()));
 
     accept(&mut connections, 4.into());
-    assert!(connections.take_cancellation_dispatch(4.into()));
-    assert!(!connections.take_cancellation_dispatch(4.into()));
+    assert!(connections.try_claim_cancellation_dispatch_for_conn(CONNECTION, 4.into()));
+    assert!(!connections.try_claim_cancellation_dispatch_for_conn(CONNECTION, 4.into()));
     connections.retire_completed();
     assert!(matches!(
-        connections.request_cancellation(4.into()),
+        connections.request_cancellation_for_conn(CONNECTION, 4.into()),
         Some(CancellationDecision::AlreadyRequested(_))
     ));
     terminal(
@@ -580,20 +600,28 @@ fn cancellation_routes_only_cancellable_connection_operations_and_waits_for_nati
     );
     connections.retire_completed();
     assert!(matches!(
-        connections.request_cancellation(4.into()),
+        connections.request_cancellation_for_conn(CONNECTION, 4.into()),
         Some(CancellationDecision::AlreadyRequested(_))
     ));
-    assert!(connections.resolve_cancellation(4.into(), Ok(())));
+    assert!(connections.try_resolve_cancellation_for_conn(CONNECTION, 4.into(), Ok(())));
     connections.retire_completed();
-    assert!(connections.request_cancellation(4.into()).is_none());
+    assert!(
+        connections
+            .request_cancellation_for_conn(CONNECTION, 4.into())
+            .is_none()
+    );
 
     let mut connections = ready_connections();
     connections.reserve_disconnect(PERIPHERAL, 4.into());
     assert!(matches!(
-        connections.request_cancellation(4.into()),
+        connections.request_cancellation_for_conn(CONNECTION, 4.into()),
         Some(CancellationDecision::NotCancellable)
     ));
-    assert!(connections.request_cancellation(99.into()).is_none());
+    assert!(
+        connections
+            .request_cancellation_for_conn(CONNECTION, 99.into())
+            .is_none()
+    );
 }
 
 #[test]
@@ -611,11 +639,11 @@ fn terminal_retirement_preserves_pending_cancellation_receipts_across_connection
             let mut connections = ready_connections();
             reserve_operation(&mut connections, operation);
             accept(&mut connections, 4.into());
-            let receipt = match connections.request_cancellation(4.into()) {
+            let receipt = match connections.request_cancellation_for_conn(CONNECTION, 4.into()) {
                 Some(CancellationDecision::Accepted(receipt)) => receipt,
                 _ => panic!("{operation:?}: cancellation must be admitted"),
             };
-            assert!(connections.take_cancellation_dispatch(4.into()));
+            assert!(connections.try_claim_cancellation_dispatch_for_conn(CONNECTION, 4.into()));
             terminal(
                 &mut connections,
                 4.into(),
@@ -640,11 +668,15 @@ fn terminal_retirement_preserves_pending_cancellation_receipts_across_connection
                 connections.require_peripheral_available(PERIPHERAL),
                 Err(WaiterError::PeripheralBusy)
             );
-            assert!(connections.resolve_cancellation(4.into(), Ok(())));
+            assert!(connections.try_resolve_cancellation_for_conn(CONNECTION, 4.into(), Ok(())));
             assert_eq!(*receipt.borrow(), Some(Ok(())));
             connections.retire_completed();
             connections.retire_completed();
-            assert!(connections.request_cancellation(4.into()).is_none());
+            assert!(
+                connections
+                    .request_cancellation_for_conn(CONNECTION, 4.into())
+                    .is_none()
+            );
             assert_eq!(
                 connections.require_peripheral_available(PERIPHERAL),
                 if disconnected {
@@ -670,11 +702,11 @@ fn failed_connect_retirement_preserves_pending_cancellation_receipt() {
     let mut connections = ConnectionReservations::default();
     connections.reserve_connection(PERIPHERAL, 1.into(), CONNECTION);
     accept(&mut connections, 1.into());
-    let receipt = match connections.request_cancellation(1.into()) {
+    let receipt = match connections.request_cancellation_for_conn(CONNECTION, 1.into()) {
         Some(CancellationDecision::Accepted(receipt)) => receipt,
         _ => panic!("pending connect must be cancellable"),
     };
-    assert!(connections.take_cancellation_dispatch(1.into()));
+    assert!(connections.try_claim_cancellation_dispatch_for_conn(CONNECTION, 1.into()));
     terminal(
         &mut connections,
         1.into(),
@@ -690,11 +722,15 @@ fn failed_connect_retirement_preserves_pending_cancellation_receipt() {
         connections.require_peripheral_available(PERIPHERAL),
         Err(WaiterError::PeripheralBusy)
     );
-    assert!(connections.resolve_cancellation(1.into(), Ok(())));
+    assert!(connections.try_resolve_cancellation_for_conn(CONNECTION, 1.into(), Ok(())));
     connections.retire_completed();
     assert_eq!(*receipt.borrow(), Some(Ok(())));
     assert_eq!(connections.require_peripheral_available(PERIPHERAL), Ok(()));
-    assert!(connections.request_cancellation(1.into()).is_none());
+    assert!(
+        connections
+            .request_cancellation_for_conn(CONNECTION, 1.into())
+            .is_none()
+    );
 }
 
 #[test]
@@ -703,10 +739,13 @@ fn enabled_unknown_mode_is_default_only_and_strict_duplicates_are_validated() {
     reserve_operation(&mut connections, Operation::Subscription);
     accept(&mut connections, 4.into());
     record(&mut connections, enabled(4.into(), None));
-    assert_eq!(connections.waiter_result(4.into()), None);
+    assert_eq!(
+        connections.waiter_result_for_conn(CONNECTION, 4.into()),
+        None
+    );
     terminal(&mut connections, 4.into(), Ok(()));
     assert_eq!(
-        connections.waiter_result(4.into()),
+        connections.waiter_result_for_conn(CONNECTION, 4.into()),
         Some(Ok(WaiterSuccess::NotificationsEnabled {
             connection_id: CONNECTION,
             gatt_session_id: SESSION,
@@ -760,7 +799,10 @@ fn enabled_unknown_mode_is_default_only_and_strict_duplicates_are_validated() {
                     connections.record_event(&invalid),
                     Err(ReconciliationFault::UnexpectedNotificationMode)
                 ));
-                assert_eq!(connections.waiter_result(4.into()), None);
+                assert_eq!(
+                    connections.waiter_result_for_conn(CONNECTION, 4.into()),
+                    None
+                );
             }
         }
     }

@@ -166,7 +166,7 @@ impl OperationControl {
             if state.is_locally_settled() {
                 return Err(WaiterError::OperationAlreadyCompleted(command_id));
             }
-            if state.cancel_before_claim() {
+            if state.try_cancel_before_claim() {
                 return Ok(());
             }
             // Rejection or another cancellation may win after the first check.

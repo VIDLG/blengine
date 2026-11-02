@@ -107,7 +107,7 @@ impl<F: Future> FaultOnTaskDrop<F> {
         }
     }
 
-    fn drop_future_catching_panic(&mut self) -> bool {
+    fn try_drop_future_catching_panic(&mut self) -> bool {
         if catch_unwind(AssertUnwindSafe(|| drop(self.future.take()))).is_err() {
             self.lifecycle.fault();
             true
@@ -119,7 +119,7 @@ impl<F: Future> FaultOnTaskDrop<F> {
 
 impl<F: Future> Drop for FaultOnTaskDrop<F> {
     fn drop(&mut self) {
-        self.drop_future_catching_panic();
+        self.try_drop_future_catching_panic();
     }
 }
 
@@ -405,7 +405,7 @@ impl RuntimeOwner {
                 guarded.lifecycle.fault();
             }
             // Future destructors can panic after poll succeeds; that failure wins.
-            if guarded.drop_future_catching_panic() {
+            if guarded.try_drop_future_catching_panic() {
                 return Err(TaskFailure::Panicked);
             }
             task_outcome

@@ -112,7 +112,7 @@ use super::{
     messages::{CancellationResolved, DispatchResolved},
     reservations::{
         CancellationDecision, CancellationReceiver, DispatchAction, GattAccess,
-        ReservationCoordinator, connection_lost,
+        PublicationDecision, ReservationCoordinator, connection_lost,
     },
     shared::{IdGenerator, OperationSubmission},
 };
@@ -323,7 +323,10 @@ impl BlengActor {
         match decision {
             CancellationDecision::Accepted(receiver)
             | CancellationDecision::AlreadyRequested(receiver) => {
-                if self.reservations.take_cancellation_dispatch(command_id) {
+                if self
+                    .reservations
+                    .try_claim_cancellation_dispatch(command_id)
+                {
                     self.dispatch_native_cancellation(command_id, actor);
                 }
                 Ok(receiver)
@@ -390,8 +393,8 @@ impl BlengActor {
         if result.is_ok() {
             self.waiters.cancel(command_id);
         } else {
-            self.reservations.clear_cancellation(command_id);
-            self.try_settle_waiter(command_id);
+            self.reservations.try_clear_cancellation(command_id);
+            self.settle_waiter_if_ready(command_id);
         }
         // Native completion may already be recorded while its control receipt
         // was pending. Settle caller delivery before releasing that evidence.
@@ -431,18 +434,22 @@ impl BlengActor {
         actor: ActorRef<Self>,
     ) {
         let cancellation_requested =
-            result.is_err() && self.reservations.cancellation_requested(command_id);
+            result.is_err() && self.reservations.is_cancellation_requested(command_id);
         if cancellation_requested {
             // A rejected native dispatch never became cancellable. Complete the
             // cancellation receipt before resolution can remove the reservation.
             self.handle_cancellation_result(command_id, Ok(()));
         }
         let resolution = self.reservations.resolve_dispatch(command_id, &result);
-        if result.is_ok() && self.reservations.take_cancellation_dispatch(command_id) {
+        if result.is_ok()
+            && self
+                .reservations
+                .try_claim_cancellation_dispatch(command_id)
+        {
             self.dispatch_native_cancellation(command_id, actor);
         }
         match resolution.action {
-            DispatchAction::None => {}
+            DispatchAction::NoAction => {}
             DispatchAction::StartCleanup => self.lifecycle.start_cleanup(),
             DispatchAction::FaultRuntime(fault) => {
                 tracing::error!(
@@ -470,13 +477,13 @@ impl BlengActor {
     }
 
     fn process_event(&mut self, event: BleEvent) {
-        match self.reservations.allow_publication(&event) {
-            Ok(true) => {
+        match self.reservations.decide_publication(&event) {
+            Ok(PublicationDecision::Publish) => {
                 if self.publish_event(&event).is_err() {
                     return;
                 }
             }
-            Ok(false) => {}
+            Ok(PublicationDecision::Defer | PublicationDecision::Suppress) => {}
             Err(fault) => {
                 tracing::error!(
                     ?fault,
@@ -518,16 +525,16 @@ impl BlengActor {
             // Passive loss may complete an explicit disconnect's domain evidence,
             // but its own terminal is still required for successful settlement.
             if let Some(command_id) = self.reservations.disconnect_command(*connection_id) {
-                self.try_settle_waiter(command_id);
+                self.settle_waiter_if_ready(command_id);
             }
         }
         if let Some(command_id) = event.command_id() {
-            self.try_settle_waiter(command_id);
+            self.settle_waiter_if_ready(command_id);
         }
         if matches!(event, BleEvent::ScanStopped { .. })
             && let Some(command_id) = self.reservations.stop_command()
         {
-            self.try_settle_waiter(command_id);
+            self.settle_waiter_if_ready(command_id);
         }
     }
 
@@ -556,10 +563,10 @@ impl BlengActor {
     /// The reservation may outlive the waiter after timeout or cancellation;
     /// this method is therefore intentionally a no-op when no result is ready
     /// or when the waiter has already retired.
-    fn try_settle_waiter(&mut self, command_id: CommandId) {
+    fn settle_waiter_if_ready(&mut self, command_id: CommandId) {
         let has_waiter = self.waiters.contains(command_id);
-        let cancellation_requested = self.reservations.cancellation_requested(command_id);
-        if !cancellation_requested && self.waiters.finish_deferred(command_id) {
+        let cancellation_requested = self.reservations.is_cancellation_requested(command_id);
+        if !cancellation_requested && self.waiters.try_finish_deferred(command_id) {
             return;
         }
         // Direct actor tests may install reservations without launch_dispatch;

@@ -4,7 +4,7 @@ use blehub::{BleEvent, CommandId, ConnectionId, GattCharacteristicId, GattSessio
 
 use crate::waiter::{WaiterOutcome, WaiterSuccess};
 
-use super::{connection::connection_lost, dispatch::CommandProgress};
+use super::{CommandProgress, connection::connection_lost};
 
 pub(super) struct RssiReservation {
     pub(super) progress: CommandProgress,
@@ -276,7 +276,7 @@ impl IoReservations {
                 .any(|slot| slot.characteristic_id == characteristic_id)
     }
 
-    pub(super) fn rssi_is_awaiting_dispatch(&self) -> bool {
+    pub(super) fn is_rssi_awaiting_dispatch(&self) -> bool {
         self.rssi
             .values()
             .any(|slot| slot.progress.is_awaiting_dispatch_result())

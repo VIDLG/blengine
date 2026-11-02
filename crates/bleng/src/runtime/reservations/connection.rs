@@ -11,11 +11,10 @@ use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 use super::super::command::ConnectionOperationKind;
 
 use super::{
-    dispatch::{
-        BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
-        DispatchResolution, ReconciliationFault, ScopedPublication,
-    },
-    gatt::{GattAccess, GattReservation},
+    BufferedEventDisposition, CancellationDecision, CommandProgress, DispatchAction,
+    DispatchResolution, GattAccess, PublicationDecision, PublicationGate, PublicationRelease,
+    ReconciliationFault, ScopedPublication,
+    gatt::GattReservation,
     io::{IoReservations, MAX_PENDING_NATIVE_OPERATIONS_PER_CONNECTION},
     subscription::{SubscriptionDisposition, SubscriptionReservation},
 };
@@ -107,7 +106,7 @@ impl ConnectionReservation {
         let Some(progress) = self.pending_dispatch_target(kind, event) else {
             return Ok(false);
         };
-        progress.buffer(event.clone())?;
+        progress.buffer_pre_dispatch_event(event.clone())?;
         Ok(true)
     }
 
@@ -284,7 +283,7 @@ impl ConnectionReservation {
                 .expect("matching transition exists");
             return Some(if result.is_err() {
                 // Subscription rejection also permits commanded connection loss.
-                let resolution = progress.rejected_resolution(DispatchAction::None, |event| {
+                let resolution = progress.rejected_resolution(DispatchAction::NoAction, |event| {
                     if connection_lost(event, connection_id) {
                         BufferedEventDisposition::Replay
                     } else {
@@ -311,7 +310,9 @@ impl ConnectionReservation {
         }
         Some(if result.is_err() {
             self.progress
-                .rejected_resolution(DispatchAction::None, |_| BufferedEventDisposition::Conflict)
+                .rejected_resolution(DispatchAction::NoAction, |_| {
+                    BufferedEventDisposition::Conflict
+                })
         } else {
             self.progress.accepted_resolution()
         })
@@ -326,29 +327,43 @@ impl ConnectionReservation {
             .find(|progress| progress.owns_command(command_id))
     }
 
-    pub(super) fn allow_publication(
+    pub(super) fn decide_publication(
         &mut self,
         event: &BleEvent,
-    ) -> Result<bool, ReconciliationFault> {
-        let accepted_target = event
+    ) -> Result<PublicationDecision, ReconciliationFault> {
+        let cancellation_accepted = event
             .command_id()
             .and_then(|id| self.progress(id))
-            .is_some_and(CommandProgress::cancellation_accepted);
-        let pending = self
-            .command_progresses()
-            .any(CommandProgress::is_awaiting_cancellation_result);
-        self.publication.allow(event, pending, accepted_target)
+            .is_some_and(CommandProgress::is_cancellation_accepted);
+        let gate = PublicationGate {
+            cancellation_accepted_for_event: cancellation_accepted,
+            cancellation_pending: self
+                .command_progresses()
+                .any(CommandProgress::is_awaiting_cancellation_result),
+        };
+        self.publication.decide(event, gate)
     }
 
     pub(super) fn take_cancellation_public_events(
         &mut self,
         command_id: CommandId,
-    ) -> Option<Vec<BleEvent>> {
-        let accepted = self.progress(command_id)?.cancellation_accepted();
+    ) -> Vec<BleEvent> {
+        let Some(accepted) = self
+            .progress(command_id)
+            .map(CommandProgress::is_cancellation_accepted)
+        else {
+            return Vec::new();
+        };
         let pending = self
             .command_progresses()
             .any(CommandProgress::is_awaiting_cancellation_result);
-        Some(self.publication.resolve(command_id, accepted, pending))
+        self.publication.resolve(
+            command_id,
+            PublicationRelease {
+                cancellation_accepted: accepted,
+                another_cancellation_pending: pending,
+            },
+        )
     }
 
     pub(super) fn contains_command(&self, command_id: CommandId) -> bool {
@@ -382,13 +397,13 @@ impl ConnectionReservation {
             .map(CommandProgress::request_cancellation)
     }
 
-    pub(super) fn take_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
+    pub(super) fn try_claim_cancellation_dispatch(&mut self, command_id: CommandId) -> bool {
         self.command_progresses_mut()
             .find(|progress| progress.owns_command(command_id))
-            .is_some_and(CommandProgress::take_cancellation_dispatch)
+            .is_some_and(CommandProgress::try_claim_cancellation_dispatch)
     }
 
-    pub(super) fn resolve_cancellation(
+    pub(super) fn try_resolve_cancellation(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -403,7 +418,7 @@ impl ConnectionReservation {
         true
     }
 
-    pub(super) fn clear_cancellation(&mut self, command_id: CommandId) -> bool {
+    pub(super) fn try_clear_cancellation(&mut self, command_id: CommandId) -> bool {
         let Some(progress) = self
             .command_progresses_mut()
             .find(|progress| progress.owns_command(command_id))
@@ -414,10 +429,10 @@ impl ConnectionReservation {
         true
     }
 
-    pub(super) fn cancellation_requested(&self, command_id: CommandId) -> bool {
+    pub(super) fn is_cancellation_requested(&self, command_id: CommandId) -> bool {
         self.command_progresses()
             .find(|progress| progress.owns_command(command_id))
-            .is_some_and(CommandProgress::cancellation_requested)
+            .is_some_and(CommandProgress::is_cancellation_requested)
     }
 
     fn require_connected(&self) -> Result<(), WaiterError> {
@@ -472,7 +487,7 @@ impl ConnectionReservation {
     pub(super) fn validate_gatt_discovery(&self) -> Result<(), WaiterError> {
         self.require_connected()?;
         if self.disconnect.is_some()
-            || self.io.rssi_is_awaiting_dispatch()
+            || self.io.is_rssi_awaiting_dispatch()
             || self.gatt.has_pending_discovery()
             || self.io.len() != 0
             || !self.subscriptions.is_empty()
@@ -718,7 +733,9 @@ impl ConnectionReservation {
             && !self.command_progresses().any(|progress| {
                 progress.is_awaiting_dispatch_result() || progress.is_awaiting_cancellation_result()
             })
-            && (self.disconnected_evidence || self.has_failed() || self.progress.terminal_failed())
+            && (self.disconnected_evidence
+                || self.has_failed()
+                || self.progress.is_terminal_failed())
     }
 
     fn connect_result(&self) -> Option<WaiterOutcome> {
@@ -887,7 +904,7 @@ impl DisconnectReservation {
     /// A failed accepted terminal releases only this child operation; the
     /// connection root may still be alive and allow a retry.
     fn can_retire_after_failure(&self) -> bool {
-        !self.progress.is_awaiting_dispatch_result() && self.progress.terminal_failed()
+        !self.progress.is_awaiting_dispatch_result() && self.progress.is_terminal_failed()
     }
 
     /// Dispatch timing applies only to buffering, not domain evidence recording.
@@ -972,7 +989,7 @@ fn resolve_pending_reservation<T>(
         return None;
     }
     Some(if result.is_err() {
-        command.rejected_resolution(DispatchAction::None, |event| {
+        command.rejected_resolution(DispatchAction::NoAction, |event| {
             if passive_connection_lost(event, connection_id) {
                 BufferedEventDisposition::Replay
             } else {
@@ -998,7 +1015,7 @@ fn resolve_pending_slot<T>(
         return None;
     }
     Some(if result.is_err() {
-        let resolution = command.rejected_resolution(DispatchAction::None, |event| {
+        let resolution = command.rejected_resolution(DispatchAction::NoAction, |event| {
             if passive_connection_lost(event, connection_id) {
                 BufferedEventDisposition::Replay
             } else {

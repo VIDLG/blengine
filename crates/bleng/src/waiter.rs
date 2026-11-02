@@ -308,7 +308,7 @@ impl WaiterRegistry {
 
     /// Releases a retained outcome after cancellation rejection, without looking
     /// at connection state that may have changed since completion.
-    pub(crate) fn finish_deferred(&mut self, command_id: CommandId) -> bool {
+    pub(crate) fn try_finish_deferred(&mut self, command_id: CommandId) -> bool {
         let Some(result) = self
             .pending
             .get_mut(&command_id)

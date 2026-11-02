@@ -165,7 +165,7 @@ fn completed_loss_deferred_results_release_on_caller_retirement_or_transport_fau
             let mut next = registry
                 .register(id(2), WaiterExpectation::Initialized)
                 .unwrap();
-            assert!(!registry.finish_deferred(id(1)));
+            assert!(!registry.try_finish_deferred(id(1)));
             assert_eq!(next.try_recv(), Err(TryRecvError::Empty));
         } else {
             let error = match mode {
@@ -187,7 +187,7 @@ fn completed_loss_deferred_results_release_on_caller_retirement_or_transport_fau
         }
         registry.defer_result(id(1), Ok(WaiterSuccess::Connected(connection(10))));
         assert!(
-            !registry.finish_deferred(id(1)),
+            !registry.try_finish_deferred(id(1)),
             "retired results must not be reinserted"
         );
     }

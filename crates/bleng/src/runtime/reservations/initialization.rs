@@ -3,7 +3,7 @@ use blehub::{AdapterSnapshot, BleEvent, BleEventError, CommandDispatchError, Com
 use super::super::shared::CompletionObserver;
 use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
-use super::dispatch::{
+use super::{
     BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
     ReconciliationFault,
 };
@@ -21,7 +21,7 @@ use super::dispatch::{
 /// any caller waiter before advance_after_settlement() can release pending state.
 /// This owner neither settles waiters nor performs runtime lifecycle actions.
 #[derive(Default)]
-pub struct InitializationState {
+pub(crate) struct InitializationState {
     phase: InitializationPhase,
 }
 
@@ -42,7 +42,10 @@ impl InitializationState {
     /// Some(event) passes through, including owned events needing no buffering;
     /// this is not an ownership query. None retains the event pending resolution.
     /// Overflow or evidence contradicting rejection is an error.
-    pub fn gate_event(&mut self, event: BleEvent) -> Result<Option<BleEvent>, ReconciliationFault> {
+    pub(crate) fn gate_event(
+        &mut self,
+        event: BleEvent,
+    ) -> Result<Option<BleEvent>, ReconciliationFault> {
         if let InitializationPhase::Rejected { command_id } = &self.phase
             && matches_initialization_event(&event, *command_id)
         {
@@ -52,14 +55,14 @@ impl InitializationState {
         if let Some(init) = self.pending_mut()
             && init.should_buffer_event(&event)
         {
-            init.progress.buffer(event)?;
+            init.progress.buffer_pre_dispatch_event(event)?;
             init.buffering_adapter_updates = true;
             return Ok(None);
         }
         Ok(Some(event))
     }
 
-    pub fn record_event(&mut self, event: &BleEvent) {
+    pub(crate) fn record_event(&mut self, event: &BleEvent) {
         if let BleEvent::AdapterSnapshotChanged {
             command_id: Some(command_id),
             snapshot,
@@ -73,7 +76,7 @@ impl InitializationState {
 
     /// Returns None if no pending initialization owns this dispatch result.
     /// Otherwise updates state and returns ordered replay plus actor-owned actions.
-    pub fn resolve_dispatch(
+    pub(crate) fn resolve_dispatch(
         &mut self,
         command_id: CommandId,
         result: &Result<(), CommandDispatchError>,
@@ -94,7 +97,7 @@ impl InitializationState {
 
     /// Installs the reservation after admission and caller submission succeed.
     /// A second installation is an invariant violation, not a normal error path.
-    pub fn reserve_initialize(&mut self, command_id: CommandId) {
+    pub(crate) fn reserve_initialize(&mut self, command_id: CommandId) {
         assert!(
             self.require_not_started().is_ok(),
             "validated initialization has already started"
@@ -102,20 +105,20 @@ impl InitializationState {
         self.phase = InitializationPhase::Pending(InitReservation::new(command_id));
     }
 
-    pub fn require_not_started(&self) -> Result<(), WaiterError> {
+    pub(crate) fn require_not_started(&self) -> Result<(), WaiterError> {
         if !matches!(self.phase, InitializationPhase::NotStarted) {
             return Err(WaiterError::OperationBusy);
         }
         Ok(())
     }
 
-    pub fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
+    pub(crate) fn completion_observer(&self, command_id: CommandId) -> Option<CompletionObserver> {
         self.pending()
             .filter(|init| init.progress.owns_command(command_id))
             .map(|init| init.progress.completion_observer())
     }
 
-    pub fn require_initialized(&self) -> Result<(), WaiterError> {
+    pub(crate) fn require_initialized(&self) -> Result<(), WaiterError> {
         if matches!(self.phase, InitializationPhase::Ready) {
             Ok(())
         } else {
@@ -149,7 +152,7 @@ impl InitializationState {
 
     /// Returns whether initialization owns the command, not whether it succeeded.
     /// A matching duplicate still returns true; the first terminal is preserved.
-    pub fn record_terminal(
+    pub(crate) fn record_terminal(
         &mut self,
         command_id: CommandId,
         result: &Result<(), BleEventError>,
@@ -164,7 +167,7 @@ impl InitializationState {
     /// Returns a deliverable result without advancing or releasing pending state.
     /// None means either the command is not owned or its evidence is incomplete;
     /// it is not a command-ownership probe. The actor owns waiter delivery.
-    pub fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
+    pub(crate) fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
         let init = self.pending_for(command_id)?;
         if let Err(error) = init.progress.terminal_result()? {
             return Some(Err(error));
@@ -179,7 +182,7 @@ impl InitializationState {
     /// Accepted terminal failure is returned for actor-owned runtime faulting.
     /// `None` means the reservation remains pending or the phase is inactive.
     /// `Some` identifies the command whose native reservation just retired.
-    pub fn advance_after_settlement(&mut self) -> Result<Option<CommandId>, WaiterError> {
+    pub(crate) fn advance_after_settlement(&mut self) -> Result<Option<CommandId>, WaiterError> {
         let Some(init) = self.pending() else {
             return Ok(None);
         };

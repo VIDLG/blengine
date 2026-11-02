@@ -1,5 +1,6 @@
-use super::super::dispatch::{
-    CancellationDecision, CancellationReceiver, CommandProgress, DispatchAction, ScopedPublication,
+use super::super::{
+    CancellationDecision, CancellationReceiver, CommandProgress, DispatchAction,
+    PublicationDecision, PublicationGate, PublicationRelease, ScopedPublication,
 };
 use crate::waiter::WaiterError;
 use blehub::{BleErrorCategory, BleEventError};
@@ -67,7 +68,7 @@ fn check_cancel_trace(trace: &[Step]) {
                 let expected =
                     acknowledged && active.is_some_and(|attempt| !attempts[attempt].claimed);
                 assert_eq!(
-                    progress.take_cancellation_dispatch(),
+                    progress.try_claim_cancellation_dispatch(),
                     expected,
                     "claim at {index}: {trace:?}"
                 );
@@ -104,7 +105,7 @@ fn check_cancel_trace(trace: &[Step]) {
         }
         let pending = active.is_some_and(|attempt| attempts[attempt].result.is_none());
         assert_eq!(
-            progress.cancellation_requested(),
+            progress.is_cancellation_requested(),
             active.is_some(),
             "requested at {index}: {trace:?}"
         );
@@ -119,7 +120,7 @@ fn check_cancel_trace(trace: &[Step]) {
             "receipt at {index}: {trace:?}"
         );
         assert_eq!(
-            progress.cancellation_accepted(),
+            progress.is_cancellation_accepted(),
             active.is_some_and(|attempt| attempts[attempt].result == Some(Ok(()))),
             "accepted at {index}: {trace:?}"
         );
@@ -201,7 +202,7 @@ fn cancel_state_clear_keeps_old_receipt_and_repeated_resolution_stays_last_write
         CancellationDecision::Accepted(receipt) => receipt,
         _ => panic!("first request must be admitted"),
     };
-    assert!(progress.take_cancellation_dispatch());
+    assert!(progress.try_claim_cancellation_dispatch());
     let rejection = Err(WaiterError::OperationNotCancellable(1.into()));
     progress.resolve_cancellation(rejection.clone());
     assert_eq!(*old.borrow_and_update(), Some(rejection.clone()));
@@ -215,15 +216,15 @@ fn cancel_state_clear_keeps_old_receipt_and_repeated_resolution_stays_last_write
         CancellationDecision::AlreadyRequested(receipt) => receipt,
         _ => panic!("retry must share the active request"),
     };
-    assert!(progress.take_cancellation_dispatch());
-    assert!(!progress.take_cancellation_dispatch());
+    assert!(progress.try_claim_cancellation_dispatch());
+    assert!(!progress.try_claim_cancellation_dispatch());
     for result in [Ok(()), rejection.clone(), Ok(())] {
         progress.resolve_cancellation(result.clone());
         assert_eq!(*current.borrow_and_update(), Some(result.clone()));
         assert_eq!(*retry.borrow(), Some(result.clone()));
-        assert_eq!(progress.cancellation_accepted(), result.is_ok());
+        assert_eq!(progress.is_cancellation_accepted(), result.is_ok());
         assert_eq!(*old.borrow(), Some(rejection.clone()));
-        assert!(!progress.take_cancellation_dispatch());
+        assert!(!progress.try_claim_cancellation_dispatch());
     }
 }
 
@@ -235,20 +236,20 @@ fn cancel_state_local_resolution_before_rejection_does_not_dispatch_native_contr
         CancellationDecision::Accepted(receipt) => receipt,
         _ => panic!("pre-ack request must be admitted"),
     };
-    assert!(!progress.take_cancellation_dispatch());
+    assert!(!progress.try_claim_cancellation_dispatch());
     progress.resolve_cancellation(Ok(()));
-    assert!(progress.cancellation_requested());
+    assert!(progress.is_cancellation_requested());
     assert!(!progress.is_awaiting_cancellation_result());
     assert_eq!(*receipt.borrow(), Some(Ok(())));
     let retry = match progress.request_cancellation() {
         CancellationDecision::AlreadyRequested(receipt) => receipt,
         _ => panic!("local resolution retains the shared receipt until retirement"),
     };
-    let resolution = progress.rejected_resolution(DispatchAction::None, |_| {
+    let resolution = progress.rejected_resolution(DispatchAction::NoAction, |_| {
         panic!("no callbacks were buffered")
     });
     assert!(resolution.events_to_replay.is_empty());
-    assert!(!progress.take_cancellation_dispatch());
+    assert!(!progress.try_claim_cancellation_dispatch());
     assert!(!progress.is_complete(true));
     assert!(!completion.is_completed());
     drop(progress);
@@ -276,7 +277,7 @@ fn cancellation_receipt_gates_retirement_without_erasing_terminal_evidence() {
             CancellationDecision::Accepted(receipt) => receipt,
             _ => panic!("cancellation must precede terminal"),
         };
-        assert!(progress.take_cancellation_dispatch());
+        assert!(progress.try_claim_cancellation_dispatch());
         progress.record_terminal(&terminal);
         assert_eq!(
             progress.terminal_result(),
@@ -315,18 +316,76 @@ fn typed_boundary_duplicate_dispatch_ack_does_not_drain_pending_public_evidence(
         progress.request_cancellation(),
         CancellationDecision::Accepted(_)
     ));
-    assert!(progress.take_cancellation_dispatch());
+    assert!(progress.try_claim_cancellation_dispatch());
     let event = blehub::BleEvent::CommandCompleted {
         command_id: 1.into(),
         error: None,
     };
     let mut publication = ScopedPublication::default();
-    assert!(!publication.allow(&event, true, false).unwrap());
+    assert!(matches!(
+        publication.decide(
+            &event,
+            PublicationGate {
+                cancellation_accepted_for_event: false,
+                cancellation_pending: true,
+            },
+        ),
+        Ok(PublicationDecision::Defer)
+    ));
     assert!(
         progress.accepted_resolution().events_to_replay.is_empty(),
         "a duplicate acknowledgement must not reprocess public-only evidence"
     );
     progress.resolve_cancellation(Err(WaiterError::OperationNotCancellable(1.into())));
-    assert_eq!(publication.resolve(1.into(), false, false), vec![event]);
-    assert!(publication.resolve(1.into(), false, false).is_empty());
+    assert_eq!(
+        publication.resolve(
+            1.into(),
+            PublicationRelease {
+                cancellation_accepted: false,
+                another_cancellation_pending: false,
+            },
+        ),
+        vec![event]
+    );
+    assert!(
+        publication
+            .resolve(
+                1.into(),
+                PublicationRelease {
+                    cancellation_accepted: false,
+                    another_cancellation_pending: false,
+                },
+            )
+            .is_empty()
+    );
+}
+
+#[test]
+fn accepted_cancelled_terminal_publishes_when_scope_has_no_other_pending_control() {
+    let event = blehub::BleEvent::CommandCompleted {
+        command_id: 1.into(),
+        error: None,
+    };
+    let mut publication = ScopedPublication::default();
+
+    assert!(matches!(
+        publication.decide(
+            &event,
+            PublicationGate {
+                cancellation_accepted_for_event: true,
+                cancellation_pending: false,
+            },
+        ),
+        Ok(PublicationDecision::Publish)
+    ));
+    assert!(matches!(
+        publication.decide(
+            &event,
+            PublicationGate {
+                cancellation_accepted_for_event: true,
+                cancellation_pending: true,
+            },
+        ),
+        Ok(PublicationDecision::Defer)
+    ));
 }

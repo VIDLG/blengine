@@ -18,4 +18,4 @@ impl ReservationCoordinator {
 }
 
 mod connections;
-mod dispatch;
+mod coordination;

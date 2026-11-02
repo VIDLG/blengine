@@ -411,7 +411,7 @@ fn local_admission_error_wins_against_cancellation_that_already_observed_pending
         // its cancellation CAS. It must not return a false acceptance receipt.
         assert!(!entry.state.is_locally_settled());
         entry.state.reject(WaiterError::NotInitialized);
-        assert!(!entry.state.cancel_before_claim());
+        assert!(!entry.state.try_cancel_before_claim());
         let (id, control, slot) = pending.into_parts();
         assert_eq!(
             slot.wait(Duration::from_secs(2)).await,

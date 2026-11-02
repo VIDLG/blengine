@@ -2,7 +2,7 @@ use blehub::{BleEvent, CommandId, ConnectionId, GattDatabase, GattSessionId};
 
 use crate::waiter::{WaiterOutcome, WaiterSuccess};
 
-use super::{connection::connection_lost, dispatch::CommandProgress};
+use super::{CommandProgress, connection::connection_lost};
 
 /// GATT state under one connection. A committed database survives while a
 /// later discovery transition is in flight, so failed rediscovery cannot erase
@@ -111,7 +111,7 @@ impl GattDiscoveryReservation {
     }
 
     fn is_successful(&self) -> bool {
-        self.draft_database.is_some() && self.progress.terminal_succeeded()
+        self.draft_database.is_some() && self.progress.is_terminal_succeeded()
     }
 
     /// Queries this already-selected discovery; None means incomplete evidence.
