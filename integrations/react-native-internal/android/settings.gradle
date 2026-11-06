@@ -8,6 +8,8 @@ pluginManagement {
 dependencyResolutionManagement {
   repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
   repositories {
+
+    maven { url = uri("../../../.work/staged/android-bleng-maven") }
     maven { url = uri("../../../.work/staged/android-maven") }
     maven { url = uri("https://mirrors.huaweicloud.com/repository/maven/") }
   }

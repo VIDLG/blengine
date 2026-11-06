@@ -58,5 +58,11 @@ pub trait BleBackend: Send + Sync {
     fn cancel_operation(&self, request: CancelOperationRequest)
     -> Result<(), CommandDispatchError>;
 
+    /// Stops native work and releases backend-owned resources, including ingress.
+    /// Called synchronously by Hub shutdown or assembly rollback. This method,
+    /// its synchronous callbacks, and backend Drop/deinit must not directly or
+    /// indirectly wait for the owning Hub's `dispose` to finish: Hub shutdown
+    /// cannot complete until they return. Backend-local idempotent cleanup is
+    /// distinct from recursively closing the owning Hub.
     fn dispose(&self) -> Result<(), BleHubError>;
 }

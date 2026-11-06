@@ -1,0 +1,26 @@
+[
+  {
+    "testIdentifier": "BleHubNitroHostUITests/testBluetoothSettingsOffAndRestore()",
+    "testIdentifierURL": "test://com.apple.xcode/BleHubNitroHost/BleHubNitroHostUITests/BleHubNitroHostUITests/testBluetoothSettingsOffAndRestore",
+    "attachments": [
+      {
+        "configurationName": "Test Scheme Action",
+        "deviceId": "00008110-000C61160C39401E",
+        "deviceName": "vision’s iPhone",
+        "exportedFileName": "A10F18DF-CCDE-49EB-B677-9393C5505A5C.txt",
+        "isAssociatedWithFailure": false,
+        "suggestedHumanReadableName": "ios-radio-inspection-only_0_9EB026A5-EAC8-4C81-BCFA-8650132EF5EF.txt",
+        "timestamp": 1792466940.584
+      },
+      {
+        "configurationName": "Test Scheme Action",
+        "deviceId": "00008110-000C61160C39401E",
+        "deviceName": "vision’s iPhone",
+        "exportedFileName": "EFE49740-FAFB-42CC-A76D-3B634EC8CD68.txt",
+        "isAssociatedWithFailure": false,
+        "suggestedHumanReadableName": "bluetooth-settings-accessibility-toggle-inspection-only-no-mutation_0_DD8DC7B9-4FF5-4639-9CBB-5331FC2C1C48.txt",
+        "timestamp": 1792466940.146
+      }
+    ]
+  }
+]

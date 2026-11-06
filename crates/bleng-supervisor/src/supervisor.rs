@@ -1,17 +1,28 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use crate::recovery::{
-    RecoveryAction, RecoveryContext, RecoveryObservation, RecoveryPlan, RecoveryPolicy,
-    RecoveryPolicyConfig, RecoverySignal,
+use blehub::{
+    AdapterSnapshot, CommandId, ConnectionId, GattCharacteristicId, GattSessionId,
+    NotificationModeRequest, PeripheralId, ScanOptions, ScanSessionId, SubscriptionId, WriteType,
 };
-use bleng::Bleng;
+
+use crate::recovery::{
+    RecoveryAction, RecoveryContext, RecoveryLink, RecoveryObservation, RecoveryOperationId,
+    RecoveryPhase, RecoveryPlan, RecoveryPolicy, RecoveryPolicyConfig, RecoverySignal,
+};
+use bleng::{
+    Bleng, ConnectOperation, DisableNotificationsOperation, DisconnectOperation,
+    DiscoverGattOperation, EnableNotificationsOperation, ReadOperation, ReadRssiOperation,
+    StartScanOperation, StopScanOperation, WriteOperation,
+};
 
 use crate::{
-    error::SupervisorError,
+    error::{SupervisorError, SupervisorOperationError},
     platform::{
         PlatformOwnerSession, PlatformOwnerSessionFactory, PlatformRecoveryAction, RecoveryTarget,
         ResourceSnapshot,
     },
+    scan::ScanProjectionLease,
+    scan_delivery::{ScanHandoff, ScanSubmissionError},
 };
 
 /// Validated, typed inputs used to construct one Rust recovery supervisor.
@@ -22,13 +33,29 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SupervisorConfig {
     pub recovery: RecoveryPolicyConfig,
-    pub required_zero_resource_names: BTreeSet<String>,
-    pub recovery_target: RecoveryTarget,
+    pub recovery_target: Option<RecoveryTarget>,
 }
 
+const INITIALIZE_TIMEOUT_MS: u64 = 30_000;
+
 struct ActiveOwnerSession {
+    // Drop the publication capability before the owner and platform, including on unwinding.
+    scan_projection_lease: ScanProjectionLease,
     bleng: Arc<Bleng>,
     platform: Box<dyn PlatformOwnerSession>,
+    initialization_command_id: CommandId,
+    adapter_snapshot: AdapterSnapshot,
+}
+
+/// Evidence returned when the initial owner has been fully assembled and initialized.
+///
+/// The initialization command ID and adapter snapshot come from the same Rust-owned operation;
+/// native hosts must consume this value instead of reconstructing startup identity from callbacks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnerStart {
+    pub context: RecoveryContext,
+    pub initialization_command_id: CommandId,
+    pub adapter_snapshot: AdapterSnapshot,
 }
 
 struct OwnerRetirementEvidence {
@@ -56,6 +83,7 @@ impl OwnerRetirementEvidence {
 impl ActiveOwnerSession {
     /// Runs every retirement barrier and retains each result for the supervisor to classify.
     async fn shutdown(self) -> OwnerRetirementEvidence {
+        self.scan_projection_lease.revoke();
         OwnerRetirementEvidence::collect(&self.bleng, self.platform.as_ref()).await
     }
 }
@@ -102,6 +130,17 @@ impl OwnerLifecycle {
         }
     }
 
+    fn active_start(&self) -> Option<OwnerStart> {
+        let Self::Active(active) = self else {
+            return None;
+        };
+        Some(OwnerStart {
+            context: active.platform.context().clone(),
+            initialization_command_id: active.initialization_command_id,
+            adapter_snapshot: active.adapter_snapshot.clone(),
+        })
+    }
+
     fn require_active(&self) -> Result<&ActiveOwnerSession, SupervisorError> {
         match self {
             Self::Active(active) => Ok(active),
@@ -139,9 +178,10 @@ pub struct SessionSupervisor {
     policy: RecoveryPolicy,
     required_zero_resource_names: BTreeSet<String>,
     owner_lifecycle: OwnerLifecycle,
-    recovery_target: RecoveryTarget,
-    // The latest policy plan authorizes one action that has not been dispatched.
+    recovery_target: Option<RecoveryTarget>,
+    // The latest policy plan authorizes an action that has not been dispatched.
     pending_plan: Option<RecoveryPlan>,
+    last_retired_resources: Option<ResourceSnapshot>,
 }
 
 impl SessionSupervisor {
@@ -153,23 +193,63 @@ impl SessionSupervisor {
     ) -> Result<Self, SupervisorError> {
         let SupervisorConfig {
             recovery,
-            required_zero_resource_names,
             recovery_target,
         } = config;
         let policy = RecoveryPolicy::new(recovery);
-        let recovery_target = recovery_target.canonicalized()?;
+        let required_zero_resource_names = factory.required_zero_resource_names();
+        if required_zero_resource_names.is_empty() {
+            return Err(SupervisorError::RequiredResourcesNotConfigured);
+        }
+        if required_zero_resource_names
+            .iter()
+            .any(|name| name.trim().is_empty())
+        {
+            return Err(SupervisorError::BlankRequiredResourceName);
+        }
+        let recovery_target = recovery_target
+            .map(|target| target.canonicalized())
+            .transpose()?;
         Ok(Self {
             factory,
             policy,
             required_zero_resource_names,
             owner_lifecycle: OwnerLifecycle::NotStarted,
             pending_plan: None,
+            last_retired_resources: None,
             recovery_target,
         })
     }
 
     pub fn policy(&self) -> &RecoveryPolicy {
         &self.policy
+    }
+
+    /// Returns startup evidence for the currently assembled owner, if one exists.
+    pub fn active_owner_start(&self) -> Option<OwnerStart> {
+        self.owner_lifecycle.active_start()
+    }
+
+    /// Whether shutdown permanently closed this supervisor, independent of cleanup success.
+    pub fn is_closed(&self) -> bool {
+        matches!(self.owner_lifecycle, OwnerLifecycle::Closed)
+    }
+
+    /// Returns the last validated resource-zero snapshot, if an owner was retired.
+    pub fn last_retired_resources(&self) -> Option<&ResourceSnapshot> {
+        self.last_retired_resources.as_ref()
+    }
+
+    /// Installs the baseline link and operation-terminal barrier once the initial owner has
+    /// observed all identities needed for recovery. The caller cannot change it after recovery
+    /// starts, and an absent/empty barrier is only valid when explicitly configured as such.
+    pub fn configure_old_operation_barrier(
+        &mut self,
+        old_link: Option<RecoveryLink>,
+        expected_terminals: BTreeSet<RecoveryOperationId>,
+    ) -> Result<(), SupervisorError> {
+        self.policy
+            .configure_old_operation_barrier(old_link, expected_terminals)
+            .map_err(SupervisorError::RecoveryConfiguration)
     }
 
     // These are pure lifecycle queries. The policy context and the actually assembled owner
@@ -181,6 +261,167 @@ impl SessionSupervisor {
 
             pub fn is_active(&self) -> bool;
         }
+    }
+
+    /// Installs bounded Rust observation delivery atomically with original BLeng submission.
+    /// The returned operation still owns start waiting/cancellation; delivery is not start success
+    /// or native control. Dropping/detaching delivery does not stop a native scan.
+    pub fn begin_scan(
+        &self,
+        context: &RecoveryContext,
+        options: ScanOptions,
+    ) -> Result<ScanHandoff, ScanSubmissionError> {
+        let active = self.operation_session(context)?;
+        active.scan_projection_lease.projection().submit_scan(|| {
+            active
+                .bleng
+                .begin_start_scan(options)
+                .map_err(SupervisorOperationError::from)
+        })
+    }
+
+    /// Submits synchronously after fencing the request to the active owner and policy.
+    /// BLeng retains ownership of admission, result waiting, deadlines and cancellation.
+    pub fn begin_start_scan(
+        &self,
+        context: &RecoveryContext,
+        options: ScanOptions,
+    ) -> Result<Arc<StartScanOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_start_scan(options)?)
+    }
+
+    pub fn begin_stop_scan(
+        &self,
+        context: &RecoveryContext,
+        session: ScanSessionId,
+    ) -> Result<Arc<StopScanOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_stop_scan(session)?)
+    }
+
+    pub fn begin_connect(
+        &self,
+        context: &RecoveryContext,
+        peripheral: PeripheralId,
+    ) -> Result<Arc<ConnectOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_connect(peripheral)?)
+    }
+
+    pub fn begin_disconnect(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+    ) -> Result<Arc<DisconnectOperation>, SupervisorOperationError> {
+        Ok(self
+            .operation_owner(context)?
+            .begin_disconnect(connection)?)
+    }
+
+    pub fn begin_discover_gatt(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+    ) -> Result<Arc<DiscoverGattOperation>, SupervisorOperationError> {
+        Ok(self
+            .operation_owner(context)?
+            .begin_discover_gatt(connection)?)
+    }
+
+    pub fn begin_read_characteristic(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+    ) -> Result<Arc<ReadOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_read_characteristic(
+            connection,
+            session,
+            characteristic,
+        )?)
+    }
+
+    pub fn begin_write_characteristic(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        value: Vec<u8>,
+        write_type: WriteType,
+    ) -> Result<Arc<WriteOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_write_characteristic(
+            connection,
+            session,
+            characteristic,
+            value,
+            write_type,
+        )?)
+    }
+
+    pub fn begin_enable_notifications(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        mode: NotificationModeRequest,
+    ) -> Result<Arc<EnableNotificationsOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_enable_notifications(
+            connection,
+            session,
+            characteristic,
+            mode,
+        )?)
+    }
+
+    pub fn begin_disable_notifications(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+        session: GattSessionId,
+        subscription: SubscriptionId,
+    ) -> Result<Arc<DisableNotificationsOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_disable_notifications(
+            connection,
+            session,
+            subscription,
+        )?)
+    }
+
+    pub fn begin_read_rssi(
+        &self,
+        context: &RecoveryContext,
+        connection: ConnectionId,
+    ) -> Result<Arc<ReadRssiOperation>, SupervisorOperationError> {
+        Ok(self.operation_owner(context)?.begin_read_rssi(connection)?)
+    }
+
+    pub(crate) fn operation_owner(
+        &self,
+        context: &RecoveryContext,
+    ) -> Result<&Bleng, SupervisorOperationError> {
+        Ok(&self.operation_session(context)?.bleng)
+    }
+
+    fn operation_session(
+        &self,
+        context: &RecoveryContext,
+    ) -> Result<&ActiveOwnerSession, SupervisorOperationError> {
+        let OwnerLifecycle::Active(active) = &self.owner_lifecycle else {
+            return Err(SupervisorOperationError::NoActiveSession);
+        };
+        // Check both authorities before calling any begin method: BLeng allocates its
+        // command identity during submission, even when later actor admission rejects it.
+        if context != active.platform.context() || context != self.policy.active_context() {
+            return Err(SupervisorOperationError::StaleContext);
+        }
+        if !matches!(
+            self.policy.phase(),
+            RecoveryPhase::Active | RecoveryPhase::Recovered
+        ) {
+            return Err(SupervisorOperationError::RecoveryNotReady);
+        }
+        Ok(active)
     }
 
     /// Applies one fenced observation without executing its returned actions.
@@ -199,7 +440,7 @@ impl SessionSupervisor {
     }
 
     /// Creates and assembles the initial owner for the policy's current context.
-    pub async fn start(&mut self) -> Result<(), SupervisorError> {
+    pub async fn start(&mut self) -> Result<OwnerStart, SupervisorError> {
         // Initial startup is one-shot: OwnerLifecycle distinguishes an active owner from
         // an already-retired initial owner.
         self.owner_lifecycle.require_initial_start()?;
@@ -209,8 +450,13 @@ impl SessionSupervisor {
         // startup admission check at this boundary.
         let context = self.policy.active_context().clone();
         let active = self.create_session(&context).await?;
+        let start = OwnerStart {
+            context,
+            initialization_command_id: active.initialization_command_id,
+            adapter_snapshot: active.adapter_snapshot.clone(),
+        };
         self.owner_lifecycle = OwnerLifecycle::Active(active);
-        Ok(())
+        Ok(start)
     }
 
     /// Creates the next owner after policy has admitted the fresh-owner transition.
@@ -259,7 +505,8 @@ impl SessionSupervisor {
         // be emitted from RecoveringSameOwner, so do not duplicate that state-machine check.
         self.consume_pending_action("RetireOldOwner", RecoveryAction::RetireOldOwner)?;
         let active = self.owner_lifecycle.take_active_for_recovery()?;
-        self.shutdown_active(active).await?;
+        let resources = self.shutdown_active(active).await?;
+        self.last_retired_resources = Some(resources);
         let context = self.policy.active_context().clone();
         self.observe(RecoveryObservation::new(
             context,
@@ -294,11 +541,35 @@ impl SessionSupervisor {
         self.observe(RecoveryObservation::new(context, result.signal))
     }
 
+    /// Drives platform actions until the next owner-boundary action or terminal plan.
+    ///
+    /// Each platform action remains single-use and sequence-fenced. This method does not execute
+    /// `RetireOldOwner` or `CreateFreshOwner`; callers must invoke the corresponding owner-boundary
+    /// method explicitly after inspecting the returned plan.
+    pub async fn drive_platform_actions_until_boundary(
+        &mut self,
+    ) -> Result<RecoveryPlan, SupervisorError> {
+        loop {
+            let plan = self.execute_platform_action().await?;
+            let Some(action) = plan.next_action() else {
+                return Ok(plan);
+            };
+            if matches!(
+                action,
+                RecoveryAction::RetireOldOwner | RecoveryAction::CreateFreshOwner
+            ) {
+                return Ok(plan);
+            }
+        }
+    }
+
     /// Shuts down the BLeng owner, then validates native resource retirement.
     pub async fn shutdown(&mut self) -> Result<ResourceSnapshot, SupervisorError> {
         let active = self.owner_lifecycle.take_active_for_shutdown()?;
         self.pending_plan = None;
-        self.shutdown_active(active).await
+        let resources = self.shutdown_active(active).await?;
+        self.last_retired_resources = Some(resources.clone());
+        Ok(resources)
     }
 
     /// Returns the platform command for the plan's first ordered action.
@@ -313,7 +584,7 @@ impl SessionSupervisor {
             });
         };
         let platform_action =
-            PlatformRecoveryAction::from_recovery_action(action, &self.recovery_target)?;
+            PlatformRecoveryAction::from_recovery_action(action, self.recovery_target.as_ref())?;
         Ok((plan.sequence(), platform_action))
     }
 
@@ -376,15 +647,44 @@ impl SessionSupervisor {
                 .cleanup_after_backend_transfer(platform.as_ref(), owner, primary_error.into())
                 .await);
         }
-        if let Err(primary_error) = platform.start_event_reader(Arc::clone(&owner)) {
+        let scan_projection_lease = ScanProjectionLease::new(context.clone());
+        if let Err(primary_error) =
+            platform.start_event_reader(Arc::clone(&owner), scan_projection_lease.projection())
+        {
+            scan_projection_lease.revoke();
             return Err(self
                 .cleanup_after_backend_transfer(platform.as_ref(), owner, primary_error)
                 .await);
         }
 
+        // Initialization is part of owner assembly: every session action assumes a ready
+        // backend, and the event reader must already be active to observe the adapter snapshot.
+        let initialization = match owner.begin_initialize() {
+            Ok(operation) => operation,
+            Err(primary_error) => {
+                scan_projection_lease.revoke();
+                return Err(self
+                    .cleanup_after_backend_transfer(platform.as_ref(), owner, primary_error.into())
+                    .await);
+            }
+        };
+        let initialization_command_id = initialization.command_id();
+        let adapter_snapshot = match initialization.wait(INITIALIZE_TIMEOUT_MS).await {
+            Ok(snapshot) => snapshot,
+            Err(primary_error) => {
+                scan_projection_lease.revoke();
+                return Err(self
+                    .cleanup_after_backend_transfer(platform.as_ref(), owner, primary_error.into())
+                    .await);
+            }
+        };
+
         Ok(ActiveOwnerSession {
+            scan_projection_lease,
             bleng: owner,
             platform,
+            initialization_command_id,
+            adapter_snapshot,
         })
     }
 
@@ -409,10 +709,10 @@ impl SessionSupervisor {
                 None
             }
         };
-        if let Some(snapshot) = &snapshot {
-            if let Err(error) = self.validate_resources(snapshot) {
-                failures.push(("resource validation", error));
-            }
+        if let Some(snapshot) = &snapshot
+            && let Err(error) = self.validate_resources(snapshot)
+        {
+            failures.push(("resource validation", error));
         }
 
         if failures.is_empty() {

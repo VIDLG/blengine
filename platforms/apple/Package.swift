@@ -1,5 +1,14 @@
 // swift-tools-version: 5.9
+import Foundation
 import PackageDescription
+
+// The selected UniFFI package is a build input, not a checkout-relative dependency. The
+// invoking recipe must provide BLEHUB_APPLE_UNIFFI_PACKAGE_PATH explicitly.
+guard let uniffiPackagePath = ProcessInfo.processInfo.environment[
+    "BLEHUB_APPLE_UNIFFI_PACKAGE_PATH"
+] else {
+    fatalError("BLEHUB_APPLE_UNIFFI_PACKAGE_PATH is required to build BleHubApple")
+}
 
 let package = Package(
     name: "BleHubApple",
@@ -13,7 +22,7 @@ let package = Package(
     dependencies: [
         .package(
             name: "BleHubUniFfiPackage",
-            path: "../../.work/staged/apple-production"
+            path: uniffiPackagePath
         ),
     ],
     targets: [

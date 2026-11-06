@@ -12,8 +12,8 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "typeRoots": ["../../../integrations/react-native-internal/node_modules/@types"],
-    "types": ["react"]
+    "typeRoots": ["../../../integrations/react-native-internal/node_modules/@types", "./node_modules/@types"],
+    "types": ["react", "jest"]
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

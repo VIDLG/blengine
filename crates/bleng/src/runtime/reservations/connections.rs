@@ -8,222 +8,74 @@ use blehub::{
 
 use crate::waiter::{WaiterError, WaiterOutcome};
 
-use super::super::{command::ConnectionOperationKind, shared::CompletionObserver};
+use super::super::shared::CompletionObserver;
 use super::{
     CancellationDecision, DispatchResolution, GattAccess, PublicationDecision, ReconciliationFault,
     connection::ConnectionReservation,
 };
 
 /// Actor-local ownership of connection lifecycles, keyed only by peripheral.
-/// Production command routing supplies the connection identity whenever the event
-/// carries a command route. Terminal callbacks may carry only a command ID, so this
-/// container also resolves those through its command inventory. Only this container
-/// inserts and removes connection roots.
+/// Command routes select non-state callbacks; state callbacks first select the
+/// affected connection. Terminals without a route can use the retained command
+/// inventory. Only this container inserts and removes connection roots.
 #[derive(Default)]
-pub(crate) struct ConnectionReservations {
+pub(in crate::runtime) struct ConnectionReservations {
     by_peripheral: HashMap<PeripheralId, ConnectionReservation>,
 }
 
 impl ConnectionReservations {
-    /// Gates live callbacks before publication; this is not an ownership query.
-    /// Some(event) passes through, including owned events needing no buffering.
-    /// None retains the event pending dispatch resolution; overflow is an error.
-    pub(crate) fn gate_event(
-        &mut self,
-        event: BleEvent,
-    ) -> Result<Option<BleEvent>, ReconciliationFault> {
-        // Category priority is global, not per connection. A malformed callback
-        // can identify one connection by command and another by connection ID.
-        for kind in [
-            ConnectionOperationKind::Disconnect,
-            ConnectionOperationKind::DiscoverGatt,
-            ConnectionOperationKind::ReadRssi,
-            ConnectionOperationKind::Read,
-            ConnectionOperationKind::Write,
-            ConnectionOperationKind::EnableNotifications,
-            ConnectionOperationKind::Connect,
-        ] {
-            for connection in self.by_peripheral.values_mut() {
-                if connection.buffer_pending_dispatch_event(kind, &event)? {
-                    return Ok(None);
-                }
-            }
-        }
-        Ok(Some(event))
-    }
+    // Admission.
 
-    pub(crate) fn gate_event_for_conn(
-        &mut self,
-        connection_id: ConnectionId,
-        kind: ConnectionOperationKind,
-        event: BleEvent,
-    ) -> Result<Option<BleEvent>, ReconciliationFault> {
-        let Some(connection) = self.find_mut(connection_id) else {
-            return Ok(Some(event));
-        };
-        if connection.buffer_pending_dispatch_event(kind, &event)? {
-            return Ok(None);
-        }
-        Ok(Some(event))
-    }
-
-    pub(crate) fn record_event(&mut self, event: &BleEvent) -> Result<(), ReconciliationFault> {
-        let connection_id = match event {
-            BleEvent::ConnectionStateChanged { connection_id, .. }
-            | BleEvent::RssiRead { connection_id, .. }
-            | BleEvent::CharacteristicRead { connection_id, .. }
-            | BleEvent::CharacteristicWritten { connection_id, .. }
-            | BleEvent::NotificationStateChanged { connection_id, .. } => *connection_id,
-            BleEvent::GattDiscovered { database, .. } => database.connection_id,
-            _ => return Ok(()),
-        };
-        if let Some(connection) = self.find_mut(connection_id) {
-            connection.record_event(event)?;
-        }
-        Ok(())
-    }
-
-    /// Resolves a command through its actor-provided connection route.
-    /// The route avoids scanning every peripheral; the connection still owns
-    /// the operation-specific evidence and command progress.
-    pub(crate) fn resolve_dispatch_for_conn(
-        &mut self,
-        connection_id: ConnectionId,
-        command_id: CommandId,
-        result: &Result<(), CommandDispatchError>,
-    ) -> Option<DispatchResolution> {
-        let (peripheral_id, root_rejected, resolution) = {
-            let (peripheral_id, connection) = self.find_mut_with_key(connection_id)?;
-            let root_rejected = result.is_err() && connection.owns_root_command(command_id);
-            let resolution = connection.resolve_dispatch(command_id, result)?;
-            (peripheral_id, root_rejected, resolution)
-        };
-        if root_rejected {
-            self.remove(peripheral_id);
-        }
-        Some(resolution)
-    }
-
-    pub(crate) fn completion_observer_for_conn(
-        &self,
-        connection_id: ConnectionId,
-        command_id: CommandId,
-    ) -> Option<CompletionObserver> {
-        self.find(connection_id)
-            .and_then(|(_, connection)| connection.progress(command_id))
-            .map(|progress| progress.completion_observer())
-    }
-
-    pub(crate) fn decide_publication_for_conn(
-        &mut self,
-        connection_id: ConnectionId,
-        event: &BleEvent,
-    ) -> Result<PublicationDecision, ReconciliationFault> {
-        match self.find_mut(connection_id) {
-            Some(connection) => connection.decide_publication(event),
-            None => Ok(PublicationDecision::Publish),
-        }
-    }
-
-    pub(crate) fn decide_publication_for_cmd(
-        &mut self,
-        command_id: CommandId,
-        event: &BleEvent,
-    ) -> Result<PublicationDecision, ReconciliationFault> {
-        match self.find_command_mut(command_id) {
-            Some((_, connection)) => connection.decide_publication(event),
-            None => Ok(PublicationDecision::Publish),
-        }
-    }
-
-    pub(crate) fn take_cancellation_public_events_for_conn(
-        &mut self,
-        connection_id: ConnectionId,
-        command_id: CommandId,
-    ) -> Vec<BleEvent> {
-        self.find_mut(connection_id)
-            .map(|connection| connection.take_cancellation_public_events(command_id))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn is_foreign_disconnect(&self, event: &BleEvent) -> bool {
-        if let BleEvent::ConnectionStateChanged {
-            command_id: Some(command_id),
-            connection_id,
-            result:
-                ConnectionStateResult::Ok {
-                    state: ConnectionState::Disconnected,
-                },
-        } = event
-            && let Some((_, connection)) = self.find(*connection_id)
-        {
-            return connection.is_foreign_disconnect(*command_id);
-        }
-        false
-    }
-
-    pub(crate) fn disconnect_command(&self, connection_id: ConnectionId) -> Option<CommandId> {
-        self.find(connection_id)?.1.disconnect_command()
-    }
-
-    pub(crate) fn require_peripheral_available(
+    pub(in crate::runtime) fn require_peripheral_available(
         &self,
         peripheral_id: PeripheralId,
     ) -> Result<(), WaiterError> {
-        if self.contains_peripheral(peripheral_id) {
+        if self.by_peripheral.contains_key(&peripheral_id) {
             return Err(WaiterError::PeripheralBusy);
         }
         Ok(())
     }
 
-    pub(crate) fn validate_disconnect(
+    pub(in crate::runtime) fn validate_disconnect(
         &self,
         connection_id: ConnectionId,
     ) -> Result<PeripheralId, WaiterError> {
-        let (key, connection) = self
-            .find(connection_id)
-            .ok_or(WaiterError::ConnectionNotActive)?;
+        let (peripheral_id, connection) = self.require_entry_for_conn(connection_id)?;
         connection.validate_disconnect()?;
-        Ok(key)
+        Ok(peripheral_id)
     }
 
-    pub(crate) fn validate_gatt_discovery(
+    pub(in crate::runtime) fn validate_gatt_discovery(
         &self,
         connection_id: ConnectionId,
     ) -> Result<PeripheralId, WaiterError> {
-        let (key, connection) = self
-            .find(connection_id)
-            .ok_or(WaiterError::ConnectionNotActive)?;
+        let (peripheral_id, connection) = self.require_entry_for_conn(connection_id)?;
         connection.validate_gatt_discovery()?;
-        Ok(key)
+        Ok(peripheral_id)
     }
 
-    pub(crate) fn validate_rssi(
+    pub(in crate::runtime) fn validate_rssi(
         &self,
         connection_id: ConnectionId,
     ) -> Result<PeripheralId, WaiterError> {
-        let (key, connection) = self
-            .find(connection_id)
-            .ok_or(WaiterError::ConnectionNotActive)?;
+        let (peripheral_id, connection) = self.require_entry_for_conn(connection_id)?;
         connection.validate_rssi()?;
-        Ok(key)
+        Ok(peripheral_id)
     }
 
-    pub(crate) fn validate_gatt_access(
+    pub(in crate::runtime) fn validate_gatt_access(
         &self,
         connection_id: ConnectionId,
         session_id: GattSessionId,
         characteristic_id: GattCharacteristicId,
         access: GattAccess,
     ) -> Result<PeripheralId, WaiterError> {
-        let (key, connection) = self
-            .find(connection_id)
-            .ok_or(WaiterError::ConnectionNotActive)?;
+        let (peripheral_id, connection) = self.require_entry_for_conn(connection_id)?;
         connection.validate_gatt_access(session_id, characteristic_id, access)?;
-        Ok(key)
+        Ok(peripheral_id)
     }
 
-    pub(crate) fn validate_notification_enable(
+    pub(in crate::runtime) fn validate_notification_enable(
         &self,
         connection_id: ConnectionId,
         session_id: GattSessionId,
@@ -237,21 +89,21 @@ impl ConnectionReservations {
         )
     }
 
-    pub(crate) fn validate_notification_disable(
+    pub(in crate::runtime) fn validate_notification_disable(
         &self,
         connection_id: ConnectionId,
         session_id: GattSessionId,
         subscription_id: SubscriptionId,
     ) -> Result<(PeripheralId, GattCharacteristicId), WaiterError> {
-        let (key, connection) = self
-            .find(connection_id)
-            .ok_or(WaiterError::ConnectionNotActive)?;
+        let (peripheral_id, connection) = self.require_entry_for_conn(connection_id)?;
         let characteristic =
             connection.validate_notification_disable(session_id, subscription_id)?;
-        Ok((key, characteristic))
+        Ok((peripheral_id, characteristic))
     }
 
-    pub(crate) fn reserve_connection(
+    // Installation after admission and submission claim.
+
+    pub(in crate::runtime) fn reserve_connection(
         &mut self,
         peripheral_id: PeripheralId,
         command_id: CommandId,
@@ -265,217 +117,294 @@ impl ConnectionReservations {
         entry.insert(ConnectionReservation::new(command_id, connection_id));
     }
 
-    /// Registers a disconnect transition on an existing connection.
-    pub(crate) fn reserve_disconnect(
-        &mut self,
-        peripheral_id: PeripheralId,
-        command_id: CommandId,
-    ) {
-        self.connection_mut(peripheral_id)
-            .reserve_disconnect(command_id);
-    }
+    delegate::delegate! {
+        to |peripheral_id: PeripheralId| self.reserved_for_peripheral_mut(peripheral_id) {
+            /// Registers a disconnect transition on an existing connection.
+            pub(in crate::runtime) fn reserve_disconnect(&mut self, command_id: CommandId);
 
-    /// Registers a GATT discovery transition while preserving any committed database.
-    pub(crate) fn reserve_gatt_discovery(
-        &mut self,
-        peripheral_id: PeripheralId,
-        command_id: CommandId,
-        session_id: GattSessionId,
-    ) {
-        self.connection_mut(peripheral_id)
-            .reserve_gatt_discovery(command_id, session_id);
-    }
-
-    /// Registers a pending RSSI read on an existing connection.
-    pub(crate) fn reserve_rssi(&mut self, peripheral_id: PeripheralId, command_id: CommandId) {
-        self.connection_mut(peripheral_id).reserve_rssi(command_id);
-    }
-
-    /// Registers a pending characteristic read.
-    pub(crate) fn reserve_read(
-        &mut self,
-        peripheral_id: PeripheralId,
-        command_id: CommandId,
-        session_id: GattSessionId,
-        characteristic_id: GattCharacteristicId,
-    ) {
-        self.connection_mut(peripheral_id)
-            .reserve_read(command_id, session_id, characteristic_id);
-    }
-
-    /// Registers a pending characteristic write.
-    pub(crate) fn reserve_write(
-        &mut self,
-        peripheral_id: PeripheralId,
-        command_id: CommandId,
-        session_id: GattSessionId,
-        characteristic_id: GattCharacteristicId,
-    ) {
-        self.connection_mut(peripheral_id)
-            .reserve_write(command_id, session_id, characteristic_id);
-    }
-
-    /// Registers a notification enable transition and its new subscription.
-    pub(crate) fn reserve_notification_enable(
-        &mut self,
-        peripheral_id: PeripheralId,
-        command_id: CommandId,
-        subscription_id: SubscriptionId,
-        session_id: GattSessionId,
-        characteristic_id: GattCharacteristicId,
-        mode: NotificationModeRequest,
-    ) {
-        self.connection_mut(peripheral_id)
-            .reserve_notification_enable(
-                command_id,
-                subscription_id,
-                session_id,
-                characteristic_id,
-                mode,
+            /// Registers a GATT discovery transition while preserving any committed database.
+            pub(in crate::runtime) fn reserve_gatt_discovery(
+                &mut self,
+                command_id: CommandId,
+                session_id: GattSessionId,
             );
+
+            /// Registers a pending RSSI read on an existing connection.
+            pub(in crate::runtime) fn reserve_rssi(&mut self, command_id: CommandId);
+
+            /// Registers a pending characteristic read.
+            pub(in crate::runtime) fn reserve_read(
+                &mut self,
+                command_id: CommandId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+            );
+
+            /// Registers a pending characteristic write.
+            pub(in crate::runtime) fn reserve_write(
+                &mut self,
+                command_id: CommandId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+            );
+
+            /// Registers a notification enable transition and its new subscription.
+            pub(in crate::runtime) fn reserve_notification_enable(
+                &mut self,
+                command_id: CommandId,
+                subscription_id: SubscriptionId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+                mode: NotificationModeRequest,
+            );
+
+            /// Registers a notification disable transition on an active subscription.
+            pub(in crate::runtime) fn reserve_notification_disable(
+                &mut self,
+                command_id: CommandId,
+                subscription_id: SubscriptionId,
+            );
+        }
     }
 
-    /// Registers a notification disable transition on an active subscription.
-    pub(crate) fn reserve_notification_disable(
-        &mut self,
-        peripheral_id: PeripheralId,
+    // Command queries.
+
+    pub(super) fn completion_observer_for_conn(
+        &self,
+        connection_id: ConnectionId,
         command_id: CommandId,
-        subscription_id: SubscriptionId,
-    ) {
-        self.connection_mut(peripheral_id)
-            .reserve_notification_disable(command_id, subscription_id);
+    ) -> Option<CompletionObserver> {
+        let connection = self.reserved_for_conn(connection_id)?;
+        let progress = connection.progress_for_cmd(command_id)?;
+        Some(progress.completion_observer())
+    }
+
+    delegate::delegate! {
+        to |connection_id: ConnectionId| self.reserved_for_conn(connection_id)? {
+            pub(super) fn disconnect_command(&self) -> Option<CommandId>;
+        }
     }
 
     /// Collects accepted commands for loss settlement without exposing connection records.
-    pub(crate) fn accepted_command_ids(&self, connection_id: ConnectionId) -> Vec<CommandId> {
-        self.find(connection_id)
-            .map(|(_, connection)| connection.accepted_command_ids())
+    pub(super) fn accepted_command_ids(&self, connection_id: ConnectionId) -> Vec<CommandId> {
+        self.reserved_for_conn(connection_id)
+            .map(ConnectionReservation::accepted_command_ids)
             .unwrap_or_default()
     }
 
-    fn contains_peripheral(&self, peripheral_id: PeripheralId) -> bool {
-        self.by_peripheral.contains_key(&peripheral_id)
+    // Dispatch and evidence.
+
+    pub(in crate::runtime) fn is_foreign_disconnect(&self, event: &BleEvent) -> bool {
+        if let BleEvent::ConnectionStateChanged {
+            command_id: Some(command_id),
+            connection_id,
+            result:
+                ConnectionStateResult::Ok {
+                    state: ConnectionState::Disconnected,
+                },
+        } = event
+            && let Some(connection) = self.reserved_for_conn(*connection_id)
+        {
+            return connection.is_foreign_disconnect(*command_id);
+        }
+        false
     }
 
-    fn connection_mut(&mut self, peripheral_id: PeripheralId) -> &mut ConnectionReservation {
-        self.by_peripheral
-            .get_mut(&peripheral_id)
-            .expect("validated connection")
-    }
+    /// Gates live callbacks before publication; this is not an ownership query.
+    /// Some(event) passes through, including owned events needing no buffering.
+    /// None retains the event pending dispatch resolution; overflow is an error.
+    pub(in crate::runtime) fn gate_event(
+        &mut self,
+        event: BleEvent,
+    ) -> Result<Option<BleEvent>, ReconciliationFault> {
+        let connection = match &event {
+            BleEvent::CommandCompleted { command_id, .. } => self.reserved_for_cmd_mut(*command_id),
+            _ => Self::connection_id_for_event(&event)
+                .and_then(|connection_id| self.reserved_for_conn_mut(connection_id)),
+        };
+        if let Some(connection) = connection
+            && connection.try_buffer_dispatch_pending_event(&event)?
+        {
+            return Ok(None);
+        }
 
-    fn find(&self, connection_id: ConnectionId) -> Option<(PeripheralId, &ConnectionReservation)> {
-        self.by_peripheral
-            .iter()
-            .find_map(|(peripheral_id, connection)| {
-                connection
-                    .matches_connection_id(connection_id)
-                    .then_some((*peripheral_id, connection))
+        // A state callback may name a different connect by command ID. All gates
+        // on the affected connection must precede this broad connect fallback.
+        if let BleEvent::ConnectionStateChanged {
+            command_id: Some(command_id),
+            connection_id,
+            ..
+        } = &event
+            && let Some(connection) = self.by_peripheral.values_mut().find(|connection| {
+                !connection.matches_connection_id(*connection_id)
+                    && connection.owns_root_command(*command_id)
             })
+            && connection.try_buffer_dispatch_pending_event(&event)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(event))
     }
 
-    fn find_mut(&mut self, connection_id: ConnectionId) -> Option<&mut ConnectionReservation> {
-        self.by_peripheral
-            .values_mut()
-            .find(|connection| connection.matches_connection_id(connection_id))
-    }
-
-    fn find_mut_with_key(
+    pub(super) fn gate_event_for_conn(
         &mut self,
         connection_id: ConnectionId,
-    ) -> Option<(PeripheralId, &mut ConnectionReservation)> {
-        self.by_peripheral
-            .iter_mut()
-            .find(|(_, connection)| connection.matches_connection_id(connection_id))
-            .map(|(peripheral_id, connection)| (*peripheral_id, connection))
+        event: BleEvent,
+    ) -> Result<Option<BleEvent>, ReconciliationFault> {
+        let Some(connection) = self.reserved_for_conn_mut(connection_id) else {
+            return Ok(Some(event));
+        };
+        if connection.try_buffer_dispatch_pending_event(&event)? {
+            return Ok(None);
+        }
+        Ok(Some(event))
     }
 
-    fn find_command_mut(
+    pub(in crate::runtime) fn record_event(
         &mut self,
+        event: &BleEvent,
+    ) -> Result<(), ReconciliationFault> {
+        // Notification values belong to publication, not command-completion evidence.
+        if matches!(event, BleEvent::NotificationReceived { .. }) {
+            return Ok(());
+        }
+        let Some(connection_id) = Self::connection_id_for_event(event) else {
+            return Ok(());
+        };
+        if let Some(connection) = self.reserved_for_conn_mut(connection_id) {
+            connection.record_event(event)?;
+        }
+        Ok(())
+    }
+
+    /// Resolves a command through its actor-provided connection route.
+    /// The route selects the connection; the connection still owns
+    /// the operation-specific evidence and command progress.
+    pub(in crate::runtime) fn resolve_dispatch_for_conn(
+        &mut self,
+        connection_id: ConnectionId,
         command_id: CommandId,
-    ) -> Option<(PeripheralId, &mut ConnectionReservation)> {
-        self.by_peripheral
-            .iter_mut()
-            .find_map(|(peripheral_id, connection)| {
-                connection
-                    .contains_command(command_id)
-                    .then_some((*peripheral_id, connection))
-            })
+        result: &Result<(), CommandDispatchError>,
+    ) -> Option<DispatchResolution> {
+        let (peripheral_id, connection) = self.reserved_entry_for_conn_mut(connection_id)?;
+        let root_rejected = result.is_err() && connection.owns_root_command(command_id);
+        let resolution = connection.resolve_dispatch(command_id, result)?;
+        if root_rejected {
+            self.by_peripheral.remove(&peripheral_id);
+        }
+        Some(resolution)
     }
 
-    fn remove(&mut self, peripheral_id: PeripheralId) -> Option<ConnectionReservation> {
-        self.by_peripheral.remove(&peripheral_id)
-    }
-
-    pub(crate) fn record_terminal_for_conn(
+    pub(in crate::runtime) fn record_terminal_for_conn(
         &mut self,
         connection_id: ConnectionId,
         command_id: CommandId,
         result: &Result<(), BleEventError>,
     ) {
-        if let Some(connection) = self.find_mut(connection_id) {
-            connection.record_terminal(command_id, result);
+        if let Some(connection) = self.reserved_for_conn_mut(connection_id) {
+            connection.try_record_terminal(command_id, result);
         }
     }
 
-    pub(crate) fn waiter_result_for_conn(
-        &self,
-        connection_id: ConnectionId,
-        command_id: CommandId,
-    ) -> Option<WaiterOutcome> {
-        self.find(connection_id)
-            .and_then(|(_, connection)| connection.waiter_result(command_id))
+    // Cancellation.
+
+    delegate::delegate! {
+        to |connection_id: ConnectionId| self.reserved_for_conn_mut(connection_id)? {
+            #[call(request_cancellation)]
+            pub(super) fn request_cancellation_for_conn(
+                &mut self,
+                command_id: CommandId,
+            ) -> Option<CancellationDecision>;
+        }
     }
 
-    pub(crate) fn request_cancellation_for_conn(
-        &mut self,
-        connection_id: ConnectionId,
-        command_id: CommandId,
-    ) -> Option<CancellationDecision> {
-        self.find_mut(connection_id)
-            .and_then(|connection| connection.request_cancellation(command_id))
-    }
-
-    pub(crate) fn try_claim_cancellation_dispatch_for_conn(
+    pub(super) fn try_claim_cancellation_dispatch_for_conn(
         &mut self,
         connection_id: ConnectionId,
         command_id: CommandId,
     ) -> bool {
-        self.find_mut(connection_id)
+        self.reserved_for_conn_mut(connection_id)
             .is_some_and(|connection| connection.try_claim_cancellation_dispatch(command_id))
     }
 
-    pub(crate) fn try_resolve_cancellation_for_conn(
+    pub(super) fn try_resolve_cancellation_for_conn(
         &mut self,
         connection_id: ConnectionId,
         command_id: CommandId,
         result: Result<(), WaiterError>,
     ) -> bool {
-        self.find_mut(connection_id)
+        self.reserved_for_conn_mut(connection_id)
             .is_some_and(|connection| connection.try_resolve_cancellation(command_id, result))
     }
 
-    pub(crate) fn try_clear_cancellation_for_conn(
+    pub(super) fn try_clear_cancellation_for_conn(
         &mut self,
         connection_id: ConnectionId,
         command_id: CommandId,
     ) -> bool {
-        self.find_mut(connection_id)
+        self.reserved_for_conn_mut(connection_id)
             .is_some_and(|connection| connection.try_clear_cancellation(command_id))
     }
 
-    pub(crate) fn is_cancellation_requested_for_conn(
+    pub(super) fn is_cancellation_requested_for_conn(
         &self,
         connection_id: ConnectionId,
         command_id: CommandId,
     ) -> bool {
-        self.find(connection_id)
-            .is_some_and(|(_, connection)| connection.is_cancellation_requested(command_id))
+        self.reserved_for_conn(connection_id)
+            .is_some_and(|connection| connection.is_cancellation_requested(command_id))
+    }
+
+    // Public event ordering.
+
+    pub(super) fn decide_publication_for_conn(
+        &mut self,
+        connection_id: ConnectionId,
+        event: &BleEvent,
+    ) -> Result<PublicationDecision, ReconciliationFault> {
+        match self.reserved_for_conn_mut(connection_id) {
+            Some(connection) => connection.decide_publication(event),
+            None => Ok(PublicationDecision::Publish),
+        }
+    }
+
+    pub(super) fn decide_publication_for_cmd(
+        &mut self,
+        command_id: CommandId,
+        event: &BleEvent,
+    ) -> Result<PublicationDecision, ReconciliationFault> {
+        match self.reserved_for_cmd_mut(command_id) {
+            Some(connection) => connection.decide_publication(event),
+            None => Ok(PublicationDecision::Publish),
+        }
+    }
+
+    pub(super) fn take_cancellation_public_events_for_conn(
+        &mut self,
+        connection_id: ConnectionId,
+        command_id: CommandId,
+    ) -> Vec<BleEvent> {
+        self.reserved_for_conn_mut(connection_id)
+            .map(|connection| connection.take_cancellation_public_events(command_id))
+            .unwrap_or_default()
+    }
+
+    // Caller results and reservation retirement.
+
+    delegate::delegate! {
+        to |connection_id: ConnectionId| self.reserved_for_conn(connection_id)? {
+            #[call(waiter_result)]
+            pub(in crate::runtime) fn waiter_result_for_conn(
+                &self,
+                command_id: CommandId,
+            ) -> Option<WaiterOutcome>;
+        }
     }
 
     /// Call only after settling affected waiters, including after late callbacks.
     /// Releases completed child operations and connection roots, returning every
     /// command route that can now be removed from the coordinator.
-    pub(crate) fn retire_completed(&mut self) -> Vec<CommandId> {
+    pub(in crate::runtime) fn retire_completed(&mut self) -> Vec<CommandId> {
         let mut retired = Vec::new();
         self.by_peripheral.retain(|_, connection| {
             retired.extend(connection.retire_completed_operations());
@@ -487,5 +416,82 @@ impl ConnectionReservations {
             }
         });
         retired
+    }
+
+    // Private lookup; entry variants also retain the peripheral key.
+
+    /// Admission must have validated this peripheral before installing a child command.
+    fn reserved_for_peripheral_mut(
+        &mut self,
+        peripheral_id: PeripheralId,
+    ) -> &mut ConnectionReservation {
+        self.by_peripheral
+            .get_mut(&peripheral_id)
+            .expect("validated connection")
+    }
+
+    fn reserved_for_conn(&self, connection_id: ConnectionId) -> Option<&ConnectionReservation> {
+        self.reserved_entry_for_conn(connection_id)
+            .map(|(_, connection)| connection)
+    }
+
+    fn reserved_for_conn_mut(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Option<&mut ConnectionReservation> {
+        self.reserved_entry_for_conn_mut(connection_id)
+            .map(|(_, connection)| connection)
+    }
+
+    // Entry lookups retain the peripheral key for validation results or root removal.
+    fn reserved_entry_for_conn(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Option<(PeripheralId, &ConnectionReservation)> {
+        self.by_peripheral
+            .iter()
+            .find(|(_, connection)| connection.matches_connection_id(connection_id))
+            .map(|(peripheral_id, connection)| (*peripheral_id, connection))
+    }
+
+    fn reserved_entry_for_conn_mut(
+        &mut self,
+        connection_id: ConnectionId,
+    ) -> Option<(PeripheralId, &mut ConnectionReservation)> {
+        self.by_peripheral
+            .iter_mut()
+            .find(|(_, connection)| connection.matches_connection_id(connection_id))
+            .map(|(peripheral_id, connection)| (*peripheral_id, connection))
+    }
+
+    /// Only checks existence; operation-specific admission remains on the reservation.
+    fn require_entry_for_conn(
+        &self,
+        connection_id: ConnectionId,
+    ) -> Result<(PeripheralId, &ConnectionReservation), WaiterError> {
+        self.reserved_entry_for_conn(connection_id)
+            .ok_or(WaiterError::ConnectionNotActive)
+    }
+
+    fn reserved_for_cmd_mut(
+        &mut self,
+        command_id: CommandId,
+    ) -> Option<&mut ConnectionReservation> {
+        self.by_peripheral
+            .values_mut()
+            .find(|connection| connection.owns_command(command_id))
+    }
+
+    fn connection_id_for_event(event: &BleEvent) -> Option<ConnectionId> {
+        match event {
+            BleEvent::ConnectionStateChanged { connection_id, .. }
+            | BleEvent::RssiRead { connection_id, .. }
+            | BleEvent::CharacteristicRead { connection_id, .. }
+            | BleEvent::CharacteristicWritten { connection_id, .. }
+            | BleEvent::NotificationStateChanged { connection_id, .. }
+            | BleEvent::NotificationReceived { connection_id, .. } => Some(*connection_id),
+            BleEvent::GattDiscovered { database, .. } => Some(database.connection_id),
+            _ => None,
+        }
     }
 }

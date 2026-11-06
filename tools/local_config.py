@@ -196,7 +196,13 @@ def report() -> None:
 
     for table, key, environment_variable in (
         ("toolchains", "nrftest_root", "BLEHUB_NRFTEST_ROOT"),
+        ("tools", "nrfutil_home", "BLEHUB_NRFUTIL_HOME"),
         ("peripheral_nrf52840", "port", "BLEHUB_NRF52840_PORT"),
+        (
+            "peripheral_nrf52840",
+            "sniffer_port",
+            "BLEHUB_NRF52840_SNIFFER_PORT",
+        ),
     ):
         configured = resolve_local_value(table, key, environment_variable, None)
         value = configured.value if configured.value is not None else "<unset>"

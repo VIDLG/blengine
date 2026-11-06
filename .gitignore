@@ -32,6 +32,7 @@ htmlcov/
 # Gradle, Kotlin, and Android build output
 **/.gradle/
 **/.kotlin/
+**/.cxx/
 **/build/
 **/out/
 local.properties
@@ -51,6 +52,8 @@ local.properties
 /tests/consumers/react-native-internal/ios/Pods/
 /tests/consumers/react-native-internal/ios/*.xcworkspace/
 /tests/consumers/react-native-internal/ios/.xcode.env.local
+# Retired compile consumer: preserve ignored local output, not an active source root.
+/tests/consumers/apple/bleng-rn-ios/
 /tests/consumers/react-native-internal/macos/macos/Pods/
 /tests/consumers/react-native-internal/macos/macos/*.xcworkspace/
 /tests/consumers/react-native-internal/macos/macos/.xcode.env.local
@@ -61,6 +64,7 @@ local.properties
 # Generated FFI bindings and package staging
 # Reviewed API/ABI snapshots use a dedicated tracked directory when required.
 **/generated/
+
 **/gen/
 **/dist/
 **/staging/
@@ -71,10 +75,7 @@ local.properties
 /integrations/archive/tauri-plugin-blehub/plugins/blehub/permissions/schemas/
 /integrations/archive/tauri-plugin-blehub/plugins/blehub/assembly/.tauri/
 /integrations/react-native-internal/apple-production/
-/integrations/react-native-internal/apple-pods/BleHubApple/Sources/
-/integrations/react-native-internal/apple-pods/BleHubUniFfi/Sources/
-/integrations/react-native-internal/apple-pods/BleHubUniFfi/Package.swift
-/integrations/react-native-internal/apple-pods/BleHubUniFfi/BleHubUniFfi.flavor
+
 /integrations/react-native-internal/android/.cxx/
 /tests/consumers/react-native-internal/android/app/.cxx/
 

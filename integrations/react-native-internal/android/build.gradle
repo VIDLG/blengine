@@ -76,6 +76,7 @@ android {
     main {
       java.srcDir("src/main/java")
       java.srcDir("../nitrogen/generated/android/kotlin")
+      java.srcDir("../../react-native-bleng/android/src/main/kotlin/com/blehub/reactnative/bleng")
     }
   }
 
@@ -108,10 +109,12 @@ kotlin {
 dependencies {
   implementation "com.facebook.react:react-android:0.87.1"
   implementation project(":react-native-nitro-modules")
-  implementation "dev.blehub:blehub-uniffi:0.0.0"
-  implementation "dev.blehub:blehub-android:0.0.0"
-  androidTestImplementation "androidx.test:runner:1.7.0"
-  androidTestImplementation "junit:junit:4.13.2"
+  implementation "dev.blehub:bleng:0.0.0"
+  implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2"
+  implementation("dev.blehub:blehub-android:0.0.0") {
+    exclude group: "dev.blehub", module: "blehub-uniffi"
+  }
+
 }
 
 subprojects {

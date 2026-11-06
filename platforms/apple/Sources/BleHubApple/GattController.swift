@@ -155,6 +155,30 @@ internal final class AppleGattController {
     private var nextDiscoveryGeneration: UInt64? = 1
     private var nextAttributeId: UInt64? = 1
 
+    // Native instance identities, including uncommitted drafts; UUIDs are not instance keys.
+    var diagnosticAttributeIdentities: Set<ObjectIdentifier> {
+        var identities = Set<ObjectIdentifier>()
+        for active in activeByConnectionId.values {
+            identities.formUnion(active.nativeMap.services.values.map { ObjectIdentifier($0) })
+            identities.formUnion(active.nativeMap.characteristics.values.map { ObjectIdentifier($0) })
+            identities.formUnion(active.nativeMap.descriptors.values.map { ObjectIdentifier($0) })
+        }
+        for pending in pendingByConnectionId.values {
+            for service in pending.services {
+                identities.insert(ObjectIdentifier(service.object))
+                for characteristic in service.characteristics {
+                    identities.insert(ObjectIdentifier(characteristic.object))
+                    identities.formUnion(characteristic.descriptors.map { ObjectIdentifier($0.object) })
+                }
+            }
+        }
+        return identities
+    }
+
+    var diagnosticCallbackRouteCount: Int {
+        pendingByConnectionId.count + quarantinedGenerationByConnectionId.count
+    }
+
     var pendingCount: Int {
         pendingByConnectionId.count
     }
@@ -385,6 +409,10 @@ internal final class AppleGattController {
             return nil
         }
         return active.database
+    }
+
+    func hasPendingDiscovery(commandId: CommandId) -> Bool {
+        pendingByConnectionId.values.contains { $0.correlation.command.commandId == commandId }
     }
 
     func hasPendingDiscovery(connection: AppleConnectionCorrelation) -> Bool {

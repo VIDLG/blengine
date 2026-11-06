@@ -30,6 +30,10 @@ export const RF_RECOVERY_CONNECT_COMMAND = '9023';
 export const RF_RECOVERY_CONNECTION_ID = '9024';
 export const RF_RECOVERY_DISCONNECT_COMMAND = '9025';
 export const RF_RSSI_COMMAND = '9026';
+export const RF_CANCELLATION_ACTIVE_COMMAND = '9027';
+export const RF_CANCELLATION_QUEUED_COMMAND = '9028';
+export const RF_CANCELLATION_RECOVERY_COMMAND = '9029';
+export const RF_CANCELLATION_UNKNOWN_TARGET = '9030';
 export const RF_CONNECTION_TIMEOUT_MS = 45_000;
 export const RF_POST_DISCONNECT_OBSERVATION_MS = 1_000;
 export const RF_INITIALIZATION_TIMEOUT_MS = 120_000;
@@ -46,7 +50,24 @@ export const STRESS_WAIT_MS = 150;
 export const SAMPLE_BYTES = new Uint8Array([0x01, 0x02, 0x7f, 0x00]);
 export const INVALID_COMMAND_IDS = ['', '00', '01', '-1', '1.0', '18446744073709551616'];
 
+// Standalone ATT-hold image; deliberately not part of the normal nine-flow suite.
+export const RF_WATCHDOG_SERVICE_UUID = 'fd300000-0000-4000-8000-000000000000';
+export const RF_WATCHDOG_IDS = {
+  initialize: '21001', scanStart: '21002', scanStop: '21003', scan: '21004',
+  connect: '21005', connection: '21007', discover: '21008', gatt: '21009',
+  active: '21010', queued: '21011',
+  recoveryScanStart: '21012', recoveryScanStop: '21013', recoveryScan: '21014',
+  recoveryConnect: '21020', recoveryConnection: '21021',
+  recoveryDiscover: '21022', recoveryGatt: '21023', recoveryRead: '21024', recoveryDisconnect: '21025',
+} as const;
+export const RF_WATCHDOG_WAIT_MS = 45_000;
+export const RF_WATCHDOG_SILENCE_MS = 1_000;
+
 export type RuntimeMode =
+  | 'rf-workbench'
+  | 'rf-write-reject'
+  | 'rf-ccc-enable-reject'
+  | 'rf-ccc-disable-reject'
   | 'basic'
   | 'stress'
   | 'reload'
@@ -58,13 +79,20 @@ export type RuntimeMode =
   | 'rf-notification'
   | 'rf-indication'
   | 'rf-passive-disconnect'
+  | 'rf-cancellation'
   | 'rf-recovery'
   | 'rf-recovery-ten'
+  | 'rf-adapter-transition'
+  | 'rf-permission-transition'
+  | 'permission-authorization'
   | 'rf-multi'
   | 'rf-multi-soak'
   | 'rf-multi-fault'
   | 'rf-reload'
-  | 'rf-pending-read-reload';
+  | 'rf-pending-read-reload'
+  | 'rf-lab'
+  | 'rf-lab-suite'
+  | 'rf-watchdog';
 export type RfSubscriptionMode = 'notification' | 'indication';
 export type StepState = 'pending' | 'passed' | 'failed';
 export type StepId = 'round-trip' | 'dispatch' | 'completion' | 'listener-removal' | 'close';
@@ -96,6 +124,14 @@ export type RfStepId =
   | 'recovery-connected'
   | 'recovery-disconnected'
   | 'recovery-connection-silence'
+  | 'cancellation-active-rejection'
+  | 'cancellation-queued-accepted'
+  | 'cancellation-terminal'
+  | 'cancellation-active-completion'
+  | 'cancellation-recovery'
+  | 'cancellation-late-silence'
+  | 'cancellation-unknown-target'
+  | 'cancellation-completed-target'
   | `cycle-${number}`
   | 'close';
 
@@ -114,11 +150,11 @@ export interface RfStep {
 }
 
 export function isRfMode(mode: RuntimeMode): boolean {
-  return mode === 'rf' || mode === 'rf-connect' || mode === 'rf-gatt' || mode === 'rf-io' || mode === 'rf-rssi' || mode === 'rf-notification' || mode === 'rf-indication' || mode === 'rf-passive-disconnect' || mode === 'rf-recovery' || mode === 'rf-recovery-ten' || mode === 'rf-multi' || mode === 'rf-multi-soak' || mode === 'rf-multi-fault' || mode === 'rf-reload' || mode === 'rf-pending-read-reload';
+  return mode === 'rf-ccc-disable-reject' || mode === 'rf-ccc-enable-reject' || mode === 'rf-write-reject' || mode === 'rf-permission-transition' || mode === 'rf-adapter-transition' || mode === 'rf-watchdog' || mode === 'rf' || mode === 'rf-connect' || mode === 'rf-gatt' || mode === 'rf-io' || mode === 'rf-rssi' || mode === 'rf-notification' || mode === 'rf-indication' || mode === 'rf-passive-disconnect' || mode === 'rf-cancellation' || mode === 'rf-recovery' || mode === 'rf-recovery-ten' || mode === 'rf-multi' || mode === 'rf-multi-soak' || mode === 'rf-multi-fault' || mode === 'rf-reload' || mode === 'rf-pending-read-reload' || mode === 'rf-lab' || mode === 'rf-lab-suite';
 }
 
 export function rfMarkerPrefix(mode: RuntimeMode): string {
-  return mode === 'rf-pending-read-reload' ? 'rf-pending-read-reload' : mode === 'rf-reload' ? 'rf-reload' : mode === 'rf-recovery-ten' ? 'rf-recovery-ten' : mode === 'rf-recovery' ? 'rf-recovery' : mode === 'rf-multi-fault' ? 'rf-multi-fault' : mode === 'rf-multi-soak' ? 'rf-multi-soak' : mode === 'rf-multi' ? 'rf-multi' : mode === 'rf-passive-disconnect' ? 'rf-passive-disconnect' : mode === 'rf-indication' ? 'rf-indication' : mode === 'rf-notification' ? 'rf-notification' : mode === 'rf-io' ? 'rf-io' : mode === 'rf-rssi' ? 'rf-rssi' : mode === 'rf-gatt' ? 'rf-gatt' : mode === 'rf-connect' ? 'rf-connect' : 'rf';
+  return mode === 'rf-ccc-disable-reject' ? 'rf-ccc-disable-reject' : mode === 'rf-ccc-enable-reject' ? 'rf-ccc-enable-reject' : mode === 'rf-write-reject' ? 'rf-write-reject' : mode === 'rf-permission-transition' ? 'rf-permission-transition' : mode === 'rf-adapter-transition' ? 'rf-adapter-transition' : mode === 'rf-watchdog' ? 'rf-watchdog' : mode === 'rf-lab-suite' ? 'rf-lab-suite' : mode === 'rf-cancellation' ? 'rf-cancellation' : mode === 'rf-pending-read-reload' ? 'rf-pending-read-reload' : mode === 'rf-reload' ? 'rf-reload' : mode === 'rf-recovery-ten' ? 'rf-recovery-ten' : mode === 'rf-recovery' ? 'rf-recovery' : mode === 'rf-multi-fault' ? 'rf-multi-fault' : mode === 'rf-multi-soak' ? 'rf-multi-soak' : mode === 'rf-multi' ? 'rf-multi' : mode === 'rf-passive-disconnect' ? 'rf-passive-disconnect' : mode === 'rf-indication' ? 'rf-indication' : mode === 'rf-notification' ? 'rf-notification' : mode === 'rf-io' ? 'rf-io' : mode === 'rf-rssi' ? 'rf-rssi' : mode === 'rf-gatt' ? 'rf-gatt' : mode === 'rf-connect' ? 'rf-connect' : 'rf';
 }
 
 export const INITIAL_STEPS: Step[] = [
@@ -213,6 +249,24 @@ export const INITIAL_RF_RECOVERY_STEPS: RfStep[] = [
 export const INITIAL_RF_RECOVERY_TEN_STEPS: RfStep[] = [
   ...Array.from({ length: 10 }, (_, cycle) => ({ id: `cycle-${cycle}` as RfStepId, label: `Passive disconnect and recovery cycle ${cycle + 1}`, state: 'pending' as StepState, detail: 'waiting' })),
   INITIAL_RF_RECOVERY_STEPS[INITIAL_RF_RECOVERY_STEPS.length - 1],
+];
+
+export const INITIAL_RF_CANCELLATION_STEPS: RfStep[] = [
+  ...INITIAL_RF_STEPS.slice(0, -1),
+  { id: 'connecting', label: 'Matching Connecting', state: 'pending', detail: 'waiting' },
+  { id: 'connected', label: 'Matching Connected and connect completion', state: 'pending', detail: 'waiting' },
+  { id: 'gatt-discovery', label: 'Aggregate GATT database and instance mapping', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-active-rejection', label: 'Active cancellation rejected without stopping the read', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-queued-accepted', label: 'Queued cancellation accepted for the exact command', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-terminal', label: 'Queued command emits one cancelled terminal', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-active-completion', label: 'Active read completes normally', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-recovery', label: 'GATT FIFO recovers for a later read', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-late-silence', label: 'Cancelled command emits no late domain result', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-unknown-target', label: 'Unknown cancellation target is rejected', state: 'pending', detail: 'waiting' },
+  { id: 'cancellation-completed-target', label: 'Completed cancellation target is rejected', state: 'pending', detail: 'waiting' },
+  { id: 'disconnected', label: 'Requested Disconnected and disconnect completion', state: 'pending', detail: 'waiting' },
+  { id: 'connection-silence', label: 'One-second post-disconnect JS silence', state: 'pending', detail: 'waiting' },
+  INITIAL_RF_STEPS[INITIAL_RF_STEPS.length - 1],
 ];
 
 export const INITIAL_RF_PASSIVE_DISCONNECT_STEPS: RfStep[] = [

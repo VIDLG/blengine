@@ -139,6 +139,11 @@ internal final class AppleScanController {
         return allocated
     }
 
+    // Count the union of identity allocations and retained native peers, not two indexes.
+    var diagnosticPeerCacheCount: Int {
+        Set(peripheralIdsByIdentifier.values).union(peripheralsById.keys).count
+    }
+
     func dispose() {
         session = nil
         lastStoppedSessionId = nil

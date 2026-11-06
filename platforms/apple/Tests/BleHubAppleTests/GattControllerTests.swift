@@ -11,6 +11,8 @@ final class GattControllerTests: XCTestCase {
         let command = discoveryCommand(commandId: 10, sessionId: 20)
         _ = try controller.begin(command: command, connection: connection)
 
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1)
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
         let duplicateServiceUuid = uuid("fff00000-0000-4000-8000-000000000000")
         let duplicateCharacteristicUuid = uuid("fff10000-0000-4000-8000-000000000000")
         let duplicateDescriptorUuid = uuid("00002902-0000-1000-8000-00805f9b34fb")
@@ -34,6 +36,7 @@ final class GattControllerTests: XCTestCase {
             ),
             expected: firstService
         )
+        XCTAssertEqual(controller.diagnosticAttributeIdentities.count, 2)
         assertDiscoversDescriptors(
             try controller.didDiscoverCharacteristics(
                 connection: connection,
@@ -86,12 +89,17 @@ final class GattControllerTests: XCTestCase {
             database.services[0].characteristics[0].descriptors.map(\.uuid),
             [duplicateDescriptorUuid, duplicateDescriptorUuid]
         )
+        XCTAssertEqual(controller.diagnosticAttributeIdentities.count, 6)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
         XCTAssertEqual(completion.nativeMap.services.count, 2)
         XCTAssertEqual(completion.nativeMap.characteristics.count, 2)
         XCTAssertEqual(completion.nativeMap.descriptors.count, 2)
         XCTAssertEqual(controller.pendingCount, 0)
         XCTAssertEqual(controller.activeCount, 1)
         XCTAssertEqual(controller.activeDatabase(connection: connection), database)
+        _ = controller.retire(connection: connection)
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
     }
 
     func testCharacteristicResolverUsesActiveSessionAndExactNativeInstance() throws {
@@ -267,6 +275,8 @@ final class GattControllerTests: XCTestCase {
         _ = try controller.begin(command: firstCommand, connection: connection)
 
         XCTAssertEqual(controller.invalidateServices(connection: connection), firstCommand)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1, "quarantine is still a callback barrier")
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
         XCTAssertEqual(controller.pendingCount, 0)
         XCTAssertEqual(controller.activeCount, 0)
         XCTAssertThrowsError(
@@ -288,6 +298,7 @@ final class GattControllerTests: XCTestCase {
         )
 
         XCTAssertNil(controller.retire(connection: connection))
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
         let reconnected = connectionCorrelation(generation: 6, peripheral: peripheral)
         XCTAssertNoThrow(
             try controller.begin(
@@ -328,7 +339,10 @@ final class GattControllerTests: XCTestCase {
         _ = try controller.begin(command: command, connection: connection)
         XCTAssertEqual(controller.invalidateServices(connection: connection), command)
 
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1)
         XCTAssertEqual(controller.drain(), [])
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
         XCTAssertNoThrow(
             try controller.begin(
                 command: discoveryCommand(commandId: 111, sessionId: 121),

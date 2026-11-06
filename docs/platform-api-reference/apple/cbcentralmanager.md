@@ -43,15 +43,15 @@ Before calling the [`CBCentralManager`](/documentation/CoreBluetooth/CBCentralMa
 
 ### Initializing a Central Manager
 
-[`-  init`](/documentation/CoreBluetooth/CBCentralManager/init())
+[`convenience init()`](/documentation/CoreBluetooth/CBCentralManager/init())
 
 Initializes the central manager without a delegate.
 
-[`-  initWithDelegate:queue:`](/documentation/CoreBluetooth/CBCentralManager/init(delegate:queue:))
+[`convenience init(delegate: (any CBCentralManagerDelegate)?, queue: dispatch_queue_t?)`](/documentation/CoreBluetooth/CBCentralManager/init(delegate:queue:))
 
 Initializes the central manager with a specified delegate and dispatch queue.
 
-[`-  initWithDelegate:queue:options:`](/documentation/CoreBluetooth/CBCentralManager/init(delegate:queue:options:))
+[`init(delegate: (any CBCentralManagerDelegate)?, queue: dispatch_queue_t?, options: [String : Any]?)`](/documentation/CoreBluetooth/CBCentralManager/init(delegate:queue:options:))
 
 Initializes the central manager with specified delegate, dispatch queue, and initialization options.
 
@@ -65,7 +65,7 @@ Restore central manager state in scene-based apps.
 
 ### Establishing or Canceling Connections with Peripherals
 
-[`-  connectPeripheral:options:`](/documentation/CoreBluetooth/CBCentralManager/connect(_:options:))
+[`func connect(CBPeripheral, options: [String : Any]?)`](/documentation/CoreBluetooth/CBCentralManager/connect(_:options:))
 
 Establishes a local connection to a peripheral.
 
@@ -73,23 +73,23 @@ Establishes a local connection to a peripheral.
 
 Keys used to pass options when connecting to a peripheral.
 
-[`-  cancelPeripheralConnection:`](/documentation/CoreBluetooth/CBCentralManager/cancelPeripheralConnection(_:))
+[`func cancelPeripheralConnection(CBPeripheral)`](/documentation/CoreBluetooth/CBCentralManager/cancelPeripheralConnection(_:))
 
 Cancels an active or pending local connection to a peripheral.
 
 ### Retrieving Lists of Peripherals
 
-[`-  retrieveConnectedPeripheralsWithServices:`](/documentation/CoreBluetooth/CBCentralManager/retrieveConnectedPeripherals(withServices:))
+[`func retrieveConnectedPeripherals(withServices: [CBUUID]) -> [CBPeripheral]`](/documentation/CoreBluetooth/CBCentralManager/retrieveConnectedPeripherals(withServices:))
 
 Returns a list of the peripherals connected to the system whose services match a given set of criteria.
 
-[`-  retrievePeripheralsWithIdentifiers:`](/documentation/CoreBluetooth/CBCentralManager/retrievePeripherals(withIdentifiers:))
+[`func retrievePeripherals(withIdentifiers: [UUID]) -> [CBPeripheral]`](/documentation/CoreBluetooth/CBCentralManager/retrievePeripherals(withIdentifiers:))
 
 Returns a list of known peripherals by their identifiers.
 
 ### Scanning or Stopping Scans of Peripherals
 
-[`-  scanForPeripheralsWithServices:options:`](/documentation/CoreBluetooth/CBCentralManager/scanForPeripherals(withServices:options:))
+[`func scanForPeripherals(withServices: [CBUUID]?, options: [String : Any]?)`](/documentation/CoreBluetooth/CBCentralManager/scanForPeripherals(withServices:options:))
 
 Scans for peripherals that are advertising services.
 
@@ -97,33 +97,33 @@ Scans for peripherals that are advertising services.
 
 Keys used to pass options when scanning for peripherals.
 
-[`-  stopScan`](/documentation/CoreBluetooth/CBCentralManager/stopScan())
+[`func stopScan()`](/documentation/CoreBluetooth/CBCentralManager/stopScan())
 
 Asks the central manager to stop scanning for peripherals.
 
-[`isScanning`](/documentation/CoreBluetooth/CBCentralManager/isScanning)
+[`var isScanning: Bool`](/documentation/CoreBluetooth/CBCentralManager/isScanning)
 
 A Boolean value that indicates whether the central is currently scanning.
 
 ### Inspecting Feature Support
 
-[`+  supportsFeatures:`](/documentation/CoreBluetooth/CBCentralManager/supports(_:))
+[`class func supports(CBCentralManager.Feature) -> Bool`](/documentation/CoreBluetooth/CBCentralManager/supports(_:))
 
 Returns a Boolean that indicates whether the device supports a specific set of features.
 
-[`Feature`](/documentation/CoreBluetooth/CBCentralManager/Feature)
+[`struct Feature`](/documentation/CoreBluetooth/CBCentralManager/Feature)
 
 An option set of device-specific features.
 
 ### Monitoring Properties
 
-[`delegate`](/documentation/CoreBluetooth/CBCentralManager/delegate)
+[`var delegate: (any CBCentralManagerDelegate)?`](/documentation/CoreBluetooth/CBCentralManager/delegate)
 
 The delegate object that you want to receive central manager events.
 
 ### Receiving Connection Events
 
-[`-  registerForConnectionEventsWithOptions:`](/documentation/CoreBluetooth/CBCentralManager/registerForConnectionEvents(options:))
+[`func registerForConnectionEvents(options: [CBConnectionEventMatchingOption : Any]?)`](/documentation/CoreBluetooth/CBCentralManager/registerForConnectionEvents(options:))
 
 Register for an event notification when the central manager makes a connection matching the given options.
 
@@ -131,39 +131,39 @@ Register for an event notification when the central manager makes a connection m
 
 Keys used to pass options when connecting to a peripheral.
 
-[`CBConnectionEvent`](/documentation/CoreBluetooth/CBConnectionEvent)
+[`enum CBConnectionEvent`](/documentation/CoreBluetooth/CBConnectionEvent)
 
 A change to the connection state of a peer.
 
-[`CBConnectionEventMatchingOption`](/documentation/CoreBluetooth/CBConnectionEventMatchingOption)
+[`struct CBConnectionEventMatchingOption`](/documentation/CoreBluetooth/CBConnectionEventMatchingOption)
 
 A set of options to use when registering for connection events.
 
 ### Deprecated
 
-[`CBCentralManagerState`](/documentation/CoreBluetooth/CBCentralManagerState)
+[`enum CBCentralManagerState`](/documentation/CoreBluetooth/CBCentralManagerState)
 
 Values that represent the current state of a central manager object.
 
 ## Relationships
 
+### Inherits From
+
+[`CBManager`](/documentation/CoreBluetooth/CBManager)
+
 ### Conforms To
 
-[`Equatable`](/documentation/Swift/Equatable)
+[`CVarArg`](/documentation/Swift/CVarArg)
 
 [`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
+
+[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
+
+[`Equatable`](/documentation/Swift/Equatable)
 
 [`Hashable`](/documentation/Swift/Hashable)
 
 [`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
-
-[`CVarArg`](/documentation/Swift/CVarArg)
-
-[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
-
-### Inherits From
-
-[`CBManager`](/documentation/CoreBluetooth/CBManager)
 
 ---
 

@@ -30,6 +30,10 @@ impl<M: OperationSpec> ResultSlot<M> {
     pub(crate) async fn wait(&self, timeout: Duration) -> Result<M::Output, WaiterError> {
         self.wait_until(Instant::now() + timeout).await
     }
+
+    pub(crate) async fn wait_until(&self, deadline: Instant) -> Result<M::Output, WaiterError> {
+        self.claim_wait_until(deadline)?.await
+    }
 }
 
 #[test]

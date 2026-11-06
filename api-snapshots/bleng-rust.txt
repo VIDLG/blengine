@@ -5,6 +5,18 @@ pub struct Bleng;
 impl Bleng {
     pub fn new() -> Result<Arc<Self>, BlengError>;
     pub async fn assemble_backend(&self, backend: Arc<dyn BleBackend>) -> Result<(), BlengError>;
+    pub async fn cancel_operation(&self, command_id: CommandId) -> Result<(), BlengError>;
+    pub fn begin_initialize(&self) -> Result<Arc<InitializeOperation>, BlengError>;
+    pub fn begin_start_scan(&self, options: ScanOptions,) -> Result<Arc<StartScanOperation>, BlengError>;
+    pub fn begin_stop_scan(&self, session: ScanSessionId,) -> Result<Arc<StopScanOperation>, BlengError>;
+    pub fn begin_connect(&self, peripheral: PeripheralId,) -> Result<Arc<ConnectOperation>, BlengError>;
+    pub fn begin_disconnect(&self, connection: ConnectionId,) -> Result<Arc<DisconnectOperation>, BlengError>;
+    pub fn begin_discover_gatt(&self, connection: ConnectionId,) -> Result<Arc<DiscoverGattOperation>, BlengError>;
+    pub fn begin_read_characteristic(&self, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId,) -> Result<Arc<ReadOperation>, BlengError>;
+    pub fn begin_write_characteristic(&self, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Vec<u8>, write_type: WriteType,) -> Result<Arc<WriteOperation>, BlengError>;
+    pub fn begin_enable_notifications(&self, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest,) -> Result<Arc<EnableNotificationsOperation>, BlengError>;
+    pub fn begin_disable_notifications(&self, connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId,) -> Result<Arc<DisableNotificationsOperation>, BlengError>;
+    pub fn begin_read_rssi(&self, connection: ConnectionId,) -> Result<Arc<ReadRssiOperation>, BlengError>;
     pub async fn initialize(&self, timeout_ms: u64) -> Result<AdapterSnapshot, BlengError>;
     pub async fn start_scan(&self, options: ScanOptions, timeout_ms: u64,) -> Result<ScanSessionId, BlengError>;
     pub async fn stop_scan(&self, session: ScanSessionId, timeout_ms: u64,) -> Result<(), BlengError>;
@@ -36,6 +48,10 @@ pub enum BlengContractFailure {
 pub enum BlengError {
     Closed,
     Cancelled,
+    OperationNotFound {command_id: CommandId},
+    OperationAlreadyCompleted {command_id: CommandId},
+    OperationNotCancellable {command_id: CommandId},
+    OperationResultConsumed,
     Disconnected,
     InvalidTimeout,
     NotReady {reason: BlengNotReadyReason},
@@ -62,5 +78,102 @@ pub enum BlengNotReadyReason {
 
 pub enum BlengResource {
     PendingWaiters,
+    SubmissionQueue,
     Identifiers,
+}
+
+pub struct ConnectOperation;
+
+impl ConnectOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<ConnectionId, BlengError>;
+}
+
+pub struct DisableNotificationsOperation;
+
+impl DisableNotificationsOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<(), BlengError>;
+}
+
+pub struct DisconnectOperation;
+
+impl DisconnectOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<(), BlengError>;
+}
+
+pub struct DiscoverGattOperation;
+
+impl DiscoverGattOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<GattDatabase, BlengError>;
+}
+
+pub struct EnableNotificationsOperation;
+
+impl EnableNotificationsOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<SubscriptionId, BlengError>;
+}
+
+pub struct InitializeOperation;
+
+impl InitializeOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<AdapterSnapshot, BlengError>;
+}
+
+pub trait OperationFailureObserver: Send + Sync {
+    fn operation_failed(&self);
+}
+
+pub struct OperationFailureRegistration;
+
+pub struct ReadOperation;
+
+impl ReadOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<Vec<u8>, BlengError>;
+}
+
+pub struct ReadRssiOperation;
+
+impl ReadRssiOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<i16, BlengError>;
+}
+
+pub struct StartScanOperation;
+
+impl StartScanOperation {
+    pub fn observe_failure(&self, observer: std::sync::Weak<dyn crate::OperationFailureObserver>,) -> Option<crate::OperationFailureRegistration>;
+    pub async fn observe_with_timeout<T: Send + 'static>(&self, timeout_ms: u64, observation: impl Future<Output = T> + Send + 'static,) -> Result<T, BlengError>;
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<ScanSessionId, BlengError>;
+}
+
+pub struct StopScanOperation;
+
+impl StopScanOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<(), BlengError>;
+}
+
+pub struct WriteOperation;
+
+impl WriteOperation {
+    pub fn command_id(&self) -> CommandId;
+    pub async fn cancel(&self) -> Result<(), BlengError>;
+    pub async fn wait(&self, timeout_ms: u64) -> Result<(), BlengError>;
 }

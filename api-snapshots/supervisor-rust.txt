@@ -1,0 +1,326 @@
+# Reviewed BLeng supervisor FFI API shape; ABI remains unfrozen.
+
+pub enum ForeignExternalRecoverySignal {
+    RadioLost,
+    ManualReconnectRequired,
+}
+
+pub struct ForeignOwnerClose {
+    pub owner_closed: bool,
+    pub failure: Option<ForeignOwnerCloseFailure>,
+}
+
+pub struct ForeignOwnerCloseFailure {
+    pub code: String,
+    pub message: String,
+}
+
+pub struct ForeignOwnerContext {
+    pub owner_id: String,
+    pub backend_id: String,
+    pub owner_generation: u64,
+    pub recovery_attempt: u64,
+}
+
+pub struct ForeignOwnerStart {
+    pub context: ForeignOwnerContext,
+    pub initialization_command_id: u64,
+    pub adapter_snapshot: AdapterSnapshot,
+}
+
+pub struct ForeignPlatformActionResult {
+    pub sequence: u64,
+    pub signal: ForeignRecoverySignal,
+}
+
+pub trait ForeignPlatformOwnerSession: Send + Sync {
+    fn context(&self) -> ForeignOwnerContext;
+    fn backend(&self) -> Arc<dyn BleBackend>;
+    fn dispose_unassembled(&self) -> Result<(), SupervisorFfiError>;
+    fn start_event_reader(&self, owner: Arc<Bleng>, scan_projection: Arc<ScanEventProjection>,) -> Result<(), SupervisorFfiError>;
+}
+
+pub trait ForeignPlatformOwnerSessionFactory: Send + Sync {
+    fn required_zero_resource_names(&self) -> Vec<String>;
+    fn create(&self, context: ForeignOwnerContext,) -> Result<Arc<dyn ForeignPlatformOwnerSession>, SupervisorFfiError>;
+}
+
+pub struct ForeignPlatformOwnerSessionFactoryAdapter;
+
+pub enum ForeignPlatformRecoveryAction {
+    WaitForRadioOn,
+    AwaitOldOperationTerminals {remaining: Vec<String>,},
+    AttemptSameOwnerRecovery {after_central_recreation: bool, target: ForeignRecoveryTarget,},
+    RecreateCentral,
+    AttemptFreshOwnerRecovery {target: ForeignRecoveryTarget,},
+}
+
+pub enum ForeignRecoveryAction {
+    WaitForRadioOn,
+    AwaitOldOperationTerminals {remaining: Vec<String>},
+    AttemptSameOwnerRecovery {after_central_recreation: bool},
+    RecreateCentral,
+    RetireOldOwner,
+    CreateFreshOwner,
+    AttemptFreshOwnerRecovery,
+}
+
+pub struct ForeignRecoveryLink {
+    pub connection_id: String,
+    pub gatt_session_id: String,
+    pub subscription_id: String,
+}
+
+pub enum ForeignRecoveryMode {
+    SameOwner,
+    FreshOwner,
+}
+
+pub struct ForeignRecoveryObservation {
+    pub source_context: ForeignOwnerContext,
+    pub signal: ForeignRecoverySignal,
+}
+
+pub enum ForeignRecoveryOutcome {
+    Recovered {context: ForeignOwnerContext, mode: ForeignRecoveryMode, link: ForeignRecoveryLink,},
+    PlatformTimeout {context: ForeignOwnerContext, reason: String,},
+    ManualReconnectRequired {context: ForeignOwnerContext, reason: String,},
+}
+
+pub struct ForeignRecoveryPlan {
+    pub execution_context: ForeignOwnerContext,
+    pub sequence: u64,
+    pub actions: Vec<ForeignRecoveryAction>,
+    pub outcome: Option<ForeignRecoveryOutcome>,
+}
+
+pub struct ForeignRecoveryPolicyConfig {
+    pub initial_context: ForeignOwnerContext,
+    pub old_link: Option<ForeignRecoveryLink>,
+    pub expected_old_operation_ids: Vec<String>,
+    pub allow_central_recreation: bool,
+    pub allow_fresh_owner: bool,
+}
+
+pub enum ForeignRecoverySignal {
+    RadioLost,
+    OldOperationTerminal {operation_id: String},
+    RadioOn,
+    SameOwnerRecovered {link: ForeignRecoveryLink},
+    SameOwnerRecoveryFailed {reason: String},
+    CentralRecreated,
+    CentralRecreationFailed {reason: String},
+    OwnerRetired {resources_zero: bool},
+    FreshOwnerCreated,
+    FreshOwnerRecovered {link: ForeignRecoveryLink},
+    FreshOwnerRecoveryFailed {reason: String},
+    PlatformTimedOut {reason: String},
+    ManualReconnectRequired {reason: String},
+}
+
+pub struct ForeignRecoveryTarget {
+    pub scan_options: ScanOptions,
+    pub service_uuid: BluetoothUuid,
+    pub characteristic_uuid: BluetoothUuid,
+    pub notification_mode: NotificationModeRequest,
+    pub expected_value: Vec<u8>,
+}
+
+pub struct ForeignResourceCount {
+    pub name: String,
+    pub count: u64,
+}
+
+pub struct ForeignScanAdvertisement {
+    pub peripheral: Arc<SupervisedPeripheral>,
+    pub local_name: Option<String>,
+    pub advertised_services: Vec<String>,
+    pub manufacturer_data: Vec<ManufacturerData>,
+    pub service_data: Vec<ServiceData>,
+    pub rssi: Option<i16>,
+    pub connectable: Option<bool>,
+}
+
+pub struct ForeignScanBeginResult {
+    pub scan: Option<Arc<SupervisedScan>>,
+    pub failure: Option<ForeignScanFailure>,
+}
+
+pub struct ForeignScanCommandResult {
+    pub failure: Option<ForeignScanFailure>,
+}
+
+pub struct ForeignScanDeliverySnapshot {
+    pub queued_advertisements: u64,
+    pub queued_bytes: u64,
+    pub queued_stop_bytes: u64,
+    pub pull_pending: bool,
+}
+
+pub struct ForeignScanEnd {
+    pub reason: ForeignScanEndReason,
+    pub failure: Option<ForeignScanFailure>,
+}
+
+pub enum ForeignScanEndReason {
+    Requested,
+    SystemSuspended,
+    Failed,
+    OwnerClosed,
+}
+
+pub struct ForeignScanEventEnvelope {
+    pub source_context: ForeignOwnerContext,
+    pub event: ScanEvent,
+}
+
+pub struct ForeignScanFailure {
+    pub domain: ForeignScanFailureDomain,
+    pub code: String,
+    pub message: String,
+    pub platform_details: Option<PlatformErrorDetails>,
+}
+
+pub enum ForeignScanFailureDomain {
+    Input,
+    Submission,
+    Operation,
+    Observation,
+    Delivery,
+    Lifecycle,
+}
+
+pub struct ForeignScanObservation {
+    pub advertisement: Option<ForeignScanAdvertisement>,
+    pub ended: Option<ForeignScanEnd>,
+    pub failure: Option<ForeignScanFailure>,
+}
+
+pub struct ForeignScanOptions {
+    pub service_uuids: Vec<String>,
+    pub name_prefix: Option<String>,
+    pub company_id: Option<f64>,
+    pub allow_duplicates: bool,
+}
+
+pub struct ForeignScanStopResult {
+    pub operation: Option<Arc<SupervisedScanStop>>,
+    pub failure: Option<ForeignScanFailure>,
+}
+
+pub struct ForeignSupervisorConfig {
+    pub recovery: ForeignRecoveryPolicyConfig,
+    pub recovery_target: Option<ForeignRecoveryTarget>,
+}
+
+pub enum ScanDeliveryError {
+    PullBusy,
+    StartFailed,
+    AdvertisementOverflow,
+    ByteOverflow,
+    StopDataOverflow,
+    PendingEventOverflow,
+    OwnerRetired,
+    Detached,
+    Unavailable,
+    ConflictingStart,
+}
+
+pub enum ScanEvent {
+    Started {command_id: CommandId, scan_id: ScanSessionId,},
+    Advertisement {advertisement: AdvertisementObservation,},
+    Stopped {scan_id: ScanSessionId, result: ScanStopResult,},
+}
+
+pub struct ScanEventProjection;
+
+impl ScanEventProjection {
+    pub fn project(&self, event: BleEvent) -> Option<ForeignScanEventEnvelope>;
+}
+
+pub enum ScanSessionError {
+    Submission {error: SupervisorOperationError,},
+    Delivery {error: ScanDeliveryError},
+    DeliveryBusy,
+    StartNotObserved,
+    Operation {error: BlengError},
+    Observation {error: BlengError},
+}
+
+pub struct SupervisedPeripheral;
+
+impl SupervisedPeripheral {
+    pub fn same_peripheral(&self, other: Arc<Self>) -> bool;
+}
+
+pub struct SupervisedScan;
+
+impl SupervisedScan {
+    pub async fn wait_until_started(&self, timeout_ms: u64) -> Result<(), ScanSessionError>;
+    pub async fn cancel_start(&self) -> Result<(), ScanSessionError>;
+    pub async fn next_event(&self, timeout_ms: u64) -> Result<ScanEvent, ScanSessionError>;
+    pub fn begin_stop(&self) -> Result<Arc<StopScanOperation>, ScanSessionError>;
+    pub fn detach(&self);
+    pub fn observation_snapshot(&self) -> ForeignScanDeliverySnapshot;
+    pub async fn start_result(&self, timeout_ms: f64) -> ForeignScanCommandResult;
+    pub async fn cancel_start_result(&self) -> ForeignScanCommandResult;
+    pub async fn next_observation(&self, timeout_ms: f64) -> ForeignScanObservation;
+    pub fn begin_stop_view(&self) -> ForeignScanStopResult;
+}
+
+pub struct SupervisedScanStop;
+
+impl SupervisedScanStop {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignScanCommandResult;
+    pub async fn cancel_result(&self) -> ForeignScanCommandResult;
+}
+
+pub struct Supervisor;
+
+impl Supervisor {
+    pub fn new(factory: Arc<dyn ForeignPlatformOwnerSessionFactory>, config: ForeignSupervisorConfig,) -> Result<Arc<Self>, SupervisorFfiError>;
+    pub fn is_active(&self) -> Result<bool, SupervisorFfiError>;
+    pub fn active_context(&self) -> Result<Option<ForeignOwnerContext>, SupervisorFfiError>;
+    pub fn active_owner_start(&self) -> Result<Option<ForeignOwnerStart>, SupervisorFfiError>;
+    pub async fn start(&self) -> Result<ForeignOwnerStart, SupervisorFfiError>;
+    pub fn last_retired_resources(&self,) -> Result<Option<Vec<ForeignResourceCount>>, SupervisorFfiError>;
+    pub fn configure_old_operation_barrier(&self, old_link: Option<ForeignRecoveryLink>, expected_old_operation_ids: Vec<String>,) -> Result<(), SupervisorFfiError>;
+    pub async fn execute_platform_action(&self) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn drive_platform_actions_until_boundary(&self,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn retire_for_recovery(&self) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn create_fresh_owner(&self, context: ForeignOwnerContext,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn shutdown(&self) -> Result<Vec<ForeignResourceCount>, SupervisorFfiError>;
+    pub async fn shutdown_view(&self) -> ForeignOwnerClose;
+    pub fn observe(&self, observation: ForeignRecoveryObservation,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub fn observe_external_signal(&self, signal: ForeignExternalRecoverySignal,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub fn observe_signal(&self, signal: ForeignRecoverySignal,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub fn begin_scan(self: Arc<Self>, context: ForeignOwnerContext, options: ScanOptions,) -> Result<Arc<SupervisedScan>, ScanSessionError>;
+    pub fn begin_start_scan(&self, context: ForeignOwnerContext, options: ScanOptions,) -> Result<Arc<StartScanOperation>, SupervisorOperationError>;
+    pub fn begin_stop_scan(&self, context: ForeignOwnerContext, session: ScanSessionId,) -> Result<Arc<StopScanOperation>, SupervisorOperationError>;
+    pub fn begin_connect(&self, context: ForeignOwnerContext, peripheral: PeripheralId,) -> Result<Arc<ConnectOperation>, SupervisorOperationError>;
+    pub fn begin_disconnect(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<DisconnectOperation>, SupervisorOperationError>;
+    pub fn begin_discover_gatt(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<DiscoverGattOperation>, SupervisorOperationError>;
+    pub fn begin_read_characteristic(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId,) -> Result<Arc<ReadOperation>, SupervisorOperationError>;
+    pub fn begin_write_characteristic(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Vec<u8>, write_type: WriteType,) -> Result<Arc<WriteOperation>, SupervisorOperationError>;
+    pub fn begin_enable_notifications(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest,) -> Result<Arc<EnableNotificationsOperation>, SupervisorOperationError>;
+    pub fn begin_disable_notifications(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId,) -> Result<Arc<DisableNotificationsOperation>, SupervisorOperationError>;
+    pub fn begin_read_rssi(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<ReadRssiOperation>, SupervisorOperationError>;
+    pub fn begin_scan_view(self: Arc<Self>, context: ForeignOwnerContext, options: ForeignScanOptions,) -> ForeignScanBeginResult;
+}
+
+pub enum SupervisorFfiError {
+    InvalidContext {detail: String},
+    InvalidConfiguration {detail: String},
+    NoActiveContext,
+    Platform {detail: String},
+}
+
+pub enum SupervisorOperationError {
+    NoActiveSession,
+    StaleContext,
+    RecoveryNotReady,
+    SupervisorBusy,
+    SupervisorUnavailable,
+    InvalidContext {detail: String},
+    Bleng {error: BlengError,},
+}

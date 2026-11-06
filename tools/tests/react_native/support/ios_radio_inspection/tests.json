@@ -1,0 +1,53 @@
+{
+  "devices" : [
+    {
+      "architecture" : "arm64e",
+      "deviceId" : "00008110-000C61160C39401E",
+      "deviceName" : "vision’s iPhone",
+      "modelName" : "iPhone 14 Plus",
+      "osBuildNumber" : "23G83",
+      "osVersion" : "26.6.1",
+      "platform" : "iOS"
+    }
+  ],
+  "testNodes" : [
+    {
+      "children" : [
+        {
+          "children" : [
+            {
+              "children" : [
+                {
+                  "duration" : "5s",
+                  "durationInSeconds" : 5.185397028923035,
+                  "name" : "testBluetoothSettingsOffAndRestore()",
+                  "nodeIdentifier" : "BleHubNitroHostUITests/testBluetoothSettingsOffAndRestore()",
+                  "nodeIdentifierURL" : "test://com.apple.xcode/BleHubNitroHost/BleHubNitroHostUITests/BleHubNitroHostUITests/testBluetoothSettingsOffAndRestore",
+                  "nodeType" : "Test Case",
+                  "result" : "Passed"
+                }
+              ],
+              "name" : "BleHubNitroHostUITests",
+              "nodeIdentifierURL" : "test://com.apple.xcode/BleHubNitroHost/BleHubNitroHostUITests/BleHubNitroHostUITests",
+              "nodeType" : "Test Suite",
+              "result" : "Passed"
+            }
+          ],
+          "name" : "BleHubNitroHostUITests",
+          "nodeIdentifierURL" : "test://com.apple.xcode/BleHubNitroHost/BleHubNitroHostUITests",
+          "nodeType" : "UI test bundle",
+          "result" : "Passed"
+        }
+      ],
+      "name" : "BleHubNitroHost",
+      "nodeType" : "Test Plan",
+      "result" : "Passed"
+    }
+  ],
+  "testPlanConfigurations" : [
+    {
+      "configurationId" : "1",
+      "configurationName" : "Test Scheme Action"
+    }
+  ]
+}

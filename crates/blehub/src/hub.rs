@@ -191,6 +191,13 @@ impl BleHub {
         })
     }
 
+    /// Stops dispatch, drains admitted sink calls, and performs backend cleanup once.
+    /// Concurrent callers wait for the same cached result, including cleanup errors.
+    ///
+    /// Sink/backend Drop or deinit, backend cleanup, and their synchronous callbacks
+    /// must not directly or indirectly wait for this same Hub's disposal. Doing so
+    /// would wait for the outer shutdown that is itself waiting for them to return.
+    /// Releasing internal locks before cleanup does not make recursive close safe.
     pub fn dispose(&self) -> Result<(), BleHubError> {
         let mut lifecycle = self
             .lifecycle

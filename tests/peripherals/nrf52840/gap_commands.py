@@ -20,6 +20,11 @@ GAP_DEVICE_DISCONNECTED = 0x83
 GAP_GENERAL_DISCOVERABLE = 0x01
 GAP_NON_DISCOVERABLE = 0x00
 
+# Bluetooth Assigned Numbers AD types used by the fixture advertiser.
+AD_FLAGS = 0x01
+AD_SERVICE_UUID128 = 0x07
+AD_COMPLETE_LOCAL_NAME = 0x09
+
 CONTROLLER_INFO = struct.Struct("<6sII3s249s11s")
 
 

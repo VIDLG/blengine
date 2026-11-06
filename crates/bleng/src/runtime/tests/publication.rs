@@ -847,6 +847,12 @@ fn publication_order_dispatch_rejection_finishes_pending_control_without_strandi
         let (mut actor, mut rx, lifecycle) = fixture();
         ready_connection(&mut actor);
         drain(&mut rx);
+        // A pending dispatch excludes new child admission on this connection.
+        let sibling = other_pending.then(|| {
+            let (b, result_b) = reserve_read(&mut actor, 41);
+            let receipt_b = cancel(&mut actor, b);
+            (b, result_b, receipt_b)
+        });
         let (a, mut result_a) = actor
             .register_waiter(WaiterExpectation::CharacteristicRead(
                 10.into(),
@@ -863,11 +869,6 @@ fn publication_order_dispatch_rejection_finishes_pending_control_without_strandi
             _ => panic!("pre-dispatch cancellation must be admitted"),
         };
         assert!(!actor.reservations.try_claim_cancellation_dispatch(a));
-        let sibling = other_pending.then(|| {
-            let (b, result_b) = reserve_read(&mut actor, 41);
-            let receipt_b = cancel(&mut actor, b);
-            (b, result_b, receipt_b)
-        });
         let event = notification(10.into());
         actor.handle_ingress_event(event.clone());
         assert!(drain(&mut rx).is_empty());
@@ -897,6 +898,156 @@ fn publication_order_dispatch_rejection_finishes_pending_control_without_strandi
         );
         assert!(lifecycle.is_open());
     }
+}
+
+#[test]
+fn publication_order_retired_sibling_keeps_fifo_without_restoring_command_route() {
+    let (mut actor, mut rx, lifecycle) = fixture();
+    ready_connection(&mut actor);
+    assert_eq!(drain(&mut rx).len(), 2);
+    let prepared = kameo::actor::PreparedActor::<BlengActor>::new(kameo::mailbox::bounded(1));
+    let reserve_rssi = |actor: &mut BlengActor| {
+        let peripheral_id = actor.reservations.validate_rssi(10.into()).unwrap();
+        let (id, result) = actor
+            .register_waiter(WaiterExpectation::RssiRead(10.into()))
+            .unwrap();
+        actor.reservations.reserve_rssi(peripheral_id, id);
+        assert_eq!(
+            actor.reservations.validate_rssi(10.into()),
+            Err(WaiterError::OperationBusy),
+            "another child cannot be admitted before this dispatch resolves"
+        );
+        actor.handle_dispatch_result(id, Ok(()), prepared.actor_ref().clone());
+        let completion = actor.reservations.attach_completion_observer(id);
+        (id, result, completion)
+    };
+    // Each dispatch is accepted before the next command's admission check.
+    let (a, mut result_a, completion_a) = reserve_rssi(&mut actor);
+    let (b, mut result_b, completion_b) = reserve_rssi(&mut actor);
+    let receipt_a = cancel(&mut actor, a);
+    assert!(!actor.reservations.is_cancellation_requested(b));
+    assert!(actor.reservations.command_completion(b).is_some());
+
+    let domain_b = BleEvent::RssiRead {
+        command_id: b,
+        connection_id: 10.into(),
+        rssi: -41,
+    };
+    let mut events = vec![notification(10.into()), domain_b, terminal(b)];
+    for event in &events[..2] {
+        actor.handle_ingress_event(event.clone());
+        assert_eq!(
+            result_b.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        );
+        assert!(!completion_b.is_completed());
+        assert!(drain(&mut rx).is_empty());
+    }
+    actor.handle_ingress_event(events[2].clone());
+    assert_eq!(
+        result_b.try_recv(),
+        Ok(Ok(WaiterSuccess::RssiRead(10.into(), -41)))
+    );
+    assert_eq!(
+        result_b.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    );
+    assert!(completion_b.is_completed());
+    assert!(
+        !actor
+            .reservations
+            .accepted_command_ids(10.into())
+            .contains(&b),
+        "B's native reservation retires independently of the connection FIFO"
+    );
+    assert!(actor.reservations.completion_observer(b).is_none());
+    assert!(
+        actor.reservations.command_completion(b).is_none(),
+        "the attached directory entry must retire with B's reservation"
+    );
+    assert!(actor.reservations.request_cancellation(b).is_none());
+    assert_eq!(
+        result_a.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    );
+    assert!(!completion_a.is_completed());
+    assert!(matches!(receipt_a.has_changed(), Ok(false)));
+    assert!(drain(&mut rx).is_empty());
+
+    let mut after_b = notification(10.into());
+    if let BleEvent::NotificationReceived { value, .. } = &mut after_b {
+        *value = vec![2, 0xfe];
+    }
+    actor.handle_ingress_event(after_b.clone());
+    events.push(after_b);
+    assert!(drain(&mut rx).is_empty());
+    actor.handle_cancellation_result(a, control(a, false));
+    assert_eq!(*receipt_a.borrow(), Some(control(a, false)));
+    assert_eq!(
+        drain(&mut rx),
+        events,
+        "retired B's domain and terminal retain their original connection FIFO order"
+    );
+    assert!(actor.reservations.command_completion(b).is_none());
+    assert!(actor.reservations.completion_observer(b).is_none());
+    assert!(actor.reservations.request_cancellation(b).is_none());
+    assert_eq!(
+        result_b.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    );
+    assert_eq!(
+        result_a.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    );
+    actor.handle_cancellation_result(a, control(a, false));
+    assert!(drain(&mut rx).is_empty(), "FIFO release is exactly once");
+    assert_eq!(
+        actor.reservations.require_peripheral_available(20.into()),
+        Err(WaiterError::PeripheralBusy)
+    );
+
+    let domain_a = BleEvent::RssiRead {
+        command_id: a,
+        connection_id: 10.into(),
+        rssi: -40,
+    };
+    actor.handle_ingress_event(domain_a.clone());
+    assert_eq!(
+        result_a.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    );
+    actor.handle_ingress_event(terminal(a));
+    assert_eq!(drain(&mut rx), vec![domain_a, terminal(a)]);
+    assert_eq!(
+        result_a.try_recv(),
+        Ok(Ok(WaiterSuccess::RssiRead(10.into(), -40)))
+    );
+    assert_eq!(
+        result_a.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    );
+    assert!(completion_a.is_completed());
+    assert!(actor.reservations.command_completion(a).is_none());
+    assert!(actor.reservations.command_completion(b).is_none());
+    actor.handle_ingress_event(lost(10.into()));
+    assert_eq!(drain(&mut rx), vec![lost(10.into())]);
+    assert_eq!(
+        actor.reservations.require_peripheral_available(20.into()),
+        Ok(()),
+        "released publication evidence must not strand the disconnected root"
+    );
+    assert!(
+        actor
+            .reservations
+            .accepted_command_ids(10.into())
+            .is_empty()
+    );
+    assert_eq!(
+        actor.reservations.validate_rssi(10.into()),
+        Err(WaiterError::ConnectionNotActive)
+    );
+    assert!(drain(&mut rx).is_empty());
+    assert!(lifecycle.is_open());
 }
 
 #[test]

@@ -20,6 +20,18 @@ internal fun connectionError(message: String, status: Int? = null) = BleEventErr
     platformDetails = platformDetails(status?.toString(), "BluetoothGatt", null),
 )
 
+internal fun operationTimeoutError(message: String) = BleEventError(
+    category = BleErrorCategory.TIMEOUT,
+    message = message,
+    platformDetails = platformDetails(null, "AndroidBleBackend", null),
+)
+
+internal fun operationAbortedError(message: String) = BleEventError(
+    category = BleErrorCategory.OPERATION_ABORTED,
+    message = message,
+    platformDetails = platformDetails(null, "AndroidBleBackend", null),
+)
+
 
 internal fun gattError(message: String, status: Int? = null) = BleEventError(
     category = BleErrorCategory.GATT,

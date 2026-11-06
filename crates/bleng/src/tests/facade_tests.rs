@@ -12,6 +12,9 @@ use blehub::{
 use blehub_testkit::{CancellationPolicy, EventScenario, FakeBackend, RecordedCommand};
 use std::sync::Arc;
 
+#[path = "scan_observation.rs"]
+mod scan_observation;
+
 #[test]
 fn synchronous_submission_is_eager_bounded_and_cancel_wins_before_claim() {
     let host = tokio::runtime::Builder::new_current_thread()
@@ -203,6 +206,222 @@ fn typed_wait_budget_includes_private_runtime_scheduling_delay() {
         bleng.shutdown().await.unwrap();
         assert!(handle.commands().is_empty());
         assert!(matches!(result, Err(BlengError::Timeout)), "{result:?}");
+    });
+}
+
+#[test]
+fn typed_wait_dropped_before_private_task_poll_stays_consumed() {
+    assert_typed_wait_claim_before_private_task_poll(true);
+}
+
+#[test]
+fn typed_concurrent_wait_claims_before_private_task_poll() {
+    assert_typed_wait_claim_before_private_task_poll(false);
+}
+
+fn assert_typed_wait_claim_before_private_task_poll(drop_scheduled_wait: bool) {
+    use blehub::*;
+    use std::{
+        future::Future,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        task::{Context, Poll, Waker},
+        time::Duration,
+    };
+
+    struct CountCancellation {
+        backend: FakeBackend,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl BleBackend for CountCancellation {
+        delegate::delegate! {
+            to self.backend {
+                fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
+                fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>) -> Result<(), BleHubError>;
+                fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+                fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
+                fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
+                fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
+                fn disconnect(&self, command: DisconnectCommand) -> Result<(), CommandDispatchError>;
+                fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError>;
+                fn read_characteristic(&self, command: ReadCharacteristicCommand) -> Result<(), CommandDispatchError>;
+                fn write_characteristic(&self, command: WriteCharacteristicCommand) -> Result<(), CommandDispatchError>;
+                fn set_notifications(&self, command: SetNotificationsCommand) -> Result<(), CommandDispatchError>;
+                fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+                fn dispose(&self) -> Result<(), BleHubError>;
+            }
+        }
+
+        fn cancel_operation(
+            &self,
+            request: CancelOperationRequest,
+        ) -> Result<(), CommandDispatchError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.backend.cancel_operation(request)
+        }
+    }
+
+    let caller = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    caller.block_on(async {
+        let (backend, handle) = FakeBackend::scripted_with_cancellation(
+            [
+                EventScenario::emit_before_return(
+                    RecordedCommand::Initialize(InitializeCommand {
+                        command_id: 1.into(),
+                    }),
+                    vec![
+                        BleEvent::AdapterSnapshotChanged {
+                            command_id: Some(1.into()),
+                            snapshot: AdapterSnapshot {
+                                state: AdapterState::PoweredOn,
+                                scan_authorization: AuthorizationState::Authorized,
+                                connection_authorization: AuthorizationState::Authorized,
+                                name: None,
+                            },
+                        },
+                        BleEvent::CommandCompleted {
+                            command_id: 1.into(),
+                            error: None,
+                        },
+                    ],
+                ),
+                EventScenario::accept(RecordedCommand::StartScan(StartScanCommand {
+                    command_id: 2.into(),
+                    scan_session_id: 1.into(),
+                    options: ScanOptions::default(),
+                })),
+            ],
+            CancellationPolicy::Accept,
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let bleng = super::Bleng::new().unwrap();
+        bleng
+            .assemble_backend(Arc::new(CountCancellation {
+                backend,
+                calls: Arc::clone(&calls),
+            }))
+            .await
+            .unwrap();
+        bleng.initialize(2000).await.unwrap();
+        let operation = bleng.begin_start_scan(ScanOptions::default()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while handle.commands().len() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        // Neither creating an unpolled wait nor rejecting its timeout owns delivery.
+        drop(operation.wait(2000));
+        for timeout in [0, 86_400_001, u64::MAX] {
+            assert!(matches!(
+                operation.wait(timeout).await,
+                Err(BlengError::InvalidTimeout)
+            ));
+        }
+
+        // Use the existing scheduling gate: no private task can poll until every
+        // worker is released. Sender drop also releases them on assertion failure.
+        let executor = bleng.owner.handle();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let mut releases = Vec::new();
+        let mut workers = Vec::new();
+        for _ in 0..executor.metrics().num_workers() {
+            let entered = entered_tx.clone();
+            let (release, released) = mpsc::channel::<()>();
+            releases.push(release);
+            workers.push(executor.spawn(async move {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5))
+            }));
+        }
+        for _ in &workers {
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+
+        let mut first = Box::pin(operation.wait(2000));
+        assert!(
+            first
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let first = if drop_scheduled_wait {
+            drop(first);
+            None
+        } else {
+            Some(first)
+        };
+        let mut second = Box::pin(operation.wait(2000));
+        assert!(
+            matches!(
+                second
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Err(BlengError::OperationResultConsumed))
+            ),
+            "the public first poll must claim delivery before private scheduling"
+        );
+        drop(second);
+
+        drop(releases);
+        for worker in workers {
+            assert!(matches!(
+                worker.await.unwrap(),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ));
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        if let Some(first) = first {
+            operation.cancel().await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(matches!(first.await, Err(BlengError::Cancelled)));
+        } else {
+            // Caller retirement must leave native work and its public result alone.
+            for event in [
+                BleEvent::ScanStarted {
+                    command_id: 2.into(),
+                    scan_id: 1.into(),
+                },
+                BleEvent::CommandCompleted {
+                    command_id: 2.into(),
+                    error: None,
+                },
+            ] {
+                assert_eq!(handle.emit(event), EventIngressStatus::Delivered);
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    if let Some(BleEvent::CommandCompleted { command_id, error }) =
+                        bleng.next_event(2000).await.unwrap()
+                        && command_id == operation.command_id()
+                    {
+                        assert!(error.is_none());
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+        assert!(matches!(
+            operation.wait(2000).await,
+            Err(BlengError::OperationResultConsumed)
+        ));
+        bleng.shutdown().await.unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            usize::from(!drop_scheduled_wait)
+        );
+        assert_eq!(handle.dispose_count(), 1);
     });
 }
 

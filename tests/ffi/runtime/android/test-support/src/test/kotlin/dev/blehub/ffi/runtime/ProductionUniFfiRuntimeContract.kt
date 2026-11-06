@@ -14,6 +14,7 @@ import dev.blehub.BleEventSink
 import dev.blehub.BleHub
 import dev.blehub.BleHubException
 import dev.blehub.BluetoothUuid
+import dev.blehub.CancelOperationRequest
 import dev.blehub.CharacteristicProperties
 import dev.blehub.CommandDispatchException
 import dev.blehub.CommandId
@@ -111,6 +112,52 @@ abstract class ProductionUniFfiRuntimeContract {
 
             assertTrue(statuses.all { it == EventIngressStatus.Delivered })
             assertTrue(eventCatalogMatches(expected, sink.snapshot().events))
+        } finally {
+            release(hub, backend, sink)
+        }
+    }
+
+    @Test
+    fun largeIdsBytesAndStructuredErrorCrossTheProductionIngressInOrder() {
+        val backend = TestBackend(BackendMode.NO_EVENT)
+        val sink = RecordingSink()
+        val hub = BleHub(backend, sink)
+        try {
+            val commandId = CommandId(ULong.MAX_VALUE)
+            // Odd values above 2^53 expose any lossy floating-point ID conversion.
+            val connectionId = ConnectionId(9_007_199_254_740_993uL)
+            val gattSessionId = GattSessionId(9_007_199_254_740_995uL)
+            val characteristicId = GattCharacteristicId(9_007_199_254_740_997uL)
+            val subscriptionId = SubscriptionId(9_007_199_254_740_999uL)
+            val bytes = byteArrayOf(0x00, 0x7f, 0x80.toByte(), 0xff.toByte())
+            val error = BleEventError(
+                category = BleErrorCategory.GATT,
+                message = "structured ingress failure",
+                platformDetails = PlatformErrorDetails(
+                    platform = Platform.ANDROID,
+                    code = "133",
+                    name = "GATT_ERROR",
+                    message = "native platform detail",
+                ),
+            )
+            val expected = listOf(
+                BleEvent.CharacteristicRead(
+                    commandId, connectionId, gattSessionId, characteristicId, bytes,
+                ),
+                BleEvent.NotificationReceived(
+                    connectionId, gattSessionId, subscriptionId, characteristicId, bytes,
+                ),
+                BleEvent.CommandCompleted(commandId, error),
+            )
+
+            expected.forEach { event ->
+                assertEquals(EventIngressStatus.Delivered, backend.push(event))
+            }
+
+            assertTrue(
+                eventCatalogMatches(expected, sink.snapshot().events),
+                "production ingress changed IDs, bytes, structured error, or domain/terminal order",
+            )
         } finally {
             release(hub, backend, sink)
         }
@@ -494,6 +541,8 @@ private class TestBackend(
     override fun setNotifications(command: SetNotificationsCommand) = Unit
 
     override fun readRssi(command: ReadRssiCommand) = Unit
+
+    override fun cancelOperation(request: CancelOperationRequest) = Unit
 
     override fun dispose() {
         disposeCount.incrementAndGet()

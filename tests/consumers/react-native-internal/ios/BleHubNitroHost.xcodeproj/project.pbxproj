@@ -15,6 +15,15 @@
 		831C616CCB663414869EDA2D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		A10000000000000000000003 /* BleHubNitroHostUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000001 /* BleHubNitroHostUITests.swift */; };
 		A1000000000000000000000E /* BleHubNitroHostNativeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000010 /* BleHubNitroHostNativeTests.swift */; };
+		B10000000000000000000001 /* BleHubPendingReloadLifecycle.mm in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* BleHubPendingReloadLifecycle.mm */; };
+		B10000000000000000000003 /* BleHubPendingReloadLifecycle.mm in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* BleHubPendingReloadLifecycle.mm */; };
+		B20000000000000000000001 /* NarrowRejectControlGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* NarrowRejectControlGate.swift */; };
+		B20000000000000000000003 /* NarrowRejectControlGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* NarrowRejectControlGate.swift */; };
+		B30000000000000000000001 /* AdapterStartupGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002 /* AdapterStartupGate.swift */; };
+		B30000000000000000000003 /* AdapterStartupGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B30000000000000000000002 /* AdapterStartupGate.swift */; };
+		B40000000000000000000001 /* FullRecoveryBeginGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000002 /* FullRecoveryBeginGate.swift */; };
+		B40000000000000000000003 /* FullRecoveryBeginGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = B40000000000000000000002 /* FullRecoveryBeginGate.swift */; };
+		C10000000000000000000001 /* BluetoothSettingsControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* BluetoothSettingsControl.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -50,6 +59,11 @@
 		A10000000000000000000011 /* BleHubNitroHostNativeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BleHubNitroHostNativeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000019 /* Pods-BleHubNitroHostNativeTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-BleHubNitroHostNativeTests.debug.xcconfig"; path = "Target Support Files/Pods-BleHubNitroHostNativeTests/Pods-BleHubNitroHostNativeTests.debug.xcconfig"; sourceTree = "<group>"; };
 		A1000000000000000000001A /* Pods-BleHubNitroHostNativeTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-BleHubNitroHostNativeTests.release.xcconfig"; path = "Target Support Files/Pods-BleHubNitroHostNativeTests/Pods-BleHubNitroHostNativeTests.release.xcconfig"; sourceTree = "<group>"; };
+		B10000000000000000000002 /* BleHubPendingReloadLifecycle.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; name = BleHubPendingReloadLifecycle.mm; path = BleHubNitroHost/BleHubPendingReloadLifecycle.mm; sourceTree = "<group>"; };
+		B20000000000000000000002 /* NarrowRejectControlGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = NarrowRejectControlGate.swift; path = BleHubNitroHost/NarrowRejectControlGate.swift; sourceTree = "<group>"; };
+		B30000000000000000000002 /* AdapterStartupGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AdapterStartupGate.swift; path = BleHubNitroHost/AdapterStartupGate.swift; sourceTree = "<group>"; };
+		B40000000000000000000002 /* FullRecoveryBeginGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FullRecoveryBeginGate.swift; path = BleHubNitroHost/FullRecoveryBeginGate.swift; sourceTree = "<group>"; };
+		C10000000000000000000002 /* BluetoothSettingsControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = BluetoothSettingsControl.swift; path = ../../../../hil/apple/support/BluetoothSettingsControl.swift; sourceTree = "<group>"; };
 		D182E2D8CDA64F7D22A3E9E6 /* libPods-BleHubNitroHostNativeTests.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-BleHubNitroHostNativeTests.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -86,6 +100,10 @@
 			children = (
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
+				B30000000000000000000002 /* AdapterStartupGate.swift */,
+				B40000000000000000000002 /* FullRecoveryBeginGate.swift */,
+				B20000000000000000000002 /* NarrowRejectControlGate.swift */,
+				B10000000000000000000002 /* BleHubPendingReloadLifecycle.mm */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
@@ -140,6 +158,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000001 /* BleHubNitroHostUITests.swift */,
+				C10000000000000000000002 /* BluetoothSettingsControl.swift */,
 			);
 			path = BleHubNitroHostUITests;
 			sourceTree = "<group>";
@@ -431,6 +450,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				B30000000000000000000001 /* AdapterStartupGate.swift in Sources */,
+				B40000000000000000000001 /* FullRecoveryBeginGate.swift in Sources */,
+				B20000000000000000000001 /* NarrowRejectControlGate.swift in Sources */,
+				B10000000000000000000001 /* BleHubPendingReloadLifecycle.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -439,6 +462,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000003 /* BleHubNitroHostUITests.swift in Sources */,
+				C10000000000000000000001 /* BluetoothSettingsControl.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -447,6 +471,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000000E /* BleHubNitroHostNativeTests.swift in Sources */,
+				B30000000000000000000003 /* AdapterStartupGate.swift in Sources */,
+				B40000000000000000000003 /* FullRecoveryBeginGate.swift in Sources */,
+				B20000000000000000000003 /* NarrowRejectControlGate.swift in Sources */,
+				B10000000000000000000003 /* BleHubPendingReloadLifecycle.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -471,9 +499,20 @@
 			baseConfigurationReference = 3B4392A12AC88292D35C810B /* Pods-BleHubNitroHost.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = FWVYQ287W5;
 				ENABLE_BITCODE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PODS_ROOT)/Headers/Private",
+					"$(PODS_ROOT)/Headers/Private/NitroModules",
+					"$(PODS_ROOT)/Headers/Private/BleHubReactNative",
+					"\"$(PODS_CONFIGURATION_BUILD_DIR)/BleHubReactNative/Swift Compatibility Header\"",
+				);
 				INFOPLIST_FILE = BleHubNitroHost/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -488,7 +527,9 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = BleHubNitroHost;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/BleHubNitroHost/BleHubPendingReloadHost.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -501,8 +542,19 @@
 			baseConfigurationReference = 5709B34CF0A7D63546082F79 /* Pods-BleHubNitroHost.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = FWVYQ287W5;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PODS_ROOT)/Headers/Private",
+					"$(PODS_ROOT)/Headers/Private/NitroModules",
+					"$(PODS_ROOT)/Headers/Private/BleHubReactNative",
+					"\"$(PODS_CONFIGURATION_BUILD_DIR)/BleHubReactNative/Swift Compatibility Header\"",
+				);
 				INFOPLIST_FILE = BleHubNitroHost/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -517,7 +569,9 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = BleHubNitroHost;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_OBJC_BRIDGING_HEADER = "$(SRCROOT)/BleHubNitroHost/BleHubPendingReloadHost.h";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VERSIONING_SYSTEM = "apple-generic";
@@ -731,6 +785,7 @@
 					"$(PODS_ROOT)/Headers/Private",
 					"$(PODS_ROOT)/Headers/Private/BleHubReactNative",
 					"$(PODS_ROOT)/Headers/Private/NitroModules",
+					"\"$(PODS_CONFIGURATION_BUILD_DIR)/BleHubReactNative/Swift Compatibility Header\"",
 				);
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.reactjs.native.example.BleHubNitroHostNativeTests;
@@ -757,6 +812,7 @@
 					"$(PODS_ROOT)/Headers/Private",
 					"$(PODS_ROOT)/Headers/Private/BleHubReactNative",
 					"$(PODS_ROOT)/Headers/Private/NitroModules",
+					"\"$(PODS_CONFIGURATION_BUILD_DIR)/BleHubReactNative/Swift Compatibility Header\"",
 				);
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				PRODUCT_BUNDLE_IDENTIFIER = org.reactjs.native.example.BleHubNitroHostNativeTests;

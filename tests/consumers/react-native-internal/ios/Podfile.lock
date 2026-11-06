@@ -1640,9 +1640,9 @@ PODS:
     - React-Core-prebuilt
 
 DEPENDENCIES:
-  - BleHubApple (from `../../../../integrations/react-native-internal/apple-pods/BleHubApple`)
+  - BleHubApple (from `/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubApple`)
   - BleHubReactNative (from `../../../../integrations/react-native-internal`)
-  - BleHubUniFfi (from `../../../../integrations/react-native-internal/apple-pods/BleHubUniFfi`)
+  - BleHubUniFfi (from `/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubUniFfi`)
   - boost (from `build/rndeps-facades/boost`)
   - DoubleConversion (from `build/rndeps-facades/DoubleConversion`)
   - fast_float (from `build/rndeps-facades/fast_float`)
@@ -1733,11 +1733,11 @@ DEPENDENCIES:
 
 EXTERNAL SOURCES:
   BleHubApple:
-    :path: "../../../../integrations/react-native-internal/apple-pods/BleHubApple"
+    :path: "/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubApple"
   BleHubReactNative:
     :path: "../../../../integrations/react-native-internal"
   BleHubUniFfi:
-    :path: "../../../../integrations/react-native-internal/apple-pods/BleHubUniFfi"
+    :path: "/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubUniFfi"
   boost:
     :path: build/rndeps-facades/boost
   DoubleConversion:
@@ -1913,9 +1913,9 @@ EXTERNAL SOURCES:
     :path: build/rncore-facades/Yoga
 
 SPEC CHECKSUMS:
-  BleHubApple: 4874059b2a1e3d85df576ee66e0460ef148e9727
+  BleHubApple: 84c29019f6d6744a0c8b2b39a29a515c3dc7a3b1
   BleHubReactNative: 07779f983690d035e24a19e7934d598c25b18c97
-  BleHubUniFfi: 1143dd087bca7074cf1b0fae6a081024def49a7a
+  BleHubUniFfi: 741cde67338ceedec170ca010eacdb88bf3adc3f
   boost: 8502bfdc46e2804408af2e163049ece181009af4
   DoubleConversion: 501a575c40c0b50c89685762dd3e415e6bb26fb0
   fast_float: 7c925d1cebf8328d4018d061f49377e9f887e3b4
@@ -2003,6 +2003,6 @@ SPEC CHECKSUMS:
   SocketRocket: 37aec555668fb852ec12e3c0de59a86ca58f0871
   Yoga: d1c536142c5ff8ec8cd856ab2a7c227a1d875c8e
 
-PODFILE CHECKSUM: e7495ee90c726462130920ebb25892e288c537fb
+PODFILE CHECKSUM: 402b786944d96c61412990f4ae0c17d2ddc12601
 
 COCOAPODS: 1.17.0

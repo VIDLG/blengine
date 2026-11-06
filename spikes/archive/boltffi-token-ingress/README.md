@@ -47,4 +47,4 @@ Official `0.30.1` also clears unchecked Kotlin exceptions from foreign callbacks
 
 The surviving candidate uses an independent one-shot `ForeignCallAckToken`: Rust registers it before the Unit callback, the foreign implementation calls exported `acknowledgeForeignCall(token)` only at the accepted linearization point, and Rust checks/removes it afterward. Missing ACK and 10,000 unchecked exceptions become `CommandDispatchError.FfiContract`; explicit ACK succeeds; a declared typed error before ACK remains unchanged. This passes on desktop JVM, x86_64 ART, and arm64-v8a ART. It remains probe evidence only; production `BleBackend` requires a separate contract review and broader lifecycle/concurrency/Swift validation before adopting this pattern.
 
-Generated files, native libraries, Gradle output, and test reports are ignored build artifacts. Durable conclusions are recorded in `docs/research/phase0-token-ingress-runtime-results.md`.
+Generated files, native libraries, Gradle output, and test reports are ignored build artifacts. Durable conclusions are recorded in `docs/research/integrations/phase0-token-ingress-runtime-results.md`.

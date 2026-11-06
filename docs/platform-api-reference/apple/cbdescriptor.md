@@ -52,13 +52,13 @@ class CBDescriptor
 
 ### Identifying a Descriptor
 
-[`characteristic`](/documentation/CoreBluetooth/CBDescriptor/characteristic)
+[`var characteristic: CBCharacteristic?`](/documentation/CoreBluetooth/CBDescriptor/characteristic)
 
 The characteristic to which this descriptor belongs.
 
 ### Accessing Descriptor Data
 
-[`value`](/documentation/CoreBluetooth/CBDescriptor/value)
+[`var value: Any?`](/documentation/CoreBluetooth/CBDescriptor/value)
 
 The value of the descriptor.
 
@@ -66,17 +66,17 @@ The value of the descriptor.
 
 ### Conforms To
 
-[`CVarArg`](/documentation/Swift/CVarArg)
-
 [`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
 
 [`Equatable`](/documentation/Swift/Equatable)
 
-[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
-
 [`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
 
+[`CVarArg`](/documentation/Swift/CVarArg)
+
 [`Hashable`](/documentation/Swift/Hashable)
+
+[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
 
 ### Inherits From
 

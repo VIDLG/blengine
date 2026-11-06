@@ -9,6 +9,7 @@ python = ">=3.12,<3.14"
 just = ">=1.38,<2"
 tqdm = ">=4.67,<5"
 ruff = ">=0.16.5,<0.17"
+pytest = ">=9,<10"
 httpx = ">=0.28.1,<0.29"
 pooch = ">=1.8,<2"
 hishel = ">=1,<2"
@@ -32,6 +33,7 @@ rust-std-aarch64-linux-android = "1.95.*"
 rust-std-x86_64-linux-android = "1.95.*"
 
 [feature.apple-ci.dependencies]
+cmake = ">=3.30,<5"
 rust-std-aarch64-apple-ios = "1.95.*"
 rust-std-aarch64-apple-ios-sim = "1.95.*"
 rust-std-x86_64-apple-ios = "1.95.*"
@@ -70,5 +72,7 @@ CARGO_HOME = "$HOME/.cache/mobile-ffi-toolchain/cargo-home"
 CARGO_TARGET_DIR = "$PIXI_PROJECT_ROOT/.work/cargo-target"
 
 [pypi-dependencies]
+appium-python-client = ">=5, <6"
 bleak = ">=1, <2"
 pyserial = ">=3.5, <4"
+scapy = ">=2.5, <3"

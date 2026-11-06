@@ -13,11 +13,196 @@ SWIFT_BINDING = GENERATED_ROOT / "swift" / "blehub.swift"
 SNAPSHOT_ROOT = PROJECT_ROOT / "api-snapshots"
 BLENG_GENERATED_ROOT = PROJECT_ROOT / ".work" / "bleng-snapshot-generated"
 BLENG_RUST_SOURCES = (
-    PROJECT_ROOT / "crates" / "bleng" / "src" / "api.rs",
+    PROJECT_ROOT / "crates" / "bleng" / "src" / "facade" / "mod.rs",
+    PROJECT_ROOT / "crates" / "bleng" / "src" / "facade" / "operations.rs",
     PROJECT_ROOT / "crates" / "bleng" / "src" / "error.rs",
+    PROJECT_ROOT / "crates" / "bleng" / "src" / "operation_observation.rs",
 )
 BLENG_KOTLIN_BINDING = BLENG_GENERATED_ROOT / "kotlin" / "uniffi" / "bleng" / "bleng.kt"
 BLENG_SWIFT_BINDING = BLENG_GENERATED_ROOT / "swift" / "bleng.swift"
+SUPERVISOR_RUST_SOURCES = (
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "adapter.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "object.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "operations.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "types.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "scan.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "scan_session.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "ffi" / "scan_view.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "error.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "scan.rs",
+    PROJECT_ROOT / "crates" / "bleng-supervisor" / "src" / "scan_delivery.rs",
+)
+SUPERVISOR_KOTLIN_BINDING = (
+    BLENG_GENERATED_ROOT
+    / "kotlin"
+    / "uniffi"
+    / "bleng_supervisor"
+    / "bleng_supervisor.kt"
+)
+SUPERVISOR_SWIFT_BINDING = BLENG_GENERATED_ROOT / "swift" / "bleng_supervisor.swift"
+SUPERVISOR_SNAPSHOT_PATHS = {
+    language: SNAPSHOT_ROOT / f"supervisor-{language}.txt"
+    for language in ("rust", "kotlin", "swift")
+}
+SUPERVISOR_DECLARATIONS = {
+    "rust": {
+        "ForeignPlatformOwnerSession",
+        "ForeignPlatformOwnerSessionFactory",
+        "ForeignPlatformOwnerSessionFactoryAdapter",
+        "ForeignOwnerClose",
+        "ForeignOwnerCloseFailure",
+        "ForeignExternalRecoverySignal",
+        "ForeignOwnerContext",
+        "ForeignOwnerStart",
+        "ForeignResourceCount",
+        "ForeignRecoveryLink",
+        "ForeignRecoveryMode",
+        "ForeignRecoveryOutcome",
+        "ForeignRecoveryTarget",
+        "ForeignRecoveryPolicyConfig",
+        "ForeignSupervisorConfig",
+        "ForeignRecoverySignal",
+        "ForeignRecoveryObservation",
+        "ForeignRecoveryAction",
+        "ForeignPlatformRecoveryAction",
+        "ForeignPlatformActionResult",
+        "ForeignRecoveryPlan",
+        "SupervisorFfiError",
+        "SupervisorOperationError",
+        "Supervisor",
+        "ForeignScanEventEnvelope",
+        "ScanEvent",
+        "ScanEventProjection",
+        "SupervisedScan",
+        "ScanSessionError",
+        "ScanDeliveryError",
+        "ForeignScanDeliverySnapshot",
+        "ForeignScanFailureDomain",
+        "ForeignScanFailure",
+        "ForeignScanOptions",
+        "ForeignScanCommandResult",
+        "ForeignScanBeginResult",
+        "ForeignScanStopResult",
+        "ForeignScanObservation",
+        "ForeignScanAdvertisement",
+        "ForeignScanEndReason",
+        "ForeignScanEnd",
+        "SupervisedPeripheral",
+        "SupervisedScanStop",
+    },
+    "kotlin": {
+        "ForeignPlatformOwnerSession",
+        "ForeignPlatformOwnerSessionFactory",
+        "SupervisorInterface",
+        "ForeignOwnerClose",
+        "ForeignOwnerCloseFailure",
+        "Supervisor",
+        "ForeignExternalRecoverySignal",
+        "ForeignOwnerContext",
+        "ForeignOwnerStart",
+        "ForeignPlatformActionResult",
+        "ForeignRecoveryLink",
+        "ForeignRecoveryMode",
+        "ForeignRecoveryOutcome",
+        "ForeignRecoveryObservation",
+        "ForeignRecoveryPlan",
+        "ForeignRecoveryPolicyConfig",
+        "ForeignRecoveryTarget",
+        "ForeignResourceCount",
+        "ForeignSupervisorConfig",
+        "ForeignPlatformRecoveryAction",
+        "ForeignRecoveryAction",
+        "ForeignRecoverySignal",
+        "SupervisorFfiException",
+        "SupervisorOperationException",
+        "ForeignScanEventEnvelope",
+        "ScanEvent",
+        "ScanEventProjection",
+        "ScanEventProjectionInterface",
+        "SupervisedScan",
+        "SupervisedScanInterface",
+        "ScanSessionException",
+        "ScanDeliveryException",
+        "ForeignScanDeliverySnapshot",
+        "ForeignScanFailureDomain",
+        "ForeignScanFailure",
+        "ForeignScanOptions",
+        "ForeignScanCommandResult",
+        "ForeignScanBeginResult",
+        "ForeignScanStopResult",
+        "ForeignScanObservation",
+        "ForeignScanAdvertisement",
+        "ForeignScanEndReason",
+        "ForeignScanEnd",
+        "SupervisedPeripheral",
+        "SupervisedPeripheralInterface",
+        "SupervisedScanStop",
+        "SupervisedScanStopInterface",
+    },
+    "swift": {
+        "ForeignPlatformOwnerSession",
+        "ForeignPlatformOwnerSessionFactory",
+        "SupervisorProtocol",
+        "ForeignOwnerClose",
+        "ForeignOwnerCloseFailure",
+        "Supervisor",
+        "ForeignExternalRecoverySignal",
+        "ForeignOwnerContext",
+        "ForeignOwnerStart",
+        "ForeignPlatformActionResult",
+        "ForeignRecoveryLink",
+        "ForeignRecoveryMode",
+        "ForeignRecoveryOutcome",
+        "ForeignRecoveryObservation",
+        "ForeignRecoveryPlan",
+        "ForeignRecoveryPolicyConfig",
+        "ForeignRecoveryTarget",
+        "ForeignResourceCount",
+        "ForeignSupervisorConfig",
+        "ForeignPlatformRecoveryAction",
+        "ForeignRecoveryAction",
+        "ForeignRecoverySignal",
+        "SupervisorFfiError",
+        "SupervisorOperationError",
+        "ForeignScanEventEnvelope",
+        "ScanEvent",
+        "ScanEventProjection",
+        "ScanEventProjectionProtocol",
+        "SupervisedScan",
+        "SupervisedScanProtocol",
+        "ScanSessionError",
+        "ScanDeliveryError",
+        "ForeignScanDeliverySnapshot",
+        "ForeignScanFailureDomain",
+        "ForeignScanFailure",
+        "ForeignScanOptions",
+        "ForeignScanCommandResult",
+        "ForeignScanBeginResult",
+        "ForeignScanStopResult",
+        "ForeignScanObservation",
+        "ForeignScanAdvertisement",
+        "ForeignScanEndReason",
+        "ForeignScanEnd",
+        "SupervisedPeripheral",
+        "SupervisedPeripheralProtocol",
+        "SupervisedScanStop",
+        "SupervisedScanStopProtocol",
+    },
+}
+BLENG_OPERATIONS = {
+    "InitializeOperation",
+    "StartScanOperation",
+    "StopScanOperation",
+    "ConnectOperation",
+    "DisconnectOperation",
+    "DiscoverGattOperation",
+    "ReadOperation",
+    "WriteOperation",
+    "EnableNotificationsOperation",
+    "DisableNotificationsOperation",
+    "ReadRssiOperation",
+}
+
 BLENG_DECLARATIONS = {
     "rust": {
         "Bleng",
@@ -26,7 +211,10 @@ BLENG_DECLARATIONS = {
         "BlengError",
         "BlengNotReadyReason",
         "BlengResource",
-    },
+        "OperationFailureObserver",
+        "OperationFailureRegistration",
+    }
+    | BLENG_OPERATIONS,
     "kotlin": {
         "Bleng",
         "BlengInterface",
@@ -35,7 +223,9 @@ BLENG_DECLARATIONS = {
         "BlengException",
         "BlengNotReadyReason",
         "BlengResource",
-    },
+    }
+    | BLENG_OPERATIONS
+    | {f"{name}Interface" for name in BLENG_OPERATIONS},
     "swift": {
         "Bleng",
         "BlengProtocol",
@@ -44,7 +234,9 @@ BLENG_DECLARATIONS = {
         "BlengError",
         "BlengNotReadyReason",
         "BlengResource",
-    },
+    }
+    | BLENG_OPERATIONS
+    | {f"{name}Protocol" for name in BLENG_OPERATIONS},
 }
 BLENG_SNAPSHOT_PATHS = {
     language: SNAPSHOT_ROOT / f"bleng-{language}.txt"
@@ -132,7 +324,7 @@ def _find_matching(source: str, opening: int, opener: str, closer: str) -> int:
             block_comment_depth = 1
             index += 2
             continue
-        if character in {'"', "'"}:
+        if character == '"':
             quote = character
             index += 1
             continue
@@ -169,7 +361,7 @@ def _split_top_level(value: str, delimiter: str = ",") -> list[str]:
             elif character == quote:
                 quote = None
             continue
-        if character in {'"', "'"}:
+        if character == '"':
             quote = character
             continue
         if character in depths:
@@ -196,9 +388,32 @@ def _without_rust_noise(value: str) -> str:
     return "\n".join(lines)
 
 
+def _without_rust_test_modules(source: str) -> str:
+    # A test module can precede or sit between production impls. Remove only
+    # that item, not the rest of the file, and do not scan its public helpers.
+    pattern = re.compile(
+        r"(?m)^[ \t]*#\[cfg\(test\)\]\s*"
+        r"(?:#\[[^\n]*\]\s*)*"
+        r"(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*"
+        r"(?P<terminator>[;{])"
+    )
+    parts = []
+    previous = 0
+    for match in pattern.finditer(source):
+        if match.start() < previous:
+            continue
+        parts.append(source[previous : match.start()])
+        if match.group("terminator") == "{":
+            previous = _find_matching(source, match.end() - 1, "{", "}") + 1
+        else:
+            previous = match.end()
+    parts.append(source[previous:])
+    return "".join(parts)
+
+
 def _rust_public_methods(source: str, type_name: str) -> list[str]:
     methods: list[str] = []
-    pattern = re.compile(rf"(?m)^impl\s+{re.escape(type_name)}\s*\{{")
+    pattern = re.compile(rf"(?m)^[ \t]*impl\s+{re.escape(type_name)}\s*\{{")
     for implementation in pattern.finditer(source):
         opening = source.find("{", implementation.start())
         closing = _find_matching(source, opening, "{", "}")
@@ -233,38 +448,61 @@ def _rust_public_methods(source: str, type_name: str) -> list[str]:
     return methods
 
 
-def _rust_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
+def _rust_snapshot(
+    *, bleng: bool = False, supervisor: bool = False
+) -> tuple[str, set[str]]:
+    if bleng and supervisor:
+        raise ValueError("BLeng and supervisor snapshots are mutually exclusive")
     definitions: dict[str, str] = {}
     source_by_file: dict[Path, str] = {}
 
     paths = (
-        list(BLENG_RUST_SOURCES) if bleng else sorted(RUST_SOURCE_ROOT.rglob("*.rs"))
+        list(SUPERVISOR_RUST_SOURCES)
+        if supervisor
+        else list(BLENG_RUST_SOURCES)
+        if bleng
+        else sorted(RUST_SOURCE_ROOT.rglob("*.rs"))
     )
     for path in paths:
         source = path.read_text(encoding="utf-8")
-        source = source.split("#[cfg(test)]", maxsplit=1)[0]
+        source = _without_rust_test_modules(source)
         source_by_file[path] = source
 
         declaration_pattern = re.compile(
-            r"(?m)^pub\s+(?P<kind>const|struct|enum|trait)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+            r"(?m)^(?P<attributes>(?:[ \t]*#\[[^\n]*\]\n|[ \t]*///[^\n]*\n)*)"
+            r"[ \t]*(?P<declaration>pub\s+(?P<kind>const|struct|enum|trait)\s+"
+            r"(?P<name>[A-Za-z_][A-Za-z0-9_]*))"
         )
         for match in declaration_pattern.finditer(source):
             kind = match.group("kind")
             name = match.group("name")
+            # Shared core modules mix Rust-only types with explicitly derived FFI types.
+            # Detect exports independently of the allowlist so unknown exports still fail.
+            if (
+                supervisor
+                and path.name in {"error.rs", "scan.rs", "scan_delivery.rs"}
+                and path.parent.name != "ffi"
+                and not re.search(
+                    r"(?m)^[ \t]*#\[[^\n]*\bderive\([^)]*\buniffi::(?:Error|Enum|Record|Object)\b",
+                    match.group("attributes"),
+                )
+            ):
+                continue
+            declaration_start = match.start("declaration")
             if kind == "const":
-                end = source.find(";", match.start())
-                definitions[name] = _collapse(source[match.start() : end + 1])
+                end = source.find(";", declaration_start)
+                definitions[name] = _collapse(source[declaration_start : end + 1])
                 continue
 
-            semicolon = source.find(";", match.start())
-            opening = source.find("{", match.start())
+            semicolon = source.find(";", declaration_start)
+            opening = source.find("{", declaration_start)
             if semicolon >= 0 and (opening < 0 or semicolon < opening):
-                definitions[name] = _collapse(source[match.start() : semicolon + 1])
+                definitions[name] = _collapse(source[declaration_start : semicolon + 1])
                 continue
             if opening < 0:
                 raise RuntimeError(f"cannot find body for Rust {kind} {name}")
             closing = _find_matching(source, opening, "{", "}")
-            header = _collapse(source[match.start() : opening])
+            header = _collapse(source[declaration_start:opening])
             body = _without_rust_noise(source[opening + 1 : closing])
 
             if kind == "struct":
@@ -300,6 +538,14 @@ def _rust_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
             definitions[name] = rendered
 
     for name in list(definitions):
+        if supervisor and name not in {
+            "Supervisor",
+            "ScanEventProjection",
+            "SupervisedScan",
+            "SupervisedPeripheral",
+            "SupervisedScanStop",
+        }:
+            continue
         if not definitions[name].startswith(("pub struct", "pub enum")):
             continue
         methods = []
@@ -316,6 +562,8 @@ def _rust_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
     header = (
         "# Reviewed BLeng public API shape; ABI remains unfrozen."
         if bleng
+        else "# Reviewed BLeng supervisor FFI API shape; ABI remains unfrozen."
+        if supervisor
         else "# Reviewed Rust public API shape. Generated by `just binding snapshot-update`."
     )
     return f"{header}\n\n{rendered}\n", set(definitions)
@@ -328,10 +576,20 @@ def _kotlin_type(value: str) -> str:
     return _collapse(value)
 
 
-def _kotlin_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
-    source = (BLENG_KOTLIN_BINDING if bleng else KOTLIN_BINDING).read_text(
-        encoding="utf-8"
+def _kotlin_snapshot(
+    *, bleng: bool = False, supervisor: bool = False
+) -> tuple[str, set[str]]:
+    if bleng and supervisor:
+        raise ValueError("BLeng and supervisor snapshots are mutually exclusive")
+    binding = (
+        SUPERVISOR_KOTLIN_BINDING
+        if supervisor
+        else BLENG_KOTLIN_BINDING
+        if bleng
+        else KOTLIN_BINDING
     )
+    source = binding.read_text(encoding="utf-8")
+    declarations = SUPERVISOR_DECLARATIONS["kotlin"] if supervisor else None
     definitions: dict[str, str] = {}
     pattern = re.compile(
         r"(?m)^(?P<kind>public interface|open class|data class|enum class|sealed class)\s+"
@@ -341,11 +599,25 @@ def _kotlin_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
     for match in pattern.finditer(source):
         kind = match.group("kind")
         name = match.group("name")
-        if bleng and name not in BLENG_DECLARATIONS["kotlin"]:
+        if name in {"RustBuffer", "FfiConverter", "FfiConverterRustBuffer"}:
             continue
+        if supervisor and name in {
+            "ForeignPlatformOwnerSessionImpl",
+            "ForeignPlatformOwnerSessionFactoryImpl",
+        }:
+            continue
+        if supervisor and name not in declarations:
+            raise RuntimeError(
+                f"supervisor kotlin API snapshot declarations: missing=[], unexpected={[name]}"
+            )
+        if bleng and name not in BLENG_DECLARATIONS["kotlin"]:
+            raise RuntimeError(
+                f"kotlin API snapshot declarations: missing=[], unexpected={[name]}"
+            )
         if (
             kind == "public interface"
             and not bleng
+            and not supervisor
             and name
             not in {
                 "BackendEventIngressHandleInterface",
@@ -354,7 +626,9 @@ def _kotlin_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
         ):
             continue
         if kind == "open class":
-            if bleng and name == "Bleng":
+            if bleng and name in BLENG_OPERATIONS:
+                definitions[name] = f"class {name} : {name}Interface"
+            elif bleng and name == "Bleng":
                 definitions[name] = "class Bleng : BlengInterface"
                 class_body_start = source.find("{", match.end())
                 class_body_end = _find_matching(source, class_body_start, "{", "}")
@@ -363,6 +637,15 @@ def _kotlin_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
                     source[class_body_start:class_body_end],
                 ):
                     raise RuntimeError("BLeng Kotlin constructor is missing")
+
+            elif supervisor and name in {
+                "Supervisor",
+                "ScanEventProjection",
+                "SupervisedScan",
+                "SupervisedPeripheral",
+                "SupervisedScanStop",
+            }:
+                definitions[name] = f"class {name} : {name}Interface"
             elif name == "BackendEventIngressHandle":
                 definitions[name] = (
                     "class BackendEventIngressHandle : BackendEventIngressHandleInterface"
@@ -453,6 +736,8 @@ def _kotlin_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
     header = (
         "# Reviewed BLeng Kotlin API shape; ABI remains unfrozen."
         if bleng
+        else "# Reviewed BLeng supervisor Kotlin API shape; ABI remains unfrozen."
+        if supervisor
         else "# Reviewed generated Kotlin API shape. Generated by `just binding snapshot-update`."
     )
     return f"{header}\n\n{rendered}\n", set(definitions)
@@ -480,11 +765,21 @@ def _direct_swift_members(body: str, keyword: str) -> list[str]:
     return members
 
 
-def _swift_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
-    source = (BLENG_SWIFT_BINDING if bleng else SWIFT_BINDING).read_text(
-        encoding="utf-8"
+def _swift_snapshot(
+    *, bleng: bool = False, supervisor: bool = False
+) -> tuple[str, set[str]]:
+    if bleng and supervisor:
+        raise ValueError("BLeng and supervisor snapshots are mutually exclusive")
+    binding = (
+        SUPERVISOR_SWIFT_BINDING
+        if supervisor
+        else BLENG_SWIFT_BINDING
+        if bleng
+        else SWIFT_BINDING
     )
-    if bleng:
+    source = binding.read_text(encoding="utf-8")
+    declarations = SUPERVISOR_DECLARATIONS["swift"] if supervisor else None
+    if bleng or supervisor:
         # UniFFI 0.32 emits `public` and the error `enum` on separate lines.
         source = re.sub(r"(?m)^public\s*\n\s*enum ", "public enum ", source)
     definitions: dict[str, str] = {}
@@ -497,15 +792,28 @@ def _swift_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
     for match in pattern.finditer(source):
         kind = match.group("kind")
         name = match.group("name")
-        if bleng and name not in BLENG_DECLARATIONS["swift"]:
-            continue
         if name.startswith(("FfiConverter", "Uniffi")) or name in {
             "InitializationResult",
             "RustBuffer",
         }:
             continue
+        if supervisor and name in {
+            "ForeignPlatformOwnerSessionImpl",
+            "ForeignPlatformOwnerSessionFactoryImpl",
+        }:
+            continue
+        if supervisor and name not in declarations:
+            raise RuntimeError(
+                f"supervisor swift API snapshot declarations: missing=[], unexpected={[name]}"
+            )
+        if bleng and name not in BLENG_DECLARATIONS["swift"]:
+            raise RuntimeError(
+                f"swift API snapshot declarations: missing=[], unexpected={[name]}"
+            )
         if kind == "class":
-            if bleng and name == "Bleng":
+            if bleng and name in BLENG_OPERATIONS:
+                definitions[name] = f"class {name} : {name}Protocol"
+            elif bleng and name == "Bleng":
                 definitions[name] = "class Bleng : BlengProtocol"
                 class_body_start = source.find("{", match.end())
                 class_body_end = _find_matching(source, class_body_start, "{", "}")
@@ -514,6 +822,15 @@ def _swift_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
                     not in source[class_body_start:class_body_end]
                 ):
                     raise RuntimeError("BLeng Swift initializer is missing")
+
+            elif supervisor and name in {
+                "Supervisor",
+                "ScanEventProjection",
+                "SupervisedScan",
+                "SupervisedPeripheral",
+                "SupervisedScanStop",
+            }:
+                definitions[name] = f"class {name} : {name}Protocol"
             elif name == "BackendEventIngressHandle":
                 definitions[name] = (
                     "class BackendEventIngressHandle : BackendEventIngressHandleProtocol"
@@ -547,6 +864,8 @@ def _swift_snapshot(*, bleng: bool = False) -> tuple[str, set[str]]:
     header = (
         "# Reviewed BLeng Swift API shape; ABI remains unfrozen."
         if bleng
+        else "# Reviewed BLeng supervisor Swift API shape; ABI remains unfrozen."
+        if supervisor
         else "# Reviewed generated Swift API shape. Generated by `just binding snapshot-update`."
     )
     return f"{header}\n\n{rendered}\n", set(definitions)
@@ -581,11 +900,19 @@ def _generate(*, bleng: bool = False) -> dict[str, str]:
             "swift/blehubFFI.modulemap",
             "swift/blengFFI.modulemap",
         }
-        if binding_files != expected_files:
+        optional_supervisor_files = {
+            "kotlin/uniffi/bleng_supervisor/bleng_supervisor.kt",
+            "swift/bleng_supervisor.swift",
+            "swift/bleng_supervisorFFI.h",
+            "swift/bleng_supervisorFFI.modulemap",
+        }
+        allowed_files = expected_files | optional_supervisor_files
+        missing = expected_files - binding_files
+        unexpected = binding_files - allowed_files
+        if missing or unexpected:
             raise RuntimeError(
-                "BLeng bindings must contain exactly blehub + bleng: "
-                f"missing={sorted(expected_files - binding_files)}, "
-                f"unexpected={sorted(binding_files - expected_files)}"
+                "BLeng bindings are missing canonical components or contain unknown files: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
         kotlin_source = kotlin_binding.read_text(encoding="utf-8")
         if not all(
@@ -631,23 +958,79 @@ def _generate(*, bleng: bool = False) -> dict[str, str]:
     return snapshots
 
 
+def _generate_supervisor() -> dict[str, str]:
+    missing_inputs = [
+        path
+        for path in (
+            *SUPERVISOR_RUST_SOURCES,
+            SUPERVISOR_KOTLIN_BINDING,
+            SUPERVISOR_SWIFT_BINDING,
+        )
+        if not path.is_file()
+    ]
+    if missing_inputs:
+        rendered = "\n".join(
+            f"- {path.relative_to(PROJECT_ROOT) if path.is_relative_to(PROJECT_ROOT) else path}"
+            for path in missing_inputs
+        )
+        raise RuntimeError(f"supervisor snapshot inputs are missing:\n{rendered}")
+
+    snapshots: dict[str, str] = {}
+    for language, extractor in {
+        "rust": _rust_snapshot,
+        "kotlin": _kotlin_snapshot,
+        "swift": _swift_snapshot,
+    }.items():
+        snapshot, declarations = extractor(supervisor=True)
+        mandatory = SUPERVISOR_DECLARATIONS[language]
+        missing = mandatory - declarations
+        unexpected = declarations - mandatory
+        if missing or unexpected:
+            raise RuntimeError(
+                f"supervisor {language} API snapshot declarations: "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        snapshots[language] = snapshot
+    return snapshots
+
+
 def update(*, bleng: bool = False) -> None:
     snapshots = _generate(bleng=bleng)
-    paths = BLENG_SNAPSHOT_PATHS if bleng else SNAPSHOT_PATHS
+    entries = [
+        (
+            BLENG_SNAPSHOT_PATHS[language] if bleng else SNAPSHOT_PATHS[language],
+            snapshot,
+        )
+        for language, snapshot in snapshots.items()
+    ]
+    if bleng:
+        entries.extend(
+            (SUPERVISOR_SNAPSHOT_PATHS[language], snapshot)
+            for language, snapshot in _generate_supervisor().items()
+        )
     SNAPSHOT_ROOT.mkdir(parents=True, exist_ok=True)
-    for language, snapshot in snapshots.items():
-        paths[language].write_text(snapshot, encoding="utf-8", newline="\n")
+    for path, snapshot in entries:
+        path.write_text(snapshot, encoding="utf-8", newline="\n")
     print(
-        f"updated {len(snapshots)} API snapshots under {SNAPSHOT_ROOT.relative_to(PROJECT_ROOT)}"
+        f"updated {len(entries)} API snapshots under {SNAPSHOT_ROOT.relative_to(PROJECT_ROOT)}"
     )
 
 
 def check(*, bleng: bool = False) -> None:
-    snapshots = _generate(bleng=bleng)
-    paths = BLENG_SNAPSHOT_PATHS if bleng else SNAPSHOT_PATHS
+    entries = [
+        (
+            BLENG_SNAPSHOT_PATHS[language] if bleng else SNAPSHOT_PATHS[language],
+            snapshot,
+        )
+        for language, snapshot in _generate(bleng=bleng).items()
+    ]
+    if bleng:
+        entries.extend(
+            (SUPERVISOR_SNAPSHOT_PATHS[language], snapshot)
+            for language, snapshot in _generate_supervisor().items()
+        )
     failures: list[str] = []
-    for language, actual in snapshots.items():
-        path = paths[language]
+    for path, actual in entries:
         if not path.is_file():
             failures.append(f"missing snapshot: {path.relative_to(PROJECT_ROOT)}")
             continue
@@ -658,7 +1041,7 @@ def check(*, bleng: bool = False) -> None:
             expected.splitlines(),
             actual.splitlines(),
             fromfile=str(path.relative_to(PROJECT_ROOT)),
-            tofile=f"generated-{language}-api",
+            tofile=f"generated-{path.stem}-api",
             lineterm="",
         )
         failures.append("\n".join(diff))
@@ -670,7 +1053,7 @@ def check(*, bleng: bool = False) -> None:
             "snapshot-update` or `pixi run just binding bleng-snapshot-update` "
             "recipe to accept intentional changes.\n\n" + "\n\n".join(failures)
         )
-    print(f"verified {len(snapshots)} reviewed API snapshots")
+    print(f"verified {len(entries)} reviewed API snapshots")
 
 
 def main() -> int:

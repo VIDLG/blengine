@@ -19,6 +19,7 @@ targets:
       - path: ../support/SwiftProbeHarness.swift
       - path: ../support/RfFixtureConfiguration.swift
       - path: ../support/AppleCoreBluetoothRfScenario.swift
+      - path: ../support/CccDisableRejectScenario.swift
     settings:
       base:
         CODE_SIGN_IDENTITY: Apple Development

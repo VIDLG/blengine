@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import platform
 import re
 import subprocess
@@ -12,6 +13,8 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from tests.peripherals.nrf52840 import profile as nrf_profile
+from tests.peripherals.nrf52840.fixture_session import prepare_session
 from tools.apple import consumer_bleng_ios as consumer
 from tools.apple import consumer_ios, rf_fixture, test_ios_runtime, xcodegen_toolchain
 
@@ -43,6 +46,116 @@ def generate() -> None:
     if not (PROJECT / "project.pbxproj").is_file():
         raise RuntimeError(f"XcodeGen did not create {PROJECT}")
     print("apple_bleng_backend_project=ready", flush=True)
+
+
+def test_recovery_host() -> None:
+    """Require a fresh, nonempty, entirely passing standalone macOS XCTest receipt."""
+    run_id = str(uuid.uuid4())
+    results = WORK / "recovery-host/Results"
+    bundle = results / f"{run_id}.xcresult"
+    attempt = results / run_id
+    if any(path.exists() or path.is_symlink() for path in (bundle, attempt)):
+        raise RuntimeError(
+            f"refusing existing recovery host artifacts: {bundle}; run directory: {attempt}"
+        )
+    attempt.mkdir(parents=True)
+    log = attempt / "xcodebuild.log"
+    summary_path = attempt / "summary.json"
+    summary_log = attempt / "summary.log"
+    print(f"apple_bleng_recovery_host_run_id={run_id}", flush=True)
+    print(f"apple_bleng_recovery_host_result_bundle={bundle}", flush=True)
+    print(f"apple_bleng_recovery_host_log={log}", flush=True)
+    print(f"apple_bleng_recovery_host_summary={summary_path}", flush=True)
+    print(f"apple_bleng_recovery_host_summary_log={summary_log}", flush=True)
+    try:
+        command = [
+            consumer_ios.executable("xcodebuild"),
+            "-quiet",
+            "-project",
+            str(PROJECT),
+            "-scheme",
+            "BlengAppleRecoveryHostTests",
+            "-destination",
+            "platform=macOS",
+            "-derivedDataPath",
+            str(WORK / "recovery-host/DerivedData"),
+            "-resultBundlePath",
+            str(bundle),
+            "CODE_SIGNING_ALLOWED=NO",
+            "test",
+        ]
+        with log.open("x", encoding="utf-8") as output:
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                check=False,
+                timeout=180,
+            )
+        if result.returncode:
+            raise RuntimeError(f"xcodebuild failed (exit {result.returncode})")
+        if not bundle.is_dir() or bundle.is_symlink():
+            raise RuntimeError(f"missing fresh recovery host result bundle: {bundle}")
+        with summary_path.open("xb") as output, summary_log.open("xb") as diagnostics:
+            result = subprocess.run(
+                [
+                    consumer_ios.executable("xcrun"),
+                    "xcresulttool",
+                    "get",
+                    "test-results",
+                    "summary",
+                    "--path",
+                    str(bundle),
+                    "--compact",
+                ],
+                cwd=ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=diagnostics,
+                check=False,
+                timeout=30,
+            )
+        if result.returncode:
+            raise RuntimeError(
+                f"xcresult summary export failed (exit {result.returncode})"
+            )
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid recovery host summary JSON: {error}") from error
+        counts = (
+            "totalTestCount",
+            "passedTests",
+            "failedTests",
+            "skippedTests",
+            "expectedFailures",
+        )
+        if not (
+            isinstance(summary, dict)
+            and summary.get("result") == "Passed"
+            and all(type(summary.get(key)) is int for key in counts)
+            and summary["totalTestCount"] > 0
+            and summary["passedTests"] == summary["totalTestCount"]
+            and summary["failedTests"]
+            == summary["skippedTests"]
+            == summary["expectedFailures"]
+            == 0
+            and summary.get("testFailures") == []
+        ):
+            raise RuntimeError(
+                "recovery host summary does not prove nonempty, all-passed execution"
+            )
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(
+            f"recovery host tests failed: {error}; result bundle: {bundle}; "
+            f"full log: {log}; summary: {summary_path}; summary log: {summary_log}"
+        ) from error
+    print(
+        f"apple_bleng_recovery_host_test_count={summary['totalTestCount']}", flush=True
+    )
+    print("apple_bleng_recovery_host=passed", flush=True)
 
 
 def build(destination: str, variant: str, *, team: str | None = None) -> Path:
@@ -108,6 +221,52 @@ def build(destination: str, variant: str, *, team: str | None = None) -> Path:
     return app
 
 
+def build_ui_tests(team: str | None = None) -> None:
+    """Compile the existing HIL App/UI test target, optionally signed for a device."""
+    variant = "ios-ui-tests-signed" if team is not None else "ios-ui-tests"
+    derived = WORK / variant / "DerivedData"
+    # This DerivedData tree is owned by this build variant. Older preflight
+    # manifests must not make the post-build artifact identity ambiguous.
+    for stale in (derived / "Build/Products").glob("*.xctestrun"):
+        stale.unlink()
+    command = [
+        consumer_ios.executable("xcodebuild"),
+        "-quiet",
+        "-project",
+        str(PROJECT),
+        "-scheme",
+        SCHEME,
+        "-destination",
+        "generic/platform=iOS",
+        "-derivedDataPath",
+        str(derived),
+        f"INFOPLIST_FILE={SPEC.parent / 'Info.plist'}",
+    ]
+    if team is None:
+        command.append("CODE_SIGNING_ALLOWED=NO")
+    else:
+        command.extend(
+            [
+                "-allowProvisioningUpdates",
+                "-allowProvisioningDeviceRegistration",
+                f"DEVELOPMENT_TEAM={team}",
+                "CODE_SIGN_STYLE=Automatic",
+                "CODE_SIGN_IDENTITY=Apple Development",
+                "ONLY_ACTIVE_ARCH=YES",
+                f"PRODUCT_BUNDLE_IDENTIFIER=dev.blehub.{team.lower()}.bleng-apple-init",
+            ]
+        )
+    command.append("build-for-testing")
+    consumer_ios.run(command, timeout=600, log=WORK / "ios-ui-tests-xcodebuild.log")
+    xctestruns = sorted((derived / "Build/Products").glob("*.xctestrun"))
+    if len(xctestruns) != 1:
+        raise RuntimeError(f"expected one UI test bundle manifest, found {xctestruns}")
+    print(
+        f"apple_bleng_backend_system_loss_ui_build=passed xctestrun={xctestruns[0]}",
+        flush=True,
+    )
+
+
 def classify_result(contents: str, run_id: str) -> dict[str, str] | None:
     lines = contents.splitlines()
     if f"apple_bleng_corebluetooth_run_id={run_id}" not in lines:
@@ -145,6 +304,84 @@ def classify_scan_result(
     for name in ("scan_session_id", "peripheral_id"):
         if name not in values or not values[name].isdigit():
             raise RuntimeError(f"BLeng RF scan result lacks {name}")
+    return values
+
+
+def classify_central_recovery_spike_result(
+    contents: str, run_id: str
+) -> dict[str, str] | None:
+    """Validate the diagnostic-only Central recreation spike result."""
+    lines = contents.splitlines()
+    if f"apple_bleng_corebluetooth_run_id={run_id}" not in lines:
+        return None
+    if "apple_bleng_corebluetooth_central_recovery_spike=failed" in lines:
+        raise RuntimeError(f"BLeng Central recovery spike failed: {contents.strip()}")
+    if "apple_bleng_corebluetooth_central_recovery_spike=attempted" not in lines:
+        raise RuntimeError("BLeng Central recovery spike lacks terminal status")
+    entries = [line.split("=", 1) for line in lines if "=" in line]
+    if len({entry[0] for entry in entries}) != len(entries):
+        raise RuntimeError(
+            "BLeng Central recovery spike contains duplicate evidence keys"
+        )
+    values = dict(entries)
+    if values.get("production_gate_claim") != "none":
+        raise RuntimeError("Central recovery spike must not claim a production gate")
+    outcome = values.get("central_recovery_spike_outcome")
+    if outcome not in ("advertisement-observed", "platform-timeout", "refused"):
+        raise RuntimeError("Central recovery spike has an invalid outcome")
+    for name in ("first_scan_session_id", "first_matching_advertisements"):
+        if re.fullmatch(r"[0-9]+", values.get(name, "")) is None:
+            raise RuntimeError(f"Central recovery spike lacks numeric {name}")
+    if int(values["first_matching_advertisements"]) < 1:
+        raise RuntimeError(
+            "Central recovery spike lacks first-scan advertisement evidence"
+        )
+    second_session = values.get("second_scan_session_id", "")
+    second_count = values.get("second_matching_advertisements", "")
+    if (
+        second_session != "not-started"
+        and re.fullmatch(r"[0-9]+", second_session) is None
+    ):
+        raise RuntimeError("Central recovery spike has an invalid second scan session")
+    if re.fullmatch(r"[0-9]+", second_count) is None:
+        raise RuntimeError("Central recovery spike lacks numeric second scan count")
+    if outcome == "advertisement-observed" and (
+        second_session == "not-started" or int(second_count) < 1
+    ):
+        raise RuntimeError(
+            "Central recovery spike claims observation without second-scan evidence"
+        )
+    return values
+
+
+def classify_fresh_owner_lifecycle_result(
+    contents: str, run_id: str
+) -> dict[str, str] | None:
+    """Validate the no-RF old-owner retirement/fresh-owner diagnostic."""
+    lines = contents.splitlines()
+    if f"apple_bleng_corebluetooth_run_id={run_id}" not in lines:
+        return None
+    if "apple_bleng_fresh_owner_lifecycle=failed" in lines:
+        raise RuntimeError(f"BLeng fresh-owner lifecycle failed: {contents.strip()}")
+    if "apple_bleng_fresh_owner_lifecycle=attempted" not in lines:
+        raise RuntimeError("fresh-owner lifecycle lacks terminal status")
+    entries = [line.split("=", 1) for line in lines if "=" in line]
+    if len({entry[0] for entry in entries}) != len(entries):
+        raise RuntimeError("fresh-owner lifecycle contains duplicate evidence keys")
+    values = dict(entries)
+    if values.get("production_gate_claim") != "none":
+        raise RuntimeError("fresh-owner lifecycle must not claim a production gate")
+    if values.get("fresh_owner_lifecycle_outcome") != "fresh-owner-created-and-retired":
+        raise RuntimeError("fresh-owner lifecycle has an invalid outcome")
+    for name in ("old_owner_id", "new_owner_id", "old_backend_id", "new_backend_id"):
+        try:
+            uuid.UUID(values.get(name, ""))
+        except (ValueError, AttributeError):
+            raise RuntimeError(f"fresh-owner lifecycle lacks valid {name}") from None
+    if values["old_owner_id"] == values["new_owner_id"]:
+        raise RuntimeError("fresh-owner lifecycle reused owner identity")
+    if values["old_backend_id"] == values["new_backend_id"]:
+        raise RuntimeError("fresh-owner lifecycle reused backend identity")
     return values
 
 
@@ -488,7 +725,11 @@ def _stop_spawned_provider(pid: str, pgid: str) -> None:
 
 
 def _start_owned_provider(
-    coordination_path: Path, *, mode: str = "notification"
+    coordination_path: Path,
+    *,
+    mode: str = "notification",
+    port: str | None = None,
+    fixture_request: Path | None = None,
 ) -> tuple[str, str]:
     status = _provider_status()
     if "nrf52840_fixture=running" in status:
@@ -497,10 +738,16 @@ def _start_owned_provider(
         [
             *_provider_command(),
             "direct-start",
+            *(["--port", port] if port is not None else []),
             "--coordination-path",
             str(coordination_path),
             "--coordination-mode",
             mode,
+            *(
+                ["--fixture-request", str(fixture_request)]
+                if fixture_request is not None
+                else []
+            ),
         ],
         cwd=ROOT,
         stdin=subprocess.DEVNULL,
@@ -940,12 +1187,179 @@ def _recovery_device_run(
             _stop_owned_provider(owned_identity)
 
 
+def _central_recovery_spike_device_run(
+    xcrun: str,
+    device_id: str,
+    bundle: str,
+    *,
+    contract: Path,
+    fixture_profile: Path,
+    port: str,
+) -> None:
+    """Run the non-destructive Central recreation spike in the existing HIL App."""
+    run_id = str(uuid.uuid4())
+    coordination_path = WORK / f"rf-central-recovery-spike-{run_id}"
+    coordination_path.mkdir(parents=True, exist_ok=False)
+    fixture_session = coordination_path / "fixture-session"
+    profile_data = nrf_profile.load_profile(fixture_profile)
+    plan = prepare_session(
+        contract,
+        fixture_profile,
+        fixture_session,
+        port=port,
+        service_uuid=profile_data.service_uuid,
+        session_id=run_id,
+    )
+    owned_identity: tuple[str, str] | None = None
+    try:
+        owned_identity = _start_owned_provider(
+            coordination_path,
+            mode="notification",
+            port=port,
+            fixture_request=plan.request_path,
+        )
+        launch = [
+            "device",
+            "process",
+            "launch",
+            "--device",
+            device_id,
+            "--terminate-existing",
+            "--activate",
+            bundle,
+            "--run-id",
+            run_id,
+            "--rf-central-recovery-spike",
+            "--rf-scan-service-uuid",
+            profile_data.service_uuid,
+        ]
+        consumer.device_json(
+            xcrun,
+            launch,
+            "central-recovery-spike-device-launch.json",
+            timeout=60,
+            work=WORK,
+        )
+        result_file = WORK / f"{run_id}-central-recovery-spike-result.txt"
+        diagnostic_file = WORK / f"{run_id}-central-recovery-spike.json"
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            result = _pull_device_file(
+                xcrun,
+                device_id,
+                bundle,
+                f"Documents/bleng-rf-{run_id}/result.txt",
+                result_file.name,
+            )
+            if result is not None and (
+                f"apple_bleng_corebluetooth_run_id={run_id}" in result.splitlines()
+            ):
+                diagnostic = _pull_device_file(
+                    xcrun,
+                    device_id,
+                    bundle,
+                    f"Documents/bleng-rf-{run_id}/central-recovery-spike.json",
+                    diagnostic_file.name,
+                )
+                values = classify_central_recovery_spike_result(result, run_id)
+                if values is None:
+                    raise RuntimeError(
+                        "Central recovery spike result lost its run identity"
+                    )
+                outcome = values["central_recovery_spike_outcome"]
+                print(
+                    "apple_bleng_backend_rf-central-recovery-spike=completed "
+                    f"run_id={run_id} outcome={outcome} "
+                    f"result={result_file} diagnostic={diagnostic_file if diagnostic else 'missing'}",
+                    flush=True,
+                )
+                return
+            time.sleep(2)
+        raise TimeoutError(
+            "BLeng Central recovery spike result not observed within 120 seconds; "
+            f"see {WORK}"
+        )
+    finally:
+        if owned_identity is not None:
+            _stop_owned_provider(owned_identity)
+
+
+def _fresh_owner_lifecycle_device_run(
+    xcrun: str,
+    device_id: str,
+    bundle: str,
+) -> None:
+    """Run the no-RF lifecycle probe in the existing HIL App."""
+    run_id = str(uuid.uuid4())
+    launch = [
+        "device",
+        "process",
+        "launch",
+        "--device",
+        device_id,
+        "--terminate-existing",
+        "--activate",
+        bundle,
+        "--run-id",
+        run_id,
+        "--rf-fresh-owner-lifecycle-spike",
+    ]
+    consumer.device_json(
+        xcrun,
+        launch,
+        "fresh-owner-lifecycle-device-launch.json",
+        timeout=60,
+        work=WORK,
+    )
+    result_file = WORK / f"{run_id}-fresh-owner-lifecycle-result.txt"
+    diagnostic_file = WORK / f"{run_id}-fresh-owner-lifecycle.json"
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        result = _pull_device_file(
+            xcrun,
+            device_id,
+            bundle,
+            f"Documents/bleng-rf-{run_id}/result.txt",
+            result_file.name,
+        )
+        if (
+            result is not None
+            and f"apple_bleng_corebluetooth_run_id={run_id}" in result.splitlines()
+        ):
+            diagnostic = _pull_device_file(
+                xcrun,
+                device_id,
+                bundle,
+                f"Documents/bleng-rf-{run_id}/fresh-owner-lifecycle.json",
+                diagnostic_file.name,
+            )
+            values = classify_fresh_owner_lifecycle_result(result, run_id)
+            if values is None:
+                raise RuntimeError("fresh-owner lifecycle result lost its run identity")
+            print(
+                "apple_bleng_backend_fresh_owner_lifecycle=completed "
+                f"run_id={run_id} old_owner={values['old_owner_id']} "
+                f"new_owner={values['new_owner_id']} "
+                f"diagnostic={diagnostic_file if diagnostic else 'missing'}",
+                flush=True,
+            )
+            return
+        time.sleep(2)
+    raise TimeoutError(
+        "BLeng fresh-owner lifecycle result not observed within 120 seconds; "
+        f"see {WORK}"
+    )
+
+
 def device_run(
     *,
     rf_scenario: str | None = None,
     profile: Path = test_ios_runtime.NRF_PROFILE_PATH,
     notification_value_hex: str | None = None,
     initial_hex: str | None = None,
+    contract: Path | None = None,
+    fixture_profile: Path | None = None,
+    port: str | None = None,
 ) -> None:
     fixture = (
         rf_fixture.load_profile(
@@ -994,9 +1408,26 @@ def device_run(
     )
     device_id, _, _ = consumer.wait_for_connected_device(xcrun, work=WORK)
     consumer.wait_for_unlocked_device(xcrun, device_id, work=WORK)
+    if rf_scenario == "fresh-owner-lifecycle":
+        _fresh_owner_lifecycle_device_run(xcrun, device_id, bundle)
+        return
     if rf_scenario in ("passive-disconnect", "recovery"):
         assert fixture is not None
         _recovery_device_run(xcrun, device_id, bundle, fixture, mode=rf_scenario)
+        return
+    if rf_scenario == "central-recovery-spike":
+        if contract is None or fixture_profile is None or port is None:
+            raise ValueError(
+                "central recovery spike requires --contract, --fixture-profile and --port"
+            )
+        _central_recovery_spike_device_run(
+            xcrun,
+            device_id,
+            bundle,
+            contract=contract,
+            fixture_profile=fixture_profile,
+            port=port,
+        )
         return
     if rf_scenario in ("notification", "indication"):
         assert fixture is not None
@@ -1128,6 +1559,8 @@ def main() -> int:
         "command",
         choices=(
             "build-unsigned",
+            "build-ui-tests",
+            "test-recovery-host",
             "device",
             "rf-scan",
             "rf-connection",
@@ -1138,10 +1571,15 @@ def main() -> int:
             "rf-rssi",
             "rf-passive-disconnect",
             "rf-recovery",
+            "rf-central-recovery-spike",
+            "rf-fresh-owner-lifecycle",
         ),
     )
     parser.add_argument(
         "--profile", type=Path, default=test_ios_runtime.NRF_PROFILE_PATH
+    )
+    parser.add_argument(
+        "--team", help="sign the UI-test candidate for a physical iOS device"
     )
     parser.add_argument(
         "--notification-value-hex", help="recovery assertion: provider value must be EF"
@@ -1149,10 +1587,23 @@ def main() -> int:
     parser.add_argument(
         "--initial-hex", help="recovery assertion: provider read must be 00"
     )
+    parser.add_argument(
+        "--contract", type=Path, help="attested nRF v2 fixture contract for the spike"
+    )
+    parser.add_argument(
+        "--fixture-profile",
+        type=Path,
+        help="attested nRF v2 fixture profile for the spike",
+    )
+    parser.add_argument("--port", help="explicit nRF fixture serial port for the spike")
     args = parser.parse_args()
     try:
         generate()
-        if args.command in (
+        if args.command == "test-recovery-host":
+            test_recovery_host()
+        elif args.command == "build-ui-tests":
+            build_ui_tests(args.team)
+        elif args.command in (
             "device",
             "rf-scan",
             "rf-connection",
@@ -1163,6 +1614,8 @@ def main() -> int:
             "rf-rssi",
             "rf-passive-disconnect",
             "rf-recovery",
+            "rf-central-recovery-spike",
+            "rf-fresh-owner-lifecycle",
         ):
             device_run(
                 rf_scenario=args.command.removeprefix("rf-")
@@ -1171,6 +1624,9 @@ def main() -> int:
                 profile=args.profile,
                 notification_value_hex=args.notification_value_hex,
                 initial_hex=args.initial_hex,
+                contract=args.contract,
+                fixture_profile=args.fixture_profile,
+                port=args.port,
             )
         else:
             build("generic/platform=iOS", "ios-device")

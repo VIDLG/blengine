@@ -78,6 +78,7 @@ impl Bleng {
         let pending =
             self.owner
                 .submit_operation(preserve_completed_result_on_close, |submission| {
+                    submission.enable_outcome_observation();
                     runtime::BeginScan {
                         submission,
                         options,

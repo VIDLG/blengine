@@ -1,0 +1,18 @@
+{
+  "board": "nrf52840dk/nrf52840",
+  "capabilities": [
+    "normal-rf",
+    "gatt-reset",
+    "notification",
+    "indication",
+    "passive-disconnect"
+  ],
+  "fixture_role": "normal-rf",
+  "image_id": "nrf-normal-rf-v1-a",
+  "image_sha256": "83b42f5ef1d28f410ea48785bcb5a8eaa3b6dc2152deee3d58eb3c026d526003",
+  "image_version": "maintained",
+  "local_name": "BleHubNrf52840",
+  "profile_id": "blehub-nrf52840-indication-v2",
+  "schema_version": 1,
+  "service_uuid": "fd000000-0000-4000-8000-000000000000"
+}

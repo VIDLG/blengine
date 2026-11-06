@@ -1,9 +1,316 @@
 import BleHubUniFfi
+import CoreBluetooth
+import Dispatch
 import Foundation
 import XCTest
-@testable import BleHubApple
+@_spi(AppleDiagnostics) @testable import BleHubApple
 
 final class GattIoControllerTests: XCTestCase {
+    func testFifoSnapshotObservesResponseWriteThenDisableWithAcceptedSiblings() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let characteristic = FakeIoCharacteristic(
+            properties: properties(writableWithResponse: true, notifiable: true)
+        )
+        let ioTarget = target(
+            connection: connection, sessionId: 20, characteristicId: 30,
+            characteristic: characteristic
+        )
+        let write = writeCommand(
+            commandId: 1, connectionId: 10, sessionId: 20, characteristicId: 30,
+            value: [1], writeType: .withResponse
+        )
+        let enable = notificationCommand(
+            commandId: 2, connectionId: 10, sessionId: 20, subscriptionId: 40,
+            characteristicId: 30, action: .enable(mode: .platformDefault)
+        )
+        XCTAssertNil(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        try controller.enqueueWrite(command: write, connection: connection, target: ioTarget)
+        _ = try nextAction(controller, connection: connection)
+        try controller.enqueueSetNotifications(command: enable, connection: connection, target: ioTarget)
+        let cancelled = rssiCommand(commandId: 5, connectionId: 10)
+        let tail = rssiCommand(commandId: 6, connectionId: 10)
+        try controller.enqueueRssi(command: cancelled, connection: connection)
+        try controller.enqueueRssi(command: tail, connection: connection)
+        let generation = try XCTUnwrap(controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )["subscriptionGeneration"] as? String)
+        let pending = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(pending.connectionId, connection.connectionId)
+        XCTAssertEqual(pending.headKind, .command)
+        XCTAssertEqual(pending.headCommandId, write.commandId)
+        XCTAssertEqual(pending.headState, .awaitingNativeCallback)
+        XCTAssertEqual(pending.queuedCommandIds, [enable.commandId, cancelled.commandId, tail.commandId])
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), pending)
+        guard case .queued = controller.cancel(commandId: cancelled.commandId) else {
+            return XCTFail("expected queued cancellation")
+        }
+        XCTAssertEqual(
+            controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId)?.queuedCommandIds,
+            [enable.commandId, tail.commandId]
+        )
+        guard case .queued = controller.cancel(commandId: tail.commandId) else {
+            return XCTFail("expected queued tail cancellation")
+        }
+        XCTAssertEqual(controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )["subscriptionGeneration"] as? String, generation)
+        XCTAssertNil(controller.nextNotificationAction(connection: connection))
+        guard case .active = controller.cancel(commandId: write.commandId) else {
+            return XCTFail("snapshot must not release the active head")
+        }
+        assertWriteCompletion(controller.didWriteValue(
+            connection: connection, peripheral: connection.peripheral,
+            characteristic: characteristic, error: nil
+        ), command: write)
+        let unstarted = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(unstarted.headCommandId, enable.commandId)
+        XCTAssertEqual(unstarted.headState, .awaitingDrive)
+        XCTAssertEqual(unstarted.queuedCommandIds, [], "consumed write must not leak from storage")
+        _ = controller.nextNotificationAction(connection: connection)
+        assertNotificationEnabled(controller.didUpdateNotificationState(
+            connection: connection, peripheral: connection.peripheral,
+            characteristic: characteristic, isNotifying: true, error: nil
+        ), command: enable, actualMode: .notification)
+        let idle = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertNil(idle.headKind)
+        XCTAssertNil(idle.headCommandId)
+        XCTAssertEqual(idle.headState, .idle)
+        XCTAssertEqual(idle.queuedCommandIds, [])
+
+        let disable = notificationCommand(
+            commandId: 3, connectionId: 10, sessionId: 20, subscriptionId: 40,
+            characteristicId: 30, action: .disable
+        )
+        let sibling = writeCommand(
+            commandId: 4, connectionId: 10, sessionId: 20, characteristicId: 30,
+            value: [2], writeType: .withResponse
+        )
+        try controller.enqueueSetNotifications(command: disable, connection: connection, target: ioTarget)
+        _ = controller.nextNotificationAction(connection: connection)
+        try controller.enqueueWrite(command: sibling, connection: connection, target: ioTarget)
+        let disabling = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(disabling.headKind, .command)
+        XCTAssertEqual(disabling.headCommandId, disable.commandId)
+        XCTAssertEqual(disabling.headState, .awaitingNativeCallback)
+        XCTAssertEqual(disabling.queuedCommandIds, [sibling.commandId])
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), disabling)
+        XCTAssertNil(try nextAction(controller, connection: connection))
+        assertNotificationDisabled(controller.didUpdateNotificationState(
+            connection: connection, peripheral: connection.peripheral,
+            characteristic: characteristic, isNotifying: false, error: nil
+        ), command: disable)
+        assertWriteWithResponseAction(
+            try XCTUnwrap(nextAction(controller, connection: connection)),
+            command: sibling, characteristic: characteristic
+        )
+        _ = controller.retireAll(
+            connection: connection, error: eventError(category: .connection, message: "retired")
+        )
+        let barriers = controller.diagnosticCallbackRouteCount
+        let attributes = controller.diagnosticAttributeIdentities
+        XCTAssertNil(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertNil(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, barriers)
+        XCTAssertEqual(controller.diagnosticAttributeIdentities, attributes)
+        assertInvalidState {
+            try controller.enqueueWrite(command: sibling, connection: connection, target: ioTarget)
+        }
+        XCTAssertTrue(controller.consumeRetiredWriteCallback(
+            peripheral: connection.peripheral, characteristic: characteristic
+        ))
+    }
+
+    func testRssiSharesPerConnectionFifoAndCompletesFromExactCallback() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let rssi = rssiCommand(commandId: 1, connectionId: 10)
+        let read = readCommand(
+            commandId: 2,
+            connectionId: 10,
+            sessionId: 20,
+            characteristicId: 30
+        )
+        let characteristic = FakeIoCharacteristic(properties: properties(readable: true))
+        let target = target(
+            connection: connection,
+            sessionId: 20,
+            characteristicId: 30,
+            characteristic: characteristic
+        )
+
+        try controller.enqueueRssi(command: rssi, connection: connection)
+        try controller.enqueueRead(command: read, connection: connection, target: target)
+
+        guard case .rssi(let active, _) = try nextAction(controller, connection: connection) else {
+            return XCTFail("RSSI did not become the FIFO head")
+        }
+        XCTAssertEqual(active, rssi)
+        guard case .queued = controller.cancel(commandId: read.commandId) else {
+            return XCTFail("queued characteristic read was not cancellable")
+        }
+
+        guard case .rssi(let completed, let value) = controller.didReadRssi(
+            connection: connection,
+            peripheral: connection.peripheral,
+            rssi: NSNumber(value: -61),
+            error: nil
+        ) else {
+            return XCTFail("RSSI callback did not complete the active operation")
+        }
+        XCTAssertEqual(completed, rssi)
+        XCTAssertEqual(value, -61)
+        XCTAssertEqual(controller.pendingCount, 0)
+    }
+
+    func testRssiRetirementQuarantinesLateCallbackBeforeRouteReuse() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let command = rssiCommand(commandId: 1, connectionId: 10)
+        try controller.enqueueRssi(command: command, connection: connection)
+        guard case .rssi = try nextAction(controller, connection: connection) else {
+            return XCTFail("RSSI did not become active")
+        }
+
+        let error = BleEventError(
+            category: .connection,
+            message: "connection retired",
+            platformDetails: nil
+        )
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 2, "lane plus native RSSI callback")
+        _ = controller.retireAll(connection: connection, error: error)
+        XCTAssertEqual(controller.pendingCount, 0)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1, "retired RSSI barrier remains visible")
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
+        XCTAssertThrowsError(try controller.enqueueRssi(
+            command: rssiCommand(commandId: 2, connectionId: 10),
+            connection: connection
+        ))
+        XCTAssertNil(controller.didReadRssi(
+            connection: connection,
+            peripheral: connection.peripheral,
+            rssi: NSNumber(value: -61),
+            error: nil
+        ))
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
+        XCTAssertNoThrow(try controller.enqueueRssi(
+            command: rssiCommand(commandId: 2, connectionId: 10),
+            connection: connection
+        ))
+    }
+
+    func testRetirementClassifiesActiveTimeoutAndQueuedAbortSeparately() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let active = rssiCommand(commandId: 1, connectionId: 10)
+        let characteristic = FakeIoCharacteristic(properties: properties(readable: true))
+        let queued = readCommand(
+            commandId: 2,
+            connectionId: 10,
+            sessionId: 20,
+            characteristicId: 30
+        )
+        let target = target(
+            connection: connection,
+            sessionId: 20,
+            characteristicId: 30,
+            characteristic: characteristic
+        )
+        try controller.enqueueRssi(command: active, connection: connection)
+        try controller.enqueueRead(command: queued, connection: connection, target: target)
+        guard case .rssi = try nextAction(controller, connection: connection) else {
+            return XCTFail("RSSI did not become the active head")
+        }
+
+        let timeout = BleEventError(
+            category: .timeout,
+            message: "active operation timed out",
+            platformDetails: nil
+        )
+        let aborted = BleEventError(
+            category: .operationAborted,
+            message: "queued operation was retired",
+            platformDetails: nil
+        )
+        let retirement = controller.retireAll(
+            connection: connection,
+            error: aborted,
+            activeOperationError: timeout,
+            queuedOperationError: aborted
+        )
+        XCTAssertEqual(retirement.ioCompletions.count, 2)
+        guard case .failed(command: .rssi(let retiredActive), error: let activeError) =
+            retirement.ioCompletions[0],
+              case .failed(command: .read(let retiredQueued), error: let queuedError) =
+            retirement.ioCompletions[1]
+        else {
+            return XCTFail("retirement did not preserve active/queued operation order")
+        }
+        XCTAssertEqual(retiredActive, active)
+        XCTAssertEqual(activeError.category, .timeout)
+        XCTAssertEqual(retiredQueued, queued)
+        XCTAssertEqual(queuedError.category, .operationAborted)
+    }
+
+    func testQueuedCancellationRemovesOnlyQueuedOperationAndActiveHeadIsNotCancellable() {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let characteristic = FakeIoCharacteristic(properties: properties(readable: true))
+        let first = readCommand(
+            commandId: 1,
+            connectionId: 10,
+            sessionId: 20,
+            characteristicId: 30
+        )
+        let second = readCommand(
+            commandId: 2,
+            connectionId: 10,
+            sessionId: 20,
+            characteristicId: 30
+        )
+        let target = target(
+            connection: connection,
+            sessionId: 20,
+            characteristicId: 30,
+            characteristic: characteristic
+        )
+
+        XCTAssertNoThrow(try controller.enqueueRead(
+            command: first,
+            connection: connection,
+            target: target
+        ))
+        XCTAssertNoThrow(try controller.enqueueRead(
+            command: second,
+            connection: connection,
+            target: target
+        ))
+        XCTAssertEqual(controller.pendingCount, 2)
+
+        guard case .queued = controller.cancel(commandId: second.commandId) else {
+            return XCTFail("queued operation was not removed")
+        }
+        XCTAssertEqual(controller.pendingCount, 1)
+        let snapshot = controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId)
+        XCTAssertEqual(snapshot?.headCommandId, first.commandId)
+        XCTAssertEqual(snapshot?.headState, .awaitingDrive)
+        XCTAssertEqual(snapshot?.queuedCommandIds, [])
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), snapshot)
+
+        guard case .read = try? controller.nextAction(
+            connection: connection,
+            canSendWriteWithoutResponse: true,
+            maximumWriteWithResponse: 512,
+            maximumWriteWithoutResponse: 512
+        ) else {
+            return XCTFail("remaining operation did not become the active head")
+        }
+        guard case .active = controller.cancel(commandId: first.commandId) else {
+            return XCTFail("active native operation was incorrectly cancelled")
+        }
+        XCTAssertEqual(controller.pendingCount, 1)
+    }
+
     func testRejectsStaleAndMismatchedCommandsAndTargets() {
         let controller = AppleGattIoController()
         let connection = connectionCorrelation(generation: 1, connectionId: 10)
@@ -666,13 +973,25 @@ final class GattIoControllerTests: XCTestCase {
             )
         )
 
-        XCTAssertNil(
-            try nextAction(
+        XCTAssertEqual(
+            controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId)?.headState,
+            .awaitingDrive
+        )
+        assertWriteCapacityWaitAction(
+            try XCTUnwrap(nextAction(
                 controller,
                 connection: connection,
                 canSendWriteWithoutResponse: false
-            )
+            )),
+            command: command,
+            connection: connection
         )
+        let waiting = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(waiting.headCommandId, command.commandId)
+        XCTAssertEqual(waiting.headState, .waitingForWriteCapacity)
+        XCTAssertNotEqual(waiting.headState, .awaitingNativeCallback)
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), waiting)
+        XCTAssertTrue(controller.isWaitingForWriteCapacity(connection: connection, commandId: command.commandId))
         XCTAssertTrue(
             controller.didBecomeReadyToSendWriteWithoutResponse(
                 connection: connection,
@@ -684,6 +1003,10 @@ final class GattIoControllerTests: XCTestCase {
             command: command,
             characteristic: characteristic
         )
+        let submitting = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(submitting.headCommandId, command.commandId)
+        XCTAssertEqual(submitting.headState, .submittingWriteWithoutResponse)
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), submitting)
         XCTAssertNil(try nextAction(controller, connection: connection))
         XCTAssertNil(
             controller.didSubmitWriteWithoutResponse(
@@ -708,6 +1031,32 @@ final class GattIoControllerTests: XCTestCase {
             )
         )
         XCTAssertEqual(controller.pendingCount, 0)
+    }
+
+    func testBothWriteModesProjectCorrelatedWrittenBeforeTerminalAndFailureWithoutDomain() {
+        for writeType: WriteType in [.withResponse, .withoutResponse] {
+            let command = writeCommand(
+                commandId: 70,
+                connectionId: 100,
+                sessionId: 101,
+                characteristicId: 102,
+                value: [1, 2],
+                writeType: writeType
+            )
+            XCTAssertEqual(AppleBackendEventProjection.gattIoEvents(.write(command: command)), [
+                .characteristicWritten(
+                    commandId: command.commandId,
+                    connectionId: command.connectionId,
+                    gattSessionId: command.gattSessionId,
+                    characteristicId: command.characteristicId
+                ),
+                .commandCompleted(commandId: command.commandId, error: nil),
+            ])
+            let error = eventError(category: .gatt, message: "write failed")
+            XCTAssertEqual(AppleBackendEventProjection.gattIoEvents(
+                .failed(command: .write(command), error: error)
+            ), [.commandCompleted(commandId: command.commandId, error: error)])
+        }
     }
 
     func testUsesSeparatePlatformMaximumsAndReturnsTerminalFailures() throws {
@@ -1316,18 +1665,50 @@ final class GattIoControllerTests: XCTestCase {
             characteristic: characteristic,
             enabled: false
         )
+        let beforeFailure = controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )
+        XCTAssertEqual(beforeFailure["phase"] as? String, "disabling")
+        XCTAssertEqual(beforeFailure["activeCommandId"] as? String, "232")
+        XCTAssertEqual(beforeFailure["routeMatches"] as? Bool, true)
         let disableError = eventError(category: .gatt, message: "disable failed")
         assertNotificationFailure(
             controller.didUpdateNotificationState(
                 connection: connection,
                 peripheral: connection.peripheral,
                 characteristic: characteristic,
+                isNotifying: false,
                 error: disableError
             ),
             command: disable,
             category: .gatt,
             message: "disable failed"
         )
+        let route = controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )
+        XCTAssertEqual(route["phase"] as? String, "active")
+        XCTAssertEqual(route["connectionId"] as? String, "230")
+        XCTAssertEqual(route["connectionGeneration"] as? String, "24")
+        XCTAssertEqual(route["gattSessionId"] as? String, "231")
+        XCTAssertEqual(route["subscriptionId"] as? String, "233")
+        XCTAssertEqual(route["characteristicId"] as? String, "232")
+        XCTAssertEqual(route["subscriptionGeneration"] as? String, beforeFailure["subscriptionGeneration"] as? String)
+        XCTAssertEqual(route["peripheralMatches"] as? Bool, true)
+        XCTAssertEqual(route["characteristicMatches"] as? Bool, true)
+        XCTAssertEqual(route["acceptsValue"] as? Bool, true)
+        XCTAssertEqual(route["readBarrier"] as? Bool, false)
+        XCTAssertEqual(route["notificationStateBarrier"] as? Bool, false)
+        XCTAssertEqual(route["valueBarrier"] as? Bool, false)
+        XCTAssertNil(route["activeCommandId"])
+        XCTAssertEqual(controller.diagnosticSubscriptionCount, 1)
+        XCTAssertNil(controller.nextNotificationAction(connection: connection))
+        let foreign = controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: duplicate
+        )
+        XCTAssertEqual(foreign["routeMatches"] as? Bool, false)
+        XCTAssertEqual(foreign["characteristicMatches"] as? Bool, false)
+        XCTAssertEqual(foreign["expectedCharacteristicObject"] as? String, route["characteristicObject"] as? String)
         assertNotificationValue(
             controller.didUpdateValue(
                 connection: connection,
@@ -1339,6 +1720,12 @@ final class GattIoControllerTests: XCTestCase {
             command: enable,
             value: [3]
         )
+        let afterValue = controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )
+        XCTAssertEqual(afterValue as NSDictionary, route as NSDictionary)
+        XCTAssertEqual(controller.pendingCount, 0)
+        XCTAssertEqual(controller.diagnosticSubscriptionCount, 1)
     }
 
     func testRetiredReadBarrierBlocksNotificationEnableUntilLateReadArrives() throws {
@@ -1382,6 +1769,12 @@ final class GattIoControllerTests: XCTestCase {
                 connection: connection,
                 target: ioTarget
             )
+        }
+        for _ in 0..<2 {
+            let diagnostic = controller.diagnosticNotificationRoute(
+                connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+            )
+            XCTAssertEqual(diagnostic["readBarrier"] as? Bool, true)
         }
         XCTAssertTrue(
             controller.consumeRetiredReadCallback(
@@ -1516,6 +1909,14 @@ final class GattIoControllerTests: XCTestCase {
             return XCTFail("expected native subscription retirement before rediscovery")
         }
         XCTAssertTrue(controller.hasPending(connection: connection))
+        let sibling = rssiCommand(commandId: 299, connectionId: 260)
+        try controller.enqueueRssi(command: sibling, connection: connection)
+        let internalHead = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(internalHead.headKind, .retireSubscription)
+        XCTAssertNil(internalHead.headCommandId)
+        XCTAssertEqual(internalHead.headState, .awaitingDrive)
+        XCTAssertEqual(internalHead.queuedCommandIds, [sibling.commandId], "drop head before compacting nil command IDs")
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), internalHead)
         guard case .retireForRediscovery(
             let actionConnection,
             let actionCharacteristic
@@ -1527,6 +1928,15 @@ final class GattIoControllerTests: XCTestCase {
             ObjectIdentifier(actionCharacteristic),
             ObjectIdentifier(characteristic)
         )
+        let activeInternal = try XCTUnwrap(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId))
+        XCTAssertEqual(activeInternal.headKind, .retireSubscription)
+        XCTAssertNil(activeInternal.headCommandId)
+        XCTAssertEqual(activeInternal.headState, .awaitingNativeCallback)
+        XCTAssertEqual(activeInternal.queuedCommandIds, [sibling.commandId])
+        XCTAssertEqual(controller.diagnosticSnapshotGattIo(connectionId: connection.connectionId), activeInternal)
+        guard case .queued = controller.cancel(commandId: sibling.commandId) else {
+            return XCTFail("expected queued sibling cancellation")
+        }
         guard case .rediscoveryRetired = controller.didUpdateNotificationState(
             connection: connection,
             peripheral: connection.peripheral,
@@ -1562,6 +1972,9 @@ final class GattIoControllerTests: XCTestCase {
                 target: ioTarget
             )
         )
+        XCTAssertEqual(controller.diagnosticNotificationRoute(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )["subscriptionGeneration"] as? String, "2", "snapshots must not allocate generations")
     }
 
     func testRediscoveryCapacityBoundaryQueuesExactlyLimitAndFailsClosedOneOver() throws {
@@ -2058,6 +2471,10 @@ final class GattIoControllerTests: XCTestCase {
             error: eventError(category: .connection, message: "disconnected")
         )
         XCTAssertTrue(retirement.ioCompletions.isEmpty)
+        XCTAssertEqual(controller.pendingCount, 0)
+        XCTAssertEqual(controller.diagnosticSubscriptionCount, 0)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 2, "state and value barriers survive retirement")
+        XCTAssertEqual(controller.diagnosticAttributeIdentities.count, 1, "two routes own one instance")
         XCTAssertEqual(retirement.notificationCompletions.count, 1)
         assertNotificationFailure(
             retirement.notificationCompletions.first,
@@ -2252,11 +2669,158 @@ final class GattIoControllerTests: XCTestCase {
         )
     }
 
+    func testRetiredReadBarrierOwnsExactCharacteristicUntilLateCallbackIsConsumed() throws {
+        let controller = AppleGattIoController()
+        let peripheral = FakeIoPeripheral(identifier: UUID())
+        let oldConnection = connectionCorrelation(
+            generation: 12,
+            connectionId: 120,
+            peripheral: peripheral
+        )
+        weak var retiredCharacteristic: FakeIoCharacteristic?
+        do {
+            let characteristic = FakeIoCharacteristic(properties: properties(readable: true))
+            retiredCharacteristic = characteristic
+            try controller.enqueueRead(
+                command: readCommand(
+                    commandId: 90,
+                    connectionId: 120,
+                    sessionId: 121,
+                    characteristicId: 122
+                ),
+                connection: oldConnection,
+                target: target(
+                    connection: oldConnection,
+                    sessionId: 121,
+                    characteristicId: 122,
+                    characteristic: characteristic
+                )
+            )
+            _ = try nextAction(controller, connection: oldConnection)
+            _ = controller.retire(
+                connection: oldConnection,
+                error: eventError(category: .timeout, message: "watchdog expired")
+            )
+        }
+        XCTAssertEqual(controller.pendingCount, 0)
+        XCTAssertNotNil(retiredCharacteristic, "the barrier must own its ObjectIdentifier's object")
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1)
+        XCTAssertEqual(controller.diagnosticAttributeIdentities.count, 1)
+
+        let recovery = connectionCorrelation(
+            generation: 13,
+            connectionId: 130,
+            peripheral: peripheral
+        )
+        let updates = FakeIoCharacteristic(properties: properties(readable: true))
+        let read = readCommand(
+            commandId: 91,
+            connectionId: 130,
+            sessionId: 131,
+            characteristicId: 132
+        )
+        try controller.enqueueRead(
+            command: read,
+            connection: recovery,
+            target: target(
+                connection: recovery,
+                sessionId: 131,
+                characteristicId: 132,
+                characteristic: updates
+            )
+        )
+        assertReadAction(
+            try XCTUnwrap(nextAction(controller, connection: recovery)),
+            command: read,
+            characteristic: updates
+        )
+        XCTAssertFalse(
+            controller.consumeRetiredReadCallback(peripheral: peripheral, characteristic: updates)
+        )
+        do {
+            let retired = try XCTUnwrap(retiredCharacteristic)
+            XCTAssertFalse(
+                controller.consumeRetiredWriteCallback(peripheral: peripheral, characteristic: retired)
+            )
+            assertInvalidState {
+                try controller.enqueueRead(
+                    command: read,
+                    connection: recovery,
+                    target: target(
+                        connection: recovery,
+                        sessionId: 131,
+                        characteristicId: 132,
+                        characteristic: retired
+                    )
+                )
+            }
+            XCTAssertNil(
+                controller.didReadValue(
+                    connection: recovery,
+                    peripheral: peripheral,
+                    characteristic: retired,
+                    value: [0],
+                    error: nil
+                )
+            )
+        }
+        XCTAssertNil(retiredCharacteristic, "consuming the barrier must release the retired object")
+        XCTAssertEqual(controller.pendingCount, 1)
+        assertReadCompletion(
+            controller.didReadValue(
+                connection: recovery,
+                peripheral: peripheral,
+                characteristic: updates,
+                value: [1],
+                error: nil
+            ),
+            command: read,
+            value: [1]
+        )
+    }
+
+    func testRetiredWriteBarrierOwnsCharacteristicUntilDrain() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 14, connectionId: 140)
+        weak var retiredCharacteristic: FakeIoCharacteristic?
+        do {
+            let characteristic = FakeIoCharacteristic(
+                properties: properties(writableWithResponse: true)
+            )
+            retiredCharacteristic = characteristic
+            try controller.enqueueWrite(
+                command: writeCommand(
+                    commandId: 100,
+                    connectionId: 140,
+                    sessionId: 141,
+                    characteristicId: 142,
+                    value: [1],
+                    writeType: .withResponse
+                ),
+                connection: connection,
+                target: target(
+                    connection: connection,
+                    sessionId: 141,
+                    characteristicId: 142,
+                    characteristic: characteristic
+                )
+            )
+            _ = try nextAction(controller, connection: connection)
+            _ = controller.retire(
+                connection: connection,
+                error: eventError(category: .timeout, message: "watchdog expired")
+            )
+        }
+        XCTAssertNotNil(retiredCharacteristic)
+        controller.drain()
+        XCTAssertNil(retiredCharacteristic, "drain must release the barrier's exact characteristic")
+    }
+
     func testStaleCallbackBarrierOverflowRetains129thAndLatchesOneSafetyFault() throws {
         let controller = AppleGattIoController()
         var routes: [(
             connection: AppleConnectionCorrelation,
-            characteristic: FakeIoCharacteristic
+            characteristic: WeakIoCharacteristic
         )] = []
 
         for index in 0 ..< 130 {
@@ -2282,7 +2846,7 @@ final class GattIoControllerTests: XCTestCase {
                 )
             )
             _ = try nextAction(controller, connection: connection)
-            routes.append((connection, characteristic))
+            routes.append((connection, WeakIoCharacteristic(characteristic)))
         }
 
         let survivorConnection = connectionCorrelation(generation: 1_000, connectionId: 1_001)
@@ -2322,16 +2886,22 @@ final class GattIoControllerTests: XCTestCase {
         )
         XCTAssertNil(controller.takeSafetyFault())
 
+        XCTAssertEqual(routes.compactMap { $0.characteristic.value }.count, 129)
+        XCTAssertNil(routes[129].characteristic.value, "the fail-closed 130th route must not be retained")
         var retainedBarrierCount = 0
         for route in routes {
+            guard let characteristic = route.characteristic.value else {
+                continue
+            }
             if controller.consumeRetiredReadCallback(
                 peripheral: route.connection.peripheral,
-                characteristic: route.characteristic
+                characteristic: characteristic
             ) {
                 retainedBarrierCount += 1
             }
         }
         XCTAssertEqual(retainedBarrierCount, 129)
+        XCTAssertTrue(routes.allSatisfy { $0.characteristic.value == nil })
         assertReadCompletion(
             controller.didReadValue(
                 connection: survivorConnection,
@@ -2411,8 +2981,13 @@ final class GattIoControllerTests: XCTestCase {
             )
         }
 
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1)
+        XCTAssertEqual(controller.diagnosticAttributeIdentities.count, 1)
         controller.drain()
 
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
+        XCTAssertEqual(controller.diagnosticSubscriptionCount, 0)
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
         XCTAssertEqual(controller.pendingCount, 0)
         XCTAssertFalse(controller.hasPending(connection: connection))
         XCTAssertNil(
@@ -2430,6 +3005,634 @@ final class GattIoControllerTests: XCTestCase {
                 target: ioTarget
             )
         )
+    }
+
+    func testMixedGattInterruptionPreservesTerminalOrderAndIsolatesReplacementRoute() throws {
+        enum Head: Int, CaseIterable {
+            case responseWrite, capacityBlockedWrite, enable, disable
+        }
+        enum Interruption: CaseIterable {
+            case disconnect, watchdog, close
+        }
+
+        for interruption in Interruption.allCases {
+            for head in Head.allCases {
+                // Dedicated capacity-watchdog tests cover its pre-native ownership boundary.
+                if interruption == .watchdog && head == .capacityBlockedWrite {
+                    continue
+                }
+                let context = "\(interruption), head=\(head)"
+                let controller = AppleGattIoController()
+                let peripheral = FakeIoPeripheral(identifier: UUID())
+                let connection = connectionCorrelation(
+                    generation: 1, connectionId: 10, peripheral: peripheral
+                )
+                let writes = FakeIoCharacteristic(
+                    properties: properties(writableWithResponse: true, writableWithoutResponse: true)
+                )
+                let enabling = FakeIoCharacteristic(properties: properties(notifiable: true))
+                let disabling = FakeIoCharacteristic(properties: properties(notifiable: true))
+                let writeTarget = target(
+                    connection: connection, sessionId: 20, characteristicId: 30,
+                    characteristic: writes
+                )
+                let enableTarget = target(
+                    connection: connection, sessionId: 20, characteristicId: 31,
+                    characteristic: enabling
+                )
+                let disableTarget = target(
+                    connection: connection, sessionId: 20, characteristicId: 32,
+                    characteristic: disabling
+                )
+                let responseWrite = writeCommand(
+                    commandId: 1, connectionId: 10, sessionId: 20, characteristicId: 30,
+                    value: [1], writeType: .withResponse
+                )
+                let noResponseWrite = writeCommand(
+                    commandId: 2, connectionId: 10, sessionId: 20, characteristicId: 30,
+                    value: [2], writeType: .withoutResponse
+                )
+                let enable = notificationCommand(
+                    commandId: 3, connectionId: 10, sessionId: 20, subscriptionId: 40,
+                    characteristicId: 31, action: .enable(mode: .platformDefault)
+                )
+                let priorEnable = notificationCommand(
+                    commandId: 5, connectionId: 10, sessionId: 20, subscriptionId: 41,
+                    characteristicId: 32, action: .enable(mode: .platformDefault)
+                )
+                let disable = notificationCommand(
+                    commandId: 4, connectionId: 10, sessionId: 20, subscriptionId: 41,
+                    characteristicId: 32, action: .disable
+                )
+                try controller.enqueueSetNotifications(
+                    command: priorEnable, connection: connection, target: disableTarget
+                )
+                _ = try XCTUnwrap(controller.nextNotificationAction(connection: connection))
+                assertNotificationEnabled(
+                    controller.didUpdateNotificationState(
+                        connection: connection, peripheral: connection.peripheral,
+                        characteristic: disabling, isNotifying: true, error: nil
+                    ),
+                    command: priorEnable, actualMode: .notification
+                )
+
+                let order = Array(Head.allCases[head.rawValue...])
+                    + Array(Head.allCases[..<head.rawValue])
+                for operation in order {
+                    switch operation {
+                    case .responseWrite:
+                        try controller.enqueueWrite(
+                            command: responseWrite, connection: connection, target: writeTarget
+                        )
+                    case .capacityBlockedWrite:
+                        try controller.enqueueWrite(
+                            command: noResponseWrite, connection: connection, target: writeTarget
+                        )
+                    case .enable:
+                        try controller.enqueueSetNotifications(
+                            command: enable, connection: connection, target: enableTarget
+                        )
+                    case .disable:
+                        try controller.enqueueSetNotifications(
+                            command: disable, connection: connection, target: disableTarget
+                        )
+                    }
+                }
+                switch head {
+                case .responseWrite:
+                    assertWriteWithResponseAction(
+                        try XCTUnwrap(nextAction(controller, connection: connection)),
+                        command: responseWrite, characteristic: writes
+                    )
+                case .capacityBlockedWrite:
+                    assertWriteCapacityWaitAction(
+                        try XCTUnwrap(nextAction(
+                            controller, connection: connection, canSendWriteWithoutResponse: false
+                        )),
+                        command: noResponseWrite,
+                        connection: connection
+                    )
+                    XCTAssertTrue(controller.didBecomeReadyToSendWriteWithoutResponse(
+                        connection: connection, peripheral: connection.peripheral
+                    ), context)
+                    XCTAssertNil(controller.nextNotificationAction(connection: connection), context)
+                case .enable, .disable:
+                    assertSetNotifyValueAction(
+                        try XCTUnwrap(controller.nextNotificationAction(connection: connection)),
+                        command: head == .enable ? enable : disable,
+                        characteristic: head == .enable ? enabling : disabling,
+                        enabled: head == .enable
+                    )
+                }
+
+                if interruption == .close {
+                    // dispose detaches ingress before silently draining controller ownership.
+                    controller.drain()
+                    XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0, context)
+                    XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty, context)
+                } else {
+                    let disconnected = eventError(category: .connection, message: "disconnected")
+                    let timeout = eventError(category: .timeout, message: "active watchdog expired")
+                    let aborted = eventError(category: .operationAborted, message: "queued operation retired")
+                    let retirement = controller.retireAll(
+                        connection: connection,
+                        error: interruption == .watchdog ? aborted : disconnected,
+                        activeOperationError: interruption == .watchdog ? timeout : nil,
+                        queuedOperationError: interruption == .watchdog ? aborted : nil
+                    )
+                    let events = AppleBackendEventProjection.gattRetirementEvents(retirement)
+                    XCTAssertEqual(retirement.completions.count, order.count, context)
+                    XCTAssertEqual(events.count, order.count, context)
+                    for (index, event) in events.enumerated() {
+                        guard index < order.count,
+                              case .commandCompleted(let commandId, let error) = event
+                        else {
+                            return XCTFail("interruption fabricated a domain event: \(context)")
+                        }
+                        XCTAssertEqual(commandId, CommandId(value: UInt64(order[index].rawValue + 1)), context)
+                        let expected = interruption == .disconnect ? disconnected : (index == 0 ? timeout : aborted)
+                        XCTAssertEqual(error, expected, context)
+                    }
+                    let cleanup = retirement.activeNotificationCharacteristicsToUnsubscribe
+                        .map { ObjectIdentifier($0) }
+                    XCTAssertEqual(
+                        cleanup,
+                        head == .enable
+                            ? [ObjectIdentifier(disabling), ObjectIdentifier(enabling)]
+                            : [ObjectIdentifier(disabling)],
+                        context
+                    )
+                    XCTAssertEqual(controller.diagnosticCallbackRouteCount,
+                                   head == .capacityBlockedWrite ? 2 : 3, context)
+                }
+                XCTAssertEqual(controller.pendingCount, 0, context)
+                XCTAssertEqual(controller.diagnosticSubscriptionCount, 0, context)
+                XCTAssertTrue(controller.retireAll(
+                    connection: connection,
+                    error: eventError(category: .connection, message: "duplicate disconnect")
+                ).completions.isEmpty, context)
+
+                let replacement = connectionCorrelation(
+                    generation: 2, connectionId: 10, peripheral: peripheral
+                )
+                let replacementCharacteristic = FakeIoCharacteristic(
+                    uuid: writes.appleGattUuid,
+                    properties: properties(writableWithResponse: true)
+                )
+                let recoveryWrite = writeCommand(
+                    commandId: 6, connectionId: 10, sessionId: 21, characteristicId: 33,
+                    value: [3], writeType: .withResponse
+                )
+                try controller.enqueueWrite(
+                    command: recoveryWrite, connection: replacement,
+                    target: target(
+                        connection: replacement, sessionId: 21, characteristicId: 33,
+                        characteristic: replacementCharacteristic
+                    )
+                )
+                assertWriteWithResponseAction(
+                    try XCTUnwrap(nextAction(controller, connection: replacement)),
+                    command: recoveryWrite, characteristic: replacementCharacteristic
+                )
+                XCTAssertNil(controller.didWriteValue(
+                    connection: replacement, peripheral: connection.peripheral,
+                    characteristic: writes, error: nil
+                ), context)
+                XCTAssertNil(controller.didSubmitWriteWithoutResponse(
+                    connection: connection, peripheral: connection.peripheral,
+                    characteristic: writes
+                ), context)
+                XCTAssertFalse(controller.didBecomeReadyToSendWriteWithoutResponse(
+                    connection: connection, peripheral: connection.peripheral
+                ), context)
+                for characteristic in [enabling, disabling] {
+                    XCTAssertNil(controller.didUpdateNotificationState(
+                        connection: replacement, peripheral: connection.peripheral,
+                        characteristic: characteristic, isNotifying: true, error: nil
+                    ), context)
+                }
+                XCTAssertEqual(controller.pendingCount, 1, context)
+                assertWriteCompletion(
+                    controller.didWriteValue(
+                        connection: replacement, peripheral: replacement.peripheral,
+                        characteristic: replacementCharacteristic, error: nil
+                    ),
+                    command: recoveryWrite
+                )
+                XCTAssertEqual(controller.pendingCount, 0, context)
+                controller.drain()
+                XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0, context)
+                XCTAssertEqual(controller.diagnosticSubscriptionCount, 0, context)
+                XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty, context)
+                XCTAssertNil(controller.takeSafetyFault(), context)
+            }
+        }
+    }
+
+    func testCapacityWaitExpiryRetiresTargetAndSiblingsWithoutNativeCallbackBarrier() throws {
+        let controller = AppleGattIoController()
+        let connections = AppleConnectionController()
+        let peripheral = FakeIoPeripheral(identifier: UUID())
+        let connect = ConnectCommand(
+            commandId: CommandId(value: 90), connectionId: ConnectionId(value: 10),
+            peripheralId: PeripheralId(value: 100)
+        )
+        let connection = try connections.begin(command: connect, peripheral: peripheral)
+        XCTAssertEqual(connections.didConnect(peripheral: peripheral), .connected(connection))
+        let characteristic = FakeIoCharacteristic(
+            properties: properties(writableWithResponse: true, writableWithoutResponse: true)
+        )
+        let head = try enqueueCapacityWrite(controller, connection: connection, characteristic: characteristic, id: 1)
+        let sibling = rssiCommand(commandId: 2, connectionId: 10)
+        try controller.enqueueRssi(command: sibling, connection: connection)
+        let registry = AppleGattWatchdogRegistry()
+        let token = try armCapacityWait(controller, registry: registry, connection: connection, command: head)
+        XCTAssertTrue(controller.isWaitingForWriteCapacity(connection: connection, commandId: head.commandId))
+        XCTAssertFalse(controller.isWaitingForWriteCapacity(connection: connection, commandId: sibling.commandId))
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 1, "only the connection lane; no native callback")
+        XCTAssertNil(controller.didSubmitWriteWithoutResponse(
+            connection: connection, peripheral: peripheral, characteristic: characteristic
+        ))
+
+        XCTAssertNotNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: token))
+        XCTAssertTrue(connections.beginFailClosedDisconnect(connection: connection))
+        let timeout = AppleEventMapper.operationTimeout("write capacity stalled")
+        let aborted = AppleEventMapper.operationAborted("connection recovery")
+        let retirement = controller.retireAll(
+            connection: connection, error: aborted,
+            activeOperationError: timeout, queuedOperationError: aborted
+        )
+        let events = AppleBackendEventProjection.gattRetirementEvents(retirement)
+        XCTAssertEqual(events.count, 2)
+        for (event, expected) in zip(events, [(head.commandId, timeout), (sibling.commandId, aborted)]) {
+            guard case .commandCompleted(let commandId, let error) = event else {
+                return XCTFail("capacity timeout fabricated a domain event")
+            }
+            XCTAssertEqual(commandId, expected.0)
+            XCTAssertEqual(error, expected.1)
+        }
+        XCTAssertNil(connections.connectedCorrelation(for: connection.connectionId))
+        XCTAssertNil(try nextAction(controller, connection: connection))
+        XCTAssertFalse(controller.didBecomeReadyToSendWriteWithoutResponse(
+            connection: connection, peripheral: peripheral
+        ))
+        XCTAssertNil(controller.didSubmitWriteWithoutResponse(
+            connection: connection, peripheral: peripheral, characteristic: characteristic
+        ))
+        XCTAssertFalse(controller.consumeRetiredWriteCallback(peripheral: peripheral, characteristic: characteristic))
+        XCTAssertEqual(controller.pendingCount, 0)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
+        XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
+        XCTAssertTrue(controller.retireAll(connection: connection, error: aborted).completions.isEmpty)
+        XCTAssertNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: token))
+
+        _ = connections.didDisconnect(peripheral: peripheral)
+        let replacement = try connections.begin(command: connect, peripheral: peripheral)
+        _ = connections.didConnect(peripheral: peripheral)
+        XCTAssertNotEqual(replacement.generation, connection.generation)
+        let recovery = try enqueueCapacityWrite(controller, connection: replacement, characteristic: characteristic, id: 3)
+        _ = try XCTUnwrap(nextAction(controller, connection: replacement))
+        XCTAssertNil(controller.didSubmitWriteWithoutResponse(
+            connection: connection, peripheral: peripheral, characteristic: characteristic
+        ))
+        assertWriteCompletion(controller.didSubmitWriteWithoutResponse(
+            connection: replacement, peripheral: peripheral, characteristic: characteristic
+        ), command: recovery)
+        XCTAssertEqual(controller.pendingCount, 0)
+    }
+
+    func testCapacityReadinessDoesNotExtendDeadlineAndCancelsItBeforeSubmission() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let characteristic = FakeIoCharacteristic(properties: properties(writableWithoutResponse: true))
+        let head = try enqueueCapacityWrite(controller, connection: connection, characteristic: characteristic, id: 1)
+        let registry = AppleGattWatchdogRegistry()
+        let token = try armCapacityWait(controller, registry: registry, connection: connection, command: head)
+        for _ in 0..<3 {
+            XCTAssertTrue(controller.didBecomeReadyToSendWriteWithoutResponse(
+                connection: connection, peripheral: connection.peripheral
+            ))
+            XCTAssertNil(try nextAction(controller, connection: connection, canSendWriteWithoutResponse: false),
+                         "repeated drive must not request a fresh watchdog/deadline")
+        }
+        XCTAssertFalse(controller.didBecomeReadyToSendWriteWithoutResponse(
+            connection: connection,
+            peripheral: FakeIoPeripheral(identifier: connection.peripheral.identifier)
+        ))
+        let stale = connectionCorrelation(generation: 2, connectionId: 10)
+        XCTAssertFalse(controller.isWaitingForWriteCapacity(connection: stale, commandId: head.commandId))
+        XCTAssertFalse(controller.didBecomeReadyToSendWriteWithoutResponse(
+            connection: stale, peripheral: stale.peripheral
+        ))
+        assertWriteWithoutResponseAction(
+            try XCTUnwrap(nextAction(controller, connection: connection)),
+            command: head, characteristic: characteristic
+        )
+        XCTAssertFalse(controller.isWaitingForWriteCapacity(connection: connection, commandId: head.commandId))
+        let cancelled = try XCTUnwrap(registry.cancel(
+            connectionId: connection.connectionId, kind: .writeCapacity(head.commandId)
+        ))
+        cancelled.cancel()
+        XCTAssertNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: token))
+        guard case .active = controller.cancel(commandId: head.commandId) else {
+            return XCTFail("submission, unlike capacity waiting, must not be queued-cancellable")
+        }
+        XCTAssertNil(controller.didWriteValue(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic, error: nil
+        ))
+        let completion = try XCTUnwrap(controller.didSubmitWriteWithoutResponse(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        ))
+        // Written records the completed local submission, not a didWrite callback or remote ACK.
+        XCTAssertEqual(AppleBackendEventProjection.gattIoEvents(completion), [
+            .characteristicWritten(
+                commandId: head.commandId,
+                connectionId: head.connectionId,
+                gattSessionId: head.gattSessionId,
+                characteristicId: head.characteristicId
+            ),
+            .commandCompleted(commandId: head.commandId, error: nil),
+        ])
+        XCTAssertNil(controller.didWriteValue(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic, error: nil
+        ))
+        XCTAssertFalse(controller.didBecomeReadyToSendWriteWithoutResponse(
+            connection: connection, peripheral: connection.peripheral
+        ))
+        XCTAssertNil(controller.didSubmitWriteWithoutResponse(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        ))
+        XCTAssertEqual(registry.diagnosticCount, 0)
+        XCTAssertEqual(controller.pendingCount, 0)
+        XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
+    }
+
+    func testCapacityHeadCancellationCannotCancelSiblingWatchdogOrReviveOldExpiry() throws {
+        let controller = AppleGattIoController()
+        let connection = connectionCorrelation(generation: 1, connectionId: 10)
+        let characteristic = FakeIoCharacteristic(properties: properties(writableWithoutResponse: true))
+        let first = try enqueueCapacityWrite(controller, connection: connection, characteristic: characteristic, id: 1)
+        let second = try enqueueCapacityWrite(controller, connection: connection, characteristic: characteristic, id: 2)
+        let sibling = rssiCommand(commandId: 3, connectionId: 10)
+        try controller.enqueueRssi(command: sibling, connection: connection)
+        let registry = AppleGattWatchdogRegistry()
+        let firstToken = try armCapacityWait(controller, registry: registry, connection: connection, command: first)
+        guard case .queued = controller.cancel(commandId: sibling.commandId) else {
+            return XCTFail("sibling was not queued-cancellable")
+        }
+        XCTAssertNil(registry.cancel(connectionId: connection.connectionId, kind: .writeCapacity(sibling.commandId)))
+        XCTAssertTrue(controller.isWaitingForWriteCapacity(connection: connection, commandId: first.commandId))
+        XCTAssertNil(try nextAction(controller, connection: connection, canSendWriteWithoutResponse: false))
+        guard case .queued = controller.cancel(commandId: first.commandId) else {
+            return XCTFail("capacity-waiting head must remain queued-cancellable")
+        }
+        try XCTUnwrap(registry.cancel(connectionId: connection.connectionId, kind: .writeCapacity(first.commandId))).cancel()
+        let secondToken = try armCapacityWait(controller, registry: registry, connection: connection, command: second)
+        XCTAssertNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: firstToken))
+        XCTAssertFalse(controller.isWaitingForWriteCapacity(connection: connection, commandId: first.commandId))
+        XCTAssertTrue(controller.isWaitingForWriteCapacity(connection: connection, commandId: second.commandId))
+        XCTAssertEqual(controller.pendingCount, 1)
+
+        _ = try XCTUnwrap(nextAction(controller, connection: connection))
+        try XCTUnwrap(registry.cancel(connectionId: connection.connectionId, kind: .writeCapacity(second.commandId))).cancel()
+        _ = controller.didSubmitWriteWithoutResponse(
+            connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+        )
+        let rssi = rssiCommand(commandId: 4, connectionId: 10)
+        try controller.enqueueRssi(command: rssi, connection: connection)
+        _ = try XCTUnwrap(nextAction(controller, connection: connection))
+        let nativeToken = registry.arm(connectionId: connection.connectionId, kind: .io, workItem: DispatchWorkItem {}).token
+        XCTAssertNil(registry.cancel(connectionId: connection.connectionId, kind: .writeCapacity(second.commandId)))
+        XCTAssertNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: secondToken))
+        XCTAssertEqual(registry.diagnosticCount, 1)
+        XCTAssertNotNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: nativeToken))
+        _ = controller.didReadRssi(connection: connection, peripheral: connection.peripheral, rssi: -60, error: nil)
+        XCTAssertEqual(controller.pendingCount, 0)
+    }
+
+    func testCapacityWaitDisconnectAndDisposeRemoveTokensWithoutNativeBarriers() throws {
+        for disposing in [false, true] {
+            let controller = AppleGattIoController()
+            let connection = connectionCorrelation(generation: 1, connectionId: 10)
+            let characteristic = FakeIoCharacteristic(properties: properties(writableWithoutResponse: true))
+            let head = try enqueueCapacityWrite(controller, connection: connection, characteristic: characteristic, id: 1)
+            let registry = AppleGattWatchdogRegistry()
+            let token = try armCapacityWait(controller, registry: registry, connection: connection, command: head)
+            let other = ConnectionId(value: 11)
+            let otherToken = registry.arm(connectionId: other, kind: .discovery, workItem: DispatchWorkItem {}).token
+            if disposing {
+                registry.cancelAll().forEach { $0.cancel() }
+                controller.drain()
+                XCTAssertEqual(registry.diagnosticCount, 0)
+            } else {
+                try XCTUnwrap(registry.cancel(connectionId: connection.connectionId)).cancel()
+                let error = eventError(category: .connection, message: "disconnected before submission")
+                let retirement = controller.retireAll(connection: connection, error: error)
+                XCTAssertEqual(retirement.ioCompletions.count, 1)
+                assertFailure(retirement.ioCompletions.first, commandId: head.commandId,
+                              category: .connection, message: error.message)
+                XCTAssertEqual(registry.diagnosticCount, 1, "connection teardown must not cancel its sibling")
+                XCTAssertNotNil(registry.takeIfCurrent(connectionId: other, token: otherToken))
+            }
+            XCTAssertNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: token))
+            XCTAssertFalse(controller.isWaitingForWriteCapacity(connection: connection, commandId: head.commandId))
+            XCTAssertFalse(controller.didBecomeReadyToSendWriteWithoutResponse(
+                connection: connection, peripheral: connection.peripheral
+            ))
+            XCTAssertNil(try nextAction(controller, connection: connection))
+            XCTAssertNil(controller.didSubmitWriteWithoutResponse(
+                connection: connection, peripheral: connection.peripheral, characteristic: characteristic
+            ))
+            XCTAssertEqual(controller.pendingCount, 0)
+            XCTAssertEqual(controller.diagnosticCallbackRouteCount, 0)
+            XCTAssertTrue(controller.diagnosticAttributeIdentities.isEmpty)
+        }
+    }
+
+    func testUnavailableAdapterOrAuthorizationRetiresActiveCccAndQueuedWriteWatchdog() throws {
+        let inputs: [(CBManagerState, CBManagerAuthorization, BleErrorCategory)] = [
+            (.poweredOff, .allowedAlways, .adapterUnavailable),
+            (.poweredOn, .denied, .permission),
+        ]
+        for (state, authorization, category) in inputs {
+            let context = "state=\(state), authorization=\(authorization)"
+            let controller = AppleGattIoController()
+            let connections = AppleConnectionController()
+            let gatt = AppleGattController()
+            let registry = AppleGattWatchdogRegistry()
+            let peripheral = FakeIoPeripheral(identifier: UUID())
+            let connect = ConnectCommand(
+                commandId: CommandId(value: 90), connectionId: ConnectionId(value: 10),
+                peripheralId: PeripheralId(value: 100)
+            )
+            let connection = try connections.begin(command: connect, peripheral: peripheral)
+            XCTAssertEqual(connections.didConnect(peripheral: peripheral), .connected(connection))
+            let characteristic = FakeIoCharacteristic(
+                properties: properties(writableWithResponse: true, notifiable: true)
+            )
+            let ioTarget = target(
+                connection: connection, sessionId: 20, characteristicId: 30,
+                characteristic: characteristic
+            )
+            let enable = notificationCommand(
+                commandId: 1, connectionId: 10, sessionId: 20, subscriptionId: 40,
+                characteristicId: 30, action: .enable(mode: .platformDefault)
+            )
+            try controller.enqueueSetNotifications(command: enable, connection: connection, target: ioTarget)
+            assertSetNotifyValueAction(
+                try XCTUnwrap(controller.nextNotificationAction(connection: connection)),
+                command: enable, characteristic: characteristic, enabled: true
+            )
+            let write = writeCommand(
+                commandId: 2, connectionId: 10, sessionId: 20, characteristicId: 30,
+                value: [1], writeType: .withResponse
+            )
+            try controller.enqueueWrite(command: write, connection: connection, target: ioTarget)
+            let oldWork = DispatchWorkItem {}
+            let oldToken = registry.arm(
+                connectionId: connection.connectionId, kind: .io, workItem: oldWork
+            ).token
+            // A registry entry not owned by the drained routes must not be globally cancelled.
+            let unrelatedId = ConnectionId(value: 11)
+            let unrelatedWork = DispatchWorkItem {}
+            let unrelatedToken = registry.arm(
+                connectionId: unrelatedId, kind: .discovery, workItem: unrelatedWork
+            ).token
+            var nativeRetirements: [AppleConnectionCorrelation] = []
+            func retire(_ state: CBManagerState, _ authorization: CBManagerAuthorization) -> [BleEvent] {
+                AppleUnavailableConnectionRetirement.retireIfUnavailable(
+                    state: state, authorization: authorization,
+                    connections: connections, gatt: gatt, io: controller, watchdogs: registry
+                ) { retiredConnection, retirement in
+                    nativeRetirements.append(retiredConnection)
+                    XCTAssertEqual(retirement.completions.count, 2, context)
+                    XCTAssertEqual(retirement.activeNotificationCharacteristicsToUnsubscribe.count, 1, context)
+                }
+            }
+
+            XCTAssertTrue(retire(.poweredOn, .allowedAlways).isEmpty, context)
+            XCTAssertEqual(connections.connectedCorrelation(for: connection.connectionId), connection, context)
+            XCTAssertEqual(controller.pendingCount, 2, context)
+            XCTAssertEqual(registry.diagnosticCount, 2, context)
+            XCTAssertFalse(oldWork.isCancelled, context)
+            XCTAssertTrue(nativeRetirements.isEmpty, context)
+
+            let error = try XCTUnwrap(AppleEventMapper.connectionAvailabilityError(
+                state: state, authorization: authorization
+            ))
+            XCTAssertEqual(error.category, category, context)
+            let events = retire(state, authorization)
+            XCTAssertEqual(events, [
+                .commandCompleted(commandId: enable.commandId, error: error),
+                .commandCompleted(commandId: write.commandId, error: error),
+                .connectionStateChanged(commandId: nil, connectionId: connection.connectionId,
+                                        result: .err(error: error)),
+            ], context)
+            XCTAssertEqual(nativeRetirements, [connection], context)
+            XCTAssertEqual(connections.activeCount, 0, context)
+            XCTAssertEqual(controller.pendingCount, 0, context)
+            XCTAssertEqual(controller.diagnosticSubscriptionCount, 0, context)
+            XCTAssertGreaterThan(controller.diagnosticCallbackRouteCount, 0, "unresolved barriers must survive loss")
+            XCTAssertTrue(controller.diagnosticAttributeIdentities.contains(ObjectIdentifier(characteristic)), context)
+            XCTAssertTrue(oldWork.isCancelled, "retirement must cancel the active CCC watchdog: \(context)")
+            XCTAssertEqual(registry.diagnosticCount, 1, "only the unrelated token may remain: \(context)")
+            XCTAssertFalse(unrelatedWork.isCancelled, context)
+
+            XCTAssertTrue(retire(state, authorization).isEmpty, "repeated loss must not duplicate terminals")
+            XCTAssertEqual(nativeRetirements, [connection], context)
+            XCTAssertEqual(registry.diagnosticCount, 1, context)
+            XCTAssertTrue(retire(.poweredOn, .allowedAlways).isEmpty, context)
+
+            let replacement = try connections.begin(command: ConnectCommand(
+                commandId: CommandId(value: 91), connectionId: connect.connectionId,
+                peripheralId: connect.peripheralId
+            ), peripheral: peripheral)
+            XCTAssertNotEqual(replacement.generation, connection.generation, context)
+            XCTAssertEqual(connections.didConnect(peripheral: peripheral), .connected(replacement))
+            // A fresh native characteristic does not erase the old CCC callback/value barriers.
+            let freshCharacteristic = FakeIoCharacteristic(properties: properties(writableWithResponse: true))
+            let recoveryWrite = writeCommand(
+                commandId: 3, connectionId: 10, sessionId: 21, characteristicId: 31,
+                value: [2], writeType: .withResponse
+            )
+            try controller.enqueueWrite(command: recoveryWrite, connection: replacement, target: target(
+                connection: replacement, sessionId: 21, characteristicId: 31,
+                characteristic: freshCharacteristic
+            ))
+            assertWriteWithResponseAction(
+                try XCTUnwrap(nextAction(controller, connection: replacement)),
+                command: recoveryWrite, characteristic: freshCharacteristic
+            )
+            let replacementToken = registry.arm(
+                connectionId: replacement.connectionId, kind: .io, workItem: DispatchWorkItem {}
+            ).token
+            // This is the production expiry handler's registry gate, not a real Dispatch timer.
+            XCTAssertNil(registry.takeIfCurrent(connectionId: connection.connectionId, token: oldToken), context)
+            XCTAssertEqual(registry.diagnosticCount, 2, context)
+            XCTAssertEqual(connections.connectedCorrelation(for: replacement.connectionId), replacement, context)
+            XCTAssertTrue(controller.consumeRetiredNotificationStateCallback(
+                peripheral: peripheral, characteristic: characteristic
+            ), "late CCC callback must still encounter its retirement barrier")
+            XCTAssertNil(controller.didUpdateNotificationState(
+                connection: replacement, peripheral: peripheral, characteristic: characteristic,
+                isNotifying: true, error: nil
+            ), context)
+            XCTAssertEqual(controller.pendingCount, 1, context)
+            XCTAssertNotNil(registry.takeIfCurrent(connectionId: replacement.connectionId, token: replacementToken), context)
+            assertWriteCompletion(controller.didWriteValue(
+                connection: replacement, peripheral: peripheral,
+                characteristic: freshCharacteristic, error: nil
+            ), command: recoveryWrite)
+            XCTAssertEqual(controller.pendingCount, 0, context)
+            XCTAssertNotNil(registry.takeIfCurrent(connectionId: unrelatedId, token: unrelatedToken), context)
+            XCTAssertEqual(registry.diagnosticCount, 0, context)
+        }
+    }
+
+    private func enqueueCapacityWrite(
+        _ controller: AppleGattIoController,
+        connection: AppleConnectionCorrelation,
+        characteristic: FakeIoCharacteristic,
+        id: UInt64
+    ) throws -> WriteCharacteristicCommand {
+        let command = writeCommand(
+            commandId: id, connectionId: connection.connectionId.value,
+            sessionId: 20, characteristicId: 30, value: [1], writeType: .withoutResponse
+        )
+        try controller.enqueueWrite(command: command, connection: connection, target: target(
+            connection: connection, sessionId: 20, characteristicId: 30, characteristic: characteristic
+        ))
+        return command
+    }
+
+    private func armCapacityWait(
+        _ controller: AppleGattIoController,
+        registry: AppleGattWatchdogRegistry,
+        connection: AppleConnectionCorrelation,
+        command: WriteCharacteristicCommand
+    ) throws -> AppleGattWatchdogToken {
+        assertWriteCapacityWaitAction(
+            try XCTUnwrap(nextAction(controller, connection: connection, canSendWriteWithoutResponse: false)),
+            command: command, connection: connection
+        )
+        return registry.arm(
+            connectionId: connection.connectionId, kind: .writeCapacity(command.commandId),
+            workItem: DispatchWorkItem {}
+        ).token
+    }
+
+    private func assertWriteCapacityWaitAction(
+        _ action: AppleGattIoAction,
+        command: WriteCharacteristicCommand,
+        connection: AppleConnectionCorrelation,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case .waitForWriteCapacity(let commandId, let owner) = action else {
+            return XCTFail("expected capacity-wait action, not native submission", file: file, line: line)
+        }
+        XCTAssertEqual(commandId, command.commandId, file: file, line: line)
+        XCTAssertEqual(owner, connection, file: file, line: line)
     }
 
     private func nextAction(
@@ -2472,6 +3675,13 @@ final class GattIoControllerTests: XCTestCase {
             gattSessionId: GattSessionId(value: sessionId),
             characteristicId: GattCharacteristicId(value: characteristicId),
             characteristic: characteristic
+        )
+    }
+
+    private func rssiCommand(commandId: UInt64, connectionId: UInt64) -> ReadRssiCommand {
+        ReadRssiCommand(
+            commandId: CommandId(value: commandId),
+            connectionId: ConnectionId(value: connectionId)
         )
     }
 
@@ -2863,6 +4073,8 @@ final class GattIoControllerTests: XCTestCase {
             return command.commandId
         case .write(let command):
             return command.commandId
+        case .rssi(let command):
+            return command.commandId
         }
     }
 }
@@ -2872,6 +4084,14 @@ private final class FakeIoPeripheral: ApplePeripheralObject {
 
     init(identifier: UUID) {
         self.identifier = identifier
+    }
+}
+
+private final class WeakIoCharacteristic {
+    weak var value: FakeIoCharacteristic?
+
+    init(_ value: FakeIoCharacteristic) {
+        self.value = value
     }
 }
 

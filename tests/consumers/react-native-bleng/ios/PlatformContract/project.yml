@@ -1,0 +1,37 @@
+name: BlengPlatformContract
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "26.2"
+packages:
+  BleHubApple:
+    path: "__BLEHUB_APPLE_BLENG_STAGING_ROOT__/BleHubApple"
+targets:
+  BlengPlatformContract:
+    type: library.static
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: "__BLEHUB_PLATFORM_CONTRACT_SMOKE_ROOT__"
+      - path: "__BLEHUB_INSTALLED_FORMAL_PACKAGE_ROOT__/ios/ApplePlatformSession.swift"
+        buildPhase: sources
+      - path: "__BLEHUB_INSTALLED_FORMAL_PACKAGE_ROOT__/ios/RecoveryEventProjection.swift"
+        buildPhase: sources
+      - path: "__BLEHUB_INSTALLED_FORMAL_PACKAGE_ROOT__/ios/RecoveryEventInbox.swift"
+        buildPhase: sources
+      - path: "__BLEHUB_INSTALLED_FORMAL_PACKAGE_ROOT__/ios/AppleRustSupervisorOwner.swift"
+        buildPhase: sources
+    settings:
+      base:
+        SWIFT_VERSION: 5.0
+        PRODUCT_NAME: BlengPlatformContract
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      - package: BleHubApple
+        product: BleHubApple
+schemes:
+  BlengPlatformContract:
+    build:
+      targets:
+        BlengPlatformContract: all

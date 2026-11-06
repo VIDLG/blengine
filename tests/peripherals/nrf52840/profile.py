@@ -20,7 +20,7 @@ PROPERTY_BITS = {
 }
 PERMISSION_READ = 1 << 0
 PERMISSION_WRITE = 1 << 1
-PERMISSION_READ_AUTHORIZATION = 1 << 6
+
 PRIMARY_SERVICE = 0
 CCC_UUID = "2902"
 
@@ -46,6 +46,49 @@ class ProfilePlan:
     service_uuid: str
     notification_value: bytes
     characteristics: tuple[CharacteristicPlan, ...]
+    require_local_name: bool = False
+
+    def recovery_target(self) -> RecoveryTargetSpec:
+        """Project the declared profile facts needed by a recovery host.
+
+        This is deliberately a provider-side value object, not a UniFFI record. The
+        platform adapter maps it to ``ForeignRecoveryTarget`` after it has chosen
+        the platform's notification mode.
+        """
+        updates = next(
+            (
+                characteristic
+                for characteristic in self.characteristics
+                if characteristic.role == "updates"
+            ),
+            None,
+        )
+        if updates is None:
+            raise ProfileError("recovery target requires an updates characteristic")
+        if not updates.requires_ccc:
+            raise ProfileError(
+                "recovery updates characteristic must support notifications"
+            )
+        if not updates.properties & PROPERTY_BITS["read"]:
+            raise ProfileError("recovery updates characteristic must be readable")
+        return RecoveryTargetSpec(
+            service_uuid=self.service_uuid,
+            characteristic_uuid=updates.uuid,
+            expected_value=self.notification_value,
+            scan_service_uuids=(self.service_uuid,),
+            scan_name_prefix=self.local_name if self.require_local_name else None,
+        )
+
+
+@dataclass(frozen=True)
+class RecoveryTargetSpec:
+    """Provider-owned recovery facts before native FFI conversion."""
+
+    service_uuid: str
+    characteristic_uuid: str
+    expected_value: bytes
+    scan_service_uuids: tuple[str, ...]
+    scan_name_prefix: str | None
 
 
 def _hex(value: Any, *, field: str) -> bytes:
@@ -57,7 +100,7 @@ def _hex(value: Any, *, field: str) -> bytes:
         raise ProfileError(f"{field} is not valid hexadecimal") from error
 
 
-def load_profile(path: Path, *, allow_read_authorization: bool = False) -> ProfilePlan:
+def load_profile(path: Path) -> ProfilePlan:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -70,6 +113,9 @@ def load_profile(path: Path, *, allow_read_authorization: bool = False) -> Profi
         raise ProfileError("nRF profile must contain exactly one service")
     if not isinstance(advertising, dict):
         raise ProfileError("profile advertising must be an object")
+    require_local_name = advertising.get("require_local_name")
+    if type(require_local_name) is not bool:
+        raise ProfileError("advertising.require_local_name must be a bool")
     service = services[0]
     if not isinstance(service, dict) or not isinstance(
         service.get("characteristics"), list
@@ -112,15 +158,7 @@ def load_profile(path: Path, *, allow_read_authorization: bool = False) -> Profi
         if "write" in properties or "write_without_response" in properties:
             permissions |= PERMISSION_WRITE
         if "read_authorization" in item:
-            if (
-                not allow_read_authorization
-                or item["read_authorization"] is not True
-                or "read" not in properties
-            ):
-                raise ProfileError(
-                    "read authorization requires an opt-in readable diagnostic"
-                )
-            permissions |= PERMISSION_READ_AUTHORIZATION
+            raise ProfileError("retired AUTH_READ is not supported by live profiles")
         initial_value = _hex(
             item.get("initial_value_hex", ""), field=f"{role}.initial_value_hex"
         )
@@ -136,7 +174,12 @@ def load_profile(path: Path, *, allow_read_authorization: bool = False) -> Profi
         )
         roles.add(role)
     return ProfilePlan(
-        profile_id, local_name, service_uuid, notification_value, tuple(characteristics)
+        profile_id,
+        local_name,
+        service_uuid,
+        notification_value,
+        tuple(characteristics),
+        require_local_name,
     )
 
 

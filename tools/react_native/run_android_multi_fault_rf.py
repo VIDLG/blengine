@@ -12,7 +12,7 @@ from typing import cast
 
 from tests.peripherals.nrf52840 import multi_fixture, provider
 from tests.peripherals.nrf52840.profile import load_profile
-from tools.react_native import run_android_rf
+from tools.react_native import android_sdk
 from tools.react_native.rf_runner import ProgressReporter, runtime_failure
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +46,7 @@ def _wait_for_runtime(
     log = ""
     progress.phase_started(phase)
     while time.monotonic() < deadline:
-        log = run_android_rf.logcat(serial)
+        log = android_sdk.logcat(serial)
         _ = log_path.write_text(log, encoding="utf-8")
         failure = runtime_failure(log)
         if failure is not None:
@@ -81,7 +81,7 @@ def _wait_for_runtime(
                 )
             progress.phase_passed("reconnect", marker=PASS_MARKER)
             return
-        if phase != "launch" and not run_android_rf.runtime_alive(serial):
+        if phase != "launch" and not android_sdk.runtime_alive(serial):
             progress.failed("runtime-exited:com.blehubnitrohost")
             raise AndroidMultiFaultRfError(
                 f"Android RN multi fault host exited before the pass marker; see {log_path}"
@@ -123,20 +123,20 @@ def run(serial: str, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> Path:
         print("android-rf-multi-fault:fixture-start", flush=True)
         controller.start()
         print("android-rf-multi-fault:fixture-ready", flush=True)
-        _ = run_android_rf.run_command(
-            run_android_rf.adb_command(
+        _ = android_sdk.run_command(
+            android_sdk.adb_command(
                 serial, "shell", "am", "force-stop", "com.blehubnitrohost"
             ),
             timeout=15,
             check=True,
         )
-        _ = run_android_rf.run_command(
-            run_android_rf.adb_command(serial, "logcat", "-c"), timeout=15, check=True
+        _ = android_sdk.run_command(
+            android_sdk.adb_command(serial, "logcat", "-c"), timeout=15, check=True
         )
-        run_android_rf.grant_bluetooth_permissions(serial)
+        android_sdk.grant_bluetooth_permissions(serial)
         app_attempted = True
-        started = run_android_rf.run_command(
-            run_android_rf.adb_command(
+        started = android_sdk.run_command(
+            android_sdk.adb_command(
                 serial,
                 "shell",
                 "am",
@@ -169,7 +169,7 @@ def run(serial: str, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> Path:
             "--rf-multi-fault-service-uuids",
             service_uuids,
         ]
-        _ = run_android_rf.run_command(checker, timeout=30, check=True)
+        _ = android_sdk.run_command(checker, timeout=30, check=True)
         return log_path
     except BaseException as error:
         primary_error = error
@@ -180,14 +180,14 @@ def run(serial: str, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> Path:
         cleanup_errors: list[Exception] = []
         if app_attempted:
             try:
-                _ = run_android_rf.run_command(
-                    run_android_rf.adb_command(
+                _ = android_sdk.run_command(
+                    android_sdk.adb_command(
                         serial, "shell", "am", "force-stop", "com.blehubnitrohost"
                     ),
                     timeout=15,
                     check=True,
                 )
-            except (run_android_rf.AndroidRfError, OSError) as error:
+            except (android_sdk.AndroidSdkError, OSError) as error:
                 cleanup_errors.append(error)
         try:
             controller.stop()

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "image_id": "nrf-att-hold-watchdog-v1",
+  "image_version": "maintained",
+  "board": "nrf52840dk/nrf52840",
+  "profile_id": "blehub-nrf52840-watchdog-v1",
+  "fixture_role": "diagnostic-watchdog",
+  "capabilities": [
+    "att-read-hold",
+    "att-read-hold-timeout-30000",
+    "gatt-reset",
+    "diagnostic-btp"
+  ],
+  "settings": {
+    "CONFIG_BTTESTER_GATT_READ_HOLD": "y",
+    "CONFIG_BTTESTER_GATT_READ_HOLD_TIMEOUT_MS": "30000"
+  }
+}

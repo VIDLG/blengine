@@ -14,7 +14,7 @@ from typing import TextIO, cast, final
 
 from tests.peripherals.nrf52840 import multi_fixture, provider
 from tests.peripherals.nrf52840.profile import load_profile
-from tools.react_native import run_android_rf
+from tools.react_native import android_sdk
 from tools.react_native.rf_runner import (
     ProgressReporter,
     multi_rf_timeout_seconds,
@@ -37,7 +37,7 @@ class _LogcatCapture:
 
     def __init__(self, serial: str) -> None:
         self._process: subprocess.Popen[str] = subprocess.Popen(
-            run_android_rf.adb_command(
+            android_sdk.adb_command(
                 serial,
                 "logcat",
                 "-v",
@@ -150,9 +150,7 @@ def _wait_for_runtime(
                 progress.failed("fixture-exited")
                 message = f"nRF52840 fixture failed during Android RN multi RF: {error}; see {log_path}"
                 raise AndroidMultiRfError(message) from error
-        log = (
-            capture.snapshot() if capture is not None else run_android_rf.logcat(serial)
-        )
+        log = capture.snapshot() if capture is not None else android_sdk.logcat(serial)
         _ = log_path.write_text(log, encoding="utf-8")
         for line in log.splitlines():
             if "BLEHUB_NITRO_RUNTIME rf-multi-soak:cycle:" not in line:
@@ -177,7 +175,7 @@ def _wait_for_runtime(
         if pass_marker in log:
             progress.phase_passed("multi-rf", marker=PASS_MARKER)
             return
-        if phase != "launch" and not run_android_rf.runtime_alive(serial):
+        if phase != "launch" and not android_sdk.runtime_alive(serial):
             progress.failed("runtime-exited:com.blehubnitrohost")
             raise AndroidMultiRfError(
                 f"Android RN multi RF host exited before the pass marker; see {log_path}"
@@ -254,21 +252,21 @@ def run(
             coordination_cycles=soak_cycles if runtime_mode == "rf-multi-soak" else 1,
         )
         print("android-rf-multi:fixture-ready", flush=True)
-        _ = run_android_rf.run_command(
-            run_android_rf.adb_command(
+        _ = android_sdk.run_command(
+            android_sdk.adb_command(
                 serial, "shell", "am", "force-stop", "com.blehubnitrohost"
             ),
             timeout=15,
             check=True,
         )
-        _ = run_android_rf.run_command(
-            run_android_rf.adb_command(serial, "logcat", "-c"), timeout=15, check=True
+        _ = android_sdk.run_command(
+            android_sdk.adb_command(serial, "logcat", "-c"), timeout=15, check=True
         )
         capture = _LogcatCapture(serial)
-        run_android_rf.grant_bluetooth_permissions(serial)
+        android_sdk.grant_bluetooth_permissions(serial)
         app_attempted = True
-        start = run_android_rf.run_command(
-            run_android_rf.adb_command(
+        start = android_sdk.run_command(
+            android_sdk.adb_command(
                 serial,
                 "shell",
                 "am",
@@ -333,7 +331,7 @@ def run(
             )
         else:
             checker.extend(["--rf-multi-service-uuids", service_uuid_argument])
-        _ = run_android_rf.run_command(checker, timeout=30, check=True)
+        _ = android_sdk.run_command(checker, timeout=30, check=True)
         return log_path
     except Exception as error:
         primary_error = error
@@ -346,14 +344,14 @@ def run(
             capture.close()
         if app_attempted:
             try:
-                _ = run_android_rf.run_command(
-                    run_android_rf.adb_command(
+                _ = android_sdk.run_command(
+                    android_sdk.adb_command(
                         serial, "shell", "am", "force-stop", "com.blehubnitrohost"
                     ),
                     timeout=15,
                     check=True,
                 )
-            except (run_android_rf.AndroidRfError, OSError) as error:
+            except (android_sdk.AndroidSdkError, OSError) as error:
                 cleanup_errors.append(error)
         try:
             controller.stop()

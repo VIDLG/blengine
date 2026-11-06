@@ -1,0 +1,49 @@
+# Resolve react_native_pods.rb with node to allow for hoisting
+require Pod::Executable.execute_command("node", [
+  "-p",
+  "require.resolve(\n    \"react-native/scripts/react_native_pods.rb\",\n    {paths: [process.argv[1]]},\n  )",
+  __dir__,
+]).strip
+
+platform :ios, "16.0"
+prepare_react_native_project!
+
+apple_staged_root = ENV.fetch(
+  "BLEHUB_APPLE_BLENG_STAGING_ROOT",
+  File.expand_path("../../../../.work/staged/apple-bleng-react-native", __dir__)
+)
+
+linkage = ENV["USE_FRAMEWORKS"]
+if linkage != nil
+  Pod::UI.puts "Configuring Pod with #{linkage}ally linked Frameworks".green
+  use_frameworks! :linkage => linkage.to_sym
+end
+
+target "BleHubBlengHost" do
+  config = use_native_modules!
+
+  # The formal Nitro pod is autolinked from node_modules. Keep its staged
+  # production Apple/UniFFI dependencies explicit; no transitional integration is used.
+  pod "BleHubApple", :path => File.join(apple_staged_root, "BleHubApple")
+  pod "BleHubUniFfi", :path => File.join(apple_staged_root, "BleHubUniFfi")
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  post_install do |installer|
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false,
+    )
+  end
+end
+
+target "BleHubBlengHostNativeTests" do
+  inherit! :complete
+  pod "BleHubReactNativeBleng", :path => "../node_modules/@blehub/react-native-bleng"
+  pod "BleHubApple", :path => File.join(apple_staged_root, "BleHubApple")
+  pod "BleHubUniFfi", :path => File.join(apple_staged_root, "BleHubUniFfi")
+end

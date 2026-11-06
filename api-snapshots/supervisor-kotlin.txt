@@ -1,0 +1,326 @@
+# Reviewed BLeng supervisor Kotlin API shape; ABI remains unfrozen.
+
+enum class ForeignExternalRecoverySignal {
+    RADIO_LOST,
+    MANUAL_RECONNECT_REQUIRED,
+}
+
+data class ForeignOwnerClose(
+    var ownerClosed: Boolean,
+    var failure: ForeignOwnerCloseFailure?,
+)
+
+data class ForeignOwnerCloseFailure(
+    var code: String,
+    var message: String,
+)
+
+data class ForeignOwnerContext(
+    var ownerId: String,
+    var backendId: String,
+    var ownerGeneration: ULong,
+    var recoveryAttempt: ULong,
+)
+
+data class ForeignOwnerStart(
+    var context: ForeignOwnerContext,
+    var initializationCommandId: ULong,
+    var adapterSnapshot: AdapterSnapshot,
+)
+
+data class ForeignPlatformActionResult(
+    var sequence: ULong,
+    var signal: ForeignRecoverySignal,
+)
+
+interface ForeignPlatformOwnerSession {
+    fun context(): ForeignOwnerContext
+    fun backend(): BleBackend
+    fun disposeUnassembled()
+    fun startEventReader(owner: Bleng, scanProjection: ScanEventProjection)
+    suspend fun waitEventReader()
+    suspend fun resourceSnapshot(): List<ForeignResourceCount>
+    suspend fun executeRecoveryAction(sequence: ULong, action: ForeignPlatformRecoveryAction): ForeignPlatformActionResult
+}
+
+interface ForeignPlatformOwnerSessionFactory {
+    fun requiredZeroResourceNames(): List<String>
+    fun create(context: ForeignOwnerContext): ForeignPlatformOwnerSession
+}
+
+sealed class ForeignPlatformRecoveryAction {
+    WaitForRadioOn,
+    AwaitOldOperationTerminals(remaining: List<String>),
+    AttemptSameOwnerRecovery(afterCentralRecreation: Boolean, target: uniffi.bleng_supervisor.ForeignRecoveryTarget),
+    RecreateCentral,
+    AttemptFreshOwnerRecovery(target: uniffi.bleng_supervisor.ForeignRecoveryTarget),
+}
+
+sealed class ForeignRecoveryAction {
+    WaitForRadioOn,
+    AwaitOldOperationTerminals(remaining: List<String>),
+    AttemptSameOwnerRecovery(afterCentralRecreation: Boolean),
+    RecreateCentral,
+    RetireOldOwner,
+    CreateFreshOwner,
+    AttemptFreshOwnerRecovery,
+}
+
+data class ForeignRecoveryLink(
+    var connectionId: String,
+    var gattSessionId: String,
+    var subscriptionId: String,
+)
+
+enum class ForeignRecoveryMode {
+    SAME_OWNER,
+    FRESH_OWNER,
+}
+
+data class ForeignRecoveryObservation(
+    var sourceContext: ForeignOwnerContext,
+    var signal: ForeignRecoverySignal,
+)
+
+sealed class ForeignRecoveryOutcome {
+    Recovered(context: uniffi.bleng_supervisor.ForeignOwnerContext, mode: uniffi.bleng_supervisor.ForeignRecoveryMode, link: uniffi.bleng_supervisor.ForeignRecoveryLink),
+    PlatformTimeout(context: uniffi.bleng_supervisor.ForeignOwnerContext, reason: String),
+    ManualReconnectRequired(context: uniffi.bleng_supervisor.ForeignOwnerContext, reason: String),
+}
+
+data class ForeignRecoveryPlan(
+    var executionContext: ForeignOwnerContext,
+    var sequence: ULong,
+    var actions: List<ForeignRecoveryAction>,
+    var outcome: ForeignRecoveryOutcome?,
+)
+
+data class ForeignRecoveryPolicyConfig(
+    var initialContext: ForeignOwnerContext,
+    var oldLink: ForeignRecoveryLink?,
+    /** * Decimal CommandId.value strings produced by the BLeng event stream. * Native adapters must match these exactly; they must not relabel a late event. */ var expectedOldOperationIds: List<String>,
+    var allowCentralRecreation: Boolean,
+    var allowFreshOwner: Boolean,
+)
+
+sealed class ForeignRecoverySignal {
+    RadioLost,
+    OldOperationTerminal(operationId: String),
+    RadioOn,
+    SameOwnerRecovered(link: uniffi.bleng_supervisor.ForeignRecoveryLink),
+    SameOwnerRecoveryFailed(reason: String),
+    CentralRecreated,
+    CentralRecreationFailed(reason: String),
+    OwnerRetired(resourcesZero: Boolean),
+    FreshOwnerCreated,
+    FreshOwnerRecovered(link: uniffi.bleng_supervisor.ForeignRecoveryLink),
+    FreshOwnerRecoveryFailed(reason: String),
+    PlatformTimedOut(reason: String),
+    ManualReconnectRequired(reason: String),
+}
+
+data class ForeignRecoveryTarget(
+    var scanOptions: ScanOptions,
+    var serviceUuid: BluetoothUuid,
+    var characteristicUuid: BluetoothUuid,
+    var notificationMode: NotificationModeRequest,
+    var expectedValue: ByteArray,
+)
+
+data class ForeignResourceCount(
+    var name: String,
+    var count: ULong,
+)
+
+data class ForeignScanAdvertisement(
+    var peripheral: SupervisedPeripheral,
+    var localName: String?,
+    var advertisedServices: List<String>,
+    var manufacturerData: List<ManufacturerData>,
+    var serviceData: List<ServiceData>,
+    var rssi: Short?,
+    var connectable: Boolean?,
+)
+
+data class ForeignScanBeginResult(
+    var scan: SupervisedScan?,
+    var failure: ForeignScanFailure?,
+)
+
+data class ForeignScanCommandResult(
+    var failure: ForeignScanFailure?,
+)
+
+data class ForeignScanDeliverySnapshot(
+    var queuedAdvertisements: ULong,
+    var queuedBytes: ULong,
+    var queuedStopBytes: ULong,
+    var pullPending: Boolean,
+)
+
+data class ForeignScanEnd(
+    var reason: ForeignScanEndReason,
+    var failure: ForeignScanFailure?,
+)
+
+enum class ForeignScanEndReason {
+    REQUESTED,
+    SYSTEM_SUSPENDED,
+    FAILED,
+    OWNER_CLOSED,
+}
+
+data class ForeignScanEventEnvelope(
+    var sourceContext: ForeignOwnerContext,
+    var event: ScanEvent,
+)
+
+data class ForeignScanFailure(
+    var domain: ForeignScanFailureDomain,
+    var code: String,
+    var message: String,
+    var platformDetails: PlatformErrorDetails?,
+)
+
+enum class ForeignScanFailureDomain {
+    INPUT,
+    SUBMISSION,
+    OPERATION,
+    OBSERVATION,
+    DELIVERY,
+    LIFECYCLE,
+}
+
+data class ForeignScanObservation(
+    var advertisement: ForeignScanAdvertisement?,
+    var ended: ForeignScanEnd?,
+    var failure: ForeignScanFailure?,
+)
+
+data class ForeignScanOptions(
+    var serviceUuids: List<String>,
+    var namePrefix: String?,
+    var companyId: Double?,
+    var allowDuplicates: Boolean,
+)
+
+data class ForeignScanStopResult(
+    var operation: SupervisedScanStop?,
+    var failure: ForeignScanFailure?,
+)
+
+data class ForeignSupervisorConfig(
+    var recovery: ForeignRecoveryPolicyConfig,
+    var recoveryTarget: ForeignRecoveryTarget?,
+)
+
+sealed class ScanDeliveryException {
+    PullBusy,
+    StartFailed,
+    AdvertisementOverflow,
+    ByteOverflow,
+    StopDataOverflow,
+    PendingEventOverflow,
+    OwnerRetired,
+    Detached,
+    Unavailable,
+    ConflictingStart,
+}
+
+sealed class ScanEvent {
+    Started(commandId: CommandId, scanId: ScanSessionId),
+    Advertisement(advertisement: AdvertisementObservation),
+    Stopped(scanId: ScanSessionId, result: ScanStopResult),
+}
+
+class ScanEventProjection : ScanEventProjectionInterface
+
+interface ScanEventProjectionInterface {
+    fun project(event: BleEvent): ForeignScanEventEnvelope?
+}
+
+sealed class ScanSessionException {
+    Submission(error: SupervisorOperationException),
+    Delivery(error: ScanDeliveryException),
+    DeliveryBusy,
+    StartNotObserved,
+    Operation(error: BlengException),
+    Observation(error: BlengException),
+}
+
+class SupervisedPeripheral : SupervisedPeripheralInterface
+
+interface SupervisedPeripheralInterface {
+    fun samePeripheral(other: SupervisedPeripheral): Boolean
+}
+
+class SupervisedScan : SupervisedScanInterface
+
+interface SupervisedScanInterface {
+    fun beginStop(): StopScanOperation
+    suspend fun cancelStart()
+    fun detach()
+    suspend fun nextEvent(timeoutMs: ULong): ScanEvent
+    fun observationSnapshot(): ForeignScanDeliverySnapshot
+    suspend fun waitUntilStarted(timeoutMs: ULong)
+    fun beginStopView(): ForeignScanStopResult
+    suspend fun cancelStartResult(): ForeignScanCommandResult
+    suspend fun nextObservation(timeoutMs: Double): ForeignScanObservation
+    suspend fun startResult(timeoutMs: Double): ForeignScanCommandResult
+}
+
+class SupervisedScanStop : SupervisedScanStopInterface
+
+interface SupervisedScanStopInterface {
+    suspend fun cancelResult(): ForeignScanCommandResult
+    suspend fun waitResult(timeoutMs: Double): ForeignScanCommandResult
+}
+
+class Supervisor : SupervisorInterface
+
+sealed class SupervisorFfiException {
+    InvalidContext(detail: String),
+    InvalidConfiguration(detail: String),
+    NoActiveContext,
+    Platform(detail: String),
+}
+
+interface SupervisorInterface {
+    fun activeContext(): ForeignOwnerContext?
+    fun activeOwnerStart(): ForeignOwnerStart?
+    fun configureOldOperationBarrier(oldLink: ForeignRecoveryLink?, expectedOldOperationIds: List<String>)
+    suspend fun createFreshOwner(context: ForeignOwnerContext): ForeignRecoveryPlan
+    suspend fun drivePlatformActionsUntilBoundary(): ForeignRecoveryPlan
+    suspend fun executePlatformAction(): ForeignRecoveryPlan
+    fun isActive(): Boolean
+    fun lastRetiredResources(): List<ForeignResourceCount>?
+    fun observe(observation: ForeignRecoveryObservation): ForeignRecoveryPlan
+    fun observeExternalSignal(signal: ForeignExternalRecoverySignal): ForeignRecoveryPlan
+    fun observeSignal(signal: ForeignRecoverySignal): ForeignRecoveryPlan
+    suspend fun retireForRecovery(): ForeignRecoveryPlan
+    suspend fun shutdown(): List<ForeignResourceCount>
+    suspend fun shutdownView(): ForeignOwnerClose
+    suspend fun start(): ForeignOwnerStart
+    fun beginConnect(context: ForeignOwnerContext, peripheral: PeripheralId): ConnectOperation
+    fun beginDisableNotifications(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId): DisableNotificationsOperation
+    fun beginDisconnect(context: ForeignOwnerContext, connection: ConnectionId): DisconnectOperation
+    fun beginDiscoverGatt(context: ForeignOwnerContext, connection: ConnectionId): DiscoverGattOperation
+    fun beginEnableNotifications(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest): EnableNotificationsOperation
+    fun beginReadCharacteristic(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId): ReadOperation
+    fun beginReadRssi(context: ForeignOwnerContext, connection: ConnectionId): ReadRssiOperation
+    fun beginScan(context: ForeignOwnerContext, options: ScanOptions): SupervisedScan
+    fun beginStartScan(context: ForeignOwnerContext, options: ScanOptions): StartScanOperation
+    fun beginStopScan(context: ForeignOwnerContext, session: ScanSessionId): StopScanOperation
+    fun beginWriteCharacteristic(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: ByteArray, writeType: WriteType): WriteOperation
+    fun beginScanView(context: ForeignOwnerContext, options: ForeignScanOptions): ForeignScanBeginResult
+}
+
+sealed class SupervisorOperationException {
+    NoActiveSession,
+    StaleContext,
+    RecoveryNotReady,
+    SupervisorBusy,
+    SupervisorUnavailable,
+    InvalidContext(detail: String),
+    Bleng(error: BlengException),
+}

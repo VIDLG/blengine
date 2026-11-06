@@ -33,7 +33,7 @@
 - `.gitignore` 排除官方 mobile builder 生成的 `assembly/.tauri/`；生成的 `gen/apple/`、归档、工具环境和本机签名配置不入库。
 - iOS HIL 的精简失败日志现在保留 `errSec` / CodeSign 原因，并提示用户在本机终端执行钥匙串 recipe；不接收密码参数或将密码交给 agent。
 
-相关入口见 [Just Tauri recipes](../../../just/tauri/mod.just)、[example README](../../../examples/tauri-blehub-internal/README.md) 与 [assembly 调研](../../research/tauri-apple-assembly-ecosystem.md)。
+相关入口见 [Just Tauri recipes](../../../just/tauri/mod.just)、[example README](../../../examples/tauri-blehub-internal/README.md) 与 [assembly 调研](../../research/integrations/tauri-apple-assembly-ecosystem.md)。
 
 ## `project.yml` 的两个 owner
 

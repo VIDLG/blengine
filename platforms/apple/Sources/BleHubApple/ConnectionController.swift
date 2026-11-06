@@ -93,6 +93,18 @@ internal final class AppleConnectionController {
         return correlation
     }
 
+    func hasPendingConnect(commandId: CommandId) -> Bool {
+        routesByGeneration.values.contains { route in
+            guard route.correlation.connectCommandId == commandId else { return false }
+            switch route.phase {
+            case .connecting, .disconnecting(_, pendingConnect: true):
+                return true
+            case .connected, .disconnecting(_, pendingConnect: false), .cancellingAfterBackendFailure:
+                return false
+            }
+        }
+    }
+
     func peripheralId(for connectionId: ConnectionId) -> PeripheralId? {
         route(for: connectionId)?.correlation.peripheralId
     }

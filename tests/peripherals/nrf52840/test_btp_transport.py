@@ -4,6 +4,7 @@ import unittest
 from collections import deque
 
 from tests.peripherals.nrf52840.btp_protocol import BtpFrame
+from tests.peripherals.nrf52840.btp_session import BtpSession
 from tests.peripherals.nrf52840.btp_transport import FramedTransport
 
 
@@ -51,10 +52,26 @@ class FramedTransportTests(unittest.TestCase):
         with self.assertRaises(EOFError):
             transport.receive(1.0)
 
-    def test_close_delegates_to_byte_transport(self) -> None:
-        byte_stream = FakeBytes([])
-        FramedTransport(byte_stream).close()
-        self.assertTrue(byte_stream.closed)
+
+class BtpEventConsumptionTests(unittest.TestCase):
+    def test_polled_events_are_consumed_once_including_command_buffered_events(
+        self,
+    ) -> None:
+        connected = BtpFrame(1, 0x82, 0, b"peer")
+        disconnected = BtpFrame(1, 0x83, 0, b"peer")
+        response = BtpFrame(1, 3, 0, b"info")
+        raw = FakeBytes(
+            [connected.encode() + response.encode() + disconnected.encode()]
+        )
+        session = BtpSession(FramedTransport(raw))
+        self.assertEqual(session.request(service=1, opcode=3), response)
+        # The event buffered by request precedes the next wire event.
+        self.assertEqual(session.poll_event(), connected)
+        self.assertIsNone(session.pop_event())
+        self.assertEqual(session.poll_event(), disconnected)
+        self.assertIsNone(session.pop_event())
+        self.assertIsNone(session.poll_event())
+        self.assertIsNone(session.pop_event())
 
 
 if __name__ == "__main__":

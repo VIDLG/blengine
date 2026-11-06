@@ -276,7 +276,11 @@ pub enum RecoveryOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryPolicyConfig {
     pub initial_context: RecoveryContext,
+    /// Baseline link, when already known at construction time. If absent together with an empty
+    /// terminal set, [`RecoveryPolicy::configure_old_operation_barrier`] must be called before
+    /// `RadioLost`.
     pub old_link: Option<RecoveryLink>,
+    /// Operations that existed before radio loss and must reach terminal state first.
     pub expected_terminals: BTreeSet<RecoveryOperationId>,
     pub allow_central_recreation: bool,
     pub allow_fresh_owner: bool,
@@ -388,6 +392,12 @@ pub enum RecoveryError {
     CentralRecreationPending,
     #[error("recovery link was reused")]
     LinkReused,
+    #[error("old operation terminal barrier is not configured")]
+    OldOperationBarrierNotConfigured,
+    #[error("old operation terminal barrier is already configured")]
+    OldOperationBarrierAlreadyConfigured,
+    #[error("old operation barrier configuration is closed in phase {phase:?}")]
+    OldOperationBarrierConfigurationClosed { phase: RecoveryPhase },
     #[error("old operation terminal barrier is incomplete")]
     TerminalBarrierIncomplete,
     #[error("old owner resources are not zero")]
@@ -400,10 +410,10 @@ pub enum RecoveryError {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CentralRecreationState {
-    NotAttempted,
-    Pending,
-    Completed,
+enum SameOwnerRecoveryState {
+    Attempt { after_central_recreation: bool },
+    CentralPending,
+    RetirementPending,
 }
 
 /// Pure recovery state machine shared by native supervisors.
@@ -425,8 +435,9 @@ pub struct RecoveryPolicy {
     #[get_copy = "pub"]
     phase: RecoveryPhase,
     plan_sequence: u64,
-    central_recreation: CentralRecreationState,
+    same_owner_state: SameOwnerRecoveryState,
     outcome: Option<RecoveryOutcome>,
+    old_operation_barrier_configured: bool,
 }
 
 /// A batch of work produced for one exact execution context and transition.
@@ -443,6 +454,8 @@ pub struct RecoveryPlan {
     sequence: u64,
     #[get = "pub"]
     actions: Vec<RecoveryAction>,
+    #[get = "pub"]
+    outcome: Option<RecoveryOutcome>,
 }
 
 impl RecoveryPlan {
@@ -450,11 +463,13 @@ impl RecoveryPlan {
         execution_context: RecoveryContext,
         sequence: u64,
         actions: Vec<RecoveryAction>,
+        outcome: Option<RecoveryOutcome>,
     ) -> Self {
         Self {
             execution_context,
             sequence,
             actions,
+            outcome,
         }
     }
 
@@ -485,6 +500,7 @@ impl RecoveryPolicy {
             allow_central_recreation,
             allow_fresh_owner,
         } = config;
+        let old_operation_barrier_configured = old_link.is_some() || !expected_terminals.is_empty();
         let used_links = old_link.into_iter().collect();
         Self {
             old_identity: initial_context.owner_backend_identity().clone(),
@@ -496,9 +512,37 @@ impl RecoveryPolicy {
             used_links,
             phase: RecoveryPhase::Active,
             plan_sequence: 0,
-            central_recreation: CentralRecreationState::NotAttempted,
+            same_owner_state: SameOwnerRecoveryState::Attempt {
+                after_central_recreation: false,
+            },
             outcome: None,
+            old_operation_barrier_configured,
         }
+    }
+
+    /// Installs the pre-loss operation barrier after the initial owner has produced its
+    /// baseline identities. This is a one-shot mutation: once recovery can observe `RadioLost`,
+    /// the old link and operation set are immutable evidence, not caller-controlled policy input.
+    pub fn configure_old_operation_barrier(
+        &mut self,
+        old_link: Option<RecoveryLink>,
+        expected_terminals: BTreeSet<RecoveryOperationId>,
+    ) -> Result<(), RecoveryError> {
+        if self.phase != RecoveryPhase::Active {
+            return Err(RecoveryError::OldOperationBarrierConfigurationClosed {
+                phase: self.phase,
+            });
+        }
+        if self.old_operation_barrier_configured {
+            return Err(RecoveryError::OldOperationBarrierAlreadyConfigured);
+        }
+        if let Some(old_link) = old_link {
+            self.used_links.insert(old_link);
+        }
+        self.expected_terminals = expected_terminals;
+        self.completed_terminals.clear();
+        self.old_operation_barrier_configured = true;
+        Ok(())
     }
 
     pub fn mode(&self) -> Option<RecoveryMode> {
@@ -619,12 +663,16 @@ impl RecoveryPolicy {
             self.active_context.clone(),
             sequence,
             actions,
+            self.outcome.clone(),
         ))
     }
 
     fn radio_lost(&mut self) -> Result<Vec<RecoveryAction>, RecoveryError> {
         if self.phase != RecoveryPhase::Active {
             return Err(self.unexpected_signal("RadioLost"));
+        }
+        if !self.old_operation_barrier_configured {
+            return Err(RecoveryError::OldOperationBarrierNotConfigured);
         }
         self.phase = RecoveryPhase::RadioLost;
         let mut actions = vec![RecoveryAction::WaitForRadioOn];
@@ -680,7 +728,12 @@ impl RecoveryPolicy {
         &mut self,
         link: RecoveryLink,
     ) -> Result<Vec<RecoveryAction>, RecoveryError> {
-        if self.phase != RecoveryPhase::RecoveringSameOwner {
+        if self.phase != RecoveryPhase::RecoveringSameOwner
+            || !matches!(
+                self.same_owner_state,
+                SameOwnerRecoveryState::Attempt { .. }
+            )
+        {
             return Err(self.unexpected_signal("SameOwnerRecovered"));
         }
         self.finish_link(RecoveryMode::SameOwner, link)
@@ -690,10 +743,14 @@ impl RecoveryPolicy {
         if self.phase != RecoveryPhase::RecoveringSameOwner {
             return Err(self.unexpected_signal("SameOwnerRecoveryFailed"));
         }
-        if self.allow_central_recreation
-            && self.central_recreation == CentralRecreationState::NotAttempted
-        {
-            self.central_recreation = CentralRecreationState::Pending;
+        let SameOwnerRecoveryState::Attempt {
+            after_central_recreation,
+        } = self.same_owner_state
+        else {
+            return Err(self.unexpected_signal("SameOwnerRecoveryFailed"));
+        };
+        if self.allow_central_recreation && !after_central_recreation {
+            self.same_owner_state = SameOwnerRecoveryState::CentralPending;
             return Ok(vec![RecoveryAction::RecreateCentral]);
         }
         self.begin_retirement(reason)
@@ -701,21 +758,19 @@ impl RecoveryPolicy {
 
     fn central_recreated(&mut self) -> Result<Vec<RecoveryAction>, RecoveryError> {
         if self.phase != RecoveryPhase::RecoveringSameOwner
-            || self.central_recreation != CentralRecreationState::Pending
+            || self.same_owner_state != SameOwnerRecoveryState::CentralPending
         {
             return Err(self.unexpected_signal("CentralRecreated"));
         }
-        self.central_recreation = CentralRecreationState::Completed;
         Ok(self.begin_same_owner_attempt(true))
     }
 
     fn central_failed(&mut self, reason: String) -> Result<Vec<RecoveryAction>, RecoveryError> {
         if self.phase != RecoveryPhase::RecoveringSameOwner
-            || self.central_recreation != CentralRecreationState::Pending
+            || self.same_owner_state != SameOwnerRecoveryState::CentralPending
         {
             return Err(self.unexpected_signal("CentralRecreationFailed"));
         }
-        self.central_recreation = CentralRecreationState::Completed;
         self.begin_retirement(reason)
     }
 
@@ -729,13 +784,15 @@ impl RecoveryPolicy {
         if !resources_zero {
             return Err(RecoveryError::OwnerResourcesNotZero);
         }
-        if self.central_recreation == CentralRecreationState::Pending {
+        if self.same_owner_state == SameOwnerRecoveryState::CentralPending {
             return Err(RecoveryError::CentralRecreationPending);
         }
         if !self.terminals_complete() {
             return Err(RecoveryError::TerminalBarrierIncomplete);
         }
-        if !self.allow_fresh_owner {
+        if !self.allow_fresh_owner
+            || self.same_owner_state != SameOwnerRecoveryState::RetirementPending
+        {
             return Err(self.unexpected_signal("OwnerRetired"));
         }
         self.phase = RecoveryPhase::CreatingFreshOwner;
@@ -784,6 +841,9 @@ impl RecoveryPolicy {
     /// marks that the attempt follows the one permitted recreation fallback.
     fn begin_same_owner_attempt(&mut self, after_central_recreation: bool) -> Vec<RecoveryAction> {
         self.phase = RecoveryPhase::RecoveringSameOwner;
+        self.same_owner_state = SameOwnerRecoveryState::Attempt {
+            after_central_recreation,
+        };
         vec![RecoveryAction::AttemptSameOwnerRecovery {
             after_central_recreation,
         }]
@@ -794,6 +854,7 @@ impl RecoveryPolicy {
     /// `RecoveringSameOwner` while the retirement action is pending.
     fn begin_retirement(&mut self, reason: String) -> Result<Vec<RecoveryAction>, RecoveryError> {
         if self.allow_fresh_owner {
+            self.same_owner_state = SameOwnerRecoveryState::RetirementPending;
             Ok(vec![RecoveryAction::RetireOldOwner])
         } else {
             self.finish_terminal(
@@ -813,9 +874,14 @@ impl RecoveryPolicy {
         mode: RecoveryMode,
         link: RecoveryLink,
     ) -> Result<Vec<RecoveryAction>, RecoveryError> {
-        if !self.used_links.insert(link.clone()) {
+        if self.used_links.iter().any(|used| {
+            used.connection_id() == link.connection_id()
+                || used.gatt_session_id() == link.gatt_session_id()
+                || used.subscription_id() == link.subscription_id()
+        }) {
             return Err(RecoveryError::LinkReused);
         }
+        self.used_links.insert(link.clone());
         self.finish_terminal(
             RecoveryPhase::Recovered,
             RecoveryOutcome::Recovered {

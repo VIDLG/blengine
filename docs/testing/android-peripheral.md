@@ -108,9 +108,9 @@ The expected evidence is:
 
 This is a real-RF test. Before running it, identify the DUT, confirm the Android fixture is advertising, and reserve the physical devices/controller. A missing or misconfigured fixture is infrastructure unavailable, not a BleHub backend failure.
 
-## Production Windows backend notification smoke
+## Historical Windows backend notification smoke
 
-The production `WindowsBackend` path uses the Android-specific service UUID so it remains isolated while the QEMU fixture advertises its `FFE0...` profile:
+The archived `WindowsBackend` path historically used the Android-specific service UUID so it remained isolated while the QEMU fixture advertised its `FFE0...` profile. This is historical compatibility evidence, not an active gate:
 
 ```sh
 pixi run just peripheral android-start

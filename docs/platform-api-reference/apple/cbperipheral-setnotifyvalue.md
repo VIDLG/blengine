@@ -51,7 +51,7 @@ When you enable notifications for the characteristic’s value, the peripheral c
 
 ### Related Documentation
 
-[`CBConnectPeripheralOptionNotifyOnNotificationKey`](/documentation/CoreBluetooth/CBConnectPeripheralOptionNotifyOnNotificationKey)
+[`let CBConnectPeripheralOptionNotifyOnNotificationKey: String`](/documentation/CoreBluetooth/CBConnectPeripheralOptionNotifyOnNotificationKey)
 
 A Boolean value that specifies whether the system should display an alert for any notification sent by a peripheral.
 

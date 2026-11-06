@@ -70,6 +70,9 @@ class AndroidEventHandoff<Event>(
         return SubmitResult.DELIVERY_UNAVAILABLE
     }
 
+    /** Accepted queued or currently executing jobs; closing does not erase this count. */
+    fun pendingCount(): Int = synchronized(lock) { pending }
+
     fun close() {
         synchronized(lock) {
             accepting = false

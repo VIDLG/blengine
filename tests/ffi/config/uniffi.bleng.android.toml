@@ -7,3 +7,8 @@ kotlin_target_version = "2.1.20"
 android = true
 package_name = "dev.bleng"
 kotlin_target_version = "2.1.20"
+
+[crates.bleng_supervisor.bindings.kotlin]
+android = true
+package_name = "dev.bleng_supervisor"
+kotlin_target_version = "2.1.20"

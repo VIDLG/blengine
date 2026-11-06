@@ -41,33 +41,33 @@ class CBCharacteristic
 
 ### Identifying a Characteristic
 
-[`service`](/documentation/CoreBluetooth/CBCharacteristic/service)
+[`var service: CBService?`](/documentation/CoreBluetooth/CBCharacteristic/service)
 
 The service to which this characteristic belongs.
 
 ### Accessing Characteristic Data
 
-[`value`](/documentation/CoreBluetooth/CBCharacteristic/value)
+[`var value: Data?`](/documentation/CoreBluetooth/CBCharacteristic/value)
 
 The value of the characteristic.
 
-[`descriptors`](/documentation/CoreBluetooth/CBCharacteristic/descriptors)
+[`var descriptors: [CBDescriptor]?`](/documentation/CoreBluetooth/CBCharacteristic/descriptors)
 
 A list of the descriptors discovered in this characteristic.
 
-[`properties`](/documentation/CoreBluetooth/CBCharacteristic/properties)
+[`var properties: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristic/properties)
 
 The properties of the characteristic.
 
-[`CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties)
+[`struct CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties)
 
 Values that represent the possible properties of a characteristic.
 
-[`isNotifying`](/documentation/CoreBluetooth/CBCharacteristic/isNotifying)
+[`var isNotifying: Bool`](/documentation/CoreBluetooth/CBCharacteristic/isNotifying)
 
 A Boolean value that indicates whether the characteristic is currently notifying a subscribed central of its value.
 
-[`isBroadcasted`](/documentation/CoreBluetooth/CBCharacteristic/isBroadcasted)
+[`var isBroadcasted: Bool`](/documentation/CoreBluetooth/CBCharacteristic/isBroadcasted)
 
 A Boolean value that indicates whether the characteristic the service broadcasts this characteristic.
 
@@ -87,13 +87,13 @@ A Boolean value that indicates whether the characteristic the service broadcasts
 
 [`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
 
-[`Hashable`](/documentation/Swift/Hashable)
-
-[`CVarArg`](/documentation/Swift/CVarArg)
+[`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
 
 [`Equatable`](/documentation/Swift/Equatable)
 
-[`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
+[`CVarArg`](/documentation/Swift/CVarArg)
+
+[`Hashable`](/documentation/Swift/Hashable)
 
 ---
 

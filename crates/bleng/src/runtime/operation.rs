@@ -318,7 +318,27 @@ impl<M: OperationSpec> ResultSlot<M> {
         self.submission_state.is_completed()
     }
 
-    pub(crate) async fn wait_until(&self, deadline: Instant) -> Result<M::Output, WaiterError> {
+    /// Observes an already-enabled outcome summary without consuming this result.
+    /// Registration does not enable recording: submission must do so before admission.
+    pub(crate) fn observe_failure(
+        &self,
+        observer: std::sync::Weak<dyn crate::OperationFailureObserver>,
+    ) -> Option<crate::OperationFailureRegistration> {
+        self.submission_state
+            .outcome_observation
+            .get()?
+            .register(observer)
+    }
+
+    /// Claims delivery before executor handoff. Dropping the returned future,
+    /// even before its first poll, retires the ticket without native cancellation.
+    pub(crate) fn claim_wait_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<
+        impl std::future::Future<Output = Result<M::Output, WaiterError>> + Send + 'static + use<M>,
+        WaiterError,
+    > {
         let operation = self
             .operation
             .lock()
@@ -326,11 +346,15 @@ impl<M: OperationSpec> ResultSlot<M> {
             .take()
             .ok_or(WaiterError::OperationResultConsumed)?;
         #[cfg(test)]
-        self.pause_wait(false).await;
-        let result = operation.wait_until(deadline).await;
-        #[cfg(test)]
-        self.pause_wait(true).await;
-        result
+        let slot = self.clone();
+        Ok(async move {
+            #[cfg(test)]
+            slot.pause_wait(false).await;
+            let result = operation.wait_until(deadline).await;
+            #[cfg(test)]
+            slot.pause_wait(true).await;
+            result
+        })
     }
 }
 

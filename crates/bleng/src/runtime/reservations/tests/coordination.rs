@@ -5,6 +5,199 @@ use super::super::{
 use crate::waiter::WaiterError;
 use blehub::{BleErrorCategory, BleEventError};
 
+#[test]
+fn initialization_failure_does_not_skip_other_roots_retirement() {
+    use super::super::ReservationCoordinator;
+    use crate::runtime::command::{CommandRoute, ConnectionOperationKind};
+
+    let mut reservations = ReservationCoordinator::default();
+    // Install roots directly to isolate retirement from normal admission rules.
+    reservations.reserve_initialize(1.into());
+    reservations.register_command(1.into(), CommandRoute::Initialization);
+    reservations.reserve_scan_start(2.into(), 20.into());
+    reservations.register_command(2.into(), CommandRoute::ScanStart);
+    reservations.reserve_connection(30.into(), 3.into(), 40.into());
+    reservations.register_command(
+        3.into(),
+        CommandRoute::Connection {
+            connection_id: 40.into(),
+            kind: ConnectionOperationKind::Connect,
+        },
+    );
+    let scan_completion = reservations.attach_completion_observer(2.into());
+    let connection_completion = reservations.attach_completion_observer(3.into());
+    let error = BleEventError {
+        category: BleErrorCategory::Internal,
+        message: "terminal failure".into(),
+        platform_details: None,
+    };
+    for command_id in [1.into(), 2.into(), 3.into()] {
+        reservations.resolve_dispatch(command_id, &Ok(()));
+        reservations.record_terminal(command_id, Some(error.clone()));
+    }
+
+    assert_eq!(
+        reservations.advance_and_retire(),
+        Err(WaiterError::Operation(error))
+    );
+    for command_id in [2.into(), 3.into()] {
+        assert!(reservations.commands.route(command_id).is_none());
+        assert!(reservations.command_completion(command_id).is_none());
+    }
+    assert!(scan_completion.is_completed());
+    assert!(connection_completion.is_completed());
+    assert_eq!(reservations.require_scan_available(), Ok(()));
+    assert_eq!(reservations.require_peripheral_available(30.into()), Ok(()));
+    assert_eq!(
+        reservations.commands.route(1.into()),
+        Some(CommandRoute::Initialization)
+    );
+}
+
+#[test]
+fn scan_start_dispatch_rejection_removes_only_the_released_command_entry() {
+    use super::super::{ReconciliationFault, ReservationCoordinator};
+    use crate::runtime::command::CommandRoute;
+    use blehub::{BleEvent, CommandDispatchError, CommandId};
+
+    for with_callback in [false, true] {
+        let mut reservations = ReservationCoordinator::default();
+        reservations.reserve_initialize(1.into());
+        reservations.register_command(1.into(), CommandRoute::Initialization);
+        let initialization = reservations.attach_completion_observer(1.into());
+        let rejection = Err(CommandDispatchError::InvalidState {
+            detail: "scan start rejected".into(),
+        });
+        // A route without a matching reservation must not be treated as a consumed result.
+        reservations.register_command(99.into(), CommandRoute::ScanStart);
+        reservations.resolve_dispatch(99.into(), &rejection);
+        assert_eq!(
+            reservations.commands.route(99.into()),
+            Some(CommandRoute::ScanStart)
+        );
+
+        for value in 2..10_u64 {
+            let command_id = CommandId::from(value);
+            let session_id = (value + 100).into();
+            reservations.reserve_scan_start(command_id, session_id);
+            reservations.register_command(command_id, CommandRoute::ScanStart);
+            let completion = reservations.attach_completion_observer(command_id);
+            if with_callback {
+                assert!(
+                    reservations
+                        .gate_event(BleEvent::ScanStarted {
+                            command_id,
+                            scan_id: session_id,
+                        })
+                        .unwrap()
+                        .is_none()
+                );
+            }
+
+            let resolution = reservations.resolve_dispatch(command_id, &rejection);
+            if with_callback {
+                assert!(matches!(
+                    resolution.action,
+                    DispatchAction::FaultRuntime(ReconciliationFault::DispatchEvidenceConflict)
+                ));
+            } else {
+                assert!(matches!(resolution.action, DispatchAction::NoAction));
+            }
+            assert!(resolution.events_to_replay.is_empty());
+            assert!(completion.is_completed());
+            assert!(reservations.commands.route(command_id).is_none());
+            assert!(reservations.command_completion(command_id).is_none());
+            assert_eq!(reservations.require_scan_available(), Ok(()));
+            reservations.advance_and_retire().unwrap();
+
+            let duplicate = reservations.resolve_dispatch(command_id, &rejection);
+            assert!(matches!(duplicate.action, DispatchAction::NoAction));
+            assert!(duplicate.events_to_replay.is_empty());
+            assert_eq!(
+                reservations.commands.route(1.into()),
+                Some(CommandRoute::Initialization)
+            );
+            assert!(reservations.command_completion(1.into()).is_some());
+            assert!(!initialization.is_completed());
+        }
+    }
+}
+
+#[test]
+fn scan_stop_dispatch_rejection_releases_command_but_preserves_session_and_replay() {
+    use super::super::ReservationCoordinator;
+    use crate::runtime::command::CommandRoute;
+    use blehub::{BleEvent, CommandDispatchError, CommandId, ScanStopReason, ScanStopResult};
+
+    for passive_end in [false, true] {
+        let mut reservations = ReservationCoordinator::default();
+        reservations.reserve_scan_start(1.into(), 10.into());
+        reservations.register_command(1.into(), CommandRoute::ScanStart);
+        let start = reservations.attach_completion_observer(1.into());
+        reservations.resolve_dispatch(1.into(), &Ok(()));
+        reservations
+            .record_event_evidence(&BleEvent::ScanStarted {
+                command_id: 1.into(),
+                scan_id: 10.into(),
+            })
+            .unwrap();
+        reservations.record_terminal(1.into(), None);
+        let rejection = Err(CommandDispatchError::InvalidState {
+            detail: "scan stop rejected".into(),
+        });
+        let stopped = BleEvent::ScanStopped {
+            scan_id: 10.into(),
+            result: ScanStopResult::Ok {
+                reason: ScanStopReason::SystemSuspended,
+            },
+        };
+
+        for value in 2..10_u64 {
+            let command_id = CommandId::from(value);
+            reservations.reserve_scan_stop(command_id);
+            reservations.register_command(command_id, CommandRoute::ScanStop);
+            let stop = reservations.attach_completion_observer(command_id);
+            if passive_end {
+                assert!(reservations.gate_event(stopped.clone()).unwrap().is_none());
+            }
+            let resolution = reservations.resolve_dispatch(command_id, &rejection);
+            assert!(matches!(resolution.action, DispatchAction::NoAction));
+            assert!(stop.is_completed());
+            assert!(reservations.commands.route(command_id).is_none());
+            assert!(reservations.command_completion(command_id).is_none());
+            assert_eq!(
+                reservations.commands.route(1.into()),
+                Some(CommandRoute::ScanStart)
+            );
+            assert!(reservations.command_completion(1.into()).is_some());
+            assert!(!start.is_completed());
+            assert_eq!(
+                reservations.require_scan_available(),
+                Err(WaiterError::ScanBusy)
+            );
+            assert_eq!(reservations.validate_scan_stop(10.into()), Ok(()));
+
+            if passive_end {
+                assert_eq!(resolution.events_to_replay, vec![stopped.clone()]);
+                for event in resolution.events_to_replay {
+                    reservations.record_event_evidence(&event).unwrap();
+                }
+                reservations.advance_and_retire().unwrap();
+                assert!(start.is_completed());
+                assert!(reservations.commands.route(1.into()).is_none());
+                assert!(reservations.command_completion(1.into()).is_none());
+                assert_eq!(reservations.require_scan_available(), Ok(()));
+                break;
+            }
+            assert!(resolution.events_to_replay.is_empty());
+            reservations.advance_and_retire().unwrap();
+            let duplicate = reservations.resolve_dispatch(command_id, &rejection);
+            assert!(matches!(duplicate.action, DispatchAction::NoAction));
+            assert!(duplicate.events_to_replay.is_empty());
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Step {
     Request,
@@ -62,7 +255,12 @@ fn check_cancel_trace(trace: &[Step]) {
             },
             Step::Acknowledge => {
                 acknowledged = true;
-                assert!(progress.accepted_resolution().events_to_replay.is_empty());
+                assert!(
+                    progress
+                        .resolve_accepted_dispatch()
+                        .events_to_replay
+                        .is_empty()
+                );
             }
             Step::Claim => {
                 let expected =
@@ -197,7 +395,7 @@ proptest::proptest! {
 #[test]
 fn cancel_state_clear_keeps_old_receipt_and_repeated_resolution_stays_last_write() {
     let mut progress = CommandProgress::new(1.into());
-    progress.accepted_resolution();
+    progress.resolve_accepted_dispatch();
     let mut old = match progress.request_cancellation() {
         CancellationDecision::Accepted(receipt) => receipt,
         _ => panic!("first request must be admitted"),
@@ -245,7 +443,7 @@ fn cancel_state_local_resolution_before_rejection_does_not_dispatch_native_contr
         CancellationDecision::AlreadyRequested(receipt) => receipt,
         _ => panic!("local resolution retains the shared receipt until retirement"),
     };
-    let resolution = progress.rejected_resolution(DispatchAction::NoAction, |_| {
+    let resolution = progress.resolve_rejected_dispatch(DispatchAction::NoAction, |_| {
         panic!("no callbacks were buffered")
     });
     assert!(resolution.events_to_replay.is_empty());
@@ -272,7 +470,7 @@ fn cancellation_receipt_gates_retirement_without_erasing_terminal_evidence() {
         }),
     ] {
         let mut progress = CommandProgress::new(1.into());
-        progress.accepted_resolution();
+        progress.resolve_accepted_dispatch();
         let receipt = match progress.request_cancellation() {
             CancellationDecision::Accepted(receipt) => receipt,
             _ => panic!("cancellation must precede terminal"),
@@ -299,7 +497,7 @@ fn cancellation_receipt_gates_retirement_without_erasing_terminal_evidence() {
 #[test]
 fn terminal_evidence_wins_over_a_first_cancellation_request() {
     let mut progress = CommandProgress::new(1.into());
-    progress.accepted_resolution();
+    progress.resolve_accepted_dispatch();
     progress.record_terminal(&Ok(()));
 
     assert!(matches!(
@@ -311,7 +509,12 @@ fn terminal_evidence_wins_over_a_first_cancellation_request() {
 #[test]
 fn typed_boundary_duplicate_dispatch_ack_does_not_drain_pending_public_evidence() {
     let mut progress = CommandProgress::new(1.into());
-    assert!(progress.accepted_resolution().events_to_replay.is_empty());
+    assert!(
+        progress
+            .resolve_accepted_dispatch()
+            .events_to_replay
+            .is_empty()
+    );
     assert!(matches!(
         progress.request_cancellation(),
         CancellationDecision::Accepted(_)
@@ -333,7 +536,10 @@ fn typed_boundary_duplicate_dispatch_ack_does_not_drain_pending_public_evidence(
         Ok(PublicationDecision::Defer)
     ));
     assert!(
-        progress.accepted_resolution().events_to_replay.is_empty(),
+        progress
+            .resolve_accepted_dispatch()
+            .events_to_replay
+            .is_empty(),
         "a duplicate acknowledgement must not reprocess public-only evidence"
     );
     progress.resolve_cancellation(Err(WaiterError::OperationNotCancellable(1.into())));

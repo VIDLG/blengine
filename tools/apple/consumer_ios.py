@@ -20,8 +20,9 @@ from tools.apple import xcodegen_toolchain
 from tools.local_config import resolve_local_value
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = ROOT / "tests/consumers/apple/ios/project.yml"
+SPEC = ROOT / "tests/consumers/apple/blehub/ios/project.yml"
 PACKAGE = ROOT / ".work/staged/apple-production"
+BACKEND_PACKAGE = ROOT / ".work/staged/apple-backend-production"
 WORK = ROOT / ".work/apple-ios-artifact-consumer"
 PROJECT = WORK / "BleHubIOSArtifactConsumer.xcodeproj"
 SCHEME = "BleHubIOSArtifactConsumer"
@@ -73,6 +74,13 @@ def generate() -> None:
     ):
         raise RuntimeError(
             "missing staged production package; run `pixi run just apple prepare`"
+        )
+    if (
+        not (BACKEND_PACKAGE / "Package.swift").is_file()
+        or not (BACKEND_PACKAGE / "Sources/BleHubApple").is_dir()
+    ):
+        raise RuntimeError(
+            "missing staged backend package; run `pixi run just apple prepare`"
         )
     WORK.mkdir(parents=True, exist_ok=True)
     run(
@@ -216,6 +224,32 @@ def device_and_team(xcrun: str) -> tuple[str, str, str]:
     )
 
 
+def classify_result(contents: str, run_id: str) -> bool | None:
+    """Ignore stale receipts; accept only this run's complete, unique evidence."""
+    lines = contents.splitlines()
+    identity = f"apple_ios_artifact_run_id={run_id}"
+    if identity not in lines:
+        return None
+    identities = [
+        line for line in lines if line.startswith("apple_ios_artifact_run_id=")
+    ]
+    if identities != [identity]:
+        raise RuntimeError("iOS artifact result has ambiguous run identity")
+    if "apple_ios_artifact_consumer=failed" in lines:
+        raise RuntimeError(
+            f"iOS artifact consumer reported failure: {contents.strip()}"
+        )
+    terminals = [
+        line for line in lines if line.startswith("apple_ios_artifact_consumer=")
+    ]
+    if terminals != ["apple_ios_artifact_consumer=passed"]:
+        raise RuntimeError("iOS artifact result has no terminal status or is ambiguous")
+    resources = [line for line in lines if line.startswith("backend_resources=")]
+    if resources != ["backend_resources=passed"]:
+        raise RuntimeError("iOS artifact result lacks successful backend resources")
+    return True
+
+
 def device_run() -> None:
     xcrun = executable("xcrun")
     device_id, udid, team = device_and_team(xcrun)
@@ -281,14 +315,14 @@ def device_run() -> None:
             check=False,
             timeout=30,
         )
-        if result.returncode == 0 and destination.is_file():
-            lines = destination.read_text(encoding="utf-8").splitlines()
-            if f"apple_ios_artifact_run_id={run_id}" in lines:
-                if "apple_ios_artifact_consumer=passed" not in lines:
-                    raise RuntimeError(f"device consumer failed; result: {destination}")
-                print(f"apple_ios_artifact_result={destination}")
-                print("apple_ios_artifact_consumer=passed")
-                return
+        if (
+            result.returncode == 0
+            and destination.is_file()
+            and classify_result(destination.read_text(encoding="utf-8"), run_id)
+        ):
+            print(f"apple_ios_artifact_result={destination}")
+            print("apple_ios_artifact_consumer=passed")
+            return
         time.sleep(1)
     raise TimeoutError(f"timed out waiting for iPhone result; see {WORK}")
 

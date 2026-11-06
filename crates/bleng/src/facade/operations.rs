@@ -1,6 +1,6 @@
 //! Concrete typed operation handles and their shared runtime adapter.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use tokio::time::Instant;
 
@@ -70,11 +70,8 @@ impl<M: runtime::OperationSpec> OperationAdapter<M> {
     /// Convenience calls share one absolute deadline across submission and wait.
     /// Abandoning this task does not cancel native work already dispatched.
     pub(super) async fn wait_until(&self, deadline: Instant) -> Result<M::Output, BlengError> {
-        let result_slot = self.result_slot.clone();
-        self.owner
-            .run_task(async move { result_slot.wait_until(deadline).await })
-            .await?
-            .map_err(BlengError::from)
+        let wait = self.result_slot.claim_wait_until(deadline)?;
+        self.owner.run_task(wait).await?.map_err(BlengError::from)
     }
 }
 
@@ -106,6 +103,38 @@ impl InitializeOperation {
 #[derive(uniffi::Object)]
 pub struct StartScanOperation {
     pub(super) operation: OperationAdapter<runtime::BeginScan>,
+}
+
+impl StartScanOperation {
+    /// Registers one Rust-only, non-consuming start-failure observer. Returns None
+    /// if another registration is active. Keep the returned token to stay registered.
+    /// A late registration synchronously replays confirmed failure; success never
+    /// notifies. Caller timeout/drop is not failure. The receiver is held weakly.
+    pub fn observe_failure(
+        &self,
+        observer: std::sync::Weak<dyn crate::OperationFailureObserver>,
+    ) -> Option<crate::OperationFailureRegistration> {
+        self.operation.result_slot.observe_failure(observer)
+    }
+
+    /// Observes on this operation's private runtime without consuming its result
+    /// or requesting BLE cancellation. Dropping the caller only aborts observation;
+    /// retaining this handle does not keep the Hub lifecycle open.
+    pub async fn observe_with_timeout<T: Send + 'static>(
+        &self,
+        timeout_ms: u64,
+        observation: impl Future<Output = T> + Send + 'static,
+    ) -> Result<T, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        self.operation
+            .owner
+            .run_task(async move {
+                tokio::time::timeout_at(deadline, observation)
+                    .await
+                    .map_err(|_| BlengError::Timeout)
+            })
+            .await?
+    }
 }
 
 #[uniffi::export]

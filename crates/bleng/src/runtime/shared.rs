@@ -7,22 +7,44 @@ use std::sync::{
 
 use blehub::CommandId;
 
-use crate::waiter::{WaiterError, WaiterSender};
+use crate::{
+    operation_observation::OperationOutcomeObservation,
+    waiter::{WaiterError, WaiterSender},
+};
 
 /// Cloneable observation of actor-confirmed native completion.
 ///
 /// The actor/reservation retirement path is the only writer. Readers may outlive
 /// caller delivery, so this latch is separate from waiter/result ownership.
+#[derive(Default)]
+struct CompletionState {
+    completed: AtomicBool,
+    // Optional result classification, not the native-retirement latch above.
+    outcome_observation: OnceLock<Arc<OperationOutcomeObservation>>,
+}
+
 #[derive(Clone, Default)]
-pub(crate) struct CompletionObserver(Arc<AtomicBool>);
+pub(crate) struct CompletionObserver(Arc<CompletionState>);
 
 impl CompletionObserver {
     pub(crate) fn is_completed(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.completed.load(Ordering::Acquire)
     }
 
     pub(in crate::runtime) fn confirm_completed(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.completed.store(true, Ordering::Release);
+    }
+
+    pub(in crate::runtime) fn record_outcome(&self, succeeded: bool, cancellation_pending: bool) {
+        if let Some(observation) = self.0.outcome_observation.get() {
+            observation.record_completion(succeeded, cancellation_pending);
+        }
+    }
+
+    pub(in crate::runtime) fn resolve_cancellation_outcome(&self, accepted: bool) {
+        if let Some(observation) = self.0.outcome_observation.get() {
+            observation.resolve_cancellation(accepted);
+        }
     }
 }
 
@@ -66,6 +88,7 @@ pub(super) struct SubmissionState {
     phase: AtomicU8,
     pub(super) result_tx: WaiterSender,
     completion: OnceLock<CompletionObserver>,
+    pub(super) outcome_observation: OnceLock<Arc<OperationOutcomeObservation>>,
 }
 
 impl SubmissionState {
@@ -103,6 +126,9 @@ impl SubmissionState {
             )
             .is_ok()
         {
+            if let Some(observation) = self.outcome_observation.get() {
+                observation.record_completion(false, false);
+            }
             self.result_tx.send(Err(WaiterError::Cancelled));
             true
         } else {
@@ -119,7 +145,16 @@ impl SubmissionState {
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
-            Ok(_) => self.result_tx.send(Err(error)),
+            Ok(_) => {
+                // Owner retirement is observed separately, not as a failed start.
+                // Preserve its precise typed error without notifying or caching failure.
+                if !matches!(error, WaiterError::Closed | WaiterError::TransportFault)
+                    && let Some(observation) = self.outcome_observation.get()
+                {
+                    observation.record_completion(false, false);
+                }
+                self.result_tx.send(Err(error));
+            }
             Err(previous)
                 if matches!(
                     SubmissionPhase::try_from(previous),
@@ -157,9 +192,16 @@ impl<R> OperationSubmission<R> {
                 phase: AtomicU8::new(SubmissionPhase::Pending.into()),
                 result_tx,
                 completion: OnceLock::new(),
+                outcome_observation: OnceLock::new(),
             }),
             resource: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Opts in before actor submission; registration may occur after settlement.
+    /// Most operations need only typed wait and the independent completion latch.
+    pub(crate) fn enable_outcome_observation(&self) {
+        self.state.outcome_observation.get_or_init(Default::default);
     }
 
     pub(super) fn try_claim(&self) -> bool {
@@ -184,6 +226,12 @@ impl<R> OperationSubmission<R> {
     }
 
     pub(super) fn observe_completion(&self, completion: CompletionObserver) {
+        if let Some(observation) = self.state.outcome_observation.get() {
+            let _ = completion
+                .0
+                .outcome_observation
+                .set(Arc::clone(observation));
+        }
         let _ = self.state.completion.set(completion);
     }
 }

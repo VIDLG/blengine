@@ -33,7 +33,7 @@ class PackageLayout:
 
     @property
     def bleng(self) -> bool:
-        return self.components == ("blehub", "bleng")
+        return self.components == ("blehub", "bleng", "bleng_supervisor")
 
     @property
     def bindings_root(self) -> Path:
@@ -55,7 +55,7 @@ def _package_layout(bleng: bool = False) -> PackageLayout:
             target_dir=TARGET_BASE / "bleng-uniffi-apple",
             work_root=PROJECT_ROOT / ".work" / "bleng-uniffi-apple",
             package_root=PROJECT_ROOT / ".work" / "staged" / "apple-bleng",
-            components=("blehub", "bleng"),
+            components=("blehub", "bleng", "bleng_supervisor"),
             static_library_name="libbleng_uniffi.a",
         )
     return PackageLayout(
@@ -361,23 +361,39 @@ def _validate_component_symbols(
                 unexpected[0] if unexpected else result.stderr.strip().splitlines()[0]
             )
             raise RuntimeError(f"nm failed for {slice_name}: {detail}")
-        symbols = result.stdout
-        actual = set(re.findall(r"^_uniffi_([a-z][a-z0-9]*)_", symbols, re.MULTILINE))
+        actual: set[str] = set()
+        for symbol in result.stdout.splitlines():
+            if not symbol.startswith(("_uniffi_", "_ffi_")):
+                continue
+            if any(
+                token in symbol.lower()
+                for token in (
+                    "ffi_test",
+                    "ffitest",
+                    "test_harness",
+                    "foreignprobe",
+                    "foreign_probe",
+                    "asyncprobe",
+                    "async_spike",
+                )
+            ):
+                raise RuntimeError(
+                    f"{slice_name} archive contains test-only UniFFI symbols"
+                )
+            # Generated family delimiters bound namespaces containing underscores.
+            match = re.fullmatch(
+                r"_uniffi_([a-z][a-z0-9_]*?)_(?:fn|checksum)_\w+"
+                r"|_ffi_([a-z][a-z0-9_]*?)_"
+                r"(?:uniffi_contract_version|rustbuffer_\w+|rust_future_\w+)",
+                symbol,
+            )
+            if match is None:
+                raise RuntimeError(f"unexpected {slice_name} UniFFI symbol: {symbol}")
+            actual.add(match.group(1) or match.group(2))
         if actual != expected:
             raise RuntimeError(
                 f"unexpected {slice_name} UniFFI components: "
                 f"expected {sorted(expected)}, got {sorted(actual)}"
-            )
-        if any(
-            token in symbols
-            for token in (
-                "_uniffi_blehub_ffi_test_harness_",
-                "_uniffi_bleng_foreignprobe_",
-                "_uniffi_bleng_async_spike_",
-            )
-        ):
-            raise RuntimeError(
-                f"{slice_name} archive contains test-only UniFFI symbols"
             )
     print("apple_uniffi_component_symbols=passed")
 

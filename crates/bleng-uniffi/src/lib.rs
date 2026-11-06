@@ -10,6 +10,16 @@
 pub use blehub;
 pub use blehub::*;
 pub use bleng::{Bleng, BlengError};
+pub use bleng_supervisor::{
+    ForeignExternalRecoverySignal, ForeignOwnerContext, ForeignOwnerStart,
+    ForeignPlatformActionResult, ForeignPlatformOwnerSession, ForeignPlatformOwnerSessionFactory,
+    ForeignPlatformOwnerSessionFactoryAdapter, ForeignPlatformRecoveryAction,
+    ForeignRecoveryAction, ForeignRecoveryLink, ForeignRecoveryMode, ForeignRecoveryObservation,
+    ForeignRecoveryOutcome, ForeignRecoveryPlan, ForeignRecoveryPolicyConfig,
+    ForeignRecoverySignal, ForeignRecoveryTarget, ForeignResourceCount, ForeignSupervisorConfig,
+    Supervisor, SupervisorFfiError,
+};
 
 blehub::uniffi_reexport_scaffolding!();
 bleng::uniffi_reexport_scaffolding!();
+bleng_supervisor::uniffi_reexport_scaffolding!();

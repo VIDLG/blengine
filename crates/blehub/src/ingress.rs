@@ -35,6 +35,10 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for EventSinkError {
 /// must not block on BLE/backend progress, and must not synchronously call a
 /// command or `dispose` on the same [`crate::BleHub`]. Such work must be queued
 /// onto caller-owned execution and performed after `on_event` returns.
+///
+/// Hub shutdown may synchronously release the last sink reference. Sink Drop/deinit
+/// and its synchronous callbacks must not directly or indirectly wait for that
+/// same Hub's `dispose` to finish: shutdown is waiting for the destructor to return.
 #[uniffi::export(foreign)]
 pub trait BleEventSink: Send + Sync {
     fn on_event(&self, event: BleEvent) -> Result<(), EventSinkError>;
@@ -211,8 +215,9 @@ impl EventIngressState {
             inner.phase = EventIngressPhase::Closed;
             inner.downstream.take()
         };
-        // The sink may re-enter assembly or cleanup from Drop. Never run that
-        // user-owned destructor while the ingress mutex is held.
+        // Run user-owned destruction outside this mutex, allowing unrelated assembly
+        // or cleanup. This does not permit synchronously waiting for the same Hub's
+        // dispose from Drop: that would self-wait on lifecycle completion.
         drop(downstream);
     }
 }

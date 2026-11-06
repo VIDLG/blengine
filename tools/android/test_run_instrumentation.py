@@ -149,6 +149,154 @@ class InstrumentationProcessTests(unittest.TestCase):
 
 
 class InstallTests(unittest.TestCase):
+    def test_guarded_root_install_shares_deadline_and_exact_upload_cleanup(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "tests.apk"
+            apk.write_bytes(b"fixture")
+            clock = 100.0
+            events = []
+            commands = []
+
+            def owner():
+                nonlocal clock
+                events.append("guard")
+                clock += 0.1
+
+            def command(argv, **kwargs):
+                nonlocal clock
+                events.append("command")
+                commands.append(argv)
+                self.assertEqual(kwargs["cwd"], Path(directory))
+                self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+                self.assertGreater(kwargs["timeout"], 0)
+                self.assertLessEqual(kwargs["timeout"], 105.0 - clock)
+                clock += 0.2
+                return subprocess.CompletedProcess(
+                    argv, 0, "Success\n" if "su" in argv else ""
+                )
+
+            class SlowLog(io.StringIO):
+                def write(self, text):
+                    nonlocal clock
+                    clock += 0.05
+                    return super().write(text)
+
+            with (
+                patch.object(runner.time, "monotonic", side_effect=lambda: clock),
+                patch.object(runner.subprocess, "run", side_effect=command),
+            ):
+                runner.install_apk(
+                    Path("adb"),
+                    "synthetic",
+                    apk,
+                    test_only=True,
+                    use_root=True,
+                    log=SlowLog(),
+                    deadline=105.0,
+                    require_owner=owner,
+                    cwd=Path(directory),
+                )
+            self.assertEqual(events, ["guard", "command", "guard"] * 5)
+            self.assertEqual(commands[2][3], "push")
+            self.assertEqual(commands[3][3:6], ["shell", "su", "-c"])
+            self.assertEqual(commands[3][-1], "pm install -r -t " + commands[2][-1])
+            self.assertEqual(commands[4][3:], ["shell", "rm", "-f", commands[2][-1]])
+
+    def test_no_cleanup_for_upload_never_attempted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "tests.apk"
+            apk.write_bytes(b"fixture")
+            with patch.object(runner.subprocess, "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "owner lost"):
+                    runner.install_apk(
+                        Path("adb"),
+                        "synthetic",
+                        apk,
+                        test_only=True,
+                        log=io.StringIO(),
+                        require_owner=Mock(side_effect=RuntimeError("owner lost")),
+                    )
+                run.assert_not_called()
+
+    def test_install_timeout_partial_output_and_cleanup_failure_both_survive(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "tests.apk"
+            apk.write_bytes(b"fixture")
+            log = io.StringIO()
+            responses = [
+                subprocess.CompletedProcess([], 0, ""),
+                subprocess.TimeoutExpired("install", 1, output=b"partial install"),
+                subprocess.CompletedProcess([], 9, "cleanup denied"),
+            ]
+            with (
+                patch.object(runner.subprocess, "run", side_effect=responses) as run,
+                self.assertRaises(subprocess.TimeoutExpired) as caught,
+            ):
+                runner.install_apk(
+                    Path("adb"), "synthetic", apk, test_only=True, log=log
+                )
+            self.assertEqual(run.call_count, 3)
+            self.assertIn("cleanup denied", " ".join(caught.exception.__notes__))
+            self.assertIn("partial install", log.getvalue())
+
+    def test_logging_failure_does_not_replace_install_timeout(self) -> None:
+        class BrokenLog(io.StringIO):
+            def write(self, text):
+                if "partial install" in text or "temporary APK cleanup failed" in text:
+                    raise OSError("log storage failed")
+                return super().write(text)
+
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "tests.apk"
+            apk.write_bytes(b"fixture")
+            with (
+                patch.object(
+                    runner.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, ""),
+                        subprocess.TimeoutExpired(
+                            "install", 1, output=b"partial install"
+                        ),
+                        subprocess.CompletedProcess([], 9, "cleanup denied"),
+                    ],
+                ),
+                self.assertRaises(subprocess.TimeoutExpired) as caught,
+            ):
+                runner.install_apk(
+                    Path("adb"), "synthetic", apk, test_only=True, log=BrokenLog()
+                )
+            self.assertIn("log storage failed", " ".join(caught.exception.__notes__))
+            self.assertIn("cleanup denied", " ".join(caught.exception.__notes__))
+
+    def test_failed_push_cleans_only_attempted_upload_and_never_installs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            apk = Path(directory) / "tests.apk"
+            apk.write_bytes(b"fixture")
+            with (
+                patch.object(
+                    runner.subprocess,
+                    "run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 1, "push failed"),
+                        subprocess.CompletedProcess([], 0, ""),
+                    ],
+                ) as run,
+                self.assertRaisesRegex(runner.AndroidInstrumentationError, "push"),
+            ):
+                runner.install_apk(
+                    Path("adb"), "synthetic", apk, test_only=True, log=io.StringIO()
+                )
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(
+                run.call_args_list[0].args[0][-1], run.call_args_list[1].args[0][-1]
+            )
+            self.assertEqual(run.call_args_list[1].args[0][3:6], ["shell", "rm", "-f"])
+
     def test_install_requires_success_and_removes_unique_remote_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             apk = Path(directory) / "tests.apk"

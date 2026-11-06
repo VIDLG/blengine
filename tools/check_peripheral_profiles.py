@@ -12,7 +12,14 @@ ARCHIVED_PROFILE_PATHS = (
 )
 NRF_PROFILE_PATH = SCENARIO_ROOT / "blehub-nrf-indication-v2.json"
 NRF_PROFILE_B_PATH = SCENARIO_ROOT / "blehub-nrf-indication-v2-b.json"
-NRF_ATT_HOLD_PATH = SCENARIO_ROOT / "blehub-nrf-att-read-hold-v1.json"
+NRF_MULTIFUNCTION_PATH = (
+    PROJECT_ROOT
+    / "tests/peripherals/nrf52840/firmware/profiles/multifunction-rf-v2-b.json"
+)
+NRF_MULTIFUNCTION_A_PATH = (
+    PROJECT_ROOT
+    / "tests/peripherals/nrf52840/firmware/profiles/multifunction-rf-v2-a.json"
+)
 
 
 class CharacteristicDefinition(TypedDict):
@@ -43,13 +50,19 @@ class ProviderProfile(TypedDict):
     services: list[ServiceDefinition]
 
 
-def load_profile(path: Path) -> ProviderProfile:
+def load_profile(path: Path, *, evidence_only: bool = False) -> ProviderProfile:
+    """Read historical schemas only by explicit opt-in; discovery is v2-only."""
     raw = cast(object, json.loads(path.read_text(encoding="utf-8")))
     if not isinstance(raw, dict):
         raise TypeError(f"{path.name}: profile root must be an object")
     document = cast(ProviderProfile, cast(object, raw))
     if document.get("schema_version") != 1:
         raise ValueError(f"{path.name}: schema_version must be 1")
+    if not evidence_only and document.get("profile_id") not in {
+        "blehub-nrf52840-multifunction-v2-a",
+        "blehub-nrf52840-multifunction-v2-b",
+    }:
+        raise ValueError(f"{path.name}: evidence-only profile is not a live v2 fixture")
     services = document["services"]
     advertising = document["advertising"]
     if len(services) != 1:
@@ -87,15 +100,19 @@ def require_distinct(values: list[str], label: str) -> None:
 
 
 def main() -> int:
-    archived_profiles = [load_profile(path) for path in ARCHIVED_PROFILE_PATHS]
-    nrf_profile = load_profile(NRF_PROFILE_PATH)
-    nrf_profile_b = load_profile(NRF_PROFILE_B_PATH)
-    diagnostic_profile = load_profile(NRF_ATT_HOLD_PATH)
+    archived_profiles = [
+        load_profile(path, evidence_only=True) for path in ARCHIVED_PROFILE_PATHS
+    ]
+    nrf_profile = load_profile(NRF_PROFILE_PATH, evidence_only=True)
+    nrf_profile_b = load_profile(NRF_PROFILE_B_PATH, evidence_only=True)
+    multifunction_profile = load_profile(NRF_MULTIFUNCTION_PATH)
+    multifunction_profile_a = load_profile(NRF_MULTIFUNCTION_A_PATH)
     all_profiles = [
         *archived_profiles,
         nrf_profile,
         nrf_profile_b,
-        diagnostic_profile,
+        multifunction_profile,
+        multifunction_profile_a,
     ]
     require_distinct(
         [profile["profile_id"] for profile in all_profiles],
@@ -129,7 +146,7 @@ def main() -> int:
     ):
         message = (
             f"profile={profile['profile_id']} file={path.name} "
-            + f"service_uuid={service_uuid} status=valid"
+            + f"service_uuid={service_uuid} status=evidence-only"
         )
         print(message)
     android_roles = {
@@ -149,7 +166,7 @@ def main() -> int:
         raise ValueError("indication-updates characteristic must be read+indicate only")
     print(
         f"profile={archived_profiles[0]['profile_id']} file={ARCHIVED_PROFILE_PATHS[0].name} "
-        + "modes=notification+strict-indication status=valid"
+        + "modes=notification+strict-indication status=evidence-only"
     )
     nrf_roles = {
         characteristic["role"]
@@ -158,7 +175,7 @@ def main() -> int:
     if nrf_roles != {"read-write", "updates", "indications", "read-only", "write-only"}:
         raise ValueError("nRF52840 profile must contain exactly the five v2 GATT roles")
     print(
-        f"profile={nrf_profile['profile_id']} file={NRF_PROFILE_PATH.name} status=valid"
+        f"profile={nrf_profile['profile_id']} file={NRF_PROFILE_PATH.name} status=evidence-only"
     )
     if semantic_signature(nrf_profile_b) != semantic_signature(nrf_profile):
         raise ValueError("nRF multi-DK profiles must preserve GATT semantics")
@@ -170,36 +187,38 @@ def main() -> int:
     ):
         raise ValueError("nRF multi-DK profile B identity drift")
     print(
-        f"profile={nrf_profile_b['profile_id']} file={NRF_PROFILE_B_PATH.name} status=valid"
+        f"profile={nrf_profile_b['profile_id']} file={NRF_PROFILE_B_PATH.name} status=evidence-only"
     )
-    if (
-        diagnostic_profile["profile_id"] != "blehub-nrf52840-att-read-hold-v1"
-        or diagnostic_profile["advertising"]["local_name"] != "BleHubAttHoldDK"
-        or diagnostic_profile["services"][0]["uuid"]
-        != "fd100000-0000-4000-8000-000000000000"
-        or len(
-            [
-                char
-                for char in diagnostic_profile["services"][0]["characteristics"]
-                if char.get("read_authorization") is True
-            ]
-        )
-        != 1
-        or not next(
-            (
-                char.get("read_authorization") is True
-                for char in diagnostic_profile["services"][0]["characteristics"]
-                if char["role"] == "read-write"
-            ),
-            False,
-        )
+    for path, profile, profile_id, local_name, service_uuid in (
+        (
+            NRF_MULTIFUNCTION_PATH,
+            multifunction_profile,
+            "blehub-nrf52840-multifunction-v2-b",
+            "BleHubMultiRfV2DKB",
+            "fd700000-0000-4000-8000-000000000000",
+        ),
+        (
+            NRF_MULTIFUNCTION_A_PATH,
+            multifunction_profile_a,
+            "blehub-nrf52840-multifunction-v2-a",
+            "BleHubMultiRfV2DKA",
+            "fd600000-0000-4000-8000-000000000000",
+        ),
     ):
-        raise ValueError(
-            "ATT hold diagnostic profile identity or read authorization drift"
-        )
-    print(
-        f"profile={diagnostic_profile['profile_id']} file={NRF_ATT_HOLD_PATH.name} status=valid"
-    )
+        if (
+            profile["profile_id"] != profile_id
+            or profile["advertising"]["local_name"] != local_name
+            or profile["services"][0]["uuid"] != service_uuid
+            or semantic_signature(profile) != semantic_signature(nrf_profile)
+            or any(
+                "read_authorization" in char
+                for char in profile["services"][0]["characteristics"]
+            )
+        ):
+            raise ValueError(
+                "multifunction profile identity or normal GATT semantics drift"
+            )
+        print(f"profile={profile['profile_id']} file={path.name} status=valid")
     print("provider_profile_isolation=passed")
     return 0
 

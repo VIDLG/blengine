@@ -40,14 +40,23 @@ profile = "b.json"
             ):
                 devices = multi_fixture.load_devices()
         self.assertEqual([device.name for device in devices], ["dk_a", "dk_b"])
-        self.assertEqual([device.probe_serial for device in devices], [
-            "001050252028",
-            "001050251479",
-        ])
-        self.assertEqual([device.port for device in devices], ["/dev/cu.a", "/dev/cu.b"])
-        self.assertEqual([device.profile.name for device in devices], ["a.json", "b.json"])
+        self.assertEqual(
+            [device.probe_serial for device in devices],
+            [
+                "001050252028",
+                "001050251479",
+            ],
+        )
+        self.assertEqual(
+            [device.port for device in devices], ["/dev/cu.a", "/dev/cu.b"]
+        )
+        self.assertEqual(
+            [device.profile.name for device in devices], ["a.json", "b.json"]
+        )
 
-    def test_load_devices_can_select_one_explicit_device_for_profile_diagnosis(self) -> None:
+    def test_load_devices_can_select_one_explicit_device_for_profile_diagnosis(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             profile = root / "b.json"
@@ -92,7 +101,9 @@ profile = "b.json"
             with (
                 patch.object(multi_fixture, "LOCAL_CONFIG_PATH", config),
                 patch.object(multi_fixture, "PROJECT_ROOT", root),
-                self.assertRaisesRegex(multi_fixture.MultiFixtureError, "ports must be distinct"),
+                self.assertRaisesRegex(
+                    multi_fixture.MultiFixtureError, "ports must be distinct"
+                ),
             ):
                 multi_fixture.load_devices()
 
@@ -115,7 +126,9 @@ class MultiFixtureControllerTests(unittest.TestCase):
         )
         with (
             tempfile.TemporaryDirectory() as temporary,
-            patch.object(multi_fixture, "MultiFixtureController", return_value=controller),
+            patch.object(
+                multi_fixture, "MultiFixtureController", return_value=controller
+            ),
         ):
             multi_fixture.readiness(work_root=Path(temporary))
         controller.start.assert_called_once_with()
@@ -126,7 +139,9 @@ class MultiFixtureControllerTests(unittest.TestCase):
             multi_fixture.DeviceConfig("dk_a", "serial-a", "/dev/a", Path("a.json")),
             multi_fixture.DeviceConfig("dk_b", "serial-b", "/dev/b", Path("b.json")),
         )
-        with self.assertRaisesRegex(multi_fixture.MultiFixtureError, "mapping mismatch"):
+        with self.assertRaisesRegex(
+            multi_fixture.MultiFixtureError, "mapping mismatch"
+        ):
             multi_fixture._validate_discovered_mappings(
                 devices, {"/dev/a": "serial-a", "/dev/b": "wrong"}
             )
@@ -152,14 +167,19 @@ class MultiFixtureControllerTests(unittest.TestCase):
                 patch.object(
                     multi_fixture,
                     "_wait_ready",
-                    side_effect=[None, multi_fixture.MultiFixtureError("dk_b not ready")],
+                    side_effect=[
+                        None,
+                        multi_fixture.MultiFixtureError("dk_b not ready"),
+                    ],
                 ),
                 patch.object(multi_fixture, "_stop_process") as stop_process,
             ):
                 controller = multi_fixture.MultiFixtureController(
                     devices, work_root=root / "fixture"
                 )
-                with self.assertRaisesRegex(multi_fixture.MultiFixtureError, "dk_b not ready"):
+                with self.assertRaisesRegex(
+                    multi_fixture.MultiFixtureError, "dk_b not ready"
+                ):
                     controller.start()
 
         self.assertEqual([owned.config.name for owned in controller.owned], [])
@@ -228,7 +248,9 @@ class MultiFixtureControllerTests(unittest.TestCase):
             multi_fixture.DeviceConfig("dk_b", "b", "/dev/b", Path("b.json")),
         )
         controller = multi_fixture.MultiFixtureController(devices)
-        with self.assertRaisesRegex(multi_fixture.MultiFixtureError, "unknown multi-DK device"):
+        with self.assertRaisesRegex(
+            multi_fixture.MultiFixtureError, "unknown multi-DK device"
+        ):
             controller.restart_device("dk_c")
 
 

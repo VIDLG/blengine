@@ -6,10 +6,13 @@ import argparse
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import cast
 
 from tools.android_toolchain import adb_executable
+from tools.react_native.capture_io import MAX_BYTES, stop_local
 from tools.react_native.rf_runner import (
     ProgressReporter,
     runtime_failure,
@@ -58,10 +61,53 @@ def _run(
     return result
 
 
-def _logcat(serial: str) -> str:
-    return _run(
-        _adb(serial, "logcat", "-d", "-v", "brief"), timeout=15, check=True
-    ).stdout
+@contextmanager
+def _capture_logcat(serial: str, log_path: Path) -> Iterator[subprocess.Popen[bytes]]:
+    # Capture before launch: repeated logcat -d snapshots can discard the first
+    # lifecycle markers when the device's main log buffer rolls over.
+    with log_path.open("wb") as output:
+        process = subprocess.Popen(
+            _adb(
+                serial,
+                "logcat",
+                "-v",
+                "brief",
+                "ReactNativeJS:V",
+                "AndroidRuntime:E",
+                "*:S",
+            ),
+            cwd=PROJECT_ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        primary: BaseException | None = None
+        try:
+            yield process
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                stop_local(process, console=False)
+            except BaseException as cleanup:
+                if primary is None:
+                    raise
+                primary.add_note(f"logcat cleanup failed: {cleanup}")
+
+
+def _logcat(log_path: Path, process: subprocess.Popen[bytes]) -> str:
+    if process.poll() is not None:
+        raise AndroidRuntimeError(
+            f"logcat exited during runtime capture; see {log_path}"
+        )
+    with log_path.open("rb") as output:
+        content = output.read(MAX_BYTES + 1)
+    if len(content) > MAX_BYTES:
+        raise AndroidRuntimeError(f"runtime capture exceeds 8 MiB; see {log_path}")
+    # A writer may currently be in the middle of a line or UTF-8 code point.
+    return content[: content.rfind(b"\n") + 1].decode("utf-8", errors="strict")
 
 
 def _mode_contract(mode: str) -> tuple[str, str, str | None]:
@@ -79,6 +125,7 @@ def _wait_for_runtime(
     mode: str,
     log_path: Path,
     timeout_seconds: float,
+    capture: subprocess.Popen[bytes],
 ) -> None:
     completion_marker, scenario, _ = _mode_contract(mode)
     progress = ProgressReporter(
@@ -93,8 +140,7 @@ def _wait_for_runtime(
     latest = "<none>"
     log = ""
     while time.monotonic() < deadline:
-        log = _logcat(serial)
-        _ = log_path.write_text(log, encoding="utf-8")
+        log = _logcat(log_path, capture)
         markers = runtime_markers(log)
         if markers:
             latest = markers[-1]
@@ -118,7 +164,6 @@ def _wait_for_runtime(
             return
         progress.waiting(f"phase:{phase}")
         _ = time.sleep(1.0)
-    _ = log_path.write_text(log, encoding="utf-8")
     progress.failed(f"timeout:{phase}")
     raise AndroidRuntimeError(
         f"Android RN {mode} marker timed out; latest={latest}; see {log_path}"
@@ -129,6 +174,7 @@ def _wait_for_reload(
     serial: str,
     log_path: Path,
     timeout_seconds: float,
+    capture: subprocess.Popen[bytes],
 ) -> None:
     """Trigger RN's native context recreation after generation one is ready."""
     progress = ProgressReporter(
@@ -142,8 +188,7 @@ def _wait_for_reload(
     last_ready_count = 0
     log = ""
     while time.monotonic() < deadline:
-        log = _logcat(serial)
-        _ = log_path.write_text(log, encoding="utf-8")
+        log = _logcat(log_path, capture)
         failed_line = runtime_failure(log)
         if failed_line is not None:
             progress.failed(f"runtime:{failed_line}")
@@ -186,7 +231,6 @@ def _wait_for_reload(
             return
         progress.waiting(f"phase:{'generation-2' if triggered else 'generation-1'}")
         _ = time.sleep(1.0)
-    _ = log_path.write_text(log, encoding="utf-8")
     progress.failed("timeout:reload")
     raise AndroidRuntimeError(
         f"Android RN reload marker timed out; ready_count={last_ready_count}; see {log_path}"
@@ -199,7 +243,7 @@ def run(
     log_path: Path,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> Path:
-    """Launch one Android runtime mode, stop on terminal/failure, and clean up."""
+    """Capture one runtime mode; reap logcat and leave successful results visible."""
     if not serial:
         raise AndroidRuntimeError("Android device serial must not be empty")
     if timeout_seconds <= 0:
@@ -210,63 +254,65 @@ def run(
     log_path.unlink(missing_ok=True)
     app_started = False
     primary_error: BaseException | None = None
-    try:
-        _ = _run(_adb(serial, "wait-for-device"), timeout=20, check=True)
-        _ = _run(
-            _adb(serial, "shell", "am", "force-stop", PACKAGE_NAME),
-            timeout=15,
-            check=True,
-        )
-        _ = _run(_adb(serial, "logcat", "-c"), timeout=15, check=True)
-        command = _adb(
-            serial,
-            "shell",
-            "am",
-            "start",
-            "-n",
-            ACTIVITY,
-            "--es",
-            "blehub.runtimeMode",
-            mode,
-        )
-        started = _run(command, timeout=20, check=True)
-        if any(
-            text in started.stdout
-            for text in ("Error:", "Exception", "Activity not started")
-        ):
-            raise AndroidRuntimeError(
-                f"unable to start RN host: {started.stdout[-1000:]}"
+    with ExitStack() as captures:
+        try:
+            _ = _run(_adb(serial, "wait-for-device"), timeout=20, check=True)
+            _ = _run(
+                _adb(serial, "shell", "am", "force-stop", PACKAGE_NAME),
+                timeout=15,
+                check=True,
             )
-        app_started = True
-        if mode == "reload":
-            _wait_for_reload(serial, log_path, timeout_seconds)
-        else:
-            _wait_for_runtime(serial, mode, log_path, timeout_seconds)
-        checker = [
-            sys.executable,
-            "-m",
-            "tools.react_native.check_runtime_log",
-            str(log_path),
-        ]
-        if checker_flag is not None:
-            checker.append(checker_flag)
-        _ = _run(checker, timeout=30, check=True)
-        print(f"Android RN runtime log: {log_path}")
-        return log_path
-    except BaseException as error:
-        primary_error = error
-        raise
-    finally:
-        if app_started:
-            try:
-                _ = _run(
-                    _adb(serial, "shell", "am", "force-stop", PACKAGE_NAME),
-                    timeout=15,
-                    check=True,
+            _ = _run(_adb(serial, "logcat", "-c"), timeout=15, check=True)
+            capture = captures.enter_context(_capture_logcat(serial, log_path))
+            command = _adb(
+                serial,
+                "shell",
+                "am",
+                "start",
+                "-n",
+                ACTIVITY,
+                "--es",
+                "blehub.runtimeMode",
+                mode,
+            )
+            started = _run(command, timeout=20, check=True)
+            if any(
+                text in started.stdout
+                for text in ("Error:", "Exception", "Activity not started")
+            ):
+                raise AndroidRuntimeError(
+                    f"unable to start RN host: {started.stdout[-1000:]}"
                 )
-            except AndroidRuntimeError:
-                if primary_error is None:
-                    raise
+            app_started = True
+            if mode == "reload":
+                _wait_for_reload(serial, log_path, timeout_seconds, capture)
+            else:
+                _wait_for_runtime(serial, mode, log_path, timeout_seconds, capture)
+            captures.close()
+            checker = [
+                sys.executable,
+                "-m",
+                "tools.react_native.check_runtime_log",
+                str(log_path),
+            ]
+            if checker_flag is not None:
+                checker.append(checker_flag)
+            _ = _run(checker, timeout=30, check=True)
+            print(f"Android RN runtime log: {log_path}")
+            return log_path
+        except BaseException as error:
+            primary_error = error
+            raise
+        finally:
+            if app_started and primary_error is not None:
+                try:
+                    _ = _run(
+                        _adb(serial, "shell", "am", "force-stop", PACKAGE_NAME),
+                        timeout=15,
+                        check=True,
+                    )
+                except AndroidRuntimeError as cleanup:
+                    primary_error.add_note(f"Android App cleanup failed: {cleanup}")
 
 
 def main() -> int:

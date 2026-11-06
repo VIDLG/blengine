@@ -5,11 +5,17 @@
   "description": "Internal downstream RN host for the private BleHub Nitro integration",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand",
+    "test:ui": "jest --runInBand src/App.rf-lab.test.tsx",
+    "test:ccc-disable-reject": "jest --runInBand src/rf_ccc_disable_reject.test.tsx src/rf_ccc_enable_reject.test.tsx src/rf_signal.test.ts src/rf_lab_catalog.test.ts src/rf_lab_session.test.ts src/rf_lab_workbench.test.tsx",
+    "test:ccc-enable-reject": "jest --runInBand src/rf_ccc_enable_reject.test.tsx src/rf_signal.test.ts src/rf_lab_catalog.test.ts src/rf_lab_session.test.ts src/rf_lab_workbench.test.tsx",
+    "test:write-reject": "jest --runInBand src/rf_write_reject.test.tsx src/rf_signal.test.ts src/rf_lab_catalog.test.ts src/rf_lab_session.test.ts src/rf_lab_workbench.test.tsx",
     "start": "react-native start",
     "android": "react-native run-android",
     "ios": "react-native run-ios"
   },
   "dependencies": {
+
     "@blehub/react-native-internal": "file:../../../integrations/react-native-internal",
     "react": "19.3.0",
     "react-native": "0.87.1",
@@ -20,8 +26,13 @@
     "@react-native-community/cli-platform-android": "20.2.0",
     "@react-native-community/cli-platform-ios": "20.2.0",
     "@react-native/babel-preset": "0.87.1",
+    "@react-native/jest-preset": "^0.87.1",
     "@react-native/metro-config": "0.87.1",
+    "@testing-library/react-native": "^13.3.3",
+    "@types/jest": "^29.5.14",
     "@types/react": "19.3.0",
+    "jest": "^29.7.0",
+    "react-test-renderer": "^19.3.0",
     "typescript": "6.0.3"
   }
 }

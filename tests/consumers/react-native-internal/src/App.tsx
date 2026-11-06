@@ -1,10 +1,27 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { RfWatchdogLab, runRfWatchdog } from './rf_watchdog';
+import { RfWriteRejectLab, writeRejectSession } from './rf_write_reject';
+import { RfCccEnableRejectLab, cccEnableRejectSession } from './rf_ccc_enable_reject';
+import { RfCccDisableRejectLab, cccDisableRejectSession } from './rf_ccc_disable_reject';
+import { RfAdapterTransition } from './rf_adapter_transition';
+import { RfPermissionTransition } from './rf_permission_transition';
+import type { PermissionTransitionProfile } from './rf_permission_transition';
+import { RfLabRunScreen, styles } from './rf_lab_screen';
+import { RfLabWorkbench } from './rf_lab_workbench';
+import { findScenario } from './rf_lab_catalog';
+import { useBeginRun, useRunOutcome, useRunReporter } from './rf_lab_session';
+import { runRfRecoveryTen } from './rf_recovery_ten';
+import { runRfLabFull } from './rf_full';
+import { RF_BOOT_NONCE } from './rf_runtime';
+import { bindPendingReloadProbe } from './pending_reload_runtime';
+import { parseRfControl, parseRfControls, RfSignalBarrier, RfSuiteSignalGuard } from './rf_signal';
 import {
   Pressable,
   ScrollView,
   Linking,
-  Settings,
-  StyleSheet,
+  TextInput,
+  Platform,
+
   Text,
   View,
 } from 'react-native';
@@ -19,6 +36,7 @@ import { runRfMultiFault } from './multi_fault';
 
 import {
   COMPLETION_TIMEOUT_MS,
+  INITIAL_RF_CANCELLATION_STEPS,
   INITIAL_RF_CONNECT_STEPS,
   INITIAL_RF_GATT_STEPS,
   INITIAL_RF_INDICATION_STEPS,
@@ -38,7 +56,10 @@ import {
   MAX_RF_EVENT_COUNT,
   MAX_U64,
   PENDING_READ_ARM_TIMEOUT_MS,
-  PENDING_READ_GENERATION_KEY,
+  RF_CANCELLATION_ACTIVE_COMMAND,
+  RF_CANCELLATION_QUEUED_COMMAND,
+  RF_CANCELLATION_RECOVERY_COMMAND,
+  RF_CANCELLATION_UNKNOWN_TARGET,
   RF_CONNECTION_ID,
   RF_CONNECTION_TIMEOUT_MS,
   RF_CONNECT_COMMAND,
@@ -56,7 +77,6 @@ import {
   RF_NOTIFICATION_DISABLE_COMMAND,
   RF_NOTIFICATION_ENABLE_COMMAND,
   RF_NOTIFICATION_SUBSCRIPTION,
-  RF_PENDING_READ_EXPECTED_LOCAL_NAME,
   RF_POST_DISCONNECT_OBSERVATION_MS,
   RF_POST_NOTIFICATION_DISABLE_OBSERVATION_MS,
   RF_POST_STOP_OBSERVATION_MS,
@@ -91,13 +111,32 @@ import type {
 
 type Probe = ReturnType<typeof createBleHubProbe>;
 
+// One identity per JS boot, not per invocation or React render.
+const PENDING_READ_RUNTIME_NONCE = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+const pendingReadRuntimeAttempts = new Set<string>();
+
 interface AppProps {
   runtimeMode?: RuntimeMode;
   rfServiceUuid?: string;
+  rfExpectedLocalName?: string;
   rfMultiNotificationMode?: string;
   rfMultiSubscriptionMode?: string;
   rfMultiCycles?: string;
   rfReloadNotificationName?: string;
+  rfPendingReadRunId?: string;
+  rfRecoveryRunId?: string;
+  rfAdapterRunId?: string;
+  rfAdapterMode?: 'startup-off' | 'active-loss';
+  rfAdapterNativeIdentity?: string;
+  rfPermissionRunId?: string;
+  rfPermissionPhase?: PermissionTransitionProfile['rfPermissionPhase'];
+  rfPermissionNativeIdentity?: string;
+  rfPendingReadGeneration?: number;
+  rfLabSuiteFlow?: string;
+  rfCancellationControl?: string;
+  rfWriteRejectControl?: string;
+    rfCccEnableRejectControl?: string;
+      rfCccDisableRejectControl?: string;
 }
 
 
@@ -112,13 +151,15 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
 
 function rfStepState(line: string): { id: RfStepId; state: StepState; detail: string } | undefined {
-  const match = /^rf:step:(initialize|scan-start|advertisement|scan-stop|silence|connecting|connected|gatt-discovery|rssi|read-initial|write-response|read-response|write-without-response|read-without-response|indication-rejection|notification-enable|notification-value|notification-disable|indication-enable|indication-value|indication-disable|disconnected|connection-silence|recovery-connecting|recovery-connected|recovery-disconnected|recovery-connection-silence|close):(passed|failed):/.exec(line);
+  const match = /^rf:step:(initialize|scan-start|advertisement|scan-stop|silence|connecting|connected|gatt-discovery|rssi|read-initial|write-response|read-response|write-without-response|read-without-response|indication-rejection|notification-enable|notification-value|notification-disable|indication-enable|indication-value|indication-disable|cancellation-active-rejection|cancellation-queued-accepted|cancellation-terminal|cancellation-active-completion|cancellation-recovery|cancellation-late-silence|cancellation-unknown-target|cancellation-completed-target|disconnected|connection-silence|recovery-connecting|recovery-connected|recovery-disconnected|recovery-connection-silence|close):(passed|failed):/.exec(line);
   if (!match) return undefined;
   return {
     id: match[1] as RfStepId,
@@ -137,6 +178,7 @@ interface RfEventStream {
   ): Promise<RfScanEvent>;
   waitForNext(timeoutMilliseconds: number, label: string, isCancelled: () => boolean): Promise<RfScanEvent>;
   expectCommandFailure(commandId: string, category: string): void;
+  consumeAll(predicate: (event: RfScanEvent) => boolean): number;
   assertHealthy(): void;
   remove(): void;
 }
@@ -164,20 +206,26 @@ function rfEventFailure(event: RfScanEvent, expectedCommandFailures: Map<string,
   return undefined;
 }
 
-function createRfEventStream(
+export function createRfEventStream(
   probe: Probe,
   connectMode = false,
   passiveDisconnectMode = false,
   passiveConnectionIds: ReadonlySet<string> = new Set([RF_CONNECTION_ID]),
   maxEvents = MAX_RF_EVENT_COUNT,
-  rejectEvent?: (event: RfScanEvent) => boolean,
+  rejectEvent?: (event: RfScanEvent) => boolean | Error,
+  guardAfterRemove = false,
 ): RfEventStream {
   const events: RfScanEvent[] = [];
   const expectedCommandFailures = new Map<string, string>();
   let wake: (() => void) | undefined;
   let removed = false;
   let terminalError: Error | undefined;
-  let cursor = 0;
+  // Native callbacks are not required to preserve domain-event/terminal-event
+  // order across the backend queue and the Nitro handoff. A wait must claim
+  // only its matching event; otherwise an earlier, unrelated event can be
+  // silently discarded and a later wait can time out on an event already
+  // delivered to JavaScript.
+  const consumedEventIndexes = new Set<number>();
   const failClosed = (error: Error): void => {
     if (terminalError) return;
     terminalError = error;
@@ -185,13 +233,21 @@ function createRfEventStream(
     wake = undefined;
   };
   const listener = (event: RfScanEvent): void => {
-    if (removed || terminalError) return;
+    if (removed) {
+      if (guardAfterRemove) {
+        const rejection = rejectEvent?.(event);
+        failClosed(rejection instanceof Error ? rejection : new Error('JS callback after stream removal'));
+      }
+      return;
+    }
+    if (terminalError) return;
     if (events.length >= maxEvents) {
       failClosed(new Error(`RF event stream exceeded ${maxEvents} events`));
       return;
     }
-    if (rejectEvent?.(event)) {
-      failClosed(new Error(`previous generation event leaked:kind=${event.kind}:commandId=${event.commandId ?? 'none'}:connectionId=${event.connectionId ?? 'none'}`));
+    const rejection = rejectEvent?.(event);
+    if (rejection) {
+      failClosed(rejection instanceof Error ? rejection : new Error(`previous generation event leaked:kind=${event.kind}:commandId=${event.commandId ?? 'none'}:connectionId=${event.connectionId ?? 'none'}`));
       return;
     }
     const expectedPassiveDisconnect = passiveDisconnectMode &&
@@ -222,10 +278,13 @@ function createRfEventStream(
       const deadline = Date.now() + timeoutMilliseconds;
       while (true) {
         if (terminalError) throw terminalError;
-        while (cursor < events.length) {
-          const event = events[cursor];
-          cursor += 1;
-          if (predicate(event)) return event;
+        for (let index = 0; index < events.length; index += 1) {
+          if (consumedEventIndexes.has(index)) continue;
+          const event = events[index];
+          if (predicate(event)) {
+            consumedEventIndexes.add(index);
+            return event;
+          }
         }
         if (isCancelled()) throw new Error(`${label} cancelled`);
         const remaining = deadline - Date.now();
@@ -241,6 +300,16 @@ function createRfEventStream(
     },
     expectCommandFailure(commandId: string, category: string): void {
       expectedCommandFailures.set(commandId, category);
+    },
+    consumeAll(predicate: (event: RfScanEvent) => boolean): number {
+      let consumed = 0;
+      for (let index = 0; index < events.length; index += 1) {
+        if (!consumedEventIndexes.has(index) && predicate(events[index])) {
+          consumedEventIndexes.add(index);
+          consumed += 1;
+        }
+      }
+      return consumed;
     },
     assertHealthy(): void {
       if (terminalError) throw terminalError;
@@ -549,24 +618,37 @@ export async function runRfPendingReadReload(
   probe: Probe,
   rfServiceUuid: string | undefined,
   rfReloadNotificationName: string | undefined,
-  generation: number,
+  generation: number | undefined,
   report: (line: string) => void,
   isCancelled: () => boolean,
-): Promise<void> {
+  runId?: string,
+  expectedLocalName?: string,
+): Promise<boolean> {
   const prefix = `rf-pending-read-reload:generation=${generation}`;
+  const android = Platform.OS === 'android';
   let stream: RfEventStream | undefined;
   let armSubscription: ReturnType<typeof Linking.addEventListener> | undefined;
   let armAwaiting = false;
   let armReceived = false;
   let armFailure: Error | undefined;
+  let eventFailureBeforeCancel: Error | undefined;
   try {
     if (generation !== 1 && generation !== 2) throw new Error(`invalid generation ${generation}`);
     const serviceUuid = rfServiceUuid?.trim();
     if (!serviceUuid) throw new Error('rfServiceUuid is required');
     const notificationToken = /^dev\.blehub\.rn\.reload\.([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$/.exec(rfReloadNotificationName ?? '')?.[1];
     if (!notificationToken) throw new Error('rfReloadNotificationName must contain a canonical UUID');
+    const localName = expectedLocalName;
+    {
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(runId ?? '')) throw new Error('rfPendingReadRunId must be a canonical UUID');
+      if (notificationToken !== runId) throw new Error('rfReloadNotificationName does not match rfPendingReadRunId');
+      if ((android && !localName?.trim()) || (localName !== undefined && !localName.trim())) throw new Error('rfExpectedLocalName cannot be blank');
+      const attempt = `${runId}:${generation}`;
+      if (pendingReadRuntimeAttempts.has(attempt)) throw new Error('generation cannot rerun in the same JS runtime');
+      pendingReadRuntimeAttempts.add(attempt);
+    }
     const expectedArmURL = `blehub-rn-spike://arm/${notificationToken.toLowerCase()}`;
-    if (generation === 2) {
+    {
       armSubscription = Linking.addEventListener('url', ({ url }) => {
         if (armFailure) return;
         if (!armAwaiting) armFailure = new Error('arm URL before awaiting-arm');
@@ -577,16 +659,36 @@ export async function runRfPendingReadReload(
           report(`${prefix}:arm-js-observed:source=linking:url=matched`);
         }
       });
-      report(`${prefix}:arm-linking-listener:registered-before-initialize`);
     }
     const base = generation === 1 ? 12000 : 13000;
     const id = (offset: number): string => String(base + offset);
+    // iOS uses the maintained pending-read route; Android's native ABI/test IDs are unchanged.
+    const gattSession = id(android ? 6 : 8);
+    const discoveryCommand = id(android ? 7 : 9);
+    const readCommand = id(android ? 8 : 11);
     const stale = (value: string | undefined): boolean => value !== undefined &&
-      /^1200[0-9]$/.test(value);
-    stream = createRfEventStream(probe, true, false, undefined, MAX_RF_EVENT_COUNT,
-      generation === 2 ? (event) => stale(event.commandId) || stale(event.scanSessionId) ||
-        stale(event.connectionId) || stale(event.gattSessionId) || stale(event.subscriptionId) : undefined);
+      /^120[0-9]{2}$/.test(value);
+    stream = createRfEventStream(probe, true, false, undefined, MAX_RF_EVENT_COUNT, (event) => {
+      if (event.error && !isCancelled()) {
+        eventFailureBeforeCancel = new Error(`${event.kind}.error:${event.commandId ?? 'none'}:${event.error.category}:${event.error.message}`);
+        return eventFailureBeforeCancel;
+      }
+      return generation === 2 && (stale(event.commandId) || stale(event.scanSessionId) ||
+        stale(event.connectionId) || stale(event.gattSessionId) || stale(event.subscriptionId));
+    });
+    // Both routes must already be guarded when the host first observes this boot.
+    report(`${prefix}:runtime-start:runId=${runId}:nonce=${PENDING_READ_RUNTIME_NONCE}`);
+    if (armSubscription) report(`${prefix}:arm-linking-listener:registered-before-initialize`);
     report(`${prefix}:listener:registered-before-initialize`);
+    {
+      stream.assertHealthy();
+      if (armFailure) throw armFailure;
+      await probe.awaitPendingReloadReady(runId!, generation);
+      stream.assertHealthy();
+      if (armFailure) throw armFailure;
+      if (isCancelled()) throw new Error('native readiness cancelled');
+      report(`${prefix}:native-ready:passed`);
+    }
     if (probe.initialize(id(0))) throw new Error('initialize dispatch rejected');
     const initDeadline = Date.now() + RF_INITIALIZATION_TIMEOUT_MS;
     await stream.waitFor((e) => e.kind === 'adapterSnapshotChanged' && e.adapterState === 'PoweredOn' && e.scanAuthorization === 'Authorized', RF_INITIALIZATION_TIMEOUT_MS, 'authorized adapter', isCancelled);
@@ -597,7 +699,9 @@ export async function runRfPendingReadReload(
     const scanDeadline = Date.now() + RF_SCAN_TIMEOUT_MS;
     await stream.waitFor((e) => e.kind === 'scanStarted' && e.commandId === id(2) && e.scanSessionId === id(1), RF_SCAN_TIMEOUT_MS, 'scan started', isCancelled);
     await expectRfConnectionEvent(stream, 'commandCompleted', id(2), undefined, scanDeadline, isCancelled);
-    const advertisement = await stream.waitFor((e) => e.kind === 'advertisementObserved' && e.scanSessionId === id(1) && (e.localName == null || e.localName === RF_PENDING_READ_EXPECTED_LOCAL_NAME), Math.max(1, scanDeadline - Date.now()), 'advertisement', isCancelled);
+    const advertisement = await stream.waitFor((e) => e.kind === 'advertisementObserved' && e.scanSessionId === id(1) && (!android || e.localName === localName), Math.max(1, scanDeadline - Date.now()), 'advertisement', isCancelled);
+    // The baseline provider may omit the name, but an explicit wrong name is never ignored.
+    if (localName !== undefined && advertisement.localName != null && advertisement.localName !== localName) throw new Error('unexpected peripheral local name');
     const peripheral = advertisement.peripheralId;
     if (!isCanonicalU64(peripheral)) throw new Error('invalid peripheral ID');
     if (probe.stopRfScan(id(3), id(1))) throw new Error('stop scan dispatch rejected');
@@ -614,18 +718,18 @@ export async function runRfPendingReadReload(
     await expectRfConnectionEvent(stream, 'connectionStateChanged', id(5), 'Connected', deadline, isCancelled, id(4));
     await expectRfConnectionEvent(stream, 'commandCompleted', id(5), undefined, deadline, isCancelled);
     report(`${prefix}:connected:passed:commandId=${id(5)}:connectionId=${id(4)}:peripheralId=${peripheral}`);
-    if (probe.discoverRfGatt(id(7), id(4), id(6))) throw new Error('GATT dispatch rejected');
-    const discovered = await stream.waitFor((e) => e.kind === 'gattDiscovered' && e.commandId === id(7) && e.connectionId === id(4), RF_CONNECTION_TIMEOUT_MS, 'GATT database', isCancelled);
+    if (probe.discoverRfGatt(discoveryCommand, id(4), gattSession)) throw new Error('GATT dispatch rejected');
+    const discovered = await stream.waitFor((e) => e.kind === 'gattDiscovered' && e.commandId === discoveryCommand && e.connectionId === id(4), RF_CONNECTION_TIMEOUT_MS, 'GATT database', isCancelled);
     const database = validateRfGattDatabase(discovered, serviceUuid, id(4));
-    if (database.gattSessionId !== id(6)) throw new Error('GATT session ID mismatch');
-    await expectRfConnectionEvent(stream, 'commandCompleted', id(7), undefined, Date.now() + RF_CONNECTION_TIMEOUT_MS, isCancelled);
-    report(`${prefix}:gatt:passed:commandId=${id(7)}:connectionId=${id(4)}:gattSessionId=${id(6)}`);
+    if (database.gattSessionId !== gattSession) throw new Error('GATT session ID mismatch');
+    await expectRfConnectionEvent(stream, 'commandCompleted', discoveryCommand, undefined, Date.now() + RF_CONNECTION_TIMEOUT_MS, isCancelled);
+    report(`${prefix}:gatt:passed:commandId=${discoveryCommand}:connectionId=${id(4)}:gattSessionId=${gattSession}`);
 
     const characteristic = database.readWriteCharacteristicId;
-    if (generation === 2) {
+    {
       if (armFailure) throw armFailure;
       armAwaiting = true;
-      report(`${prefix}:awaiting-arm:commandId=${id(8)}:connectionId=${id(4)}:gattSessionId=${id(6)}:characteristicId=${characteristic}`);
+      report(`${prefix}:awaiting-arm:commandId=${readCommand}:connectionId=${id(4)}:gattSessionId=${gattSession}:characteristicId=${characteristic}`);
       const armDeadline = Date.now() + PENDING_READ_ARM_TIMEOUT_MS;
       while (!armReceived) {
         if (isCancelled()) throw new Error('read arm cancelled');
@@ -638,34 +742,42 @@ export async function runRfPendingReadReload(
       if (armFailure) throw armFailure;
       stream.assertHealthy();
     }
-    const dispatchError = probe.readRfCharacteristic(id(8), id(4), id(6), characteristic);
+    const dispatchError = probe.readRfCharacteristic(readCommand, id(4), gattSession, characteristic);
     if (dispatchError) throw new Error(`read dispatch rejected: ${dispatchError.category}:${dispatchError.detail ?? ''}`);
     if (generation === 1) {
       // The host must receive this marker before the external reload notification.
       // Do not consume the read callback or command terminal in this generation.
-      report(`${prefix}:read-dispatched:commandId=${id(8)}:connectionId=${id(4)}:gattSessionId=${id(6)}:characteristicId=${characteristic}:peripheralId=${peripheral}`);
-      while (!isCancelled()) {
-        await delay(100);
+      report(`${prefix}:read-dispatched:commandId=${readCommand}:connectionId=${id(4)}:gattSessionId=${gattSession}:characteristicId=${characteristic}:peripheralId=${peripheral}`);
+      while (true) {
         stream.assertHealthy();
+        if (armFailure) throw armFailure;
+        if (isCancelled()) break;
+        await delay(100);
       }
+      return false;
     } else {
-      report(`${prefix}:read-dispatched:commandId=${id(8)}:connectionId=${id(4)}:gattSessionId=${id(6)}:characteristicId=${characteristic}`);
+      report(`${prefix}:read-dispatched:commandId=${readCommand}:connectionId=${id(4)}:gattSessionId=${gattSession}:characteristicId=${characteristic}`);
       const readDeadline = Date.now() + RF_CONNECTION_TIMEOUT_MS;
       const read = await stream.waitForNext(Math.max(1, readDeadline - Date.now()), 'characteristic read', isCancelled);
-      if (read.kind !== 'characteristicRead' || read.commandId !== id(8) || read.connectionId !== id(4) ||
-          read.gattSessionId !== id(6) || read.characteristicId !== characteristic || read.error ||
+      if (read.kind !== 'characteristicRead' || read.commandId !== readCommand || read.connectionId !== id(4) ||
+          read.gattSessionId !== gattSession || read.characteristicId !== characteristic || read.error ||
           !sameBytes(read.value ?? new ArrayBuffer(0), new Uint8Array([0x00]))) {
         throw new Error(`unexpected generation 2 read:kind=${read.kind}:commandId=${read.commandId ?? 'none'}`);
       }
-      await expectRfConnectionEvent(stream, 'commandCompleted', id(8), undefined, readDeadline, isCancelled);
+      await expectRfConnectionEvent(stream, 'commandCompleted', readCommand, undefined, readDeadline, isCancelled);
       // Keep the second listener alive briefly to catch a late first-generation callback.
+      const settledEventCount = stream.events.length;
       await delay(RF_POST_DISCONNECT_OBSERVATION_MS);
       stream.assertHealthy();
+      if (isCancelled()) throw new Error('read cancelled');
+      if (stream.events.length !== settledEventCount) throw new Error('generation 2 post-read silence violated');
       if (armFailure) throw armFailure;
-      report(`${prefix}:read:passed:commandId=${id(8)}:connectionId=${id(4)}:gattSessionId=${id(6)}:characteristicId=${characteristic}:value=00`);
+      report(`${prefix}:read:passed:commandId=${readCommand}:connectionId=${id(4)}:gattSessionId=${gattSession}:characteristicId=${characteristic}:value=00`);
+      return true;
     }
   } catch (error: unknown) {
-    if (!isCancelled()) report(`${prefix}:failed:${describeError(error)}`);
+    if (eventFailureBeforeCancel || !isCancelled()) report(`${prefix}:failed:${describeError(eventFailureBeforeCancel ?? error)}`);
+    return false;
   } finally {
     armSubscription?.remove();
     stream?.remove();
@@ -874,6 +986,9 @@ async function runRfScan(
   subscriptionMode: RfSubscriptionMode | undefined,
   passiveDisconnectMode = false,
   rssiMode = false,
+  cancellationMode = false,
+  expectedLocalName = RF_EXPECTED_LOCAL_NAME,
+  rfCancellationControl?: string,
 ): Promise<void> {
   const serviceUuid = rfServiceUuid?.trim();
   let stream: RfEventStream | undefined;
@@ -889,14 +1004,40 @@ async function runRfScan(
   let rssiValue: number | undefined;
   let ioEvidencePassed = false;
   let subscriptionEvidencePassed = false;
+  let cancellationEvidencePassed = false;
+  let barrier: RfSignalBarrier | undefined;
+  const cancellationRecords: RfScanEvent[] = [];
+  const cancellationExpected = new Map<string, { domain: boolean; terminal: boolean }>();
+  let releaseRequested = false;
+  let cancellationCharacteristic: string | undefined;
 
   report(
-    `rf:start:serviceUuid=${serviceUuid ?? 'missing'}:initCommandId=${RF_INITIALIZE_COMMAND}:startCommandId=${RF_START_COMMAND}:stopCommandId=${RF_STOP_COMMAND}:scanSessionId=${RF_SCAN_SESSION}`,
+    `rf:start:serviceUuid=${serviceUuid ?? 'missing'}:expectedLocalName=${expectedLocalName}:initCommandId=${RF_INITIALIZE_COMMAND}:startCommandId=${RF_START_COMMAND}:stopCommandId=${RF_STOP_COMMAND}:scanSessionId=${RF_SCAN_SESSION}`,
   );
 
   try {
     if (!serviceUuid) throw new Error('rfServiceUuid is required for RF mode');
-    stream = createRfEventStream(probe, connectMode, passiveDisconnectMode);
+    if (cancellationMode) barrier = new RfSignalBarrier(parseRfControl(rfCancellationControl), report);
+    stream = createRfEventStream(probe, connectMode, passiveDisconnectMode, undefined, MAX_RF_EVENT_COUNT,
+      cancellationMode ? (event) => {
+        try { barrier?.assertHealthy(); } catch { return true; }
+        const id = event.commandId;
+        if (!id || ![RF_CANCELLATION_ACTIVE_COMMAND, RF_CANCELLATION_QUEUED_COMMAND, RF_CANCELLATION_RECOVERY_COMMAND].includes(id)) return false;
+        const state = cancellationExpected.get(id);
+        if (!state || state.terminal) return true;
+        if (event.kind === 'commandCompleted') {
+          if (event.error?.category !== (id === RF_CANCELLATION_QUEUED_COMMAND ? 'cancelled' : undefined) ||
+              (id !== RF_CANCELLATION_QUEUED_COMMAND && !state.domain)) return true;
+          state.terminal = true;
+        } else {
+          if (event.kind !== 'characteristicRead' || id === RF_CANCELLATION_QUEUED_COMMAND || state.domain ||
+              !releaseRequested || event.connectionId !== RF_CONNECTION_ID || event.gattSessionId !== RF_GATT_SESSION || event.characteristicId !== cancellationCharacteristic ||
+              !sameBytes(event.value ?? new ArrayBuffer(0), new Uint8Array([0]))) return true;
+          state.domain = true;
+        }
+        cancellationRecords.push(event);
+        return false;
+      } : undefined);
     report('rf:listener:registered-before-initialize');
 
     const initializeError = probe.initialize(RF_INITIALIZE_COMMAND);
@@ -961,7 +1102,7 @@ async function runRfScan(
       (event) =>
         event.kind === 'advertisementObserved' &&
         event.scanSessionId === RF_SCAN_SESSION &&
-        (event.localName === undefined || event.localName === RF_EXPECTED_LOCAL_NAME),
+        (event.localName === undefined || event.localName === expectedLocalName),
       Math.max(1, scanDeadline - Date.now()),
       'matching advertisement',
       isCancelled,
@@ -1053,6 +1194,11 @@ async function runRfScan(
       if (scanCompletions.size !== 3 || scanStartedCount !== 1 || scanStoppedCount !== 1) {
         throw new Error('missing scan evidence before connect');
       }
+      // The first matching advertisement was consumed while selecting the peripheral.
+      // Consume any additional valid advertisements from the completed scan before
+      // waitForNext starts the connection event sequence; otherwise a duplicate
+      // advertisement can be mistaken for the first connection callback.
+      stream.consumeAll((event) => event.kind === 'advertisementObserved' && event.scanSessionId === RF_SCAN_SESSION);
       currentStep = 'connecting';
       const connectDeadline = Date.now() + RF_CONNECTION_TIMEOUT_MS;
       const connectError = probe.connectRfPeripheral(RF_CONNECT_COMMAND, RF_CONNECTION_ID, matchedPeripheralId);
@@ -1119,7 +1265,119 @@ async function runRfScan(
           `rf:step:gatt-discovery:passed:commandId=${RF_GATT_COMMAND}:connectionId=${RF_CONNECTION_ID}:peripheralId=${matchedPeripheralId}:serviceUuid=${serviceUuid}:gattSessionId=${gatt.gattSessionId}:requestedGattSessionId=${RF_GATT_SESSION}:serviceCount=${gatt.serviceCount}:discoveredServiceCount=${gatt.discoveredServiceCount}:characteristicCount=${gatt.characteristicCount}:descriptorCount=${gatt.descriptorCount}`,
         );
 
-        if (ioMode) {
+        if (cancellationMode) {
+          const cancellationCharacteristicId = gatt.readWriteCharacteristicId;
+          cancellationCharacteristic = cancellationCharacteristicId;
+          const cancellationDeadline = Date.now() + RF_CONNECTION_TIMEOUT_MS;
+          const eventStream = stream;
+          if (!eventStream) throw new Error('RF event stream was unavailable during cancellation');
+          const cancellationEvent = (kind: string, commandId: string): ((event: RfScanEvent) => boolean) =>
+            (event) => event.kind === kind && event.commandId === commandId &&
+              event.connectionId === RF_CONNECTION_ID && event.gattSessionId === RF_GATT_SESSION &&
+              event.characteristicId === cancellationCharacteristicId;
+          const cancellationCompletion = async (commandId: string, label: string): Promise<RfScanEvent> => {
+            const event = await eventStream.waitFor(
+              (candidate) => candidate.kind === 'commandCompleted' && candidate.commandId === commandId,
+              Math.max(1, cancellationDeadline - Date.now()), label, isCancelled,
+            );
+            return event;
+          };
+
+          if (!barrier) throw new Error('missing multifunction cancellation barrier');
+          barrier.expect('armed');
+          barrier.ready('arm');
+          await barrier.wait(isCancelled, () => eventStream.assertHealthy());
+          barrier.expect('held');
+          cancellationExpected.set(RF_CANCELLATION_ACTIVE_COMMAND, { domain: false, terminal: false });
+          const activeDispatchError = probe.readRfCharacteristic(
+            RF_CANCELLATION_ACTIVE_COMMAND, RF_CONNECTION_ID, RF_GATT_SESSION, cancellationCharacteristicId,
+          );
+          if (activeDispatchError) throw new Error(`cancellation active read dispatch rejected: ${activeDispatchError.category}:${activeDispatchError.detail ?? ''}`);
+          currentStep = 'cancellation-active-rejection';
+          barrier.ready('read-dispatched');
+          await barrier.wait(isCancelled, () => eventStream.assertHealthy());
+          const activeCancellationError = probe.cancelOperation(RF_CANCELLATION_ACTIVE_COMMAND);
+          if (activeCancellationError?.category !== 'operation_not_cancellable') {
+            throw new Error(`active cancellation returned ${activeCancellationError?.category ?? 'accepted'}`);
+          }
+          report(`rf:step:cancellation-active-rejection:passed:targetCommandId=${RF_CANCELLATION_ACTIVE_COMMAND}:category=${activeCancellationError.category}`);
+          eventStream.expectCommandFailure(RF_CANCELLATION_QUEUED_COMMAND, 'cancelled');
+          cancellationExpected.set(RF_CANCELLATION_QUEUED_COMMAND, { domain: false, terminal: false });
+          const queuedDispatchError = probe.readRfCharacteristic(
+            RF_CANCELLATION_QUEUED_COMMAND, RF_CONNECTION_ID, RF_GATT_SESSION, cancellationCharacteristicId,
+          );
+          if (queuedDispatchError) throw new Error(`cancellation queued read dispatch rejected: ${queuedDispatchError.category}:${queuedDispatchError.detail ?? ''}`);
+          currentStep = 'cancellation-queued-accepted';
+          const queuedCancellationError = probe.cancelOperation(RF_CANCELLATION_QUEUED_COMMAND);
+          if (queuedCancellationError) {
+            throw new Error(`queued cancellation rejected: ${queuedCancellationError.category}:${queuedCancellationError.detail ?? ''}`);
+          }
+          report(`rf:step:cancellation-queued-accepted:passed:targetCommandId=${RF_CANCELLATION_QUEUED_COMMAND}`);
+
+          currentStep = 'cancellation-terminal';
+          const queuedCompletion = await eventStream.waitFor(
+            (event) => event.kind === 'commandCompleted' && event.commandId === RF_CANCELLATION_QUEUED_COMMAND,
+            Math.max(1, cancellationDeadline - Date.now()), 'queued cancellation terminal', isCancelled,
+          );
+          if (queuedCompletion.error?.category !== 'cancelled') {
+            throw new Error(`queued cancellation terminal was ${queuedCompletion.error?.category ?? 'successful'}`);
+          }
+          report(`rf:step:cancellation-terminal:passed:commandId=${RF_CANCELLATION_QUEUED_COMMAND}:error=${queuedCompletion.error.category}`);
+          barrier.expect('released');
+          releaseRequested = true;
+          barrier.ready('release');
+          await barrier.wait(isCancelled, () => eventStream.assertHealthy());
+          const activeRead = await eventStream.waitFor(
+            cancellationEvent('characteristicRead', RF_CANCELLATION_ACTIVE_COMMAND),
+            Math.max(1, cancellationDeadline - Date.now()), 'active cancellation read', isCancelled,
+          );
+          const activeCompletion = await cancellationCompletion(RF_CANCELLATION_ACTIVE_COMMAND, 'active cancellation read terminal');
+          if (activeCompletion.error || !sameBytes(activeRead.value ?? new ArrayBuffer(0), new Uint8Array([0]))) {
+            throw new Error('active read did not complete with 00');
+          }
+          currentStep = 'cancellation-active-completion';
+          report(`rf:step:cancellation-active-completion:passed:commandId=${RF_CANCELLATION_ACTIVE_COMMAND}`);
+
+          currentStep = 'cancellation-late-silence';
+          const cancelledIndex = eventStream.events.indexOf(queuedCompletion);
+          await delay(RF_POST_DISCONNECT_OBSERVATION_MS);
+          eventStream.assertHealthy();
+          if (eventStream.events.slice(cancelledIndex + 1).some((event) => event.commandId === RF_CANCELLATION_QUEUED_COMMAND && event.kind !== 'commandCompleted')) {
+            throw new Error('cancelled command emitted a late domain result');
+          }
+          report(`rf:step:cancellation-late-silence:passed:commandId=${RF_CANCELLATION_QUEUED_COMMAND}:observationMs=${RF_POST_DISCONNECT_OBSERVATION_MS}`);
+
+          currentStep = 'cancellation-unknown-target';
+          const unknownCancellationError = probe.cancelOperation(RF_CANCELLATION_UNKNOWN_TARGET);
+          if (unknownCancellationError?.category !== 'operation_not_found') {
+            throw new Error(`unknown cancellation returned ${unknownCancellationError?.category ?? 'accepted'}`);
+          }
+          report(`rf:step:cancellation-unknown-target:passed:targetCommandId=${RF_CANCELLATION_UNKNOWN_TARGET}:category=${unknownCancellationError.category}`);
+          currentStep = 'cancellation-completed-target';
+          const completedCancellationError = probe.cancelOperation(RF_CANCELLATION_ACTIVE_COMMAND);
+          if (completedCancellationError?.category !== 'operation_not_found') {
+            throw new Error(`completed cancellation returned ${completedCancellationError?.category ?? 'accepted'}`);
+          }
+          report(`rf:step:cancellation-completed-target:passed:targetCommandId=${RF_CANCELLATION_ACTIVE_COMMAND}:category=${completedCancellationError.category}`);
+
+          cancellationExpected.set(RF_CANCELLATION_RECOVERY_COMMAND, { domain: false, terminal: false });
+          const recoveryDispatchError = probe.readRfCharacteristic(
+            RF_CANCELLATION_RECOVERY_COMMAND, RF_CONNECTION_ID, RF_GATT_SESSION, cancellationCharacteristicId,
+          );
+          if (recoveryDispatchError) throw new Error(`cancellation recovery read dispatch rejected: ${recoveryDispatchError.category}:${recoveryDispatchError.detail ?? ''}`);
+          const recoveryRead = await eventStream.waitFor(
+            cancellationEvent('characteristicRead', RF_CANCELLATION_RECOVERY_COMMAND),
+            Math.max(1, cancellationDeadline - Date.now()), 'cancellation recovery read', isCancelled,
+          );
+          const recoveryCompletion = await cancellationCompletion(RF_CANCELLATION_RECOVERY_COMMAND, 'cancellation recovery terminal');
+          if (recoveryCompletion.error || recoveryRead.value === undefined) {
+            throw new Error(`cancellation recovery did not complete normally: ${recoveryCompletion.error?.category ?? 'missing value'}`);
+          }
+          currentStep = 'cancellation-recovery';
+          report(`rf:step:cancellation-recovery:passed:commandId=${RF_CANCELLATION_RECOVERY_COMMAND}`);
+
+          cancellationEvidencePassed = true;
+        } else if (ioMode) {
           const ioCharacteristicId = gatt.readWriteCharacteristicId;
           const eventStream = stream;
           if (!eventStream) throw new Error('RF event stream was unavailable during I/O');
@@ -1189,8 +1447,12 @@ async function runRfScan(
             new Uint8Array([0xab]).buffer, 'without_response',
           );
           if (writeWithoutResponseError) throw new Error(`write-without-response dispatch rejected: ${writeWithoutResponseError.category}:${writeWithoutResponseError.detail ?? ''}`);
-          // Android's no-response terminal confirms only local/native submission;
-          // the later readback is the separate fixture-side evidence.
+          // No-response Written + terminal confirm only local/native submission,
+          // not a native callback or remote ACK; readback is separate fixture-side evidence.
+          await waitIoEvent(
+            characteristicEvent('characteristicWritten', RF_WRITE_WITHOUT_RESPONSE_COMMAND),
+            'write without response event',
+          );
           await waitIoCompletion(RF_WRITE_WITHOUT_RESPONSE_COMMAND, 'write without response submission');
           report(`rf:step:write-without-response:passed:commandId=${RF_WRITE_WITHOUT_RESPONSE_COMMAND}:connectionId=${RF_CONNECTION_ID}:gattSessionId=${RF_GATT_SESSION}:peripheralId=${matchedPeripheralId}:serviceUuid=${serviceUuid}:characteristicId=${ioCharacteristicId}:value=ab:terminal=local-submission`);
 
@@ -1461,8 +1723,10 @@ async function runRfScan(
     }
   } finally {
     try {
-      stream?.remove();
-      if (stream) report('rf:listener:removed');
+      if (!cancellationMode) {
+        stream?.remove();
+        if (stream) report('rf:listener:removed');
+      }
     } catch (error: unknown) {
       cleanupFailure = error;
       if (!isCancelled()) report(`rf:listener-removal:failed:${describeError(error)}`);
@@ -1471,12 +1735,30 @@ async function runRfScan(
     let closeSucceeded = false;
     try {
       await probe.close();
+      if (cancellationMode) {
+        stream?.assertHealthy();
+        barrier?.assertHealthy();
+        if (cancellationEvidencePassed) {
+          const records = cancellationRecords;
+          const hex = (value: ArrayBuffer | undefined): string => value === undefined ? 'none' : Array.from(new Uint8Array(value)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+          const field = (event: RfScanEvent, name: 'connectionId' | 'gattSessionId' | 'characteristicId'): string => event[name] ?? 'none';
+          report(`rf-cancellation:event:kind=${records.map((event) => event.kind).join('|')}:commandId=${records.map((event) => event.commandId ?? 'none').join('|')}:connectionId=${records.map((event) => field(event, 'connectionId')).join('|')}:gattSessionId=${records.map((event) => field(event, 'gattSessionId')).join('|')}:characteristicId=${records.map((event) => field(event, 'characteristicId')).join('|')}:error=${records.map((event) => event.error?.category ?? 'ok').join('|')}:value=${records.map((event) => hex(event.value)).join('|')}`);
+        }
+        stream?.remove();
+        if (stream) report('rf:listener:removed');
+      }
       closeSucceeded = true;
       if (!isCancelled()) report('rf:close:resolved');
     } catch (error: unknown) {
       cleanupFailure = cleanupFailure ?? error;
       if (!isCancelled()) report(`rf:close:rejected:${describeError(error)}`);
     }
+    try {
+      barrier?.remove();
+    } catch (error: unknown) { cleanupFailure ??= error; }
+    try {
+      if (cancellationMode) stream?.remove();
+    } catch (error: unknown) { cleanupFailure ??= error; }
     if (!isCancelled()) {
       if (cleanupFailure || !closeSucceeded) {
         report(`rf:step:close:failed:${describeError(cleanupFailure ?? new Error('probe close did not resolve'))}`);
@@ -1491,10 +1773,11 @@ async function runRfScan(
         (gattMode && !gattEvidencePassed ? new Error('missing verified GATT discovery evidence') : undefined) ??
         (ioMode && !ioEvidencePassed ? new Error('missing verified GATT I/O evidence') : undefined) ??
         (rssiMode && !rssiEvidencePassed ? new Error('missing verified connected RSSI evidence') : undefined) ??
+        (cancellationMode && !cancellationEvidencePassed ? new Error('missing verified native cancellation evidence') : undefined) ??
         (subscriptionMode && !subscriptionEvidencePassed ? new Error(`missing verified ${subscriptionMode} evidence`) : undefined);
       if (finalFailure) {
         report(
-          `${passiveDisconnectMode ? 'rf-passive-disconnect' : subscriptionMode === 'indication' ? 'rf-indication' : subscriptionMode === 'notification' ? 'rf-notification' : ioMode ? 'rf-io' : rssiMode ? 'rf-rssi' : gattMode ? 'rf-gatt' : connectMode ? 'rf-connect' : 'rf'}:failed:${describeError(finalFailure)}:serviceUuid=${serviceUuid ?? 'missing'}:scanSessionId=${RF_SCAN_SESSION}:peripheralId=${matchedPeripheralId}${connectMode ? `:connectionId=${RF_CONNECTION_ID}` : ''}`,
+          `${passiveDisconnectMode ? 'rf-passive-disconnect' : cancellationMode ? 'rf-cancellation' : subscriptionMode === 'indication' ? 'rf-indication' : subscriptionMode === 'notification' ? 'rf-notification' : ioMode ? 'rf-io' : rssiMode ? 'rf-rssi' : gattMode ? 'rf-gatt' : connectMode ? 'rf-connect' : 'rf'}:failed:${describeError(finalFailure)}:serviceUuid=${serviceUuid ?? 'missing'}:scanSessionId=${RF_SCAN_SESSION}:peripheralId=${matchedPeripheralId}${connectMode ? `:connectionId=${RF_CONNECTION_ID}` : ''}`,
         );
       } else if (passiveDisconnectMode) {
         report(`rf-passive-disconnect:passed:serviceUuid=${serviceUuid}:peripheralId=${matchedPeripheralId}:connectionId=${RF_CONNECTION_ID}:connectCommandId=${RF_CONNECT_COMMAND}:gattCommandId=${RF_GATT_COMMAND}:subscriptionId=${RF_NOTIFICATION_SUBSCRIPTION}:recoveryConnectCommandId=${RF_RECOVERY_CONNECT_COMMAND}:recoveryConnectionId=${RF_RECOVERY_CONNECTION_ID}:recoveryDisconnectCommandId=${RF_RECOVERY_DISCONNECT_COMMAND}:notificationValue=ef:passiveDisconnectCommandId=none:scanSessionId=${RF_SCAN_SESSION}`);
@@ -1504,6 +1787,8 @@ async function runRfScan(
         report(`rf-notification:passed:serviceUuid=${serviceUuid}:peripheralId=${matchedPeripheralId}:connectionId=${RF_CONNECTION_ID}:connectCommandId=${RF_CONNECT_COMMAND}:gattCommandId=${RF_GATT_COMMAND}:enableCommandId=${RF_NOTIFICATION_ENABLE_COMMAND}:disableCommandId=${RF_NOTIFICATION_DISABLE_COMMAND}:subscriptionId=${RF_NOTIFICATION_SUBSCRIPTION}:notificationValue=ef:postDisableSilenceMs=${RF_POST_NOTIFICATION_DISABLE_OBSERVATION_MS}:disconnectCommandId=${RF_DISCONNECT_COMMAND}:scanSessionId=${RF_SCAN_SESSION}`);
       } else if (rssiMode) {
         report(`rf-rssi:passed:serviceUuid=${serviceUuid}:peripheralId=${matchedPeripheralId}:connectionId=${RF_CONNECTION_ID}:connectCommandId=${RF_CONNECT_COMMAND}:rssiCommandId=${RF_RSSI_COMMAND}:rssiDbm=${rssiValue}:disconnectCommandId=${RF_DISCONNECT_COMMAND}:scanSessionId=${RF_SCAN_SESSION}`);
+      } else if (cancellationMode) {
+        report(`rf-cancellation:passed:serviceUuid=${serviceUuid}:peripheralId=${matchedPeripheralId}:connectionId=${RF_CONNECTION_ID}:connectCommandId=${RF_CONNECT_COMMAND}:gattCommandId=${RF_GATT_COMMAND}:activeCommandId=${RF_CANCELLATION_ACTIVE_COMMAND}:queuedCommandId=${RF_CANCELLATION_QUEUED_COMMAND}:recoveryCommandId=${RF_CANCELLATION_RECOVERY_COMMAND}:disconnectCommandId=${RF_DISCONNECT_COMMAND}:scanSessionId=${RF_SCAN_SESSION}`);
       } else if (ioMode) {
         report(`rf-io:passed:serviceUuid=${serviceUuid}:peripheralId=${matchedPeripheralId}:connectionId=${RF_CONNECTION_ID}:connectCommandId=${RF_CONNECT_COMMAND}:gattCommandId=${RF_GATT_COMMAND}:readCommandId=${RF_READ_INITIAL_COMMAND}:writeResponseCommandId=${RF_WRITE_RESPONSE_COMMAND}:writeWithoutResponseCommandId=${RF_WRITE_WITHOUT_RESPONSE_COMMAND}:disconnectCommandId=${RF_DISCONNECT_COMMAND}:scanSessionId=${RF_SCAN_SESSION}`);
       } else if (gattMode) {
@@ -1519,10 +1804,409 @@ async function runRfScan(
   }
 }
 
-function StepRow({ step }: { step: Pick<Step, 'label' | 'state' | 'detail'> }): React.JSX.Element {
+export type RfLabMode =
+  | 'rf'
+  | 'rf-connect'
+  | 'rf-gatt'
+  | 'rf-io'
+  | 'rf-rssi'
+  | 'rf-notification'
+  | 'rf-indication'
+  | 'rf-passive-disconnect'
+  | 'rf-cancellation'
+  | 'rf-watchdog';
+
+interface RfLabOption {
+  mode: RfLabMode;
+  label: string;
+  description: string;
+}
+
+export const RF_LAB_MODES: readonly RfLabMode[] = [
+  'rf',
+  'rf-connect',
+  'rf-gatt',
+  'rf-io',
+  'rf-rssi',
+  'rf-notification',
+  'rf-indication',
+  'rf-passive-disconnect',
+  'rf-cancellation',
+  'rf-watchdog',
+];
+
+const RF_LAB_OPTIONS: readonly RfLabOption[] = [
+  { mode: 'rf', label: 'Scan', description: 'Initialize, filter advertisements, stop, and verify silence.' },
+  { mode: 'rf-connect', label: 'Connect', description: 'Scan, connect, disconnect, and verify lifecycle ordering.' },
+  { mode: 'rf-gatt', label: 'GATT discovery', description: 'Discover and validate service, characteristic, and descriptor instances.' },
+  { mode: 'rf-io', label: 'GATT I/O', description: 'Read, write with response, write without response, and read back.' },
+  { mode: 'rf-rssi', label: 'RSSI', description: 'Read a connected peripheral RSSI and correlate its terminal.' },
+  { mode: 'rf-notification', label: 'Notification', description: 'Enable, receive the exact value, disable, and verify silence.' },
+  { mode: 'rf-indication', label: 'Strict Indication', description: 'Reject unsupported mode, enable Indication, receive, and disable.' },
+  { mode: 'rf-passive-disconnect', label: 'Passive recovery', description: 'Observe passive loss, stale-route silence, and recovery connection.' },
+  { mode: 'rf-cancellation', label: 'Cancellation', description: 'Reject active cancellation, cancel a queued read, prove terminal ordering, and recover the FIFO.' },
+];
+
+function rfLabSteps(mode: RfLabMode): RfStep[] {
+  switch (mode) {
+    case 'rf-connect': return INITIAL_RF_CONNECT_STEPS;
+    case 'rf-gatt': return INITIAL_RF_GATT_STEPS;
+    case 'rf-io': return INITIAL_RF_IO_STEPS;
+    case 'rf-rssi': return INITIAL_RF_RSSI_STEPS;
+    case 'rf-notification': return INITIAL_RF_NOTIFICATION_STEPS;
+    case 'rf-indication': return INITIAL_RF_INDICATION_STEPS;
+    case 'rf-passive-disconnect': return INITIAL_RF_PASSIVE_DISCONNECT_STEPS;
+    case 'rf-cancellation': return INITIAL_RF_CANCELLATION_STEPS;
+    default: return INITIAL_RF_STEPS;
+  }
+}
+
+export async function runRfLabFlow(
+  mode: RfLabMode,
+  probe: Probe,
+  rfServiceUuid: string | undefined,
+  report: (line: string) => void,
+  isCancelled: () => boolean,
+  expectedLocalName?: string,
+  rfCancellationControl?: string,
+): Promise<void> {
+  if (mode === 'rf-watchdog') {
+    return runRfWatchdog(probe, rfServiceUuid, report, isCancelled, parseRfControl(rfCancellationControl, 'rf-watchdog'), expectedLocalName);
+  }
+  const ioMode = mode === 'rf-io';
+  const rssiMode = mode === 'rf-rssi';
+  const cancellationMode = mode === 'rf-cancellation';
+  const passiveDisconnectMode = mode === 'rf-passive-disconnect';
+  const subscriptionMode: RfSubscriptionMode | undefined = mode === 'rf-notification' || passiveDisconnectMode
+    ? 'notification'
+    : mode === 'rf-indication' ? 'indication' : undefined;
+  const connectMode = mode !== 'rf';
+  const gattMode = mode === 'rf-gatt' || ioMode || cancellationMode || subscriptionMode !== undefined;
+  return runRfScan(
+    probe,
+    rfServiceUuid,
+    report,
+    isCancelled,
+    connectMode,
+    gattMode,
+    ioMode,
+    subscriptionMode,
+    passiveDisconnectMode,
+    rssiMode,
+    cancellationMode,
+    expectedLocalName,
+    rfCancellationControl,
+  );
+}
+
+export async function runRfLabSuite(
+  rfServiceUuid: string | undefined,
+  report: (line: string) => void,
+  isCancelled: () => boolean,
+  createProbe: (mode: RfLabMode) => Probe = () => createBleHubProbe(),
+  onlyMode?: RfLabMode,
+  setCurrentProbe?: (probe: Probe | undefined) => void,
+  expectedLocalName?: string,
+  rfCancellationControl?: string,
+  sharedSignalGuard?: RfSuiteSignalGuard,
+): Promise<boolean> {
+  const modes = onlyMode ? [onlyMode] : RF_LAB_MODES;
+  let failed = 0;
+  const controls = onlyMode ? undefined : parseRfControls(rfCancellationControl);
+  const signalGuard = sharedSignalGuard ?? (controls ? new RfSuiteSignalGuard(controls) : undefined);
+  const output = report;
+  report = (line): void => { signalGuard?.assertHealthy(); output(line); };
+  const runtimeId = RF_BOOT_NONCE;
+  try {
+    if (controls) report(`rf-lab-suite:runtime:session=${controls[0].session}:nonce=${runtimeId}:phase=start`);
+    for (const [index, mode] of modes.entries()) {
+      if (isCancelled()) throw new Error('RF Lab suite cancelled');
+      // CoreBluetooth/Android BLE teardown callbacks can arrive just after the
+      // probe close promise resolves. Keep the same JS runtime, but give the
+      // native route a bounded settle window before creating the next probe.
+      if (index > 0) await delay(2000);
+      report(`rf-lab-suite:flow-started:index=${index}:mode=${mode}`);
+      if (Platform.OS === 'android' && (index === 5 || index === 9)) {
+        // Android applies an app-level BLE scan-start throttle. The sixth scan
+        // can otherwise receive no callbacks even though the Peripheral is live.
+        report('rf-lab-suite:android-scan-throttle-wait:milliseconds=35000');
+        await delay(35_000);
+        if (isCancelled()) throw new Error('RF Lab suite cancelled during Android scan throttle wait');
+      }
+      const flowLines: string[] = [];
+      const flowReport = (line: string): void => {
+        flowLines.push(line);
+        report(line);
+      };
+      let probe: Probe | undefined;
+      let flowFailed = false;
+      try {
+        probe = createProbe(mode);
+        setCurrentProbe?.(probe);
+        await runRfLabFlow(mode, probe, rfServiceUuid, flowReport, isCancelled, expectedLocalName, rfCancellationControl);
+      } catch (error: unknown) {
+        flowFailed = true;
+        flowReport(`${mode}:failed:${describeError(error)}`);
+      } finally {
+        try { if (probe) await probe.close(); }
+        catch (error) { flowFailed = true; flowReport(`${mode}:failed:native-close:${describeError(error)}`); }
+        finally { setCurrentProbe?.(undefined); }
+      }
+      const passed = !flowFailed && !flowLines.some((line) => /:failed(?::|$)|:close:rejected:/.test(line)) && flowLines.some((line) => mode === 'rf-watchdog' ? line === 'rf-watchdog:passed' : line.startsWith(`${mode}:passed:`));
+      if (passed) {
+        report(`rf-lab-suite:flow-passed:index=${index}:mode=${mode}`);
+      } else {
+        failed += 1;
+        const detail = flowLines.find((line) => line.startsWith(`${mode}:failed:`)) ?? `${mode}:failed:missing-terminal-marker`;
+        report(`rf-lab-suite:flow-failed:index=${index}:mode=${mode}:detail=${detail}`);
+      }
+    }
+
+    const passed = modes.length - failed;
+    if (controls) report(`rf-lab-suite:runtime:session=${controls[0].session}:nonce=${runtimeId}:phase=close`);
+    report(`rf-lab-suite:${failed === 0 ? 'passed' : 'failed'}:flows=${modes.length}:passedCount=${passed}:failureCount=${failed}`);
+    return failed === 0;
+  } finally { if (!sharedSignalGuard) signalGuard?.remove(); }
+}
+
+function RfLab({ rfServiceUuid, rfExpectedLocalName }: AppProps): React.JSX.Element {
+  const beginRun = useBeginRun();
+  const platformLabel = Platform.OS === 'ios' ? 'iOS' : 'Android';
+  const [selectedMode, setSelectedMode] = useState<RfLabMode>('rf');
+  const [rfSteps, setRfSteps] = useState<RfStep[]>(INITIAL_RF_STEPS);
+  const [statusLines, setStatusLines] = useState<string[]>([]);
+  const [running, setRunning] = useState(false);
+  const [closed, setClosed] = useState(false);
+  const [runCount, setRunCount] = useState(0);
+  const [cancelTargetCommandId, setCancelTargetCommandId] = useState(RF_START_COMMAND);
+  const [cancelStatus, setCancelStatus] = useState('not requested');
+  const activeRef = useRef(true);
+  const probeRef = useRef<Probe | undefined>(undefined);
+
+  const report = useCallback((line: string): void => {
+    console.log(`BLEHUB_NITRO_RUNTIME ${line}`);
+    if (!activeRef.current) return;
+    setStatusLines((current) => [...current.slice(-11), line]);
+    const cycleUpdate = /^rf-recovery(?:-ten)?:cycle:([0-9]):cycle:(passed|failed):/.exec(line);
+    const update = cycleUpdate
+      ? { id: `cycle-${cycleUpdate[1]}` as RfStepId, state: cycleUpdate[2] as StepState, detail: line }
+      : rfStepState(line);
+    if (update) {
+      setRfSteps((current) => current.map((step) =>
+        step.id === update.id ? { ...step, state: update.state, detail: update.detail } : step,
+      ));
+    }
+  }, []);
+
+  const start = useCallback((): void => {
+    if (running) return;
+    beginRun();
+    const probe = createBleHubProbe();
+    probeRef.current = probe;
+    activeRef.current = true;
+    setRunning(true);
+    setClosed(false);
+    setRunCount((current) => current + 1);
+    setRfSteps(rfLabSteps(selectedMode));
+    setStatusLines([]);
+    setCancelStatus('ready');
+    void runRfLabFlow(
+      selectedMode,
+      probe,
+      rfServiceUuid,
+      report,
+      () => !activeRef.current,
+      rfExpectedLocalName,
+    )
+      .catch((error: unknown) => report(`${rfMarkerPrefix(selectedMode)}:failed:${describeError(error)}`))
+      .finally(() => {
+        if (activeRef.current) {
+          setRunning(false);
+          setClosed(true);
+        }
+      });
+  }, [beginRun, report, rfServiceUuid, rfExpectedLocalName, running, selectedMode]);
+
+  const cancelOperation = useCallback((): void => {
+    const probe = probeRef.current;
+    const target = cancelTargetCommandId.trim();
+    if (!probe || !target) return;
+    if (!isCanonicalU64(target)) {
+      const detail = `rf:cancel:rejected:targetCommandId=${target}:category=invalid_request`;
+      setCancelStatus(detail);
+      report(detail);
+      return;
+    }
+    try {
+      const error = probe.cancelOperation(target);
+      const line = error
+        ? `rf:cancel:rejected:targetCommandId=${target}:category=${error.category}:detail=${error.detail ?? ''}`
+        : `rf:cancel:accepted:targetCommandId=${target}`;
+      setCancelStatus(line);
+      report(line);
+    } catch (error: unknown) {
+      const line = `rf:cancel:threw:targetCommandId=${target}:detail=${describeError(error)}`;
+      setCancelStatus(line);
+      report(line);
+    }
+  }, [cancelTargetCommandId, report]);
+
+  const closeProbe = useCallback((): void => {
+    const probe = probeRef.current;
+    if (!probe || closed) return;
+    activeRef.current = false;
+    probe.removeRfScanListener();
+    void probe.close().then(
+      () => {
+        setRunning(false);
+        setClosed(true);
+        console.log(`BLEHUB_NITRO_RUNTIME ${rfMarkerPrefix(selectedMode)}:close:resolved`);
+      },
+      (error: unknown) => {
+        setRunning(false);
+        setClosed(true);
+        console.log(`BLEHUB_NITRO_RUNTIME ${rfMarkerPrefix(selectedMode)}:close:rejected:${describeError(error)}`);
+      },
+    );
+  }, [closed, selectedMode]);
+
+  useEffect(() => () => {
+    activeRef.current = false;
+    probeRef.current?.removeRfScanListener();
+    void probeRef.current?.close().catch(() => undefined);
+  }, []);
+
+  const prefix = rfMarkerPrefix(selectedMode);
+  const passed = statusLines.some((line) => line.startsWith(`${prefix}:passed:`));
+  const failed = statusLines.some((line) => line.startsWith(`${prefix}:failed:`));
+  const lastPassedStep = [...rfSteps].reverse().find((step) => step.state === 'passed');
+  const runtimeStatus = running
+    ? `running ${selectedMode}; waiting after ${lastPassedStep?.label ?? 'dispatch'}`
+    : passed ? `${selectedMode} passed` : failed ? `${selectedMode} failed` : closed ? 'closed' : 'ready';
+  useRunOutcome(failed ? 'failed' : passed ? 'passed' : running ? 'running' : 'ready', runtimeStatus);
+  const selectedOption = RF_LAB_OPTIONS.find((option) => option.mode === selectedMode);
+
+  return (
+    <View style={styles.safeArea} testID="rf-lab-root">
+      <ScrollView contentContainerStyle={styles.root} contentInsetAdjustmentBehavior="automatic">
+        <View style={styles.header}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.runTitle}>Interactive diagnostics</Text>
+            <Text style={styles.subtitle}>{platformLabel} JS → Nitro → production BLE RF flow. The host recipe must provide the nRF fixture and final gate.</Text>
+          </View>
+          <View style={styles.statusCard}>
+            <Text style={styles.statusCaption}>Runtime status</Text>
+            <Text style={styles.statusCaption} testID="rf-lab-run-count">Run {runCount}</Text>
+            <Text style={[styles.statusValue, passed && styles.successText]} testID="rf-lab-runtime-status">{runtimeStatus}</Text>
+          </View>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Select RF flow</Text>
+            <Text style={styles.badge}>{selectedOption?.label}</Text>
+          </View>
+          {RF_LAB_OPTIONS.map((option) => (
+            <Pressable
+              key={option.mode}
+              style={[styles.labMode, option.mode === selectedMode && styles.labModeSelected]}
+              onPress={() => {
+                if (running) return;
+                setSelectedMode(option.mode);
+                setRfSteps(rfLabSteps(option.mode));
+                setStatusLines([]);
+                setClosed(false);
+              }}
+              disabled={running}
+              testID={`rf-lab-mode-${option.mode}`}
+              accessibilityRole="button"
+            >
+              <Text style={styles.labModeLabel}>{option.label}</Text>
+              <Text style={styles.stepDetail}>{option.description}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={styles.actions}>
+          <Pressable
+            style={[styles.button, styles.primaryButton]}
+            onPress={start}
+            disabled={running}
+            testID="rf-lab-run-button"
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>{running ? 'Running…' : `Run ${selectedOption?.label ?? 'RF flow'}`}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.button, styles.secondaryButton]}
+            onPress={closeProbe}
+            disabled={closed || !probeRef.current}
+            testID="rf-lab-close-button"
+            accessibilityRole="button"
+          >
+            <Text style={styles.secondaryButtonText}>Close probe</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Native cancellation</Text>
+            <Text style={styles.badge} testID="rf-lab-cancel-status">{cancelStatus}</Text>
+          </View>
+          <Text style={styles.stepDetail}>Cancels the selected command through production BleHub; completion/error evidence remains asynchronous.</Text>
+          <TextInput
+            style={styles.commandInput}
+            value={cancelTargetCommandId}
+            onChangeText={setCancelTargetCommandId}
+            keyboardType="number-pad"
+            autoCapitalize="none"
+            testID="rf-lab-cancel-command-id"
+            accessibilityLabel="Cancellation target command ID"
+          />
+          <Pressable
+            style={[styles.button, styles.warningButton]}
+            onPress={cancelOperation}
+            disabled={closed || !probeRef.current}
+            testID="rf-lab-cancel-button"
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>Cancel native command</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>RF gate coverage</Text>
+            <Text style={styles.badge} testID="rf-lab-coverage">{rfSteps.filter((step) => step.state === 'passed').length}/{rfSteps.length}</Text>
+          </View>
+          <Text style={styles.stepDetail} testID="rf-lab-service-uuid">serviceUuid: {rfServiceUuid ?? 'missing (failure)'}</Text>
+          {rfSteps.map((step) => <StepRow key={step.id} step={step} />)}
+        </View>
+
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Projected runtime events</Text>
+            <Text style={styles.badge}>{statusLines.length}</Text>
+          </View>
+          {statusLines.length ? statusLines.map((line, index) => (
+            <Text key={`${index}-${line}`} style={styles.eventLine}>{line}</Text>
+          )) : <Text style={styles.emptyText}>Waiting for the RF flow to report.</Text>}
+        </View>
+
+        <Text style={styles.footer}>This page drives one RF flow at a time. Multi-DK, destructive fault, and engine-reload gates remain host-controlled recipes.</Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+function StepRow({ step, testID, stableHost = false }: {
+  step: Pick<Step, 'label' | 'state' | 'detail'>;
+  testID?: string;
+  stableHost?: boolean;
+}): React.JSX.Element {
   const indicator = step.state === 'passed' ? 'OK' : step.state === 'failed' ? 'FAIL' : '--';
   return (
-    <View style={styles.stepRow}>
+    <View style={styles.stepRow} testID={testID} collapsable={stableHost ? false : undefined}>
       <Text style={[styles.stepIndicator, step.state === 'passed' && styles.successText, step.state === 'failed' && styles.errorText]}>
         {indicator}
       </Text>
@@ -1534,21 +2218,267 @@ function StepRow({ step }: { step: Pick<Step, 'label' | 'state' | 'detail'> }): 
   );
 }
 
-export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotificationMode, rfMultiSubscriptionMode, rfMultiCycles, rfReloadNotificationName }: AppProps): React.JSX.Element {
+function RfLabSuite(props: AppProps): React.JSX.Element {
+  if (props.runtimeMode === 'rf-adapter-transition') return (
+    <RfLabRunScreen title={props.rfAdapterMode === 'active-loss' ? 'Active-read radio loss' : 'Adapter OFF → ON'}
+      description={props.rfAdapterMode === 'active-loss' ? 'Held read + queued read → radio OFF → retirement → fresh-Probe I/O. Separate from the full suite.' : 'Initialize with Bluetooth OFF, then enable it and recover I/O with a fresh Probe. Separate from the full suite.'}>
+      <RfAdapterTransition {...props} runFlow={runRfLabFlow} />
+    </RfLabRunScreen>
+  );
+  return <RfLabFlowSuite {...props} />;
+}
+
+function RfLabFlowSuite(props: AppProps): React.JSX.Element {
+  const present = useRunReporter();
+  const profile = useRef(Object.freeze({ ...props })).current;
+  const { rfServiceUuid, rfExpectedLocalName, rfLabSuiteFlow, rfCancellationControl, rfRecoveryRunId } = profile;
+  const full = rfRecoveryRunId !== undefined;
+  const startedRef = useRef(false);
+  const [fullStatus, setFullStatus] = useState({ latest: 'Waiting for the host-controlled run.', failure: '', summary: '' });
+  const [fullFlows, setFullFlows] = useState(() => RF_LAB_MODES.map((mode) => ({ label: RF_LAB_OPTIONS.find((option) => option.mode === mode)?.label ?? mode, state: 'pending' as StepState, detail: 'waiting' })));
+  const [fullCycles, setFullCycles] = useState(() => Array.from({ length: 10 }, (_, cycle) => ({ label: `Cycle ${cycle}`, state: 'pending' as StepState, detail: 'waiting' })));
+  const [statusLines, setStatusLines] = useState<string[]>([]);
+  const [cancelTargetCommandId, setCancelTargetCommandId] = useState(RF_START_COMMAND);
+  const [cancelStatus, setCancelStatus] = useState('not requested');
+  const activeRef = useRef(true);
+  const probeRef = useRef<Probe | undefined>(undefined);
+
+  useEffect(() => {
+    let active = true;
+    activeRef.current = true;
+    const requested = rfLabSuiteFlow?.trim();
+    const onlyMode = requested && (RF_LAB_MODES as readonly string[]).includes(requested)
+      ? requested as RfLabMode
+      : undefined;
+    if (requested && !onlyMode && !full) {
+      const error = `unsupported rfLabSuiteFlow: ${requested}`;
+      console.log(`BLEHUB_NITRO_RUNTIME rf-lab-suite:failed:${error}`);
+      present(`rf-lab-suite:failed:${error}`);
+      setStatusLines([`rf-lab-suite:failed:${error}`]);
+      return () => { activeRef.current = false; };
+    }
+    const report = (line: string): void => {
+      console.log(`BLEHUB_NITRO_RUNTIME ${line}`);
+      present(line);
+      if (!activeRef.current) return;
+      if (!full) { setStatusLines((current) => [...current, line]); return; }
+      // Diagnostic payloads stay in console, never in a Fabric host-node list.
+      if (/:event:|:resources:/.test(line)) return;
+      const failed = /:failed(?::|$)|:flow-failed:|:close:rejected:/.test(line);
+      const final = /^rf-lab-full:(passed|failed):/.test(line);
+      setFullStatus((current) => ({ latest: line, failure: current.failure || (failed ? line : ''),
+        summary: current.failure || (failed ? line : final ? line : current.summary) }));
+      const flow = /^rf-lab-suite:flow-(started|passed|failed):index=(\d+):/.exec(line);
+      if (flow) setFullFlows((current) => current.map((step, index) => index !== Number(flow[2]) || step.state === 'failed' ? step : {
+        ...step, state: flow[1] === 'started' ? 'pending' : flow[1] as StepState, detail: flow[1],
+      }));
+      const cycle = /^rf-recovery-ten:cycle:([0-9]):([^:]+)(?::|$)/.exec(line);
+      if (cycle) setFullCycles((current) => current.map((step, index) => index !== Number(cycle[1]) || step.state === 'failed' ? step : {
+        ...step, state: cycle[2] === 'failed' ? 'failed' : cycle[2] === 'passed' ? 'passed' : step.state,
+        detail: cycle[2] === 'passed' || cycle[2] === 'failed' ? cycle[2] : `In progress: ${cycle[2]}`,
+      }));
+    };
+    void Promise.resolve().then(async () => {
+      if (!active || startedRef.current) return;
+      startedRef.current = true;
+      if (full) {
+        if (requested) throw new Error('full suite cannot select a single flow');
+        await runRfLabFull(rfRecoveryRunId!, rfCancellationControl,
+          (guard, output) => runRfLabSuite(rfServiceUuid, output, () => !active, undefined, undefined,
+            (probe) => { probeRef.current = probe; }, rfExpectedLocalName, rfCancellationControl, guard),
+          (guard, output) => runRfRecoveryTen(
+            () => createBleHubProbe(),
+            (probe, reject, connection) => createRfEventStream(probe, true, true, new Set([connection]), 1024, reject, true),
+            profile, output, () => !active, guard),
+          report, () => !active);
+      } else {
+        if (onlyMode === 'rf-cancellation') {
+          parseRfControl(rfCancellationControl, 'rf-cancellation');
+          if (!rfExpectedLocalName) throw new Error('cancellation requires the frozen fixture local name');
+        }
+        await runRfLabSuite(rfServiceUuid, report, () => !active, undefined, onlyMode,
+          (probe) => { probeRef.current = probe; }, rfExpectedLocalName, rfCancellationControl);
+      }
+    }).catch((error: unknown) => report(`${full ? 'rf-lab-full' : 'rf-lab-suite'}:failed:${describeError(error)}`));
+    return () => { active = false; activeRef.current = false; };
+  }, [profile, full, rfRecoveryRunId, rfLabSuiteFlow, rfServiceUuid, rfExpectedLocalName, rfCancellationControl, present]);
+
+  const publishCancellation = useCallback((line: string): void => {
+    if (!activeRef.current) return;
+    console.log(`BLEHUB_NITRO_RUNTIME ${line}`);
+    setCancelStatus(line);
+    setStatusLines((current) => [...current, line]);
+  }, []);
+
+  const cancelOperation = useCallback((): void => {
+    const probe = probeRef.current;
+    const target = cancelTargetCommandId.trim();
+    if (!probe) {
+      publishCancellation('rf-lab-suite:cancel:rejected:category=invalid_state:detail=no-active-flow');
+      return;
+    }
+    if (!target) {
+      publishCancellation('rf-lab-suite:cancel:rejected:targetCommandId=:category=invalid_request');
+      return;
+    }
+    if (!isCanonicalU64(target)) {
+      publishCancellation(`rf-lab-suite:cancel:rejected:targetCommandId=${target}:category=invalid_request`);
+      return;
+    }
+    try {
+      const error = probe.cancelOperation(target);
+      publishCancellation(error
+        ? `rf-lab-suite:cancel:rejected:targetCommandId=${target}:category=${error.category}`
+        : `rf-lab-suite:cancel:accepted:targetCommandId=${target}`);
+    } catch (error: unknown) {
+      publishCancellation(`rf-lab-suite:cancel:threw:targetCommandId=${target}:detail=${describeError(error)}`);
+    }
+  }, [cancelTargetCommandId, publishCancellation]);
+
+  if (full) return (
+    <RfLabRunScreen title="Full suite"
+      description="Phase 1 · 10 RF flows. Phase 2 · 10 recovery cycles. One App and JS runtime."
+      status={fullStatus.failure ? 'RF Lab full suite failed' : fullStatus.summary ? 'RF Lab full suite passed' : 'running RF Lab full suite'}>
+        <View style={styles.card} collapsable={false}>
+          <Text style={styles.cardTitle}>1. RF capabilities</Text>
+          <Text style={styles.badge} testID="rf-lab-suite-coverage">{fullFlows.filter((step) => step.state === 'passed').length}/10</Text>
+          {fullFlows.map((step, index) => <StepRow key={RF_LAB_MODES[index]} step={step} stableHost testID={`rf-lab-full-flow-${index}`} />)}
+        </View>
+        <View style={styles.card} collapsable={false}>
+          <Text style={styles.cardTitle}>2. Recovery lifecycles</Text>
+          <Text style={styles.badge} testID="rf-lab-full-cycle-coverage">{fullCycles.filter((step) => step.state === 'passed').length}/10</Text>
+          {fullCycles.map((step, index) => <StepRow key={`cycle-${index}`} step={step} stableHost testID={`rf-lab-full-cycle-${index}`} />)}
+        </View>
+        <View style={styles.card} collapsable={false} testID="rf-lab-full-report">
+          <Text style={styles.eventLine} testID="rf-lab-full-latest">{fullStatus.latest}</Text>
+          <Text style={styles.eventLine} testID="rf-lab-full-failure">{fullStatus.failure || 'No failure reported.'}</Text>
+          <Text style={styles.eventLine} testID="rf-lab-full-summary">{fullStatus.summary || 'Awaiting final result.'}</Text>
+        </View>
+    </RfLabRunScreen>
+  );
+
+  const finalLine = statusLines.find((line) => line.startsWith('rf-lab-suite:passed:') || line.startsWith('rf-lab-suite:failed:'));
+  const running = !finalLine && statusLines.length > 0;
+  const status = finalLine?.startsWith('rf-lab-suite:passed:')
+    ? 'RF Lab suite passed'
+    : finalLine ? 'RF Lab suite failed' : running ? 'running RF Lab suite' : 'starting RF Lab suite';
+
+  return (
+    <View style={styles.safeArea} testID="rf-lab-suite-root">
+      <ScrollView contentContainerStyle={styles.root} contentInsetAdjustmentBehavior="automatic">
+        <View style={styles.header}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.eyebrow}>BLEHUB / RN NITRO</Text>
+            <Text style={styles.title}>RF Lab suite</Text>
+            <Text style={styles.subtitle}>Host-controlled real-device execution of all nine single-Peripheral RF flows. The host owns fixture setup and waits for every flow marker.</Text>
+          </View>
+          <View style={styles.statusCard}>
+            <Text style={styles.statusCaption}>Runtime status</Text>
+            <Text style={[styles.statusValue, finalLine?.startsWith('rf-lab-suite:passed:') && styles.successText]} testID="rf-lab-suite-runtime-status">{status}</Text>
+          </View>
+        </View>
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>RF flows</Text>
+            <Text style={styles.badge} testID="rf-lab-suite-coverage">{statusLines.filter((line) => line.startsWith('rf-lab-suite:flow-passed:')).length}/{rfLabSuiteFlow ? 1 : RF_LAB_MODES.length}</Text>
+          </View>
+          <Text style={styles.stepDetail}>serviceUuid: {rfServiceUuid ?? 'missing (failure)'}</Text>
+          {RF_LAB_MODES.map((mode) => {
+            const passed = statusLines.some((line) => line.startsWith('rf-lab-suite:flow-passed:') && line.endsWith(`:mode=${mode}`));
+            const failed = statusLines.some((line) => line.startsWith('rf-lab-suite:flow-failed:') && line.includes(`:mode=${mode}:`));
+            return <StepRow key={mode} step={{ label: mode, state: passed ? 'passed' : failed ? 'failed' : 'pending', detail: passed ? 'passed' : failed ? 'failed' : 'waiting' }} />;
+          })}
+        </View>
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Native cancellation</Text>
+            <Text style={styles.badge} testID="rf-lab-suite-cancel-status">{cancelStatus}</Text>
+          </View>
+          <Text style={styles.stepDetail}>Requests cancellation of the target command through production BleHub. Accepted is not completed: only the original command's cancelled terminal confirms cancellation. Rejected requests do not stop the flow; a cancelled terminal fails that flow and the suite continues.</Text>
+          <TextInput
+            style={styles.commandInput}
+            value={cancelTargetCommandId}
+            onChangeText={setCancelTargetCommandId}
+            keyboardType="number-pad"
+            autoCapitalize="none"
+            testID="rf-lab-suite-cancel-command-id"
+            accessibilityLabel="Suite cancellation target command ID"
+          />
+          <Pressable
+            style={[styles.button, styles.warningButton]}
+            onPress={cancelOperation}
+            disabled={!probeRef.current || Boolean(finalLine)}
+            testID="rf-lab-suite-cancel-button"
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>Cancel current native command</Text>
+          </Pressable>
+        </View>
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.cardTitle}>Projected runtime events</Text>
+            <Text style={styles.badge}>{statusLines.length}</Text>
+          </View>
+          {statusLines.length ? statusLines.map((line, index) => <Text key={`${index}-${line}`} style={styles.eventLine}>{line}</Text>) : <Text style={styles.emptyText}>Waiting for the RF suite to start.</Text>}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function RuntimeApp({ runtimeMode = 'basic', rfServiceUuid, rfExpectedLocalName, rfMultiNotificationMode, rfMultiSubscriptionMode, rfMultiCycles, rfReloadNotificationName, rfPendingReadRunId, rfPendingReadGeneration, rfRecoveryRunId }: AppProps): React.JSX.Element {
+  const present = useRunReporter();
+  const beginRun = useBeginRun();
+  const platformLabel = Platform.OS === 'ios' ? 'iOS' : 'Android';
   const [steps, setSteps] = useState<Step[]>(INITIAL_STEPS);
-  const [rfSteps, setRfSteps] = useState<RfStep[]>(INITIAL_RF_STEPS);
+  const [rfSteps, setRfSteps] = useState<RfStep[]>(runtimeMode === 'rf-recovery-ten' ? INITIAL_RF_RECOVERY_TEN_STEPS : INITIAL_RF_STEPS);
+  const [recoveryTenStatus, setRecoveryTenStatus] = useState({ latest: 'Waiting for the host-controlled run.', failure: '', final: '' });
   const [statusLines, setStatusLines] = useState<string[]>([]);
   const [running, setRunning] = useState(false);
   const [closed, setClosed] = useState(false);
   const [runCount, setRunCount] = useState(0);
   const activeRef = useRef(true);
   const probeRef = useRef<Probe | undefined>(undefined);
+  const pendingReadProfile = useRef({ rfServiceUuid, rfExpectedLocalName, rfReloadNotificationName, rfPendingReadRunId }).current;
+  const pendingReadStartedRef = useRef(false);
+  const recoveryTenStartedRef = useRef(false);
+  const recoveryTenProfile = useRef(Object.freeze({ rfServiceUuid, rfExpectedLocalName, rfRecoveryRunId })).current;
   const pendingReadGeneration = useRef(runtimeMode === 'rf-pending-read-reload'
-    ? Settings.get(PENDING_READ_GENERATION_KEY) ?? 1 : 1).current;
+    ? rfPendingReadGeneration : 1).current;
+  const nativeOwnsPendingClose = runtimeMode === 'rf-pending-read-reload' && pendingReadGeneration === 1;
 
   const report = useCallback((line: string): void => {
     console.log(`BLEHUB_NITRO_RUNTIME ${line}`);
+    present(line);
     if (!activeRef.current) return;
+    if (runtimeMode === 'rf-recovery-ten') {
+      // Preserve every audit record above, but never turn high-rate JSON into Fabric mutations.
+      if (line.startsWith('rf-recovery-ten:event:') || line.startsWith('rf-recovery-ten:resources:')) return;
+      const failed = line.includes(':failed:');
+      const final = line.startsWith('rf-recovery-ten:passed:') || line.startsWith('rf-recovery-ten:failed:');
+      setRecoveryTenStatus((current) => ({
+        latest: line,
+        failure: current.failure || (failed ? line : ''),
+        final: failed ? line : final && !current.failure ? line : current.final,
+      }));
+      const cycle = /^rf-recovery-ten:cycle:([0-9]):(.+)$/.exec(line);
+      if (cycle) {
+        const id = `cycle-${cycle[1]}`;
+        const passed = cycle[2] === 'passed' || cycle[2].startsWith('cycle:passed:');
+        const phase = cycle[2].split(':')[0].replace(/-/g, ' ');
+        setRfSteps((current) => current.map((step) => {
+          if (step.id !== id) return step;
+          const state = failed || step.state === 'failed' ? 'failed' : passed || step.state === 'passed' ? 'passed' : 'pending';
+          const detail = state === 'failed' ? (step.state === 'failed' ? step.detail : line)
+            : state === 'passed' ? 'Lifecycle complete: native close and all 17 resources zero.' : `In progress: ${phase}`;
+          return step.state === state && step.detail === detail ? step : { ...step, state, detail };
+        }));
+      } else if (line.startsWith('rf-recovery-ten:close:passed:')) {
+        setRfSteps((current) => current.map((step) => step.id === 'close'
+          ? { ...step, state: 'passed', detail: 'All ten native Probe/Hub lifecycles closed.' } : step));
+      }
+      return;
+    }
     setStatusLines((current) => [...current.slice(-7), line]);
     if (line === 'close:resolved' || line === 'rf:close:resolved') setClosed(true);
     const update = stepState(line);
@@ -1567,10 +2497,11 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
         step.id === rfUpdate.id ? { ...step, state: rfUpdate.state, detail: rfUpdate.detail } : step,
       ));
     }
-  }, []);
+  }, [runtimeMode, present]);
 
   const startSmoke = useCallback((): void => {
     if (running) return;
+    beginRun();
     const probe = createBleHubProbe();
     probeRef.current = probe;
     setRunning(true);
@@ -1581,18 +2512,49 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
     void runContractSmoke(probe, report)
       .catch((error: unknown) => report(`run:failed:${describeError(error)}`))
       .finally(() => setRunning(false));
-  }, [report, running]);
+  }, [beginRun, report, running]);
 
   const startRf = useCallback((): void => {
     if (running) return;
+    if (runtimeMode === 'rf-recovery-ten') {
+      if (recoveryTenStartedRef.current) return;
+      recoveryTenStartedRef.current = true;
+      setRunning(true);
+      setClosed(false);
+      setRunCount((current) => current + 1);
+      setRfSteps(INITIAL_RF_RECOVERY_TEN_STEPS);
+      setStatusLines([]);
+      void runRfRecoveryTen(
+        () => { const next = createBleHubProbe(); probeRef.current = next; return next; },
+        (next, reject, connection) => createRfEventStream(next, true, true, new Set([connection]), 1024, reject, true),
+        recoveryTenProfile, report, () => !activeRef.current,
+      ).finally(() => { setRunning(false); setClosed(true); });
+      return;
+    }
+    if (runtimeMode === 'rf-pending-read-reload') {
+      if (pendingReadStartedRef.current) return;
+      pendingReadStartedRef.current = true;
+    }
     const probe = createBleHubProbe();
+    if (runtimeMode === 'rf-pending-read-reload' && Platform.OS === 'ios') bindPendingReloadProbe(probe);
     probeRef.current = probe;
     setRunning(true);
     setClosed(false);
     setRunCount((current) => current + 1);
     if (runtimeMode === 'rf-pending-read-reload') {
       setStatusLines([]);
-      void runRfPendingReadReload(probe, rfServiceUuid, rfReloadNotificationName, pendingReadGeneration, report, () => !activeRef.current)
+      void runRfPendingReadReload(
+        probe, pendingReadProfile.rfServiceUuid, pendingReadProfile.rfReloadNotificationName,
+        pendingReadGeneration, report, () => !activeRef.current,
+        pendingReadProfile.rfPendingReadRunId, pendingReadProfile.rfExpectedLocalName,
+      ).then(async (readPassed) => {
+        if (nativeOwnsPendingClose) return;
+        await probe.close();
+        if (!activeRef.current) return;
+        report(`rf-pending-read-reload:generation=${pendingReadGeneration}:close:passed`);
+        setClosed(true);
+        if (readPassed && pendingReadGeneration === 2) report(`rf-pending-read-reload:passed:runId=${pendingReadProfile.rfPendingReadRunId}`);
+      })
         .catch((error: unknown) => report(`rf-pending-read-reload:generation=${pendingReadGeneration}:failed:${describeError(error)}`))
         .finally(() => setRunning(false));
       return;
@@ -1603,10 +2565,10 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
         .finally(() => setRunning(false));
       return;
     }
-    if (runtimeMode === 'rf-recovery' || runtimeMode === 'rf-recovery-ten') {
-      setRfSteps(runtimeMode === 'rf-recovery-ten' ? INITIAL_RF_RECOVERY_TEN_STEPS : INITIAL_RF_RECOVERY_STEPS);
+    if (runtimeMode === 'rf-recovery') {
+      setRfSteps(INITIAL_RF_RECOVERY_STEPS);
       setStatusLines([]);
-      void runRfRecovery(probe, rfServiceUuid, report, () => !activeRef.current, runtimeMode === 'rf-recovery-ten' ? 10 : 3)
+      void runRfRecovery(probe, rfServiceUuid, report, () => !activeRef.current)
         .finally(() => setRunning(false));
       return;
     }
@@ -1627,17 +2589,18 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
     }
     const ioMode = runtimeMode === 'rf-io';
     const rssiMode = runtimeMode === 'rf-rssi';
+    const cancellationMode = runtimeMode === 'rf-cancellation';
     const passiveDisconnectMode = runtimeMode === 'rf-passive-disconnect';
     const subscriptionMode: RfSubscriptionMode | undefined = runtimeMode === 'rf-notification' || passiveDisconnectMode
       ? 'notification'
       : runtimeMode === 'rf-indication' ? 'indication' : undefined;
-    const connectMode = runtimeMode === 'rf-connect' || runtimeMode === 'rf-gatt' || ioMode || rssiMode || subscriptionMode !== undefined;
-    const gattMode = runtimeMode === 'rf-gatt' || ioMode || subscriptionMode !== undefined;
-    setRfSteps(passiveDisconnectMode ? INITIAL_RF_PASSIVE_DISCONNECT_STEPS : subscriptionMode === 'notification' ? INITIAL_RF_NOTIFICATION_STEPS : subscriptionMode === 'indication' ? INITIAL_RF_INDICATION_STEPS : ioMode ? INITIAL_RF_IO_STEPS : rssiMode ? INITIAL_RF_RSSI_STEPS : gattMode ? INITIAL_RF_GATT_STEPS : connectMode ? INITIAL_RF_CONNECT_STEPS : INITIAL_RF_STEPS);
+    const connectMode = runtimeMode === 'rf-connect' || runtimeMode === 'rf-gatt' || ioMode || rssiMode || cancellationMode || subscriptionMode !== undefined;
+    const gattMode = runtimeMode === 'rf-gatt' || ioMode || cancellationMode || subscriptionMode !== undefined;
+    setRfSteps(cancellationMode ? INITIAL_RF_CANCELLATION_STEPS : passiveDisconnectMode ? INITIAL_RF_PASSIVE_DISCONNECT_STEPS : subscriptionMode === 'notification' ? INITIAL_RF_NOTIFICATION_STEPS : subscriptionMode === 'indication' ? INITIAL_RF_INDICATION_STEPS : ioMode ? INITIAL_RF_IO_STEPS : rssiMode ? INITIAL_RF_RSSI_STEPS : gattMode ? INITIAL_RF_GATT_STEPS : connectMode ? INITIAL_RF_CONNECT_STEPS : INITIAL_RF_STEPS);
     setStatusLines([]);
-    void runRfScan(probe, rfServiceUuid, report, () => !activeRef.current, connectMode, gattMode, ioMode, subscriptionMode, passiveDisconnectMode, rssiMode)
+    void runRfScan(probe, rfServiceUuid, report, () => !activeRef.current, connectMode, gattMode, ioMode, subscriptionMode, passiveDisconnectMode, rssiMode, cancellationMode)
       .finally(() => setRunning(false));
-  }, [report, rfServiceUuid, rfMultiNotificationMode, rfMultiSubscriptionMode, rfMultiCycles, rfReloadNotificationName, running, runtimeMode, pendingReadGeneration]);
+  }, [report, rfServiceUuid, rfMultiNotificationMode, rfMultiSubscriptionMode, rfMultiCycles, rfReloadNotificationName, running, runtimeMode, pendingReadGeneration, pendingReadProfile, nativeOwnsPendingClose, recoveryTenProfile]);
 
   const closeProbe = useCallback((): void => {
     const probe = probeRef.current;
@@ -1684,9 +2647,11 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
       if (runtimeMode === 'rf-reload') report('rf-reload:cleanup-started');
       if (runtimeMode === 'rf-pending-read-reload') report(`rf-pending-read-reload:generation=${pendingReadGeneration}:cleanup-started`);
       activeRef.current = false;
+      if (runtimeMode === 'rf-recovery-ten') return; // The strict runner owns close and its armed callback guard.
       if (isRfMode(runtimeMode)) probeRef.current?.removeRfScanListener();
       else probeRef.current?.removeCompletionListener();
-      const closing = probeRef.current?.close();
+      // The native generation-1 engine-invalidation hook must own the first close.
+      const closing = nativeOwnsPendingClose ? undefined : probeRef.current?.close();
       if (runtimeMode === 'rf-reload' || runtimeMode === 'rf-pending-read-reload') void closing?.catch(
         (error: unknown) => report(`${rfMarkerPrefix(runtimeMode)}:close-rejected:${describeError(error)}`),
       );
@@ -1702,6 +2667,7 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
   const rfNotificationPassed = statusLines.some((line) => line.startsWith('rf-notification:passed:'));
   const rfIndicationPassed = statusLines.some((line) => line.startsWith('rf-indication:passed:'));
   const rfPassiveDisconnectPassed = statusLines.some((line) => line.startsWith('rf-passive-disconnect:passed:'));
+  const rfCancellationPassed = statusLines.some((line) => line.startsWith('rf-cancellation:passed:'));
   const rfFailed = statusLines.some((line) => line.startsWith('rf:failed:') || line.startsWith('rf:close:rejected:'));
   const rfConnectFailed = statusLines.some((line) => line.startsWith('rf-connect:failed:') || line.startsWith('rf-connect:close:rejected:'));
   const rfGattFailed = statusLines.some((line) => line.startsWith('rf-gatt:failed:') || line.startsWith('rf-gatt:close:rejected:'));
@@ -1709,14 +2675,15 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
   const rfNotificationFailed = statusLines.some((line) => line.startsWith('rf-notification:failed:') || line.startsWith('rf-notification:close:rejected:'));
   const rfIndicationFailed = statusLines.some((line) => line.startsWith('rf-indication:failed:') || line.startsWith('rf-indication:close:rejected:'));
   const rfPassiveDisconnectFailed = statusLines.some((line) => line.startsWith('rf-passive-disconnect:failed:') || line.startsWith('rf-passive-disconnect:close:rejected:'));
+  const rfCancellationFailed = statusLines.some((line) => line.startsWith('rf-cancellation:failed:') || line.startsWith('rf-cancellation:close:rejected:'));
   const rfMultiPassed = statusLines.some((line) => line.startsWith('rf-multi:passed:'));
   const rfMultiFailed = statusLines.some((line) => line.startsWith('rf-multi:failed:') || line.startsWith('rf-multi:close:rejected:'));
   const rfMultiFaultPassed = statusLines.some((line) => line.startsWith('rf-multi-fault:passed:'));
   const rfMultiFaultFailed = statusLines.some((line) => line.startsWith('rf-multi-fault:failed:') || line.startsWith('rf-multi-fault:close:rejected:'));
   const runtimeStatus = runtimeMode === 'rf-recovery-ten'
-    ? running ? 'running RF recovery (10 cycles)' : statusLines.some((line) => line.startsWith('rf-recovery-ten:passed:')) ? 'RF recovery 10 cycles passed' : statusLines.some((line) => line.startsWith('rf-recovery-ten:failed:')) ? 'RF recovery 10 cycles failed' : closed ? 'closed' : 'ready'
+    ? recoveryTenStatus.failure ? 'RF recovery 10 cycles failed' : recoveryTenStatus.final.startsWith('rf-recovery-ten:passed:') ? 'RF recovery 10 cycles passed' : running ? 'running RF recovery (10 cycles)' : closed ? 'closed' : 'ready'
     : runtimeMode === 'rf-pending-read-reload'
-    ? statusLines.some((line) => line.startsWith(`rf-pending-read-reload:generation=${pendingReadGeneration}:failed:`)) ? 'RF pending read reload failed' : statusLines.some((line) => line.startsWith('rf-pending-read-reload:generation=2:read:passed:')) ? 'RF pending read reload passed' : running ? `running RF pending read generation ${pendingReadGeneration}` : 'awaiting external reload'
+    ? statusLines.some((line) => line.startsWith(`rf-pending-read-reload:generation=${pendingReadGeneration}:failed:`)) ? 'RF pending read reload failed' : statusLines.some((line) => line.startsWith(Platform.OS === 'android' ? 'rf-pending-read-reload:passed:runId=' : 'rf-pending-read-reload:generation=2:read:passed:')) ? 'RF pending read reload passed' : running ? `running RF pending read generation ${pendingReadGeneration}` : 'awaiting external reload'
     : runtimeMode === 'rf-reload'
     ? statusLines.some((line) => line.startsWith('rf-reload:failed:')) ? 'RF reload failed' : statusLines.some((line) => line.startsWith('rf-reload:active:')) ? 'RF active; awaiting host/fixture verdict' : running ? 'running RF reload gate' : 'waiting for native reload'
     : runtimeMode === 'rf-recovery'
@@ -1737,6 +2704,8 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
         ? running ? 'running RF strict Indication gate' : rfIndicationPassed ? 'RF strict Indication passed' : rfIndicationFailed ? 'RF strict Indication failed' : closed ? 'closed' : 'ready'
       : runtimeMode === 'rf-passive-disconnect'
         ? running ? 'running RF passive disconnect/recovery gate' : rfPassiveDisconnectPassed ? 'RF passive disconnect/recovery passed' : rfPassiveDisconnectFailed ? 'RF passive disconnect/recovery failed' : closed ? 'closed' : 'ready'
+      : runtimeMode === 'rf-cancellation'
+        ? running ? 'running RF native cancellation gate' : rfCancellationPassed ? 'RF native cancellation passed' : rfCancellationFailed ? 'RF native cancellation failed' : closed ? 'closed' : 'ready'
       : runtimeMode === 'rf-io'
         ? running ? 'running RF GATT I/O gate' : rfIoPassed ? 'RF GATT I/O passed' : rfIoFailed ? 'RF GATT I/O failed' : closed ? 'closed' : 'ready'
         : runtimeMode === 'rf-gatt'
@@ -1746,43 +2715,32 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
       : runtimeMode === 'reload'
         ? running ? 'preparing runtime reload' : 'waiting for native reload'
         : running ? 'running contract smoke' : closed && passedCount === steps.length ? 'contract passed' : closed ? 'closed' : 'ready';
+  useRunOutcome(runtimeStatus.includes('failed') ? 'failed' : runtimeStatus.includes('passed') ? 'passed' : running ? 'running' : 'ready', runtimeStatus);
+  const scenario = findScenario(runtimeMode);
 
   return (
-    <View style={styles.safeArea} testID={runtimeMode === 'rf' ? 'rf-scan-lab-root' : runtimeMode === 'rf-connect' ? 'rf-connect-lab-root' : runtimeMode === 'rf-gatt' ? 'rf-gatt-lab-root' : runtimeMode === 'rf-io' ? 'rf-io-lab-root' : runtimeMode === 'rf-notification' ? 'rf-notification-lab-root' : runtimeMode === 'rf-indication' ? 'rf-indication-lab-root' : runtimeMode === 'rf-passive-disconnect' ? 'rf-passive-disconnect-lab-root' : runtimeMode === 'rf-recovery' ? 'rf-recovery-lab-root' : runtimeMode === 'rf-recovery-ten' ? 'rf-recovery-ten-lab-root' : runtimeMode === 'rf-multi' ? 'rf-multi-lab-root' : runtimeMode === 'rf-reload' ? 'rf-reload-lab-root' : 'contract-lab-root'}>
-      <ScrollView contentContainerStyle={styles.root} contentInsetAdjustmentBehavior="automatic">
+    <View style={styles.safeArea} testID={runtimeMode === 'rf' ? 'rf-scan-lab-root' : runtimeMode === 'rf-connect' ? 'rf-connect-lab-root' : runtimeMode === 'rf-gatt' ? 'rf-gatt-lab-root' : runtimeMode === 'rf-io' ? 'rf-io-lab-root' : runtimeMode === 'rf-notification' ? 'rf-notification-lab-root' : runtimeMode === 'rf-indication' ? 'rf-indication-lab-root' : runtimeMode === 'rf-passive-disconnect' ? 'rf-passive-disconnect-lab-root' : runtimeMode === 'rf-cancellation' ? 'rf-cancellation-lab-root' : runtimeMode === 'rf-recovery' ? 'rf-recovery-lab-root' : runtimeMode === 'rf-recovery-ten' ? 'rf-recovery-ten-lab-root' : runtimeMode === 'rf-multi' ? 'rf-multi-lab-root' : runtimeMode === 'rf-reload' ? 'rf-reload-lab-root' : 'contract-lab-root'}>
+      <ScrollView
+        contentContainerStyle={styles.root}
+        contentInsetAdjustmentBehavior="automatic"
+        // The bounded ten-cycle gate keeps its offscreen progress rows attached.
+        removeClippedSubviews={runtimeMode === 'rf-recovery-ten' ? false : undefined}
+        testID="runtime-scroll"
+      >
         <View style={styles.header}>
           <View style={styles.headerCopy}>
-            <Text style={styles.eyebrow}>BLEHUB / RN NITRO</Text>
-            <Text style={styles.title} testID={runtimeMode === 'rf' ? 'rf-scan-title' : runtimeMode === 'rf-connect' ? 'rf-connect-title' : runtimeMode === 'rf-gatt' ? 'rf-gatt-title' : runtimeMode === 'rf-io' ? 'rf-io-title' : runtimeMode === 'rf-notification' ? 'rf-notification-title' : runtimeMode === 'rf-indication' ? 'rf-indication-title' : runtimeMode === 'rf-passive-disconnect' ? 'rf-passive-disconnect-title' : runtimeMode === 'rf-recovery' ? 'rf-recovery-title' : runtimeMode === 'rf-multi' ? 'rf-multi-title' : 'contract-lab-title'}>
-              {runtimeMode === 'rf' ? 'iPhone RF scan gate' : runtimeMode === 'rf-connect' ? 'iPhone RF connect gate' : runtimeMode === 'rf-gatt' ? 'iPhone RF GATT gate' : runtimeMode === 'rf-io' ? 'iPhone RF GATT I/O gate' : runtimeMode === 'rf-notification' ? 'iPhone RF notification gate' : runtimeMode === 'rf-indication' ? 'iPhone RF strict Indication gate' : runtimeMode === 'rf-passive-disconnect' ? 'iPhone RF passive disconnect/recovery gate' : runtimeMode === 'rf-recovery' ? 'iPhone RF three-cycle recovery gate' : runtimeMode === 'rf-multi' ? 'RN RF multi-DK gate' : 'Contract lab'}
+            <Text style={styles.runTitle} testID={runtimeMode === 'rf' ? 'rf-scan-title' : runtimeMode === 'rf-connect' ? 'rf-connect-title' : runtimeMode === 'rf-gatt' ? 'rf-gatt-title' : runtimeMode === 'rf-io' ? 'rf-io-title' : runtimeMode === 'rf-notification' ? 'rf-notification-title' : runtimeMode === 'rf-indication' ? 'rf-indication-title' : runtimeMode === 'rf-passive-disconnect' ? 'rf-passive-disconnect-title' : runtimeMode === 'rf-cancellation' ? 'rf-cancellation-title' : runtimeMode === 'rf-recovery' ? 'rf-recovery-title' : runtimeMode === 'rf-multi' ? 'rf-multi-title' : 'contract-lab-title'}>
+              {runtimeMode === 'basic' ? 'Contract lab' : scenario?.title ?? 'Runtime test'}
             </Text>
             <Text style={styles.subtitle}>
-              {runtimeMode === 'rf'
-                ? 'JS → Nitro → production Apple BleHub scan evidence; this mode does not run the default contract smoke.'
-                : runtimeMode === 'rf-connect'
-                  ? 'JS → Nitro → production Apple BleHub scan, connect, and disconnect evidence.'
-                  : runtimeMode === 'rf-gatt'
-                    ? 'JS → Nitro → production Apple BleHub scan, connect, aggregate GATT discovery, and disconnect evidence.'
-                    : runtimeMode === 'rf-io'
-                      ? 'JS → Nitro → production Apple BleHub scan, connect, GATT discovery, read/write, and disconnect evidence.'
-                      : runtimeMode === 'rf-notification'
-                        ? 'JS → Nitro → production Apple BleHub notification enable, value, disable, and disconnect evidence.'
-                        : runtimeMode === 'rf-indication'
-                          ? 'JS → Nitro → production Apple BleHub strict Indication rejection, enable, value, disable, and disconnect evidence.'
-                          : runtimeMode === 'rf-passive-disconnect'
-                            ? 'JS → Nitro → production Apple BleHub passive disconnect, stale-route silence, recovery connect, and cleanup evidence.'
-                          : runtimeMode === 'rf-recovery'
-                            ? 'One Nitro probe and event listener across three nRF passive-disconnect/recovery cycles.'
-                          : runtimeMode === 'rf-multi'
-                            ? 'One shared RN/Nitro probe keeps two independent nRF52840 DK connections active while checking identity, GATT, and interleaved I/O correlation.'
-                          : 'A visible React Native surface for the Nitro and production BleHub assembly.'}
+              {scenario?.description ?? 'A visible React Native surface for the Nitro and production BleHub assembly.'}
             </Text>
           </View>
           <View style={styles.statusCard}>
             <Text style={styles.statusCaption}>Runtime status</Text>
             <Text style={styles.statusCaption} testID="run-count">Run {runCount}</Text>
             <Text
-              style={[styles.statusValue, (runtimeStatus === 'contract passed' || runtimeStatus === 'RF scan passed' || runtimeStatus === 'RF connect passed' || runtimeStatus === 'RF GATT passed' || runtimeStatus === 'RF GATT I/O passed' || runtimeStatus === 'RF notification passed' || runtimeStatus === 'RF strict Indication passed' || runtimeStatus === 'RF passive disconnect/recovery passed' || runtimeStatus === 'RF recovery passed') && styles.successText]}
+              style={[styles.statusValue, (runtimeStatus === 'contract passed' || runtimeStatus === 'RF scan passed' || runtimeStatus === 'RF connect passed' || runtimeStatus === 'RF GATT passed' || runtimeStatus === 'RF GATT I/O passed' || runtimeStatus === 'RF notification passed' || runtimeStatus === 'RF strict Indication passed' || runtimeStatus === 'RF passive disconnect/recovery passed' || runtimeStatus === 'RF native cancellation passed' || runtimeStatus === 'RF recovery passed') && styles.successText]}
               testID="runtime-status"
             >
               {runtimeStatus}
@@ -1794,18 +2752,18 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
           <Pressable
             style={[styles.button, styles.primaryButton]}
             onPress={isRfMode(runtimeMode) ? startRf : startSmoke}
-            disabled={running}
-            testID={runtimeMode === 'rf' ? 'rerun-rf-scan-button' : runtimeMode === 'rf-connect' ? 'rerun-rf-connect-button' : runtimeMode === 'rf-gatt' ? 'rerun-rf-gatt-button' : runtimeMode === 'rf-io' ? 'rerun-rf-io-button' : runtimeMode === 'rf-notification' ? 'rerun-rf-notification-button' : runtimeMode === 'rf-indication' ? 'rerun-rf-indication-button' : runtimeMode === 'rf-passive-disconnect' ? 'rerun-rf-passive-disconnect-button' : runtimeMode === 'rf-recovery' ? 'rerun-rf-recovery-button' : 'recreate-run-button'}
+            disabled={running || runtimeMode === 'rf-pending-read-reload' || runtimeMode === 'rf-recovery-ten'}
+            testID={runtimeMode === 'rf' ? 'rerun-rf-scan-button' : runtimeMode === 'rf-connect' ? 'rerun-rf-connect-button' : runtimeMode === 'rf-gatt' ? 'rerun-rf-gatt-button' : runtimeMode === 'rf-io' ? 'rerun-rf-io-button' : runtimeMode === 'rf-notification' ? 'rerun-rf-notification-button' : runtimeMode === 'rf-indication' ? 'rerun-rf-indication-button' : runtimeMode === 'rf-passive-disconnect' ? 'rerun-rf-passive-disconnect-button' : runtimeMode === 'rf-cancellation' ? 'rerun-rf-cancellation-button' : runtimeMode === 'rf-recovery' ? 'rerun-rf-recovery-button' : 'recreate-run-button'}
             accessibilityRole="button"
           >
             <Text style={styles.primaryButtonText}>
-              {running ? 'Running…' : runtimeMode === 'rf' ? 'Run RF scan again' : runtimeMode === 'rf-connect' ? 'Run RF connect again' : runtimeMode === 'rf-gatt' ? 'Run RF GATT again' : runtimeMode === 'rf-io' ? 'Run RF GATT I/O again' : runtimeMode === 'rf-notification' ? 'Run RF notification again' : runtimeMode === 'rf-indication' ? 'Run RF strict Indication again' : runtimeMode === 'rf-passive-disconnect' ? 'Run RF passive disconnect/recovery again' : runtimeMode === 'rf-recovery' ? 'Run RF recovery again' : closed ? 'Recreate and run' : 'Run contract smoke again'}
+              {runtimeMode === 'rf-recovery-ten' ? 'Strict host-controlled run (no rerun)' : runtimeMode === 'rf-pending-read-reload' ? 'Host-controlled generation (no rerun)' : running ? 'Running…' : runtimeMode === 'rf' ? 'Run RF scan again' : runtimeMode === 'rf-connect' ? 'Run RF connect again' : runtimeMode === 'rf-gatt' ? 'Run RF GATT again' : runtimeMode === 'rf-io' ? 'Run RF GATT I/O again' : runtimeMode === 'rf-notification' ? 'Run RF notification again' : runtimeMode === 'rf-indication' ? 'Run RF strict Indication again' : runtimeMode === 'rf-passive-disconnect' ? 'Run RF passive disconnect/recovery again' : runtimeMode === 'rf-cancellation' ? 'Run RF native cancellation again' : runtimeMode === 'rf-recovery' ? 'Run RF recovery again' : closed ? 'Recreate and run' : 'Run contract smoke again'}
             </Text>
           </Pressable>
           <Pressable
             style={[styles.button, styles.secondaryButton]}
             onPress={closeProbe}
-            disabled={closed || running}
+            disabled={closed || running || runtimeMode === 'rf-pending-read-reload' || runtimeMode === 'rf-recovery-ten'}
             testID="close-probe-button"
             accessibilityRole="button"
           >
@@ -1820,7 +2778,12 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
               <Text style={styles.badge} testID={runtimeMode === 'rf' ? 'rf-scan-coverage' : runtimeMode === 'rf-connect' ? 'rf-connect-coverage' : runtimeMode === 'rf-gatt' ? 'rf-gatt-coverage' : runtimeMode === 'rf-io' ? 'rf-io-coverage' : runtimeMode === 'rf-notification' ? 'rf-notification-coverage' : runtimeMode === 'rf-indication' ? 'rf-indication-coverage' : runtimeMode === 'rf-passive-disconnect' ? 'rf-passive-disconnect-coverage' : runtimeMode === 'rf-recovery' ? 'rf-recovery-coverage' : 'rf-indication-coverage'}>{rfPassedCount}/{rfSteps.length}</Text>
             </View>
             <Text style={styles.stepDetail} testID="rf-service-uuid">serviceUuid: {rfServiceUuid ?? 'missing (failure)'}</Text>
-            {rfSteps.map((step) => <StepRow key={step.id} step={step} />)}
+            {rfSteps.map((step) => <StepRow
+              key={step.id}
+              step={step}
+              stableHost={runtimeMode === 'rf-recovery-ten'}
+              testID={runtimeMode === 'rf-recovery-ten' ? `rf-recovery-ten-${step.id}` : undefined}
+            />)}
           </View>
         ) : (
           <View style={styles.card}>
@@ -1832,19 +2795,30 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
           </View>
         )}
 
-        <View style={styles.card}>
+        <View
+          style={styles.card}
+          collapsable={runtimeMode === 'rf-recovery-ten' ? false : undefined}
+          testID="runtime-report-card"
+        >
           <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle}>Projected runtime events</Text>
-            <Text style={styles.badge}>{statusLines.length}</Text>
+            <Text style={styles.cardTitle}>{runtimeMode === 'rf-recovery-ten' ? 'Recovery progress and result' : 'Projected runtime events'}</Text>
+            <Text style={styles.badge}>{runtimeMode === 'rf-recovery-ten' ? 'audit → console' : statusLines.length}</Text>
           </View>
-          {statusLines.length ? statusLines.map((line, index) => (
-            <Text key={`${index}-${line}`} style={styles.eventLine}>{line}</Text>
-          )) : <Text style={styles.emptyText}>Waiting for the Nitro object to report.</Text>}
+          {runtimeMode === 'rf-recovery-ten' ? (
+            <>
+              <Text style={styles.eventLine} testID="rf-recovery-ten-latest">{recoveryTenStatus.latest}</Text>
+              <Text style={recoveryTenStatus.failure ? styles.errorText : styles.stepDetail} testID="rf-recovery-ten-failure">{recoveryTenStatus.failure || 'No failure reported.'}</Text>
+              <Text style={styles.eventLine} testID="rf-recovery-ten-result">{recoveryTenStatus.final || 'Awaiting final result.'}</Text>
+              <Text style={styles.stepDetail}>All native event and resource JSON records remain in the console audit; only cycle progress is rendered here.</Text>
+            </>
+          ) : (
+            <Text style={styles.eventLine} testID="runtime-event-summary">{statusLines.join('\n') || 'Waiting for the Nitro object to report.'}</Text>
+          )}
         </View>
 
         <Text style={styles.footer}>
           {isRfMode(runtimeMode)
-            ? 'RF mode is an iPhone JS→Nitro gate; Android production backend RF projection is not enabled in this private probe yet.'
+            ? `${platformLabel} JS→Nitro RF gate; the host recipe and checker remain the final RF authority.`
             : 'This is a Nitro transport/lifecycle gate, not BLE RF or the public BLeng surface.'}
         </Text>
       </ScrollView>
@@ -1852,35 +2826,33 @@ export default function App({ runtimeMode = 'basic', rfServiceUuid, rfMultiNotif
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f5f7fa' },
-  root: { padding: 20, gap: 16 },
-  header: { gap: 16 },
-  headerCopy: { gap: 6 },
-  eyebrow: { color: '#526173', fontSize: 12, fontWeight: '700', letterSpacing: 1.2 },
-  title: { color: '#122033', fontSize: 30, fontWeight: '800' },
-  subtitle: { color: '#526173', fontSize: 15, lineHeight: 22 },
-  statusCard: { borderLeftWidth: 3, borderLeftColor: '#218739', paddingLeft: 12, gap: 4 },
-  statusCaption: { color: '#526173', fontSize: 12, fontWeight: '600' },
-  statusValue: { color: '#122033', fontSize: 16, fontWeight: '700' },
-  actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  button: { borderRadius: 8, paddingHorizontal: 14, paddingVertical: 11 },
-  primaryButton: { backgroundColor: '#1769aa' },
-  secondaryButton: { backgroundColor: '#e7edf3' },
-  primaryButtonText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
-  secondaryButtonText: { color: '#17324d', fontSize: 14, fontWeight: '700' },
-  card: { backgroundColor: '#ffffff', borderRadius: 10, padding: 16, gap: 8 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  cardTitle: { color: '#122033', fontSize: 18, fontWeight: '800' },
-  badge: { color: '#1769aa', fontSize: 14, fontWeight: '800' },
-  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#e4e9ef', paddingVertical: 10 },
-  stepIndicator: { color: '#8a98a8', fontSize: 11, fontWeight: '800', width: 32 },
-  stepCopy: { flex: 1, gap: 2 },
-  stepLabel: { color: '#243447', fontSize: 14, fontWeight: '600' },
-  stepDetail: { color: '#718096', fontSize: 12 },
-  successText: { color: '#218739' },
-  errorText: { color: '#b42318' },
-  eventLine: { color: '#526173', fontFamily: 'Menlo', fontSize: 12, paddingVertical: 4 },
-  emptyText: { color: '#718096', fontSize: 14 },
-  footer: { color: '#718096', fontSize: 12, lineHeight: 18, paddingBottom: 20 },
-});
+export default function App(props: AppProps): React.JSX.Element {
+  return (
+    <RfLabWorkbench mode={props.runtimeMode} serviceUuid={props.rfServiceUuid}
+      fullSuite={props.rfRecoveryRunId !== undefined} adapterMode={props.rfAdapterMode}
+      runId={props.runtimeMode === 'rf-ccc-disable-reject' ? cccDisableRejectSession(props.rfCccDisableRejectControl) : props.runtimeMode === 'rf-ccc-enable-reject' ? cccEnableRejectSession(props.rfCccEnableRejectControl) : props.runtimeMode === 'rf-write-reject' ? writeRejectSession(props.rfWriteRejectControl) : props.rfPermissionRunId ?? props.rfAdapterRunId ?? props.rfRecoveryRunId ?? props.rfPendingReadRunId}
+      interactive={<RfLab {...props} />}>
+      {props.runtimeMode && props.runtimeMode !== 'rf-workbench' ? <ScenarioRuntime {...props} /> : null}
+    </RfLabWorkbench>
+  );
+}
+
+function ScenarioRuntime(props: AppProps): React.JSX.Element {
+  if (props.runtimeMode === 'rf-ccc-disable-reject') return <RfCccDisableRejectLab {...props} />;
+  if (props.runtimeMode === 'rf-ccc-enable-reject') return <RfCccEnableRejectLab {...props} />;
+    if (props.runtimeMode === 'rf-write-reject') return <RfWriteRejectLab {...props} />;
+  if (props.runtimeMode === 'rf-permission-transition' || props.runtimeMode === 'permission-authorization') return (
+    <RfLabRunScreen title={props.runtimeMode === 'permission-authorization' ? 'iOS authorization (non-RF)' : 'Android permission transition'}
+      description={props.runtimeMode === 'permission-authorization'
+        ? 'Inspect → authorized baseline → denied start → fresh authorized initialization. XCUITest owns restoration; no RF recovery is claimed.'
+        : 'Denied start → active-read permission revocation / OS process death → fresh-App recovery. The host owns the full-run verdict.'}>
+      <RfPermissionTransition {...props} runFlow={runRfLabFlow} />
+    </RfLabRunScreen>
+  );
+  if (props.runtimeMode === 'rf-adapter-transition') return <RfLabSuite {...props} />;
+  if (props.runtimeMode === 'rf-cancellation') return <RfLabSuite {...props} rfLabSuiteFlow="rf-cancellation" />;
+  if (props.runtimeMode === 'rf-watchdog') return <RfWatchdogLab rfServiceUuid={props.rfServiceUuid} rfCancellationControl={props.rfCancellationControl} rfExpectedLocalName={props.rfExpectedLocalName} />;
+  if (props.runtimeMode === 'rf-lab') return <RfLab {...props} />;
+  if (props.runtimeMode === 'rf-lab-suite') return <RfLabSuite {...props} />;
+  return <RuntimeApp {...props} />;
+}

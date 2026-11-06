@@ -427,12 +427,12 @@ def verify_tarball(tarball: Path) -> None:
                     )
                 if member.isfile() and _is_textual(Path(member.name)):
                     stream = archive.extractfile(member)
-                    if stream is not None and any(
-                        token in stream.read() for token in tokens
-                    ):
-                        raise ArtifactConsumerError(
-                            f"checkout path leakage in npm entry: {member.name}"
-                        )
+                    if stream is not None:
+                        data = stream.read()
+                        if any(token in data for token in tokens):
+                            raise ArtifactConsumerError(
+                                f"checkout path leakage in npm entry: {member.name}"
+                            )
     except (OSError, tarfile.TarError) as error:
         raise ArtifactConsumerError(
             f"unable to inspect npm tarball {tarball}: {error}"

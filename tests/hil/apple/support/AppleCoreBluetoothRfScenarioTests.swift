@@ -1,4 +1,5 @@
 import BleHubUniFfi
+import Dispatch
 import XCTest
 
 final class AppleCoreBluetoothRfScenarioTests: XCTestCase {
@@ -103,6 +104,47 @@ final class AppleCoreBluetoothRfScenarioTests: XCTestCase {
                        [enable, terminal, notification(ids: ids)]] {
             XCTAssertThrowsError(try validate(events))
         }
+    }
+
+    func testNotificationRunnerValidatesValueBeforeDispatchingDisable() throws {
+        let ids = RfCycleIds()
+        let backend = NotificationScenarioBackend()
+        let fixture = try SwiftProbeHarness(backend: backend)
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false)
+        let host = DispatchGroup()
+        defer {
+            XCTAssertEqual(host.wait(timeout: .now() + 4), .success)
+            try? fixture.dispose()
+            try? FileManager.default.removeItem(at: path)
+        }
+        let value = notification(ids: ids)
+        host.enter()
+        DispatchQueue.global().async {
+            defer { host.leave() }
+            for marker in ["notification-enabled", "notification-disabled"] {
+                let deadline = Date().addingTimeInterval(3)
+                while !FileManager.default.fileExists(atPath: path.appendingPathComponent(marker).path) {
+                    guard Date() < deadline else { return }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+                if marker == "notification-enabled" {
+                    backend.emit(value)
+                } else {
+                    try? "ready\n".write(to: path.appendingPathComponent("post-disable-triggered"), atomically: true, encoding: .utf8)
+                }
+            }
+        }
+        let result = try runNotifications(
+            fixture: fixture, database: database(ids: ids), expectedServiceUuid: serviceA.value,
+            fixtureCoordinationPath: path.path, ids: ids
+        )
+        XCTAssertEqual(backend.commands, [ids.command(6), ids.command(7)])
+        XCTAssertTrue(result.output.contains("apple_macos_corebluetooth_notification_post_disable_silence=passed"))
+        try validateNotificationEventLedger(
+            fixture.snapshot().events, database: database(ids: ids), subscriptionId: ids.subscription,
+            characteristicId: result.characteristicId, expectedValue: result.expectedValue, ids: ids
+        )
     }
 
     func testRssiRequiresOneCorrelatedDomainBeforeOneSuccessfulTerminal() throws {
@@ -364,4 +406,68 @@ final class AppleCoreBluetoothRfScenarioTests: XCTestCase {
             rssi: nil, connectable: nil
         )
     }
+}
+
+private final class NotificationScenarioBackend: BleBackend, @unchecked Sendable {
+    private let lock = NSLock()
+    private var ingress: BackendEventIngressHandle?
+    private(set) var commands: [CommandId] = []
+
+    func capabilities() throws -> BackendCapabilities {
+        BackendCapabilities(
+            platform: .test, contractVersion: blehubContractVersion(),
+            supportsDuplicateScanResults: false, supportsConnectableFlag: false,
+            supportsReadRssi: false, supportsRequiredNotification: true,
+            supportsRequiredIndication: false, reportsActualNotificationMode: true
+        )
+    }
+
+    func bindEventIngress(ingress: BackendEventIngressHandle) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.ingress = ingress
+    }
+
+    func emit(_ event: BleEvent) {
+        lock.lock()
+        let target = ingress
+        lock.unlock()
+        XCTAssertEqual(target?.push(event: event), .delivered)
+    }
+
+    func setNotifications(command: SetNotificationsCommand) throws {
+        commands.append(command.commandId)
+        let state: NotificationState
+        switch command.action {
+        case .enable: state = .enabled(actualMode: .notification)
+        case .disable: state = .disabled
+        }
+        emit(.notificationStateChanged(
+            commandId: command.commandId, connectionId: command.connectionId,
+            gattSessionId: command.gattSessionId, subscriptionId: command.subscriptionId,
+            characteristicId: command.characteristicId, state: state
+        ))
+        emit(.commandCompleted(commandId: command.commandId, error: nil))
+    }
+
+    func dispose() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        ingress = nil
+    }
+
+    private func unexpected() throws {
+        throw RfLedgerError(description: "unexpected command in notification-only backend")
+    }
+
+    func initialize(command: InitializeCommand) throws { try unexpected() }
+    func startScan(command: StartScanCommand) throws { try unexpected() }
+    func stopScan(command: StopScanCommand) throws { try unexpected() }
+    func connect(command: ConnectCommand) throws { try unexpected() }
+    func disconnect(command: DisconnectCommand) throws { try unexpected() }
+    func discoverGatt(command: DiscoverGattCommand) throws { try unexpected() }
+    func readCharacteristic(command: ReadCharacteristicCommand) throws { try unexpected() }
+    func writeCharacteristic(command: WriteCharacteristicCommand) throws { try unexpected() }
+    func readRssi(command: ReadRssiCommand) throws { try unexpected() }
+    func cancelOperation(request: CancelOperationRequest) throws { try unexpected() }
 }

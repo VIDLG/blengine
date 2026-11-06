@@ -41,79 +41,85 @@ The delegate of a [`CBPeripheral`](/documentation/CoreBluetooth/CBPeripheral) ob
 
 ### Discovering Services
 
-[`-  peripheral:didDiscoverServices:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverServices:))
+[`func peripheral(CBPeripheral, didDiscoverServices: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverServices:))
 
 Tells the delegate that peripheral service discovery succeeded.
 
-[`-  peripheral:didDiscoverIncludedServicesForService:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverIncludedServicesFor:error:))
+[`func peripheral(CBPeripheral, didDiscoverIncludedServicesFor: CBService, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverIncludedServicesFor:error:))
 
 Tells the delegate that discovering included services within the indicated service completed.
 
 ### Discovering Characteristics and their Descriptors
 
-[`-  peripheral:didDiscoverCharacteristicsForService:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverCharacteristicsFor:error:))
+[`func peripheral(CBPeripheral, didDiscoverCharacteristicsFor: CBService, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverCharacteristicsFor:error:))
 
 Tells the delegate that the peripheral found characteristics for a service.
 
-[`-  peripheral:didDiscoverDescriptorsForCharacteristic:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverDescriptorsFor:error:))
+[`func peripheral(CBPeripheral, didDiscoverDescriptorsFor: CBCharacteristic, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didDiscoverDescriptorsFor:error:))
 
 Tells the delegate that the peripheral found descriptors for a characteristic.
 
 ### Retrieving Characteristic and Descriptor Values
 
-[`-  peripheral:didUpdateValueForCharacteristic:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didUpdateValueFor:error:)-1xyna)
+[`func peripheral(CBPeripheral, didUpdateValueFor: CBCharacteristic, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didUpdateValueFor:error:)-1xyna)
 
 Tells the delegate that retrieving the specified characteristic’s value succeeded, or that the characteristic’s value changed.
 
-[`-  peripheral:didUpdateValueForDescriptor:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didUpdateValueFor:error:)-1t3wm)
+[`func peripheral(CBPeripheral, didUpdateValueFor: CBDescriptor, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didUpdateValueFor:error:)-1t3wm)
 
 Tells the delegate that retrieving a specified characteristic descriptor’s value succeeded.
 
 ### Writing Characteristic and Descriptor Values
 
-[`-  peripheral:didWriteValueForCharacteristic:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didWriteValueFor:error:)-4f5ea)
+[`func peripheral(CBPeripheral, didWriteValueFor: CBCharacteristic, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didWriteValueFor:error:)-4f5ea)
 
 Tells the delegate that the peripheral successfully set a value for the characteristic.
 
-[`-  peripheral:didWriteValueForDescriptor:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didWriteValueFor:error:)-1ybl3)
+[`func peripheral(CBPeripheral, didWriteValueFor: CBDescriptor, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didWriteValueFor:error:)-1ybl3)
 
 Tells the delegate that the peripheral successfully set a value for the descriptor.
 
-[`-  peripheralIsReadyToSendWriteWithoutResponse:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheralIsReady(toSendWriteWithoutResponse:))
+[`func peripheralIsReady(toSendWriteWithoutResponse: CBPeripheral)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheralIsReady(toSendWriteWithoutResponse:))
 
 Tells the delegate that a peripheral is again ready to send characteristic updates.
 
 ### Managing Notifications for a Characteristic’s Value
 
-[`-  peripheral:didUpdateNotificationStateForCharacteristic:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didUpdateNotificationStateFor:error:))
+[`func peripheral(CBPeripheral, didUpdateNotificationStateFor: CBCharacteristic, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didUpdateNotificationStateFor:error:))
 
 Tells the delegate that the peripheral received a request to start or stop providing notifications for a specified characteristic’s value.
 
 ### Retrieving a Peripheral’s RSSI Data
 
-[`-  peripheral:didReadRSSI:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didReadRSSI:error:))
+[`func peripheral(CBPeripheral, didReadRSSI: NSNumber, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didReadRSSI:error:))
 
 Tells the delegate that retrieving the value of the peripheral’s current Received Signal Strength Indicator (RSSI) succeeded.
 
-[`-  peripheralDidUpdateRSSI:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheralDidUpdateRSSI(_:error:))
+[`func peripheralDidUpdateRSSI(CBPeripheral, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheralDidUpdateRSSI(_:error:))
 
 Tells the delegate that retrieving the value of the peripheral’s current Received Signal Strength Indicator (RSSI) succeeded.
 
 ### Monitoring Changes to a Peripheral’s Name or Services
 
-[`-  peripheralDidUpdateName:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheralDidUpdateName(_:))
+[`func peripheralDidUpdateName(CBPeripheral)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheralDidUpdateName(_:))
 
 Tells the delegate that a peripheral’s name changed.
 
-[`-  peripheral:didModifyServices:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didModifyServices:))
+[`func peripheral(CBPeripheral, didModifyServices: [CBService])`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didModifyServices:))
 
 Tells the delegate that a peripheral’s services changed.
 
 ### Monitoring L2CAP Channels
 
-[`-  peripheral:didOpenL2CAPChannel:error:`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didOpen:error:))
+[`func peripheral(CBPeripheral, didOpen: CBL2CAPChannel?, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didOpen:error:))
 
 Delivers the result of an attempt to open an L2CAP channel.
+
+### Instance Methods
+
+[`func peripheral(CBPeripheral, didCompleteChannelSoundingSession: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didCompleteChannelSoundingSession:))
+
+[`func peripheral(CBPeripheral, didReceive: CBChannelSoundingProcedureResults?, error: (any Error)?)`](/documentation/CoreBluetooth/CBPeripheralDelegate/peripheral(_:didReceive:error:))
 
 ## Relationships
 

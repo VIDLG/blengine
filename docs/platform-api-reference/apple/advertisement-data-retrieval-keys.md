@@ -17,35 +17,35 @@ Keys used to specify items in a dictionary of peripheral advertisement data.
 
 ### Advertisement Keys
 
-[`CBAdvertisementDataLocalNameKey`](/documentation/CoreBluetooth/CBAdvertisementDataLocalNameKey)
+[`let CBAdvertisementDataLocalNameKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataLocalNameKey)
 
 The local name of a peripheral.
 
-[`CBAdvertisementDataManufacturerDataKey`](/documentation/CoreBluetooth/CBAdvertisementDataManufacturerDataKey)
+[`let CBAdvertisementDataManufacturerDataKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataManufacturerDataKey)
 
 The manufacturer data of a peripheral.
 
-[`CBAdvertisementDataServiceDataKey`](/documentation/CoreBluetooth/CBAdvertisementDataServiceDataKey)
+[`let CBAdvertisementDataServiceDataKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataServiceDataKey)
 
 A dictionary that contains service-specific advertisement data.
 
-[`CBAdvertisementDataServiceUUIDsKey`](/documentation/CoreBluetooth/CBAdvertisementDataServiceUUIDsKey)
+[`let CBAdvertisementDataServiceUUIDsKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataServiceUUIDsKey)
 
 An array of service UUIDs.
 
-[`CBAdvertisementDataOverflowServiceUUIDsKey`](/documentation/CoreBluetooth/CBAdvertisementDataOverflowServiceUUIDsKey)
+[`let CBAdvertisementDataOverflowServiceUUIDsKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataOverflowServiceUUIDsKey)
 
 An array of UUIDs found in the overflow area of the advertisement data.
 
-[`CBAdvertisementDataTxPowerLevelKey`](/documentation/CoreBluetooth/CBAdvertisementDataTxPowerLevelKey)
+[`let CBAdvertisementDataTxPowerLevelKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataTxPowerLevelKey)
 
 The transmit power of a peripheral.
 
-[`CBAdvertisementDataIsConnectable`](/documentation/CoreBluetooth/CBAdvertisementDataIsConnectable)
+[`let CBAdvertisementDataIsConnectable: String`](/documentation/CoreBluetooth/CBAdvertisementDataIsConnectable)
 
 A Boolean value that indicates whether the advertising event type is connectable.
 
-[`CBAdvertisementDataSolicitedServiceUUIDsKey`](/documentation/CoreBluetooth/CBAdvertisementDataSolicitedServiceUUIDsKey)
+[`let CBAdvertisementDataSolicitedServiceUUIDsKey: String`](/documentation/CoreBluetooth/CBAdvertisementDataSolicitedServiceUUIDsKey)
 
 An array of solicited service UUIDs.
 

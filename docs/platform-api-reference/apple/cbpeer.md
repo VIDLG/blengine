@@ -43,37 +43,37 @@ Your app takes the role of either a central (by creating an instance of [`CBCent
 
 ### Identifying a Peer
 
-[`identifier`](/documentation/CoreBluetooth/CBPeer/identifier)
+[`var identifier: UUID`](/documentation/CoreBluetooth/CBPeer/identifier)
 
 The UUID associated with the peer.
 
 ## Relationships
-
-### Conforms To
-
-[`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
-
-[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
-
-[`Hashable`](/documentation/Swift/Hashable)
-
-[`Equatable`](/documentation/Swift/Equatable)
-
-[`NSCopying`](/documentation/Foundation/NSCopying)
-
-[`CVarArg`](/documentation/Swift/CVarArg)
-
-[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
-
-### Inherits From
-
-[`NSObject-swift.class`](/documentation/ObjectiveC/NSObject-swift.class)
 
 ### Inherited By
 
 [`CBCentral`](/documentation/CoreBluetooth/CBCentral)
 
 [`CBPeripheral`](/documentation/CoreBluetooth/CBPeripheral)
+
+### Conforms To
+
+[`NSCopying`](/documentation/Foundation/NSCopying)
+
+[`Equatable`](/documentation/Swift/Equatable)
+
+[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
+
+[`Hashable`](/documentation/Swift/Hashable)
+
+[`CVarArg`](/documentation/Swift/CVarArg)
+
+[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
+
+[`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
+
+### Inherits From
+
+[`NSObject-swift.class`](/documentation/ObjectiveC/NSObject-swift.class)
 
 ---
 

@@ -18,6 +18,10 @@ enum BlengContractFailure {
 enum BlengError {
     case Closed
     case Cancelled
+    case OperationNotFound(commandId: CommandId)
+    case OperationAlreadyCompleted(commandId: CommandId)
+    case OperationNotCancellable(commandId: CommandId)
+    case OperationResultConsumed
     case Disconnected
     case InvalidTimeout
     case NotReady(reason: BlengNotReadyReason)
@@ -44,6 +48,18 @@ enum BlengNotReadyReason {
 
 protocol BlengProtocol {
     func assembleBackend(backend: BleBackend) async throws
+    func beginConnect(peripheral: PeripheralId) throws -> ConnectOperation
+    func beginDisableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId) throws -> DisableNotificationsOperation
+    func beginDisconnect(connection: ConnectionId) throws -> DisconnectOperation
+    func beginDiscoverGatt(connection: ConnectionId) throws -> DiscoverGattOperation
+    func beginEnableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest) throws -> EnableNotificationsOperation
+    func beginInitialize() throws -> InitializeOperation
+    func beginReadCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId) throws -> ReadOperation
+    func beginReadRssi(connection: ConnectionId) throws -> ReadRssiOperation
+    func beginStartScan(options: ScanOptions) throws -> StartScanOperation
+    func beginStopScan(session: ScanSessionId) throws -> StopScanOperation
+    func beginWriteCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Data, writeType: WriteType) throws -> WriteOperation
+    func cancelOperation(commandId: CommandId) async throws
     func connect(peripheral: PeripheralId, timeoutMs: UInt64) async throws -> ConnectionId
     func disableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId, timeoutMs: UInt64) async throws
     func disconnect(connection: ConnectionId, timeoutMs: UInt64) async throws
@@ -61,5 +77,94 @@ protocol BlengProtocol {
 
 enum BlengResource {
     case pendingWaiters
+    case submissionQueue
     case identifiers
+}
+
+class ConnectOperation : ConnectOperationProtocol
+
+protocol ConnectOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> ConnectionId
+}
+
+class DisableNotificationsOperation : DisableNotificationsOperationProtocol
+
+protocol DisableNotificationsOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class DisconnectOperation : DisconnectOperationProtocol
+
+protocol DisconnectOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class DiscoverGattOperation : DiscoverGattOperationProtocol
+
+protocol DiscoverGattOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> GattDatabase
+}
+
+class EnableNotificationsOperation : EnableNotificationsOperationProtocol
+
+protocol EnableNotificationsOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> SubscriptionId
+}
+
+class InitializeOperation : InitializeOperationProtocol
+
+protocol InitializeOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> AdapterSnapshot
+}
+
+class ReadOperation : ReadOperationProtocol
+
+protocol ReadOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> Data
+}
+
+class ReadRssiOperation : ReadRssiOperationProtocol
+
+protocol ReadRssiOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> Int16
+}
+
+class StartScanOperation : StartScanOperationProtocol
+
+protocol StartScanOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> ScanSessionId
+}
+
+class StopScanOperation : StopScanOperationProtocol
+
+protocol StopScanOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class WriteOperation : WriteOperationProtocol
+
+protocol WriteOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
 }

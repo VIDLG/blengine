@@ -80,6 +80,14 @@ internal enum AppleEventMapper {
         eventError(category: .internal, error: nil, context: context)
     }
 
+    static func operationTimeout(_ context: String) -> BleEventError {
+        eventError(category: .timeout, error: nil, context: context)
+    }
+
+    static func operationAborted(_ context: String) -> BleEventError {
+        eventError(category: .operationAborted, error: nil, context: context)
+    }
+
     private static func eventError(
         category: BleErrorCategory,
         error: Error?,

@@ -63,6 +63,7 @@ protocol BleBackend {
     func writeCharacteristic(command: WriteCharacteristicCommand) throws
     func setNotifications(command: SetNotificationsCommand) throws
     func readRssi(command: ReadRssiCommand) throws
+    func cancelOperation(request: CancelOperationRequest) throws
     func dispose() throws
 }
 
@@ -73,6 +74,7 @@ enum BleErrorCategory {
     case notFound
     case timeout
     case cancelled
+    case operationAborted
     case connection
     case gatt
     case `protocol`
@@ -116,6 +118,7 @@ enum BleHubError {
 }
 
 protocol BleHubProtocol {
+    func cancelOperation(targetCommandId: CommandId) throws
     func capabilities() -> BackendCapabilities
     func connect(command: ConnectCommand) throws
     func disconnect(command: DisconnectCommand) throws
@@ -134,6 +137,10 @@ struct BluetoothUuid {
     public var value: String
 }
 
+struct CancelOperationRequest {
+    public var targetCommandId: CommandId
+}
+
 struct CharacteristicProperties {
     public var readable: Bool
     public var writableWithResponse: Bool
@@ -146,6 +153,10 @@ enum CommandDispatchError {
     case Closed
     case InvalidRequest(detail: String)
     case InvalidState(detail: String)
+    case OperationNotFound(targetCommandId: CommandId)
+    case OperationAlreadyCompleted(targetCommandId: CommandId)
+    case OperationNotCancellable(targetCommandId: CommandId)
+    case ResourceExhausted(detail: String)
     case BackendUnavailable(detail: String, platformDetails: PlatformErrorDetails?)
     case FfiContract(detail: String)
 }

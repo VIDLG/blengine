@@ -1,0 +1,21 @@
+{
+  "board": "nrf52840dk/nrf52840",
+  "capabilities": [
+    "normal-rf",
+    "gatt-reset",
+    "notification",
+    "indication",
+    "passive-disconnect",
+    "att-read-hold",
+    "att-read-hold-timeout-30000",
+    "att-read-hold-runtime"
+  ],
+  "fixture_role": "multifunction-rf",
+  "image_id": "nrf-multifunction-rf-v1-b",
+  "image_sha256": "9937f35d591fcb9bff86492b4b82841c4050fdb5901b460974635ba64a367f2b",
+  "image_version": "maintained",
+  "local_name": "BleHubMultiRfDK",
+  "profile_id": "blehub-nrf52840-multifunction-v1-b",
+  "schema_version": 1,
+  "service_uuid": "fd400000-0000-4000-8000-000000000000"
+}

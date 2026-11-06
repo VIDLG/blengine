@@ -13,8 +13,11 @@ mod cleanup;
 mod error;
 mod facade;
 pub mod ffi;
+mod operation_observation;
 mod runtime;
 mod waiter;
+
+pub use operation_observation::{OperationFailureObserver, OperationFailureRegistration};
 
 uniffi::setup_scaffolding!();
 pub use error::{

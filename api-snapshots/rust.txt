@@ -33,7 +33,7 @@ pub enum AuthorizationState {
     Authorized,
 }
 
-pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
+pub const BLEHUB_CONTRACT_VERSION: u32 = 6;
 
 pub struct BackendAssembly;
 
@@ -77,6 +77,7 @@ pub trait BleBackend: Send + Sync {
     fn write_characteristic(&self, command: WriteCharacteristicCommand,) -> Result<(), CommandDispatchError>;
     fn set_notifications(&self, command: SetNotificationsCommand,) -> Result<(), CommandDispatchError>;
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+    fn cancel_operation(&self, request: CancelOperationRequest) -> Result<(), CommandDispatchError>;
     fn dispose(&self) -> Result<(), BleHubError>;
 }
 
@@ -87,6 +88,7 @@ pub enum BleErrorCategory {
     NotFound,
     Timeout,
     Cancelled,
+    OperationAborted,
     Connection,
     Gatt,
     Protocol,
@@ -140,6 +142,7 @@ impl BleHub {
     pub fn write_characteristic(&self, command: WriteCharacteristicCommand,) -> Result<(), CommandDispatchError>;
     pub fn set_notifications(&self, command: SetNotificationsCommand,) -> Result<(), CommandDispatchError>;
     pub fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+    pub fn cancel_operation(&self, target_command_id: crate::CommandId,) -> Result<(), CommandDispatchError>;
     pub fn dispose(&self) -> Result<(), BleHubError>;
 }
 
@@ -159,6 +162,10 @@ impl BluetoothUuid {
     pub fn canonicalize(value: &str) -> Option<Self>;
 }
 
+pub struct CancelOperationRequest {
+    pub target_command_id: CommandId,
+}
+
 pub struct CharacteristicProperties {
     pub readable: bool,
     pub writable_with_response: bool,
@@ -171,6 +178,10 @@ pub enum CommandDispatchError {
     Closed,
     InvalidRequest {detail: String},
     InvalidState {detail: String},
+    OperationNotFound {target_command_id: super::CommandId},
+    OperationAlreadyCompleted {target_command_id: super::CommandId},
+    OperationNotCancellable {target_command_id: super::CommandId},
+    ResourceExhausted {detail: String},
     BackendUnavailable {detail: String, platform_details: Option<PlatformErrorDetails>,},
     FfiContract {detail: String},
 }

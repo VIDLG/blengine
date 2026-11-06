@@ -110,6 +110,8 @@ android {
 dependencies {
     androidTestImplementation("androidx.test:runner:1.7.0")
     androidTestImplementation("junit:junit:4.13.2")
+    // Resource-accounting tests exercise the production Android backend directly; this remains a host-only test dependency.
+    androidTestImplementation("dev.blehub:blehub-android:0.0.0")
 
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")

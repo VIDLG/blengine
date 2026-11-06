@@ -33,7 +33,7 @@ No target uses both paths, and no second Tauri command/event bridge or native
 image is added. Same-candidate source-package staging supplies generated bindings
 and headers, not new API definitions or a second native image. The host supplies
 no assembly factory/callback.
-See the [assembly decision](../../docs/research/tauri-apple-assembly-ecosystem.md)
+See the [assembly decision](../../docs/research/integrations/tauri-apple-assembly-ecosystem.md)
 and the [dependency/responsibility diagram](../../.plan/PLAN.md#551-tauri-薄适配器装配).
 
 ## Module and permission boundaries

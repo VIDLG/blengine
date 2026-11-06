@@ -34,7 +34,7 @@ from tools.react_native.host_contract import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 INTEGRATION_ROOT = PROJECT_ROOT / "integrations/react-native-internal"
-APPLE_PODS_ROOT = INTEGRATION_ROOT / "apple-pods"
+APPLE_STAGED_ROOT = PROJECT_ROOT / ".work" / "staged" / "apple-production-react-native"
 HOST_SOURCE_ROOT = PROJECT_ROOT / "tests/consumers/react-native-internal"
 WORK_ROOT = PROJECT_ROOT / ".work/react-native-ios-artifact-consumer"
 PACKAGE_NAME = "@blehub/react-native-internal"
@@ -267,7 +267,7 @@ def stage_package(
     layout: Layout,
     *,
     integration_root: Path = INTEGRATION_ROOT,
-    apple_pods_root: Path = APPLE_PODS_ROOT,
+    apple_pods_root: Path = APPLE_STAGED_ROOT,
 ) -> None:
     """Create the package tree from the reviewed integration/artifact whitelist."""
     _copy_whitelist(integration_root, layout.package_root, INTEGRATION_FILES)
@@ -829,7 +829,7 @@ def pod_install(layout: Layout) -> None:
         )
     _assert_pod_linker_provenance(
         layout,
-        source_xcframework=APPLE_PODS_ROOT
+        source_xcframework=APPLE_STAGED_ROOT
         / "BleHubUniFfi/BleHubUniFfiNative.xcframework",
     )
 
@@ -1062,7 +1062,7 @@ def run(
     tarball = pack_package(layout)
     verify_tarball(
         tarball,
-        source_xcframework=APPLE_PODS_ROOT
+        source_xcframework=APPLE_STAGED_ROOT
         / "BleHubUniFfi/BleHubUniFfiNative.xcframework",
         staged_xcframework=layout.package_root
         / "apple-pods/BleHubUniFfi/BleHubUniFfiNative.xcframework",

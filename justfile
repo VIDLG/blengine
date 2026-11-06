@@ -12,9 +12,6 @@ mod ffi "just/ffi/mod.just"
 # Unit, conformance, fixture, and instrumentation selection.
 mod test "just/test/mod.just"
 
-# Production Windows backend development and explicit RF smoke tests.
-mod windows "just/windows/mod.just"
-
 # Production Apple backend development and platform build gates.
 mod apple "just/apple/mod.just"
 
@@ -26,12 +23,9 @@ default:
 
 fmt:
     rtk cargo fmt --all
-    rtk cargo fmt --manifest-path tests/hil/windows/Cargo.toml
-    rtk cargo fmt --manifest-path tests/consumers/windows/Cargo.toml
-    rtk cargo fmt --manifest-path examples/windows-central/Cargo.toml
 
-    ruff check --fix tools
-    ruff format tools
+    ruff check --fix tools tests/support/rf_lab tests/peripherals/nrf52840/support
+    ruff format tools tests/support/rf_lab tests/peripherals/nrf52840/support
     just --fmt
 
 check:
@@ -41,22 +35,10 @@ check:
 lint-common:
     just --fmt --check
     rtk cargo fmt --all -- --check
-    rtk cargo fmt --manifest-path tests/hil/windows/Cargo.toml -- --check
-    rtk cargo fmt --manifest-path tests/consumers/windows/Cargo.toml -- --check
-    rtk cargo fmt --manifest-path examples/windows-central/Cargo.toml -- --check
 
     rtk cargo clippy --workspace --all-targets -- -D warnings
-    ruff check tools
+    ruff check tools tests/support/rf_lab tests/peripherals/nrf52840/support
     just peripheral profiles-check
-
-[private]
-[windows]
-lint-windows:
-    rtk cargo clippy --manifest-path tests/hil/windows/Cargo.toml --all-targets -- -D warnings
-    rtk cargo clippy --manifest-path examples/windows-central/Cargo.toml --all-targets -- -D warnings
-
-[windows]
-lint: lint-common lint-windows
 
 [unix]
 lint: lint-common
@@ -112,6 +94,23 @@ sccache-stats:
 
 ble-scan *args:
     python -m tools.scan_ble {{ args }}
+
+# Capture BLE air traffic with the independent nRF52840 sniffer dongle.
+# Port and nrfutil home resolve from ignored blehub.local.toml unless overridden.
+ble-sniffer-capture *args:
+    python -m tools.ble_sniffer capture {{ args }}
+
+# List live serial devices before selecting a sniffer port.
+ble-sniffer-ports:
+    python -m tools.ble_sniffer ports
+
+# Extract observed BLE advertising addresses/names from a Nordic PCAP via Scapy.
+ble-sniffer-pcap-devices pcap:
+    python -m tools.ble_sniffer pcap-devices --pcap {{ quote(pcap) }}
+
+# Summarize decoded BLE data/ATT writes/notifications from a Nordic PCAP via Scapy.
+ble-sniffer-pcap-att pcap:
+    python -m tools.ble_sniffer pcap-att --pcap {{ quote(pcap) }}
 
 swift-doctor:
     python -m tools.swift_toolchain verify

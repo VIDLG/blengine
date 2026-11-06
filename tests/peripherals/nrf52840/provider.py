@@ -7,23 +7,26 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 from tools.local_config import resolve_local_value
 
 from .btp_session import BtpSession
 from .btp_transport import FramedTransport
-from .direct_fixture import serve
+from .direct_fixture import require_v2_coordination, serve
 from .doctor import run_profile_doctor
+from .resource_lease import port_lease
 from .serial_transport import open_serial
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROFILE = (
     PROJECT_ROOT
-    / "tests"
-    / "conformance"
-    / "scenarios"
-    / "blehub-nrf-indication-v2.json"
+    / "tests/peripherals/nrf52840/firmware/profiles/multifunction-rf-v2-a.json"
+)
+EXPECTED_CONTRACT = (
+    PROJECT_ROOT
+    / "tests/peripherals/nrf52840/firmware/contracts/multifunction-rf-v2-a.json"
 )
 WORK_ROOT = PROJECT_ROOT / ".work" / "peripheral" / "nrf52840"
 PID_FILE = WORK_ROOT / "fixture.pid"
@@ -35,6 +38,16 @@ DEFAULT_RF_TIMEOUT = 300
 
 class Nrf52840Error(RuntimeError):
     pass
+
+
+def _require_fixture_request(request: Path | None) -> None:
+    if request is None:
+        from .fixture_contract import load_contract
+
+        load_contract(EXPECTED_CONTRACT)
+        raise Nrf52840Error(
+            "explicit immutable --fixture-request required; v2 contract alone is not live authorization"
+        )
 
 
 def _nrftest_root() -> Path:
@@ -54,7 +67,13 @@ def _nrftest_root() -> Path:
     return root
 
 
-def _port() -> str | None:
+def _port(explicit: str | None = None) -> str | None:
+    if explicit is not None:
+        if not explicit or explicit != explicit.strip():
+            raise Nrf52840Error(
+                "explicit nRF52840 serial port must be non-empty and trimmed"
+            )
+        return explicit
     configured = resolve_local_value(
         "peripheral_nrf52840", "port", "BLEHUB_NRF52840_PORT", None
     )
@@ -183,10 +202,17 @@ def _command(nrftest_root: Path, rf_timeout: int) -> list[str]:
     return command
 
 
-def _wait_ready(pid: int, timeout: int, marker: str = READY_MARKER) -> None:
+def _wait_ready(
+    pid: int,
+    timeout: int,
+    marker: str = READY_MARKER,
+    *,
+    process: subprocess.Popen[str] | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if not _alive(pid):
+        # Reap owned children before trusting PID liveness or an old READY marker.
+        if (process is not None and process.poll() is not None) or not _alive(pid):
             raise Nrf52840Error(
                 "nRF52840 fixture exited before readiness:\n" + _tail_log()
             )
@@ -202,70 +228,148 @@ def _wait_ready(pid: int, timeout: int, marker: str = READY_MARKER) -> None:
 
 
 def start(*, ready_timeout: int, rf_timeout: int) -> None:
-    identity = _process_identity()
-    if identity is not None:
-        pid, pgid = identity
-        state = _fixture_state(pid, pgid)
-        if state == _PROCESS_RUNNING:
-            _wait_ready(pid, ready_timeout)
-            return
-        if state != _PROCESS_EXITED:
-            raise Nrf52840Error(
-                f"cannot safely reuse nRF52840 fixture pid={pid} pgid={pgid}: {state}; "
-                f"retaining {PID_FILE}"
-            )
-        PID_FILE.unlink(missing_ok=True)
-
-    nrftest_root = _nrftest_root()
-    if not PROFILE.is_file():
-        raise Nrf52840Error(f"missing canonical nRF52840 profile: {PROFILE}")
-    WORK_ROOT.mkdir(parents=True, exist_ok=True)
-    LOG_FILE.unlink(missing_ok=True)
-    log = LOG_FILE.open("w", encoding="utf-8")
-    try:
-        process = subprocess.Popen(
-            _command(nrftest_root, rf_timeout),
-            cwd=nrftest_root,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            text=True,
-        )
-    finally:
-        log.close()
-    _write_process_identity(process.pid)
-    print(f"nrf52840_fixture_pid={process.pid}")
-    print(f"nrf52840_fixture_log={LOG_FILE}")
-    _wait_ready(process.pid, ready_timeout)
+    raise Nrf52840Error(
+        "transitional provider start is unavailable: use direct-start with an immutable "
+        "v2 --fixture-request and live image proof; no v1 fallback"
+    )
 
 
 def direct_serve(
     coordination_path: str | None = None,
     coordination_mode: str = "notification",
+    fixture_request: Path | None = None,
+    *,
+    port: str | None = None,
 ) -> None:
-    port = _port()
+    require_v2_coordination(coordination_mode)
+    _require_fixture_request(fixture_request)
+    port = _port(port)
     if port is None:
         raise Nrf52840Error(
             "direct nRF fixture requires peripheral_nrf52840.port or "
             + "BLEHUB_NRF52840_PORT"
         )
+    plan = None
+    if fixture_request is not None:
+        from .fixture_session import load_session
+
+        plan = load_session(fixture_request)
+    if coordination_mode == "permission-transition":
+        from .permission_transition import serve as serve_permission
+
+        if coordination_path is None or plan is None:
+            raise Nrf52840Error(
+                "permission-transition requires --fixture-request and --coordination-path"
+            )
+        serve_permission(
+            port, plan.profile_path, Path(coordination_path), fixture_session=plan
+        )
+        return
     serve(
         port,
-        PROFILE,
+        plan.profile_path if plan is not None else PROFILE,
         Path(coordination_path) if coordination_path else None,
         coordination_mode,
+        fixture_session=plan,
     )
 
 
 def direct_start(
     coordination_path: str | None = None,
     coordination_mode: str = "notification",
+    fixture_request: Path | None = None,
+    *,
+    port: str | None = None,
 ) -> None:
+    require_v2_coordination(coordination_mode)
+    _require_fixture_request(fixture_request)
+    selected_port = _port(port)
+    if coordination_mode == "permission-transition":
+        from .fixture_session import load_session
+        from .permission_transition import validate_control
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "permission-transition requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
+    if coordination_mode in ("android-pending-reload", "ios-pending-reload"):
+        from .fixture_session import load_session
+        from .pending_reload import validate_control
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                f"{coordination_mode} requires --fixture-request and --coordination-path"
+            )
+        validate_control(
+            Path(coordination_path),
+            load_session(fixture_request),
+            platform="ios" if coordination_mode == "ios-pending-reload" else "android",
+        )
+    if coordination_mode == "adapter-transition-attested":
+        from .adapter_transition import validate_control
+        from .fixture_session import load_session
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "adapter-transition-attested requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
+    if coordination_mode == "recovery-ten-attested":
+        from .fixture_session import load_session
+        from .recovery_ten import validate_control
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "recovery-ten-attested requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
+    if coordination_mode == "rf-lab-full-attested":
+        from .fixture_session import load_session
+        from .full_suite import validate_control
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "rf-lab-full-attested requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
+    if coordination_mode == "write-reject-attested":
+        from .fixture_session import load_session
+        from .write_reject import validate_control
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "write-reject-attested requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
+    if coordination_mode == "ccc-enable-reject-attested":
+        from .ccc_enable_reject import validate_control
+        from .fixture_session import load_session
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "ccc-enable-reject-attested requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
+    if coordination_mode == "ccc-disable-reject-attested":
+        from .ccc_disable_reject import validate_control
+        from .fixture_session import load_session
+
+        if fixture_request is None or coordination_path is None:
+            raise Nrf52840Error(
+                "ccc-disable-reject-attested requires --fixture-request and --coordination-path"
+            )
+        validate_control(Path(coordination_path), load_session(fixture_request))
     identity = _process_identity()
     if identity is not None:
         pid, pgid = identity
         state = _fixture_state(pid, pgid)
         if state == _PROCESS_RUNNING:
+            if fixture_request is not None:
+                raise Nrf52840Error(
+                    "cannot reuse a running nRF52840 fixture for a live-attested "
+                    f"session: pid={pid} pgid={pgid}; stop it explicitly first"
+                )
             _wait_ready(pid, DEFAULT_READY_TIMEOUT)
             return
         if state != _PROCESS_EXITED:
@@ -274,7 +378,7 @@ def direct_start(
                 f"retaining {PID_FILE}"
             )
         PID_FILE.unlink(missing_ok=True)
-    if _port() is None:
+    if selected_port is None:
         raise Nrf52840Error("nRF52840 serial port is not configured")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_FILE.unlink(missing_ok=True)
@@ -283,9 +387,17 @@ def direct_start(
         process = subprocess.Popen(
             [
                 sys.executable,
+                "-u",
                 "-m",
                 "tests.peripherals.nrf52840.provider",
                 "direct-serve",
+                "--port",
+                selected_port,
+                *(
+                    ["--fixture-request", str(fixture_request.resolve())]
+                    if fixture_request is not None
+                    else []
+                ),
                 *(
                     [
                         "--coordination-path",
@@ -307,7 +419,12 @@ def direct_start(
         log.close()
     spawned_identity = _write_process_identity(process.pid)
     try:
-        _wait_ready(process.pid, DEFAULT_READY_TIMEOUT, "NRF52840_DIRECT_READY")
+        _wait_ready(
+            process.pid,
+            DEFAULT_READY_TIMEOUT,
+            "NRF52840_DIRECT_READY",
+            process=process,
+        )
     except Exception as error:
         try:
             stop(expected_identity=spawned_identity)
@@ -329,17 +446,18 @@ def doctor() -> None:
         )
     if not PROFILE.is_file():
         raise Nrf52840Error(f"missing canonical nRF52840 profile: {PROFILE}")
-    serial = None
     try:
-        serial = open_serial(port)
-        result = run_profile_doctor(BtpSession(FramedTransport(serial)), PROFILE)
+        with ExitStack() as resources:
+            resources.enter_context(port_lease(port, purpose="BleHub nRF52840 doctor"))
+            serial = open_serial(port)
+            resources.callback(serial.close)
+            session = BtpSession(FramedTransport(serial))
+            resources.callback(session.close)
+            result = run_profile_doctor(session, PROFILE)
     except Exception as error:
         if isinstance(error, Nrf52840Error):
             raise
         raise Nrf52840Error(f"nRF52840 doctor failed: {error}") from error
-    finally:
-        if serial is not None:
-            serial.close()
     print("nrf52840_doctor=passed")
     print(f"nrf52840_profile={result.profile_id}")
     print(f"nrf52840_supported_services=0x{result.supported_services:08x}")
@@ -457,10 +575,16 @@ def parse_args() -> argparse.Namespace:
     _ = subparsers.add_parser("status")
     _ = subparsers.add_parser("doctor")
     direct_start_parser = subparsers.add_parser("direct-start")
+    _ = direct_start_parser.add_argument("--port")
     _ = direct_start_parser.add_argument("--coordination-path")
+    _ = direct_start_parser.add_argument("--fixture-request", type=Path)
     _ = direct_start_parser.add_argument(
         "--coordination-mode",
         choices=(
+            "permission-transition",
+            "adapter-transition-attested",
+            "android-pending-reload",
+            "ios-pending-reload",
             "notification",
             "indication",
             "passive-disconnect",
@@ -468,14 +592,27 @@ def parse_args() -> argparse.Namespace:
             "recovery",
             "recovery-ios",
             "recovery-ten",
+            "recovery-ten-attested",
+            "write-reject-attested",
+            "ccc-enable-reject-attested",
+            "ccc-disable-reject-attested",
+            "system-loss-attested",
+            "rf-lab-suite",
+            "rf-lab-full-attested",
         ),
         default="notification",
     )
     direct_serve_parser = subparsers.add_parser("direct-serve")
+    _ = direct_serve_parser.add_argument("--port")
     _ = direct_serve_parser.add_argument("--coordination-path")
+    _ = direct_serve_parser.add_argument("--fixture-request", type=Path)
     _ = direct_serve_parser.add_argument(
         "--coordination-mode",
         choices=(
+            "permission-transition",
+            "adapter-transition-attested",
+            "android-pending-reload",
+            "ios-pending-reload",
             "notification",
             "indication",
             "passive-disconnect",
@@ -483,6 +620,13 @@ def parse_args() -> argparse.Namespace:
             "recovery",
             "recovery-ios",
             "recovery-ten",
+            "recovery-ten-attested",
+            "write-reject-attested",
+            "ccc-enable-reject-attested",
+            "ccc-disable-reject-attested",
+            "system-loss-attested",
+            "rf-lab-suite",
+            "rf-lab-full-attested",
         ),
         default="notification",
     )
@@ -498,7 +642,9 @@ def main() -> int:
     args = parse_args()
     try:
         if args.command == "start":
-            start(ready_timeout=args.ready_timeout, rf_timeout=args.rf_timeout)
+            raise Nrf52840Error(
+                "legacy transitional RF start is unavailable; use the attested v2 direct provider"
+            )
         elif args.command == "ready":
             pid = _pid()
             if pid is None:
@@ -509,14 +655,24 @@ def main() -> int:
         elif args.command == "doctor":
             doctor()
         elif args.command == "direct-start":
-            direct_start(args.coordination_path, args.coordination_mode)
+            direct_start(
+                args.coordination_path,
+                args.coordination_mode,
+                fixture_request=args.fixture_request,
+                port=args.port,
+            )
         elif args.command == "direct-serve":
-            direct_serve(args.coordination_path, args.coordination_mode)
+            direct_serve(
+                args.coordination_path,
+                args.coordination_mode,
+                fixture_request=args.fixture_request,
+                port=args.port,
+            )
         elif args.command == "stop-owned":
             stop(expected_identity=(args.pid, args.pgid))
         else:
             stop()
-    except Nrf52840Error as error:
+    except (ValueError, RuntimeError) as error:
         print(f"nRF52840 fixture error: {error}", file=sys.stderr)
         return 2
     return 0

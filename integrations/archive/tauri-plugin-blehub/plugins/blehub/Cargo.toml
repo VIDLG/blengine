@@ -20,7 +20,7 @@ tauri = "2.11.5"
 swift-rs = "1.0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-blehub-windows = { path = "../../../../../platforms/windows", optional = true }
+blehub-windows = { path = "../../../../../platforms/archive/windows", optional = true }
 
 [build-dependencies]
 tauri-plugin = { version = "2.6.3", features = ["build"] }

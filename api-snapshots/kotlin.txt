@@ -63,6 +63,7 @@ interface BleBackend {
     fun writeCharacteristic(command: WriteCharacteristicCommand)
     fun setNotifications(command: SetNotificationsCommand)
     fun readRssi(command: ReadRssiCommand)
+    fun cancelOperation(request: CancelOperationRequest)
     fun dispose()
 }
 
@@ -73,6 +74,7 @@ enum class BleErrorCategory {
     NOT_FOUND,
     TIMEOUT,
     CANCELLED,
+    OPERATION_ABORTED,
     CONNECTION,
     GATT,
     PROTOCOL,
@@ -115,6 +117,10 @@ data class BluetoothUuid(
     var value: String,
 )
 
+data class CancelOperationRequest(
+    /** * Existing command identity; cancellation has no independent lifecycle. */ var targetCommandId: CommandId,
+)
+
 data class CharacteristicProperties(
     var readable: Boolean,
     var writableWithResponse: Boolean,
@@ -127,6 +133,10 @@ sealed class CommandDispatchException {
     Closed,
     InvalidRequest(detail: String),
     InvalidState(detail: String),
+    OperationNotFound(targetCommandId: CommandId),
+    OperationAlreadyCompleted(targetCommandId: CommandId),
+    OperationNotCancellable(targetCommandId: CommandId),
+    ResourceExhausted(detail: String),
     BackendUnavailable(detail: String, platformDetails: PlatformErrorDetails?),
     FfiContract(detail: String),
 }

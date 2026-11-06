@@ -19,6 +19,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RN_ARTIFACT_ROOT = PROJECT_ROOT / ".work/react-native-ios-artifact-consumer"
 RN_HOST_ROOT = PROJECT_ROOT / "tests/consumers/react-native-internal"
+FORMAL_RN_HOST_ROOT = PROJECT_ROOT / "tests/consumers/react-native-bleng"
 ARCHIVE_LOCAL_ROOT = PROJECT_ROOT / ".work/archive-local"
 CARGO_TARGET_ROOT = PROJECT_ROOT / ".work/cargo-target"
 
@@ -89,11 +90,13 @@ def build_plan(
 
     rn_artifact_root = project_root / RN_ARTIFACT_ROOT.relative_to(PROJECT_ROOT)
     rn_host_root = project_root / RN_HOST_ROOT.relative_to(PROJECT_ROOT)
+    formal_rn_host_root = project_root / FORMAL_RN_HOST_ROOT.relative_to(PROJECT_ROOT)
     archive_local_root = project_root / ARCHIVE_LOCAL_ROOT.relative_to(PROJECT_ROOT)
     cargo_target_root = project_root / CARGO_TARGET_ROOT.relative_to(PROJECT_ROOT)
     allowed_roots = (
         rn_artifact_root,
         rn_host_root,
+        formal_rn_host_root,
         archive_local_root,
         cargo_target_root,
     )
@@ -127,16 +130,38 @@ def build_plan(
             items.append(CleanupItem("rn-artifact-legacy", path, reason))
 
     generated_host_paths = (
-        (rn_host_root / "node_modules", "RN host dependencies"),
-        (rn_host_root / "ios/Pods", "CocoaPods output"),
-        (rn_host_root / "ios/build", "iOS DerivedData/build output"),
+        (rn_host_root / "node_modules", "RN transitional host dependencies"),
+        (rn_host_root / "ios/Pods", "transitional host CocoaPods output"),
+        (rn_host_root / "ios/build", "transitional host iOS build output"),
         (
             rn_host_root / "ios/BleHubNitroHost.xcworkspace",
-            "generated CocoaPods workspace",
+            "transitional host generated CocoaPods workspace",
         ),
-        (rn_host_root / "ios/.xcode.env.local", "generated local Xcode environment"),
-        (rn_host_root / "android/app/.cxx", "Android CMake output"),
-        (rn_host_root / "android/app/build", "Android app build output"),
+        (
+            rn_host_root / "ios/.xcode.env.local",
+            "transitional host local Xcode environment",
+        ),
+        (rn_host_root / "android/app/.cxx", "transitional host Android CMake output"),
+        (
+            rn_host_root / "android/app/build",
+            "transitional host Android app build output",
+        ),
+        (formal_rn_host_root / "node_modules", "formal RN host dependencies"),
+        (formal_rn_host_root / "ios/Pods", "formal host CocoaPods output"),
+        (formal_rn_host_root / "ios/build", "formal host iOS build output"),
+        (
+            formal_rn_host_root / "ios/BleHubBlengHost.xcworkspace",
+            "formal host generated CocoaPods workspace",
+        ),
+        (
+            formal_rn_host_root / "ios/.xcode.env.local",
+            "formal host local Xcode environment",
+        ),
+        (formal_rn_host_root / "android/app/.cxx", "formal host Android CMake output"),
+        (
+            formal_rn_host_root / "android/app/build",
+            "formal host Android app build output",
+        ),
     )
     for path, reason in generated_host_paths:
         if path.exists() or path.is_symlink():

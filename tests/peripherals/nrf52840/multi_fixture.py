@@ -24,7 +24,8 @@ DEFAULT_STOP_TIMEOUT = 15
 
 DEFAULT_PROFILES = {
     "dk_a": PROJECT_ROOT / "tests/conformance/scenarios/blehub-nrf-indication-v2.json",
-    "dk_b": PROJECT_ROOT / "tests/conformance/scenarios/blehub-nrf-indication-v2-b.json",
+    "dk_b": PROJECT_ROOT
+    / "tests/conformance/scenarios/blehub-nrf-indication-v2-b.json",
 }
 
 
@@ -61,7 +62,9 @@ def _profile_path(value: object, *, name: str) -> Path:
     if isinstance(value, Path):
         path = value.expanduser()
     else:
-        configured = _non_empty_string(value, f"peripheral_nrf52840.devices.{name}.profile")
+        configured = _non_empty_string(
+            value, f"peripheral_nrf52840.devices.{name}.profile"
+        )
         path = Path(configured).expanduser()
     if not path.is_absolute():
         path = PROJECT_ROOT / path
@@ -96,7 +99,9 @@ def _configured_devices() -> dict[str, object]:
     return cast(dict[str, object], devices)
 
 
-def load_devices(*, names: tuple[str, ...] = ("dk_a", "dk_b")) -> tuple[DeviceConfig, ...]:
+def load_devices(
+    *, names: tuple[str, ...] = ("dk_a", "dk_b")
+) -> tuple[DeviceConfig, ...]:
     """Load and validate explicit physical-DK mappings from ignored local config."""
 
     configured = _configured_devices()
@@ -156,7 +161,9 @@ def validate_device_mappings(devices: tuple[DeviceConfig, ...]) -> None:
     try:
         from serial.tools import list_ports
     except ImportError as error:
-        raise MultiFixtureError("pyserial is required to validate nRF52840 USB mappings") from error
+        raise MultiFixtureError(
+            "pyserial is required to validate nRF52840 USB mappings"
+        ) from error
     discovered = {
         str(port.device): str(port.serial_number or "")
         for port in list_ports.comports()
@@ -220,7 +227,9 @@ class MultiFixtureController:
         ready_timeout: int = DEFAULT_READY_TIMEOUT,
         allow_single_device: bool = False,
     ) -> None:
-        self.devices: tuple[DeviceConfig, ...] = devices if devices is not None else load_devices()
+        self.devices: tuple[DeviceConfig, ...] = (
+            devices if devices is not None else load_devices()
+        )
         if len(self.devices) < 1:
             raise MultiFixtureError("at least one nRF52840 device is required")
         if len(self.devices) < 2 and not allow_single_device:
@@ -379,7 +388,9 @@ def serve(port: str, profile: Path) -> None:
     serve_direct(port, profile)
 
 
-def readiness(*, work_root: Path = DEFAULT_WORK_ROOT, ready_timeout: int = DEFAULT_READY_TIMEOUT) -> None:
+def readiness(
+    *, work_root: Path = DEFAULT_WORK_ROOT, ready_timeout: int = DEFAULT_READY_TIMEOUT
+) -> None:
     """Require every configured DK to pass BTP/profile readiness, without flashing."""
 
     run_root = work_root / f"readiness-{time.time_ns()}"
@@ -396,7 +407,11 @@ def readiness(*, work_root: Path = DEFAULT_WORK_ROOT, ready_timeout: int = DEFAU
         )
     except BaseException:
         failed = True
-        print(f"nrf52840_multi_readiness=failed logs={run_root}", file=sys.stderr, flush=True)
+        print(
+            f"nrf52840_multi_readiness=failed logs={run_root}",
+            file=sys.stderr,
+            flush=True,
+        )
         raise
     finally:
         controller.stop()
@@ -414,8 +429,12 @@ def parse_args() -> argparse.Namespace:
     _ = serve_parser.add_argument("--coordination-mode", default="notification")
     _ = serve_parser.add_argument("--coordination-cycles", type=int, default=1)
     readiness_parser = subparsers.add_parser("readiness")
-    _ = readiness_parser.add_argument("--work-root", type=Path, default=DEFAULT_WORK_ROOT)
-    _ = readiness_parser.add_argument("--ready-timeout", type=int, default=DEFAULT_READY_TIMEOUT)
+    _ = readiness_parser.add_argument(
+        "--work-root", type=Path, default=DEFAULT_WORK_ROOT
+    )
+    _ = readiness_parser.add_argument(
+        "--ready-timeout", type=int, default=DEFAULT_READY_TIMEOUT
+    )
     return parser.parse_args()
 
 

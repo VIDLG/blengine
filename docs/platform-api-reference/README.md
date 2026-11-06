@@ -2,7 +2,7 @@
 
 This directory contains focused snapshots of official platform BLE Central API documentation used as design evidence for BleHub's common command/event contract.
 
-These files are references, not BleHub's public API contract. The reviewed contract remains in [`.plan/PLAN.md`](../../.plan/PLAN.md), and future user-facing documentation will be derived from that plan and the implementation. Project-authored interpretation of platform differences, information loss, and compatibility policy is maintained in [`docs/research/platform-abstraction-and-compatibility.md`](../research/platform-abstraction-and-compatibility.md).
+These files are references, not BleHub's public API contract. The reviewed contract remains in [`.plan/PLAN.md`](../../.plan/PLAN.md), and future user-facing documentation will be derived from that plan and the implementation. Project-authored interpretation of platform differences, information loss, and compatibility policy is maintained in [`docs/research/platform/platform-abstraction-and-compatibility.md`](../research/platform/platform-abstraction-and-compatibility.md).
 
 ## Usage
 

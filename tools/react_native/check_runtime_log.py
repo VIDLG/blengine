@@ -68,10 +68,11 @@ def check_rf_scan(
     notification: bool = False,
     indication: bool = False,
     passive_disconnect: bool = False,
+    expected_local_name: str | None = None,
 ) -> None:
     markers = [
         line.split("BLEHUB_NITRO_RUNTIME ", 1)[1].strip()
-        for line in log.splitlines()
+        for line in log.split("\n")
         if "BLEHUB_NITRO_RUNTIME rf:" in line
         or "BLEHUB_NITRO_RUNTIME rf-connect:" in line
         or "BLEHUB_NITRO_RUNTIME rf-gatt:" in line
@@ -169,6 +170,42 @@ def check_rf_scan(
     ordered = [indices[0] for indices in positions]
     if ordered != sorted(set(ordered)):
         raise AssertionError(f"out-of-order RF markers in {log_path}: {ordered}")
+
+    def has_fields(marker: str, fields: tuple[str, ...]) -> bool:
+        if not io:
+            return all(field in marker for field in fields)
+        # IO scalar tokens must match exactly once, including their key boundary.
+        # Do not parse free-form names or claim native topology from these reports.
+        tokens = marker.split(":")
+        return all(
+            [
+                token
+                for token in tokens
+                if token.startswith(field.split("=", 1)[0] + "=")
+            ]
+            == [field]
+            for field in fields
+        )
+
+    if io:
+        for index, fields in (
+            (
+                1,
+                (
+                    "commandId=9001",
+                    "adapterState=PoweredOn",
+                    "scanAuthorization=Authorized",
+                ),
+            ),
+            (2, ("startCommandId=9002", "scanSessionId=9004")),
+            (4, ("stopCommandId=9003", "scanSessionId=9004")),
+            (5, ("scanSessionId=9004",)),
+            (-2, ("probe-closed=true", "listener-removed=true")),
+        ):
+            if not has_fields(markers[ordered[index]], fields):
+                raise AssertionError(
+                    f"RF I/O boundary fields are incomplete: {log_path}"
+                )
     advertisement = markers[ordered[3]]
     final = markers[ordered[-1]]
     match = re.search(r"peripheralId=([0-9]+)", advertisement)
@@ -192,6 +229,23 @@ def check_rf_scan(
         raise AssertionError(
             f"RF payload evidence contradicts the advertised UUIDs: {log_path}"
         )
+    if expected_local_name is not None:
+        fixture_start = (
+            f"rf:start:serviceUuid={service_uuid}:"
+            f"expectedLocalName={expected_local_name}:initCommandId=9001:"
+        )
+        if sum(marker.startswith(fixture_start) for marker in markers) != 1:
+            raise AssertionError(
+                f"RF launch fixture metadata is missing or mismatched: {log_path}"
+            )
+        local_name = re.search(r":localName=(.*?):filterServiceUuid=", advertisement)
+        if local_name is None or local_name.group(1) not in (
+            expected_local_name,
+            "missing",
+        ):
+            raise AssertionError(
+                f"RF local name does not match the fixture: {log_path}"
+            )
     advertisement_fields = (
         f"filterServiceUuid={service_uuid}",
         f"payloadAdvertisedServices={payload.group(1)}",
@@ -199,7 +253,7 @@ def check_rf_scan(
         "scanSessionId=9004",
         f"peripheralId={peripheral_id}",
     )
-    if any(field not in advertisement for field in advertisement_fields):
+    if not has_fields(advertisement, advertisement_fields):
         raise AssertionError(f"RF advertisement does not match the fixture: {log_path}")
     final_fields = (
         (
@@ -210,13 +264,12 @@ def check_rf_scan(
         if connect
         else advertisement_fields
     )
-    if any(field not in final for field in final_fields):
+    if not has_fields(final, final_fields):
         raise AssertionError(
             f"RF result does not match the observed peripheral: {log_path}"
         )
-    if (
-        "requested=true" not in markers[ordered[4]]
-        or "observationMs=2000" not in markers[ordered[5]]
+    if not has_fields(markers[ordered[4]], ("requested=true",)) or not has_fields(
+        markers[ordered[5]], ("observationMs=2000",)
     ):
         raise AssertionError(
             f"missing requested stop or post-stop silence evidence: {log_path}"
@@ -313,14 +366,14 @@ def check_rf_scan(
             (markers[ordered[8 + connection_offset]], "9006", "disconnected")
         )
         for marker, command, state in connection_evidence:
-            if any(
-                field not in marker
-                for field in (
+            if not has_fields(
+                marker,
+                (
                     f"commandId={command}",
                     "connectionId=9007",
                     f"peripheralId={peripheral_id}",
                     f"serviceUuid={service_uuid}",
-                )
+                ),
             ) or not marker.startswith(f"rf:step:{state}:passed:"):
                 raise AssertionError(
                     f"RF connection correlation is incomplete: {log_path}"
@@ -338,20 +391,21 @@ def check_rf_scan(
                 else 9
             ]
         ]
-        if any(
-            field not in silence_marker
-            for field in (
+        if not has_fields(
+            silence_marker,
+            (
                 "connectionId=9007",
                 f"peripheralId={peripheral_id}",
                 "observationMs=1000",
-            )
-        ) or any(
-            field not in final
-            for field in (
+                *((f"serviceUuid={service_uuid}",) if io else ()),
+            ),
+        ) or not has_fields(
+            final,
+            (
                 "connectionId=9007",
                 "connectCommandId=9005",
                 "disconnectCommandId=9006",
-            )
+            ),
         ):
             raise AssertionError(
                 f"RF connection or silence evidence is incomplete: {log_path}"
@@ -383,9 +437,9 @@ def check_rf_scan(
                 )
         if gatt:
             gatt_marker = markers[ordered[8]]
-            if any(
-                field not in gatt_marker
-                for field in (
+            if not has_fields(
+                gatt_marker,
+                (
                     "commandId=9008",
                     "connectionId=9007",
                     "gattSessionId=9009",
@@ -393,7 +447,7 @@ def check_rf_scan(
                     "serviceCount=1",
                     "characteristicCount=5",
                     "descriptorCount=2",
-                )
+                ),
             ):
                 raise AssertionError(
                     f"RF GATT discovery evidence is incomplete: {log_path}"
@@ -401,7 +455,14 @@ def check_rf_scan(
             discovered_services = re.search(
                 r"discoveredServiceCount=([0-9]+)", gatt_marker
             )
-            if discovered_services is None or int(discovered_services.group(1)) < 1:
+            if (
+                discovered_services is None
+                or int(discovered_services.group(1)) < 1
+                or not has_fields(
+                    gatt_marker,
+                    (f"discoveredServiceCount={discovered_services.group(1)}",),
+                )
+            ):
                 raise AssertionError(
                     f"RF GATT total service evidence is incomplete: {log_path}"
                 )
@@ -418,33 +479,46 @@ def check_rf_scan(
                     ),
                     (markers[ordered[13]], "9014", "read-without-response", "value=ab"),
                 )
+                characteristic_id = None
                 for marker, command, state, value in io_markers:
-                    if not marker.startswith(f"rf:step:{state}:passed:") or any(
-                        field not in marker
-                        for field in (
+                    route = re.search(
+                        r"(?:^|:)characteristicId=([^:\s]+)(?=:|$)", marker
+                    )
+                    if route is None:
+                        raise AssertionError(
+                            f"RF GATT I/O characteristic route is missing: {log_path}"
+                        )
+                    if characteristic_id is None:
+                        characteristic_id = route.group(1)
+                    if not marker.startswith(
+                        f"rf:step:{state}:passed:"
+                    ) or not has_fields(
+                        marker,
+                        (
                             f"commandId={command}",
                             "connectionId=9007",
                             "gattSessionId=9009",
                             f"peripheralId={peripheral_id}",
                             f"serviceUuid={service_uuid}",
+                            f"characteristicId={characteristic_id}",
                             value,
-                        )
+                        ),
                     ):
                         raise AssertionError(
                             f"RF GATT I/O evidence is incomplete: {log_path}"
                         )
-                if "terminal=local-submission" not in markers[ordered[12]]:
+                if not has_fields(markers[ordered[12]], ("terminal=local-submission",)):
                     raise AssertionError(
                         f"RF no-response local terminal evidence is incomplete: {log_path}"
                     )
-                if any(
-                    field not in final
-                    for field in (
+                if not has_fields(
+                    final,
+                    (
                         "gattCommandId=9008",
                         "readCommandId=9010",
                         "writeResponseCommandId=9011",
                         "writeWithoutResponseCommandId=9013",
-                    )
+                    ),
                 ) or not final.startswith("rf-io:passed:"):
                     raise AssertionError(
                         f"RF GATT I/O pass marker is incomplete: {log_path}"
@@ -548,6 +622,388 @@ def check_rf_scan(
                 raise AssertionError(f"RF GATT pass marker is incomplete: {log_path}")
     elif "startCommandId=9002" not in final or "stopCommandId=9003" not in final:
         raise AssertionError(f"RF command correlation is incomplete: {log_path}")
+
+
+def check_rf_cancellation(
+    log: str,
+    service_uuid: str,
+    log_path: Path,
+    *,
+    expected_local_name: str | None = None,
+) -> None:
+    """Validate cancellation evidence on top of the canonical GATT flow."""
+    runtime_prefix = "BLEHUB_NITRO_RUNTIME "
+    cancellation_steps = (
+        (
+            "cancellation-active-rejection",
+            ("targetCommandId=9027", "category=operation_not_cancellable"),
+        ),
+        ("cancellation-queued-accepted", ("targetCommandId=9028",)),
+        ("cancellation-terminal", ("commandId=9028", "error=cancelled")),
+        ("cancellation-active-completion", ("commandId=9027",)),
+        ("cancellation-late-silence", ("commandId=9028", "observationMs=1000")),
+        (
+            "cancellation-unknown-target",
+            ("targetCommandId=9030", "category=operation_not_found"),
+        ),
+        (
+            "cancellation-completed-target",
+            ("targetCommandId=9027", "category=operation_not_found"),
+        ),
+        ("cancellation-recovery", ("commandId=9029",)),
+    )
+    lines = log.splitlines()
+    step_markers = [
+        line.split(runtime_prefix, 1)[1].strip()
+        for line in lines
+        if runtime_prefix in line and " rf:step:cancellation-" in line
+    ]
+    if len(step_markers) != len(cancellation_steps):
+        raise AssertionError(
+            f"RF cancellation steps are missing or duplicated: {log_path}"
+        )
+    for marker, (state, fields) in zip(step_markers, cancellation_steps, strict=True):
+        if not marker.startswith(f"rf:step:{state}:passed:") or any(
+            field not in marker for field in fields
+        ):
+            raise AssertionError(f"RF cancellation step is incomplete: {log_path}")
+    step_positions = {
+        state: next(
+            index
+            for index, marker in enumerate(step_markers)
+            if marker.startswith(f"rf:step:{state}:")
+        )
+        for state, _ in cancellation_steps
+    }
+    if not (
+        step_positions["cancellation-queued-accepted"]
+        < step_positions["cancellation-terminal"]
+        and step_positions["cancellation-active-completion"]
+        < step_positions["cancellation-recovery"]
+    ):
+        raise AssertionError(f"RF cancellation steps are out of order: {log_path}")
+
+    event_prefix = f"{runtime_prefix}rf-cancellation:event:"
+    event_lines = [
+        line.split(event_prefix, 1)[1].strip() for line in lines if event_prefix in line
+    ]
+    if len(event_lines) != 1:
+        raise AssertionError(
+            f"RF cancellation event ledger is missing or duplicated: {log_path}"
+        )
+    fields: dict[str, list[str]] = {}
+    for field in event_lines[0].split(":"):
+        name, separator, values = field.partition("=")
+        if not separator or not name or name in fields:
+            raise AssertionError(
+                f"RF cancellation event ledger is malformed: {log_path}"
+            )
+        fields[name] = values.split("|")
+    expected_names = (
+        "kind",
+        "commandId",
+        "connectionId",
+        "gattSessionId",
+        "characteristicId",
+        "error",
+        "value",
+    )
+    if tuple(fields) != expected_names or any(
+        len(fields[name]) != 5 for name in expected_names
+    ):
+        raise AssertionError(
+            f"RF cancellation event ledger does not contain five events: {log_path}"
+        )
+    records = [
+        dict(zip(fields, values, strict=True))
+        for values in zip(*fields.values(), strict=True)
+    ]
+    required_records = {
+        ("characteristicRead", "9027", "ok"),
+        ("commandCompleted", "9027", "ok"),
+        ("commandCompleted", "9028", "cancelled"),
+        ("characteristicRead", "9029", "ok"),
+        ("commandCompleted", "9029", "ok"),
+    }
+    actual_records = {
+        (record["kind"], record["commandId"], record["error"]) for record in records
+    }
+    if actual_records != required_records or len(actual_records) != len(records):
+        raise AssertionError(
+            f"RF cancellation event order or correlation is invalid: {log_path}"
+        )
+    for record in records:
+        is_read = record["kind"] == "characteristicRead"
+        if record["kind"] not in {"characteristicRead", "commandCompleted"}:
+            raise AssertionError(f"RF cancellation event kind is invalid: {log_path}")
+        if is_read:
+            if (
+                record["connectionId"] != "9007"
+                or record["gattSessionId"] != "9009"
+                or record["characteristicId"] == "none"
+                or re.fullmatch(r"[0-9a-fA-F]+", record["value"] or "") is None
+            ):
+                raise AssertionError(
+                    f"RF cancellation read domain is incomplete: {log_path}"
+                )
+        elif any(
+            record[name] != "none"
+            for name in ("connectionId", "gattSessionId", "characteristicId", "value")
+        ):
+            raise AssertionError(
+                f"RF cancellation terminal leaked domain state: {log_path}"
+            )
+    active_read = next(
+        index
+        for index, record in enumerate(records)
+        if record["kind"] == "characteristicRead" and record["commandId"] == "9027"
+    )
+    active_terminal = next(
+        index
+        for index, record in enumerate(records)
+        if record["kind"] == "commandCompleted" and record["commandId"] == "9027"
+    )
+    recovery_read = next(
+        index
+        for index, record in enumerate(records)
+        if record["kind"] == "characteristicRead" and record["commandId"] == "9029"
+    )
+    recovery_terminal = next(
+        index
+        for index, record in enumerate(records)
+        if record["kind"] == "commandCompleted" and record["commandId"] == "9029"
+    )
+    if not active_read < active_terminal < recovery_read < recovery_terminal:
+        raise AssertionError(
+            f"RF cancellation read completion order is invalid: {log_path}"
+        )
+    characteristic_ids = [
+        record["characteristicId"]
+        for record in records
+        if record["kind"] == "characteristicRead"
+    ]
+    if (
+        any(
+            not re.fullmatch(r"[1-9][0-9]*", value)
+            or len(value) > 20
+            or (len(value) == 20 and value > "18446744073709551615")
+            for value in characteristic_ids
+        )
+        or len(set(characteristic_ids)) != 1
+    ):
+        raise AssertionError(
+            f"RF cancellation characteristic identity is invalid: {log_path}"
+        )
+
+    normalized_lines: list[str] = []
+    for line in lines:
+        if event_prefix in line or " rf:step:cancellation-" in line:
+            continue
+        normalized_lines.append(
+            line.replace(
+                f"{runtime_prefix}rf-cancellation:passed:",
+                f"{runtime_prefix}rf-gatt:passed:",
+                1,
+            )
+        )
+    check_rf_scan(
+        "\n".join(normalized_lines),
+        service_uuid,
+        log_path,
+        connect=True,
+        gatt=True,
+        expected_local_name=expected_local_name,
+    )
+    final_lines = [
+        line.split(runtime_prefix, 1)[1].strip()
+        for line in lines
+        if f"{runtime_prefix}rf-cancellation:passed:" in line
+    ]
+    if len(final_lines) != 1:
+        raise AssertionError(
+            f"RF cancellation pass marker is missing or duplicated: {log_path}"
+        )
+    final = final_lines[0]
+    advertisement = next(
+        line.split(runtime_prefix, 1)[1].strip()
+        for line in lines
+        if f"{runtime_prefix}rf:step:advertisement:passed:" in line
+    )
+    peripheral_match = re.search(r"peripheralId=([0-9]+)", advertisement)
+    peripheral_id = peripheral_match.group(1) if peripheral_match else ""
+    final_fields = (
+        f"serviceUuid={service_uuid}",
+        f"peripheralId={peripheral_id}",
+        "connectionId=9007",
+        "connectCommandId=9005",
+        "gattCommandId=9008",
+        "disconnectCommandId=9006",
+        "scanSessionId=9004",
+    )
+    if not final.startswith("rf-cancellation:passed:") or any(
+        field not in final for field in final_fields
+    ):
+        raise AssertionError(f"RF cancellation pass marker is incomplete: {log_path}")
+
+
+def check_rf_lab_suite(
+    log: str,
+    service_uuid: str,
+    log_path: Path,
+    *,
+    expected_local_name: str | None = None,
+    cancellation_evidence: Path | None = None,
+) -> None:
+    """Validate ten flows in one runtime plus both same-session physical holds."""
+    modes = (
+        "rf",
+        "rf-connect",
+        "rf-gatt",
+        "rf-io",
+        "rf-rssi",
+        "rf-notification",
+        "rf-indication",
+        "rf-passive-disconnect",
+        "rf-cancellation",
+        "rf-watchdog",
+    )
+    starts = list(
+        re.finditer(
+            r"BLEHUB_NITRO_RUNTIME rf-lab-suite:flow-started:index=([0-9]+):mode=([^\s]+)",
+            log,
+        )
+    )
+    if len(starts) != len(modes):
+        raise AssertionError(f"suite flow-started coverage is incomplete: {log_path}")
+    for index, (expected_mode, match) in enumerate(zip(modes, starts, strict=True)):
+        if match.group(1) != str(index) or match.group(2) != expected_mode:
+            raise AssertionError(f"suite flow order is invalid: {log_path}")
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(log)
+        segment = log[match.start() : end]
+        passed = f"rf-lab-suite:flow-passed:index={index}:mode={expected_mode}"
+        failed = f"rf-lab-suite:flow-failed:index={index}:mode={expected_mode}:"
+        if segment.count(passed) != 1 or failed in segment:
+            raise AssertionError(
+                f"suite flow {expected_mode} did not pass exactly once: {log_path}"
+            )
+        if expected_mode == "rf-watchdog":
+            from tests.peripherals.nrf52840.continuous_watchdog import (
+                check_physical_evidence as check_watchdog_physical,
+            )
+
+            if cancellation_evidence is None:
+                raise AssertionError("continuous10 requires both physical hold reports")
+            try:
+                check_watchdog_physical(
+                    cancellation_evidence.parent.parent
+                    / "flow-9-rf-watchdog"
+                    / "physical-evidence.json",
+                    segment,
+                    cancellation_evidence,
+                    service_uuid,
+                )
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+                raise AssertionError(
+                    f"physical watchdog evidence invalid: {error}"
+                ) from error
+        elif expected_mode == "rf-cancellation":
+            check_rf_cancellation(
+                segment, service_uuid, log_path, expected_local_name=expected_local_name
+            )
+            from tests.peripherals.nrf52840.cancellation_control import (
+                check_physical_evidence,
+            )
+
+            try:
+                check_physical_evidence(cancellation_evidence, segment, service_uuid)
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+                raise AssertionError(
+                    f"physical cancellation evidence invalid: {error}"
+                ) from error
+        else:
+            check_rf_scan(
+                segment,
+                service_uuid,
+                log_path,
+                connect=expected_mode != "rf",
+                gatt=expected_mode
+                in {
+                    "rf-gatt",
+                    "rf-io",
+                    "rf-notification",
+                    "rf-indication",
+                    "rf-passive-disconnect",
+                },
+                io=expected_mode == "rf-io",
+                rssi=expected_mode == "rf-rssi",
+                notification=expected_mode
+                in {"rf-notification", "rf-passive-disconnect"},
+                indication=expected_mode == "rf-indication",
+                passive_disconnect=expected_mode == "rf-passive-disconnect",
+                expected_local_name=expected_local_name,
+            )
+    passes = re.findall(
+        r"BLEHUB_NITRO_RUNTIME rf-lab-suite:flow-passed:index=([0-9]+):mode=([^\s:]+)",
+        log,
+    )
+    if (
+        passes != [(str(index), mode) for index, mode in enumerate(modes)]
+        or "BLEHUB_NITRO_RUNTIME rf-lab-suite:flow-failed:" in log
+    ):
+        raise AssertionError("continuous10 flow terminals missing/duplicated/failed")
+    runtime = re.findall(
+        r"BLEHUB_NITRO_RUNTIME rf-lab-suite:runtime:session=([0-9a-f-]+):nonce=([0-9a-z-]+):phase=(start|close)",
+        log,
+    )
+    if (
+        len(runtime) != 2
+        or runtime[0][:2] != runtime[1][:2]
+        or [r[2] for r in runtime] != ["start", "close"]
+    ):
+        raise AssertionError("continuous10 JS runtime identity missing/changed")
+    from tests.peripherals.nrf52840.cancellation_control import read_document
+
+    if (
+        cancellation_evidence is None
+        or runtime[0][0] != read_document(cancellation_evidence)["session_id"]
+    ):
+        raise AssertionError("continuous10 JS/provider session drift")
+    summary = "rf-lab-suite:passed:flows=10:passedCount=10:failureCount=0"
+    summaries = re.findall(
+        r"BLEHUB_NITRO_RUNTIME (rf-lab-suite:(?:passed|failed):flows=[^\r\n]+)", log
+    )
+    if summaries != [summary]:
+        raise AssertionError(f"suite summary is missing or duplicated: {log_path}")
+    runtime_start = log.index(
+        f"rf-lab-suite:runtime:session={runtime[0][0]}:nonce={runtime[0][1]}:phase=start"
+    )
+    runtime_close = log.index(
+        f"rf-lab-suite:runtime:session={runtime[1][0]}:nonce={runtime[1][1]}:phase=close"
+    )
+    final_flow = log.index("rf-lab-suite:flow-passed:index=9:mode=rf-watchdog")
+    if (
+        not runtime_start
+        < starts[0].start()
+        < final_flow
+        < runtime_close
+        < log.index(summary)
+    ):
+        raise AssertionError("continuous10 runtime/summary boundary order drift")
+    from tools.react_native.rf_control_relay import check_suite_identity
+
+    try:
+        check_suite_identity(log, log_path, cancellation_evidence.parent.parent)
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        KeyError,
+        TypeError,
+        IndexError,
+    ) as error:
+        raise AssertionError(
+            f"continuous native runtime identity invalid: {error}"
+        ) from error
 
 
 def check_rf_reload(log: str, service_uuid: str, log_path: Path) -> None:
@@ -1349,6 +1805,10 @@ def main() -> int:
     _ = mode.add_argument("--rf-notification-service-uuid")
     _ = mode.add_argument("--rf-indication-service-uuid")
     _ = mode.add_argument("--rf-passive-disconnect-service-uuid")
+    _ = mode.add_argument("--rf-cancellation-service-uuid")
+    _ = mode.add_argument("--rf-lab-suite-service-uuid")
+    _ = parser.add_argument("--rf-expected-local-name")
+    _ = parser.add_argument("--rf-cancellation-evidence", type=Path)
     _ = mode.add_argument("--rf-recovery-service-uuid")
     _ = mode.add_argument("--rf-recovery-ten-service-uuid")
     _ = mode.add_argument("--rf-reload-service-uuid")
@@ -1367,6 +1827,12 @@ def main() -> int:
     _ = parser.add_argument("--rf-multi-soak-cycles", type=int, default=10)
     _ = mode.add_argument("--rf-multi-fault-service-uuids")
     args = parser.parse_args()
+    if args.rf_expected_local_name is not None and (
+        args.rf_lab_suite_service_uuid is None or not args.rf_expected_local_name
+    ):
+        parser.error(
+            "--rf-expected-local-name requires suite service UUID and a nonempty name"
+        )
 
     log_path = cast(Path, args.log)
     stress = cast(bool, args.stress)
@@ -1381,6 +1847,8 @@ def main() -> int:
     rf_passive_disconnect_service_uuid = cast(
         str | None, args.rf_passive_disconnect_service_uuid
     )
+    rf_cancellation_service_uuid = cast(str | None, args.rf_cancellation_service_uuid)
+    rf_lab_suite_service_uuid = cast(str | None, args.rf_lab_suite_service_uuid)
     rf_recovery_service_uuid = cast(str | None, args.rf_recovery_service_uuid)
     rf_recovery_ten_service_uuid = cast(str | None, args.rf_recovery_ten_service_uuid)
     rf_reload_service_uuid = cast(str | None, args.rf_reload_service_uuid)
@@ -1428,6 +1896,16 @@ def main() -> int:
             connect=True,
             gatt=True,
             passive_disconnect=True,
+        )
+    elif rf_cancellation_service_uuid:
+        check_rf_cancellation(log, rf_cancellation_service_uuid, log_path)
+    elif rf_lab_suite_service_uuid:
+        check_rf_lab_suite(
+            log,
+            rf_lab_suite_service_uuid,
+            log_path,
+            expected_local_name=args.rf_expected_local_name,
+            cancellation_evidence=args.rf_cancellation_evidence,
         )
     elif rf_notification_service_uuid:
         check_rf_scan(

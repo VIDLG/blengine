@@ -194,6 +194,8 @@ final class TestBackend: BleBackend, @unchecked Sendable {
 
     func readRssi(command: ReadRssiCommand) throws {}
 
+    func cancelOperation(request: CancelOperationRequest) throws {}
+
     func dispose() throws {
         let root = lock.withLock { () -> BackendEventIngressHandle? in
             disposeCount += 1

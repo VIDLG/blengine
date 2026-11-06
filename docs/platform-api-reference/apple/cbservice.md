@@ -41,43 +41,43 @@ class CBService
 
 ### Identifying a Service
 
-[`peripheral`](/documentation/CoreBluetooth/CBService/peripheral)
+[`var peripheral: CBPeripheral?`](/documentation/CoreBluetooth/CBService/peripheral)
 
 The peripheral to which this service belongs.
 
-[`isPrimary`](/documentation/CoreBluetooth/CBService/isPrimary)
+[`var isPrimary: Bool`](/documentation/CoreBluetooth/CBService/isPrimary)
 
 A Boolean value that indicates whether the type of service is primary or secondary.
 
 ### Accessing Service Data
 
-[`characteristics`](/documentation/CoreBluetooth/CBService/characteristics)
+[`var characteristics: [CBCharacteristic]?`](/documentation/CoreBluetooth/CBService/characteristics)
 
 A list of characteristics discovered in this service.
 
-[`includedServices`](/documentation/CoreBluetooth/CBService/includedServices)
+[`var includedServices: [CBService]?`](/documentation/CoreBluetooth/CBService/includedServices)
 
 A list of included services discovered in this service.
 
 ## Relationships
 
-### Inherited By
-
-[`CBMutableService`](/documentation/CoreBluetooth/CBMutableService)
-
 ### Conforms To
-
-[`Equatable`](/documentation/Swift/Equatable)
-
-[`Hashable`](/documentation/Swift/Hashable)
-
-[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
-
-[`CVarArg`](/documentation/Swift/CVarArg)
 
 [`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
 
+[`Equatable`](/documentation/Swift/Equatable)
+
+[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
+
+[`Hashable`](/documentation/Swift/Hashable)
+
 [`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
+
+[`CVarArg`](/documentation/Swift/CVarArg)
+
+### Inherited By
+
+[`CBMutableService`](/documentation/CoreBluetooth/CBMutableService)
 
 ### Inherits From
 

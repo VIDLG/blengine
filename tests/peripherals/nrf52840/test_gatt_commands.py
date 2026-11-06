@@ -5,7 +5,11 @@ from collections import deque
 
 from tests.peripherals.nrf52840.btp_commands import BtpCommandError
 from tests.peripherals.nrf52840.btp_protocol import BtpFrame
-from tests.peripherals.nrf52840.gatt_commands import GattCommands, uuid_to_le_bytes
+from tests.peripherals.nrf52840.gatt_commands import (
+    GattCommands,
+    tester_characteristic_native_permissions,
+    uuid_to_le_bytes,
+)
 
 
 class FakeSession:
@@ -19,6 +23,25 @@ class FakeSession:
 
 
 class GattCommandsTests(unittest.TestCase):
+    def test_tester_native_permissions_are_not_btp_authorization_bits(self) -> None:
+        for supplied, native in (
+            (0x03, 0x43),
+            (0x43, 0x43),
+            (0x40, 0x41),
+            (0x80, 0x42),
+            (0x44, 0x44),
+            (0x88, 0x48),
+            (0x50, 0x50),
+            (0xA0, 0x60),
+        ):
+            with self.subTest(supplied=supplied):
+                self.assertEqual(
+                    tester_characteristic_native_permissions(supplied), native
+                )
+        for invalid in (-1, 256):
+            with self.subTest(invalid=invalid), self.assertRaises(BtpCommandError):
+                tester_characteristic_native_permissions(invalid)
+
     def test_uuid_conversion_is_little_endian(self) -> None:
         self.assertEqual(uuid_to_le_bytes("180D"), b"\x0d\x18")
         self.assertEqual(

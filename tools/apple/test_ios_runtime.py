@@ -22,6 +22,7 @@ from tools.apple.rf_fixture import (
     add_profile_arguments,
     fixture_from_arguments,
 )
+from tools.apple.signing_identity import visible_development_identities
 from tools.local_config import resolve_local_value
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -506,6 +507,7 @@ def _launch_app(
     rf_service_uuid: str | None = None,
     rf_scenario: str | None = None,
     fixture: RfFixtureConfig | None = None,
+    extra_arguments: list[str] | None = None,
 ) -> None:
     launch_arguments = [
         "device",
@@ -522,6 +524,8 @@ def _launch_app(
     if fixture is not None:
         launch_arguments.extend(fixture.app_arguments())
         launch_arguments.extend(["--rf-external-provider", "nrf52840"])
+    if extra_arguments is not None:
+        launch_arguments.extend(extra_arguments)
     if rf_service_uuid is not None:
         launch_arguments.extend(["--rf-service-uuid", rf_service_uuid])
         if rf_scenario is not None:
@@ -628,9 +632,11 @@ def _default_login_keychain(security: str) -> str:
     return (
         subprocess.run(
             [security, "default-keychain", "-d", "user"],
+            stdin=subprocess.DEVNULL,
             check=True,
             capture_output=True,
             text=True,
+            timeout=30,
         )
         .stdout.strip()
         .strip('"')
@@ -639,37 +645,19 @@ def _default_login_keychain(security: str) -> str:
 
 def _require_visible_signing_identity(security: str) -> set[str]:
     default_keychain = _default_login_keychain(security)
-    result = subprocess.run(
-        [security, "find-identity", "-v", "-p", "codesigning", default_keychain],
-        capture_output=True,
-        text=True,
-        check=False,
+    _, teams = visible_development_identities(
+        security, _required_executable("openssl"), keychain=default_keychain
     )
-    valid_identities = re.search(
-        r"^\s*(\d+) valid identities found$",
-        result.stdout,
-        re.MULTILINE,
-    )
-    if (
-        result.returncode != 0
-        or valid_identities is None
-        or int(valid_identities.group(1)) == 0
-    ):
+    if not teams:
         raise RuntimeError(
-            "the login keychain has no visible valid code-signing identity; "
-            f"run `security unlock-keychain {default_keychain}` once in a local "
-            "interactive Terminal, then retry"
+            "no visible valid Apple Development identity matched by SHA-1 to a public "
+            "certificate with a valid Team OU (2.5.4.11) in the default keychain; "
+            "this does not mean no public certificate exists or that unlocking is required"
         )
-    # find-identity enumerates certificates; it does not sign with the private key.
     print("apple_signing_identity=visible")
-    return {
-        team_id
-        for team_id in re.findall(
-            r'^\s*\d+\)\s+[A-F0-9]{40}\s+"Apple Development: [^"\n]+ \(([A-Z0-9]{10})\)"$',
-            result.stdout,
-            re.MULTILINE,
-        )
-    }
+    print("apple_signing_team_source=certificate-subject-ou")
+    print("apple_signing_private_key_access=unproved")
+    return set(teams.values())
 
 
 def unlock_login_keychain() -> None:
@@ -719,11 +707,12 @@ def _print_environment(device: IOSDevice, bundle_id: str) -> None:
     print(f"apple_ios_probe_bundle_id={bundle_id}")
 
 
-def doctor() -> None:
-    xcodegen, _, _, device, _, bundle_id = _environment()
-    _print_environment(device, bundle_id)
-    _generate_project(xcodegen)
-    print("apple_ios_device_doctor=passed")
+def doctor(
+    *, mode: str = "build-signing", app: str | None = None, device: str | None = None
+) -> int:
+    from tools.apple.ios_preflight import run
+
+    return run(mode=mode, app=app, device=device)
 
 
 def _copy_marker_to_device(
@@ -1122,8 +1111,23 @@ def main() -> int:
         type=Path,
         help="host-side nRF coordination directory for external RF scenarios",
     )
+    _ = parser.add_argument(
+        "--mode", choices=("build-signing", "prebuilt"), help="doctor only"
+    )
+    _ = parser.add_argument("--app", help="doctor only: existing prebuilt .app")
+    _ = parser.add_argument("--device", help="doctor only: explicit physical UDID")
     args = parser.parse_args()
     command = getattr(args, "command", None)
+    if command != "doctor" and any(
+        value is not None for value in (args.mode, args.app, args.device)
+    ):
+        parser.error("--mode, --app and --device are valid only for doctor")
+    if command in {"runtime-rf", "runtime-rf-android", "runtime-rf-external"}:
+        parser.error(
+            "legacy iOS normal RF CLI is disabled; use `pixi run just apple rf-native-smoke` "
+            "with explicit device/port/v2 contract/profile and a prebuilt App. "
+            "No environment, build, SDK or provider action was attempted."
+        )
     if command != "runtime-rf-external" and (
         args.profile is not None
         or args.write_with_response != "102030"
@@ -1144,7 +1148,9 @@ def main() -> int:
         elif command == "signing":
             open_project()
         elif command == "doctor":
-            doctor()
+            return doctor(
+                mode=args.mode or "build-signing", app=args.app, device=args.device
+            )
         elif command == "runtime":
             runtime()
         elif command == "runtime-rf":

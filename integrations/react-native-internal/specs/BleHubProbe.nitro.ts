@@ -8,6 +8,10 @@ type DispatchErrorCategory =
   | 'closed'
   | 'invalid_request'
   | 'invalid_state'
+  | 'operation_not_found'
+  | 'operation_already_completed'
+  | 'operation_not_cancellable'
+  | 'resource_exhausted'
   | 'backend_unavailable'
   | 'ffi_contract'
 type EventErrorCategory =
@@ -17,6 +21,7 @@ type EventErrorCategory =
   | 'not_found'
   | 'timeout'
   | 'cancelled'
+  | 'operation_aborted'
   | 'connection'
   | 'gatt'
   | 'protocol'
@@ -94,6 +99,27 @@ export interface RfScanEvent {
   error?: EventError
 }
 
+/** Private accounting of adapter-owned logical roots, not platform heap/OS resources. */
+export interface RfResourceSnapshot {
+  activeScans: number
+  connections: number
+  gattAttributes: number
+  subscriptions: number
+  pendingIo: number
+  watchdogs: number
+  callbackRoutes: number
+  ingressRoots: number
+  adapterDelegates: number
+  peerCacheEntries: number
+  backendLeases: number
+  hubRoots: number
+  handoffRoots: number
+  handoffPending: number
+  listeners: number
+  workerThreads: number
+  lifecycleOwners: number
+}
+
 export interface TransportSample {
   id: string
   bytes: ArrayBuffer
@@ -125,8 +151,17 @@ export interface BleHubProbe extends HybridObject<{ ios: 'swift'; android: 'kotl
   writeRfCharacteristic(commandId: string, connectionId: string, gattSessionId: string, characteristicId: string, value: ArrayBuffer, writeType: RfWriteType): DispatchError | undefined
   setRfNotifications(commandId: string, connectionId: string, gattSessionId: string, subscriptionId: string, characteristicId: string, enabled: boolean, mode: RfNotificationMode): DispatchError | undefined
 
+  /** Request cancellation of an accepted native operation by its original command ID. */
+  cancelOperation(targetCommandId: string): DispatchError | undefined
+
   /** Transport-only type probe; bytes are not sent over BLE and this is not RF evidence. */
   roundTrip(sample: TransportSample): TransportSample
+
+  /** Android-only private diagnostic: generation 2 waits for the old engine's native cleanup. */
+  awaitPendingReloadReady(runId: string, generation: number): Promise<void>
+
+  /** Observe real native ownership; valid after close, without recreating a Hub. */
+  snapshotRfResources(): Promise<RfResourceSnapshot>
 
   /** Resolve only after native Hub disposal; Nitro dispose()/GC is not this contract. */
   close(): Promise<void>

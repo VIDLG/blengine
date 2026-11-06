@@ -43,7 +43,7 @@
 //! callbacks for replay directly into normal processing, without gating them again.
 //!
 //! Result APIs answer different questions. resolve_dispatch(None) means no matching
-//! reservation; record_terminal() returns ownership where routing needs it, not
+//! reservation; try_record_terminal() returns ownership where routing needs it, not
 //! operation success. waiter_result(None) can mean either unowned or incomplete;
 //! a present result is deliverable but does not itself advance or retire state.
 //! Leaf waiter_result() methods without a command ID assume the caller already
@@ -58,8 +58,9 @@
 //!
 
 use blehub::{
-    BleEvent, BleEventError, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId,
-    GattSessionId, NotificationModeRequest, PeripheralId, ScanSessionId, SubscriptionId,
+    BleEvent, BleEventError, CommandDispatchError, CommandId, ConnectionId, ConnectionState,
+    ConnectionStateResult, GattCharacteristicId, GattSessionId, NotificationModeRequest,
+    PeripheralId, ScanSessionId, SubscriptionId,
 };
 
 use crate::{
@@ -79,23 +80,29 @@ mod io;
 mod publication;
 mod scan;
 mod subscription;
+mod subscriptions;
 
 #[cfg(test)]
 mod tests;
 
 pub(super) use cancellation::{CancellationDecision, CancellationReceiver};
-pub(super) use command_progress::{
-    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
-    ReconciliationFault,
-};
-pub(super) use connection::connection_lost;
+use command_progress::{BufferedEventDisposition, CommandProgress};
+pub(super) use command_progress::{DispatchAction, DispatchResolution, ReconciliationFault};
+
 pub(super) use connections::ConnectionReservations;
-pub(super) use gatt::GattAccess;
+
 pub(super) use initialization::InitializationState;
-pub(super) use publication::{
-    PublicationDecision, PublicationGate, PublicationRelease, ScopedPublication,
-};
+pub(super) use publication::PublicationDecision;
+use publication::{PublicationGate, PublicationRelease, ScopedPublication};
 pub(super) use scan::ScanState;
+
+/// Selects operation-specific GATT admission rules, not native capabilities.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum GattAccess {
+    Read,
+    Write,
+    EnableNotifications,
+}
 
 /// The command directory and three actor-owned reservation roots.
 ///
@@ -126,7 +133,7 @@ impl ReservationCoordinator {
             #[call(insert)]
             pub(super) fn register_command(&mut self, command_id: CommandId, route: CommandRoute);
             #[call(set_completion)]
-            pub(super) fn set_command_completion(
+            fn set_command_completion(
                 &mut self,
                 command_id: CommandId,
                 completion: CompletionObserver,
@@ -290,7 +297,7 @@ impl ReservationCoordinator {
         }
     }
 
-    pub(super) fn try_resolve_cancellation(
+    fn try_resolve_cancellation(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -362,9 +369,10 @@ impl ReservationCoordinator {
         }
     }
 
-    /// Resolves cancellation before draining events released by that resolution.
-    /// The order preserves publication after the control receipt is recorded.
-    pub(super) fn resolve_cancellation_and_drain_events(
+    /// Records the control receipt before releasing public events made ready by it.
+    /// Another pending cancellation keeps its scope's FIFO buffered, so this need not drain it.
+    /// Returned events are publication-only; their internal evidence was already recorded.
+    pub(super) fn resolve_cancellation_and_release_public_events(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -436,14 +444,16 @@ impl ReservationCoordinator {
         let Some(event) = self.initialization.gate_event(event)? else {
             return Ok(None);
         };
-        let event = match self.route_for_event(&event) {
-            Some(CommandRoute::Connection {
-                connection_id,
-                kind,
-            }) => self
-                .connections
-                .gate_event_for_conn(connection_id, kind, event)?,
-            _ => self.connections.gate_event(event)?,
+        let route = self.route_for_event(&event);
+        let event = match (event, route) {
+            // State callbacks affect a connection scope, not just their named command.
+            (event @ BleEvent::ConnectionStateChanged { .. }, _) => {
+                self.connections.gate_event(event)?
+            }
+            (event, Some(CommandRoute::Connection { connection_id, .. })) => {
+                self.connections.gate_event_for_conn(connection_id, event)?
+            }
+            (event, _) => self.connections.gate_event(event)?,
         };
         match event {
             Some(event) => self.scan.gate_event(event),
@@ -481,14 +491,26 @@ impl ReservationCoordinator {
                 .initialization
                 .resolve_dispatch(command_id, result)
                 .unwrap_or_default(),
-            CommandRoute::ScanStart | CommandRoute::ScanStop => self
-                .scan
-                .resolve_dispatch(command_id, result)
-                .unwrap_or_default(),
-            CommandRoute::Connection { connection_id, .. } => self
-                .connections
-                .resolve_dispatch_for_conn(connection_id, command_id, result)
-                .unwrap_or_default(),
+            CommandRoute::ScanStart | CommandRoute::ScanStop => {
+                let resolution = self.scan.resolve_dispatch(command_id, result);
+                // Start rejection releases the session; stop rejection releases its
+                // child. Neither command remains for the retirement pass to find.
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
+            CommandRoute::Connection { connection_id, .. } => {
+                let resolution =
+                    self.connections
+                        .resolve_dispatch_for_conn(connection_id, command_id, result);
+                // Rejection may have already released the reservation, leaving no
+                // command for the later retirement pass to discover.
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
             #[cfg(test)]
             CommandRoute::Test => DispatchResolution::default(),
         }
@@ -501,10 +523,10 @@ impl ReservationCoordinator {
         let result = error.map_or(Ok(()), Err);
         match route {
             CommandRoute::Initialization => {
-                self.initialization.record_terminal(command_id, &result);
+                self.initialization.try_record_terminal(command_id, &result);
             }
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
-                self.scan.record_terminal(command_id, &result);
+                self.scan.try_record_terminal(command_id, &result);
             }
             CommandRoute::Connection { connection_id, .. } => {
                 self.connections
@@ -538,14 +560,34 @@ impl ReservationCoordinator {
     pub(super) fn advance_and_retire(&mut self) -> Result<(), WaiterError> {
         // An initialization failure faults the runtime, but completed reservations in the other
         // roots can still be released in this actor turn before the error is returned.
-        let (mut retired, initialization_error) =
-            match self.initialization.advance_after_settlement() {
-                Ok(command_id) => (command_id.into_iter().collect::<Vec<_>>(), None),
-                Err(error) => (Vec::new(), Some(error)),
-            };
+        let initialization = self.initialization.advance_after_settlement();
+        let mut retired = Vec::new();
+        if let Ok(Some(command_id)) = &initialization {
+            retired.push(*command_id);
+        }
         retired.extend(self.connections.retire_completed());
         retired.extend(self.scan.retire_completed());
         self.remove_commands(retired);
-        initialization_error.map_or(Ok(()), Err)
+        initialization.map(|_| ())
     }
+}
+
+/// Identifies loss of the expected connection. A command-correlated error alone
+/// belongs to that command; only an uncorrelated error establishes passive loss.
+pub(super) fn is_connection_lost(event: &BleEvent, expected: ConnectionId) -> bool {
+    matches!(
+        event,
+        BleEvent::ConnectionStateChanged {
+            connection_id,
+            result: ConnectionStateResult::Ok { state: ConnectionState::Disconnected },
+            ..
+        } if *connection_id == expected
+    ) || matches!(
+        event,
+        BleEvent::ConnectionStateChanged {
+            command_id: None,
+            connection_id,
+            result: ConnectionStateResult::Err { .. },
+        } if *connection_id == expected
+    )
 }

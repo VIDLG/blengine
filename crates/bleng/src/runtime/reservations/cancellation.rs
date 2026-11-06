@@ -1,7 +1,7 @@
 use crate::waiter::WaiterError;
 use tokio::sync::watch;
 
-pub(crate) type CancellationReceiver = watch::Receiver<Option<Result<(), WaiterError>>>;
+pub(in crate::runtime) type CancellationReceiver = watch::Receiver<Option<Result<(), WaiterError>>>;
 type CancellationReceiptSender = watch::Sender<Option<Result<(), WaiterError>>>;
 
 // The cancellation request has two independent dimensions:
@@ -26,10 +26,10 @@ pub(super) enum CancellationState {
     Idle,
     // One allocation per request cycle keeps every idle command compact.
     // Transitions reuse this block; clear/retirement releases it and its sender.
-    Active(Box<CancellationRequest>),
+    Requested(Box<CancellationRequest>),
 }
 
-pub(crate) enum CancellationDecision {
+pub(in crate::runtime) enum CancellationDecision {
     Accepted(CancellationReceiver),
     AlreadyRequested(CancellationReceiver),
     AlreadyCompleted,
@@ -37,27 +37,28 @@ pub(crate) enum CancellationDecision {
 }
 
 impl CancellationState {
-    pub(super) fn is_active(&self) -> bool {
-        matches!(self, Self::Active(_))
+    /// A retained request may already have a result; this does not mean it is pending.
+    pub(super) fn has_request(&self) -> bool {
+        matches!(self, Self::Requested(_))
     }
 
     pub(super) fn is_accepted(&self) -> bool {
-        matches!(self, Self::Active(request) if request.control_result == Some(Ok(())))
+        matches!(self, Self::Requested(request) if request.control_result == Some(Ok(())))
     }
 
     pub(super) fn is_awaiting_result(&self) -> bool {
-        matches!(self, Self::Active(request) if request.control_result.is_none())
+        matches!(self, Self::Requested(request) if request.control_result.is_none())
     }
 
-    pub(super) fn subscribe(&self) -> Option<CancellationReceiver> {
+    fn subscribe(&self) -> Option<CancellationReceiver> {
         match self {
             Self::Idle => None,
-            Self::Active(request) => Some(request.receipt.subscribe()),
+            Self::Requested(request) => Some(request.receipt.subscribe()),
         }
     }
 
     pub(super) fn resolve(&mut self, result: Result<(), WaiterError>) {
-        let Self::Active(request) = self else {
+        let Self::Requested(request) = self else {
             return;
         };
         request.control_result = Some(result.clone());
@@ -69,7 +70,7 @@ impl CancellationState {
     }
 
     pub(super) fn try_claim_native_dispatch(&mut self) -> bool {
-        let Self::Active(request) = self else {
+        let Self::Requested(request) = self else {
             return false;
         };
         if request.native_dispatch_claimed {
@@ -87,7 +88,7 @@ impl CancellationState {
             return CancellationDecision::AlreadyCompleted;
         }
         let (result_tx, result_rx) = watch::channel(None);
-        *self = Self::Active(Box::new(CancellationRequest {
+        *self = Self::Requested(Box::new(CancellationRequest {
             control_result: None,
             native_dispatch_claimed: false,
             receipt: result_tx,

@@ -44,27 +44,31 @@ Characteristic write types have corresponding restrictions on the length of the 
 
 ### Write Types
 
-[`CBCharacteristicWriteWithResponse`](/documentation/CoreBluetooth/CBCharacteristicWriteType/withResponse)
+[`case withResponse`](/documentation/CoreBluetooth/CBCharacteristicWriteType/withResponse)
 
 Write a characteristic value, with a response from the peripheral to indicate whether the write was successful.
 
-[`CBCharacteristicWriteWithoutResponse`](/documentation/CoreBluetooth/CBCharacteristicWriteType/withoutResponse)
+[`case withoutResponse`](/documentation/CoreBluetooth/CBCharacteristicWriteType/withoutResponse)
 
 Write a characteristic value, without any response from the peripheral to indicate whether the write was successful.
+
+### Initializers
+
+[`init?(rawValue: Int)`](/documentation/CoreBluetooth/CBCharacteristicWriteType/init(rawValue:))
 
 ## Relationships
 
 ### Conforms To
+
+[`SendableMetatype`](/documentation/Swift/SendableMetatype)
+
+[`BitwiseCopyable`](/documentation/Swift/BitwiseCopyable)
 
 [`RawRepresentable`](/documentation/Swift/RawRepresentable)
 
 [`Sendable`](/documentation/Swift/Sendable)
 
 [`Equatable`](/documentation/Swift/Equatable)
-
-[`BitwiseCopyable`](/documentation/Swift/BitwiseCopyable)
-
-[`SendableMetatype`](/documentation/Swift/SendableMetatype)
 
 [`Hashable`](/documentation/Swift/Hashable)
 

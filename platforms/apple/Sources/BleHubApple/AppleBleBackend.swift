@@ -29,9 +29,10 @@ private enum AppleBackendLease {
 }
 
 public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
-    public static let contractVersion: UInt32 = 5
+    public static let contractVersion: UInt32 = blehubContractVersion()
 
     private static let logger = Logger(subsystem: "dev.blehub", category: "AppleBleBackend")
+    private let notificationDiagnostics = AppleNotificationDiagnostics()
 
     private let queue: DispatchQueue
     private let queueKey = DispatchSpecificKey<UInt8>()
@@ -44,12 +45,34 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
     private let connectionController = AppleConnectionController()
     private let gattController = AppleGattController()
     private let gattIoController = AppleGattIoController()
-    private let rssiController = AppleRssiController()
+    private var gattWatchdogs = AppleGattWatchdogRegistry()
     private var ownsLease = true
+    private let gattIoWatchdogDelay: DispatchTimeInterval
+    private var lastLossDiagnostic: [String: String] = [
+        "last_callback": "none",
+        "adapter_state": "unknown",
+        "retired_operation_count": "0",
+        "emitted_event_count": "0",
+        "ingress_status": "not-attempted",
+    ]
+    private var lastIngressStatus = "not-attempted"
+    private var diagnosticCentralRecreateCompletion: (@Sendable ([String: String]) -> Void)?
 
     /// All CoreBluetooth objects, callbacks, and mutable backend state use this private serial queue.
-    public init(queueLabel: String = "dev.blehub.apple.backend") throws {
+    public init(
+        queueLabel: String = "dev.blehub.apple.backend",
+        gattIoWatchdogMilliseconds: UInt64 = 10_000
+    ) throws {
+        guard gattIoWatchdogMilliseconds > 0,
+              gattIoWatchdogMilliseconds <= UInt64(Int.max)
+        else {
+            throw BleHubError.InvalidConfiguration(
+                field: "gattIoWatchdogMilliseconds",
+                detail: "watchdog duration must fit a positive platform timer interval"
+            )
+        }
         queue = DispatchQueue(label: queueLabel)
+        gattIoWatchdogDelay = .milliseconds(Int(gattIoWatchdogMilliseconds))
         guard AppleBackendLease.acquire() else {
             throw BleHubError.ResourceBusy(
                 detail: "another Apple backend owns the process CoreBluetooth controller lease"
@@ -81,6 +104,97 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
     ) -> PeripheralId? {
         onQueue {
             scanController.existingPeripheralId(for: nativeIdentifier)
+        }
+    }
+
+    /// Read-only private RF diagnostics, ordered with commands and delegates on the
+    /// backend queue. Counts adapter-owned logical roots, not OS heap or CB threads.
+    /// The ingress count is the retained handle whose Rust target is weak.
+    @_spi(AppleDiagnostics) public func diagnosticSnapshotRfResources(
+        completion: @escaping @Sendable ([String: Int]) -> Void
+    ) {
+        queue.async { [self] in
+            let attributes = gattController.diagnosticAttributeIdentities
+                .union(gattIoController.diagnosticAttributeIdentities)
+            completion([
+                "activeScans": scanController.activeSessionId == nil ? 0 : 1,
+                "connections": connectionController.activeCount,
+                "gattAttributes": attributes.count,
+                "subscriptions": gattIoController.diagnosticSubscriptionCount,
+                "pendingIo": gattController.pendingCount + gattIoController.pendingCount,
+                "watchdogs": gattWatchdogs.diagnosticCount,
+                "callbackRoutes": connectionController.activeCount
+                    + gattController.diagnosticCallbackRouteCount
+                    + gattIoController.diagnosticCallbackRouteCount,
+                "ingressRoots": ingress == nil ? 0 : 1,
+                "adapterDelegates": centralManager?.delegate == nil ? 0 : 1,
+                "peerCacheEntries": scanController.diagnosticPeerCacheCount,
+                "backendLeases": ownsLease ? 1 : 0,
+            ])
+        }
+    }
+
+    /// Returns the last adapter/connection-loss callback observation without driving the backend.
+    /// This is private HIL evidence only; it is not part of the Stable UniFFI ABI.
+    @_spi(AppleDiagnostics) public func diagnosticSnapshotLoss(
+        completion: @escaping @Sendable ([String: String]) -> Void
+    ) {
+        queue.async { [self] in
+            completion(lastLossDiagnostic)
+        }
+    }
+
+    /// Observes the logical GATT I/O lane on the backend serial queue without driving it.
+    /// Nil means the requested connection is not currently connected; a live connection
+    /// with no I/O queue is idle. Callback ownership is not proof of remote delivery.
+    /// Recreate the native Central manager for an explicitly authorized recovery spike.
+    /// This is not Stable UniFFI API and refuses to run while native resources are active.
+    @_spi(AppleDiagnostics) public func diagnosticRecreateCentral(
+        completion: @escaping @Sendable ([String: String]) -> Void
+    ) {
+        queue.async { [self] in
+            guard lifecycle == .ready else {
+                completion(["recreated": "false", "reason": "backend-not-ready"])
+                return
+            }
+            guard scanController.activeSessionId == nil,
+                  connectionController.activeCount == 0,
+                  gattController.pendingCount == 0,
+                  gattIoController.pendingCount == 0 else {
+                completion(["recreated": "false", "reason": "resources-active"])
+                return
+            }
+            let previousState = centralManager.map { String(describing: $0.state) } ?? "missing"
+            centralManager?.delegate = nil
+            centralManager = nil
+            diagnosticCentralRecreateCompletion = completion
+            centralManager = CBCentralManager(
+                delegate: self,
+                queue: queue,
+                options: [CBCentralManagerOptionShowPowerAlertKey: false]
+            )
+            lastLossDiagnostic["central_recreated"] = "true"
+            lastLossDiagnostic["central_previous_state"] = previousState
+        }
+    }
+
+    @_spi(AppleDiagnostics) public func diagnosticSnapshotGattIo(
+        connectionId: ConnectionId,
+        completion: @escaping @Sendable (AppleGattIoSnapshot?) -> Void
+    ) {
+        queue.async { [self] in
+            guard connectionController.connectedCorrelation(for: connectionId) != nil else {
+                completion(nil)
+                return
+            }
+            completion(gattIoController.diagnosticSnapshotGattIo(connectionId: connectionId)
+                ?? AppleGattIoSnapshot(
+                    connectionId: connectionId,
+                    headKind: nil,
+                    headCommandId: nil,
+                    headState: .idle,
+                    queuedCommandIds: []
+                ))
         }
     }
 
@@ -225,11 +339,8 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 nil,
                 context: "the connection was retired during CoreBluetooth GATT activity"
             )
+            cancelGattWatchdog(connection: correlation)
             let gattRetirement = gattIoController.retireAll(
-                connection: correlation,
-                error: retirementError
-            )
-            let rssiCompletion = rssiController.retire(
                 connection: correlation,
                 error: retirementError
             )
@@ -238,9 +349,6 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
             peripheral.delegate = nil
             centralManager.cancelPeripheralConnection(peripheral)
             var events = gattRetirementEvents(gattRetirement)
-            if let rssiCompletion {
-                events.append(contentsOf: rssiEvents(rssiCompletion))
-            }
             if let pendingGattCommand {
                 events.append(gattFailureEvent(command: pendingGattCommand, error: retirementError))
             }
@@ -378,6 +486,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                     detail: "connection lifecycle is not connected"
                 )
             }
+            try requireNoPendingGattDiscovery(connection)
             guard let peripheral = connection.peripheral as? CBPeripheral else {
                 throw CommandDispatchError.BackendUnavailable(
                     detail: "Apple peripheral ownership disappeared during RSSI dispatch",
@@ -391,9 +500,41 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 push(.commandCompleted(commandId: command.commandId, error: error))
                 return
             }
-            try rssiController.begin(command: command, connection: connection)
+            try gattIoController.enqueueRssi(
+                command: command,
+                connection: connection
+            )
             peripheral.delegate = self
-            peripheral.readRSSI()
+            driveGattIo(connection: connection, peripheral: peripheral)
+        }
+    }
+
+    public func cancelOperation(request: CancelOperationRequest) throws {
+        try onQueue {
+            try lifecycle.requireReady(operation: "cancel operation")
+            let connection = try AppleOperationCancellation.cancel(
+                commandId: request.targetCommandId,
+                connections: connectionController,
+                gatt: gattController,
+                io: gattIoController
+            )
+            gattWatchdogs.cancel(
+                connectionId: connection.connectionId,
+                kind: .writeCapacity(request.targetCommandId)
+            )?.cancel()
+            push(
+                .commandCompleted(
+                    commandId: request.targetCommandId,
+                    error: BleEventError(
+                        category: .cancelled,
+                        message: "Apple GATT operation was cancelled before native dispatch",
+                        platformDetails: nil
+                    )
+                )
+            )
+            if let peripheral = connection.peripheral as? CBPeripheral {
+                driveGattIo(connection: connection, peripheral: peripheral)
+            }
         }
     }
 
@@ -405,6 +546,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
 
             lifecycle = .closed
             ingress = nil
+            gattWatchdogs.cancelAll().forEach { $0.cancel() }
             let wasScanning = scanController.activeSessionId != nil
             let connectionRoutes = connectionController.drain()
             _ = gattController.drain()
@@ -413,13 +555,6 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 guard let peripheral = route.correlation.peripheral as? CBPeripheral else {
                     continue
                 }
-                _ = rssiController.retire(
-                    connection: route.correlation,
-                    error: AppleEventMapper.connectionError(
-                        nil,
-                        context: "the Apple backend was disposed during an RSSI read"
-                    )
-                )
                 let retirement = gattIoController.retireAll(
                     connection: route.correlation,
                     error: AppleEventMapper.connectionError(
@@ -429,7 +564,6 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 )
                 connectedPeripherals.append((peripheral, retirement))
             }
-            rssiController.drain()
             gattIoController.drain()
             scanController.dispose()
             if let centralManager {
@@ -452,6 +586,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 }
             }
             centralManager = nil
+            diagnosticCentralRecreateCompletion = nil
 
             let releaseLease = ownsLease
             ownsLease = false
@@ -482,9 +617,6 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         AppleBackendEventProjection.gattFailureEvent(command: command, error: error)
     }
 
-    private func rssiEvents(_ completion: AppleRssiCompletion) -> [BleEvent] {
-        AppleBackendEventProjection.rssiEvents(completion)
-    }
 
     private func gattIoEvents(_ completion: AppleGattIoCompletion) -> [BleEvent] {
         AppleBackendEventProjection.gattIoEvents(completion)
@@ -498,6 +630,65 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
 
     private func gattRetirementEvents(_ retirement: AppleGattRetirement) -> [BleEvent] {
         AppleBackendEventProjection.gattRetirementEvents(retirement)
+    }
+
+    private func armGattWatchdog(
+        connection: AppleConnectionCorrelation,
+        kind: AppleGattWatchdogKind,
+        context: String
+    ) {
+        AppleGattWatchdogOrchestration.arm(
+            connection: connection,
+            kind: kind,
+            watchdogs: gattWatchdogs,
+            delay: gattIoWatchdogDelay,
+            schedule: { deadline, workItem in
+                queue.asyncAfter(deadline: deadline, execute: workItem)
+            },
+            expire: { [weak self] token in
+                self?.handleGattWatchdog(connection: connection, token: token, context: context)
+            }
+        )
+    }
+
+    private func cancelGattWatchdog(connection: AppleConnectionCorrelation) {
+        gattWatchdogs.cancel(connectionId: connection.connectionId)?.cancel()
+    }
+
+    private func handleGattWatchdog(
+        connection: AppleConnectionCorrelation,
+        token: AppleGattWatchdogToken,
+        context: String
+    ) {
+        guard let events = AppleGattWatchdogOrchestration.expire(
+            connection: connection,
+            token: token,
+            context: context,
+            watchdogs: gattWatchdogs,
+            connections: connectionController,
+            gatt: gattController,
+            io: gattIoController,
+            resolveNative: { connection.peripheral as? CBPeripheral },
+            retireNative: { peripheral, retirement in
+                bestEffortUnsubscribe(retirement, peripheral: peripheral)
+                peripheral.delegate = nil
+                centralManager?.cancelPeripheralConnection(peripheral)
+            }
+        ) else {
+            return
+        }
+        push(events)
+        _ = handleGattSafetyFaultIfNeeded()
+    }
+
+    private func requireNoPendingGattDiscovery(
+        _ connection: AppleConnectionCorrelation
+    ) throws {
+        guard !gattController.hasPendingDiscovery(connection: connection) else {
+            throw CommandDispatchError.InvalidState(
+                detail: "GATT discovery is pending on this Apple connection"
+            )
+        }
     }
 
     private func resolveGattIoTarget(
@@ -519,6 +710,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 detail: "connection lifecycle is not connected"
             )
         }
+        try requireNoPendingGattDiscovery(connection)
         guard let peripheral = connection.peripheral as? CBPeripheral else {
             throw CommandDispatchError.BackendUnavailable(
                 detail: "Apple peripheral ownership disappeared during GATT I/O dispatch",
@@ -554,12 +746,19 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         while true {
             let ioAction: AppleGattIoAction?
             do {
-                ioAction = try gattIoController.nextAction(
+                ioAction = try AppleGattWatchdogOrchestration.nextAction(
                     connection: connection,
+                    io: gattIoController,
                     canSendWriteWithoutResponse: peripheral.canSendWriteWithoutResponse,
                     maximumWriteWithResponse: peripheral.maximumWriteValueLength(for: .withResponse),
                     maximumWriteWithoutResponse: peripheral.maximumWriteValueLength(for: .withoutResponse)
-                )
+                ) { owner, commandId in
+                    armGattWatchdog(
+                        connection: owner,
+                        kind: .writeCapacity(commandId),
+                        context: "write without response capacity"
+                    )
+                }
             } catch {
                 failGattIoQueue(
                     connection: connection,
@@ -571,6 +770,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
             if let ioAction {
                 switch ioAction {
                 case .terminal(let completion):
+                    cancelGattWatchdog(connection: connection)
                     push(gattIoEvents(completion))
                 case .read(_, let actionConnection, let characteristicObject):
                     guard let characteristic = characteristicObject as? CBCharacteristic else {
@@ -580,6 +780,11 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                         )
                         return
                     }
+                    armGattWatchdog(
+                        connection: actionConnection,
+                        kind: .io,
+                        context: "characteristic read"
+                    )
                     peripheral.readValue(for: characteristic)
                     return
                 case .writeWithResponse(
@@ -594,11 +799,18 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                         )
                         return
                     }
+                    armGattWatchdog(
+                        connection: actionConnection,
+                        kind: .io,
+                        context: "characteristic write with response"
+                    )
                     peripheral.writeValue(
                         Data(command.value),
                         for: characteristic,
                         type: .withResponse
                     )
+                    return
+                case .waitForWriteCapacity:
                     return
                 case .writeWithoutResponse(
                     let command,
@@ -612,18 +824,31 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                         )
                         return
                     }
-                    peripheral.writeValue(
-                        Data(command.value),
-                        for: characteristic,
-                        type: .withoutResponse
-                    )
-                    if let completion = gattIoController.didSubmitWriteWithoutResponse(
+                    if let completion = AppleGattWatchdogOrchestration.submitWithoutResponse(
+                        command: command,
                         connection: actionConnection,
                         peripheral: peripheral,
-                        characteristic: characteristic
+                        characteristic: characteristic,
+                        io: gattIoController,
+                        watchdogs: gattWatchdogs,
+                        submit: {
+                            peripheral.writeValue(
+                                Data(command.value),
+                                for: characteristic,
+                                type: .withoutResponse
+                            )
+                        }
                     ) {
                         push(gattIoEvents(completion))
                     }
+                case .rssi(_, let actionConnection):
+                    armGattWatchdog(
+                        connection: actionConnection,
+                        kind: .io,
+                        context: "RSSI read"
+                    )
+                    peripheral.readRSSI()
+                    return
                 }
                 continue
             }
@@ -635,9 +860,10 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
             }
             switch notificationAction {
             case .terminal(let completion):
+                cancelGattWatchdog(connection: connection)
                 push(gattNotificationEvents(completion))
             case .setNotifyValue(
-                _,
+                let command,
                 let actionConnection,
                 let characteristicObject,
                 let enabled
@@ -649,7 +875,20 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                     )
                     return
                 }
+                armGattWatchdog(
+                    connection: actionConnection,
+                    kind: .io,
+                    context: "notification state transition"
+                )
+                notificationDiagnostics.record("setNotify.before", fields: notificationDiagnosticFields(
+                    peripheral: peripheral, characteristic: characteristic,
+                    extra: ["commandId": String(command.commandId.value), "action": enabled ? "enable" : "disable", "origin": "command"]
+                ))
                 peripheral.setNotifyValue(enabled, for: characteristic)
+                notificationDiagnostics.record("setNotify.after", fields: notificationDiagnosticFields(
+                    peripheral: peripheral, characteristic: characteristic,
+                    extra: ["commandId": String(command.commandId.value), "action": enabled ? "enable" : "disable", "origin": "command"]
+                ))
                 return
             case .retireForRediscovery(let actionConnection, let characteristicObject):
                 guard let characteristic = characteristicObject as? CBCharacteristic else {
@@ -659,7 +898,20 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                     )
                     return
                 }
+                armGattWatchdog(
+                    connection: actionConnection,
+                    kind: .io,
+                    context: "notification unsubscribe during GATT rediscovery"
+                )
+                notificationDiagnostics.record("setNotify.before", fields: notificationDiagnosticFields(
+                    peripheral: peripheral, characteristic: characteristic,
+                    extra: ["action": "disable", "origin": "rediscovery"]
+                ))
                 peripheral.setNotifyValue(false, for: characteristic)
+                notificationDiagnostics.record("setNotify.after", fields: notificationDiagnosticFields(
+                    peripheral: peripheral, characteristic: characteristic,
+                    extra: ["action": "disable", "origin": "rediscovery"]
+                ))
                 return
             }
         }
@@ -670,6 +922,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         context: String
     ) {
         let error = AppleEventMapper.internalError(context)
+        cancelGattWatchdog(connection: connection)
         let retirement = gattIoController.retireAll(
             connection: connection,
             error: error
@@ -691,6 +944,11 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         else {
             return
         }
+        armGattWatchdog(
+            connection: connection,
+            kind: .discovery,
+            context: "service discovery"
+        )
         peripheral.discoverServices(nil)
     }
 
@@ -711,6 +969,11 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 )
                 return
             }
+            armGattWatchdog(
+                connection: connection,
+                kind: .discovery,
+                context: "characteristic discovery"
+            )
             peripheral.discoverCharacteristics(nil, for: service)
         case .discoverDescriptors(let characteristicObject):
             guard let characteristic = characteristicObject as? CBCharacteristic else {
@@ -722,8 +985,14 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 )
                 return
             }
+            armGattWatchdog(
+                connection: connection,
+                kind: .discovery,
+                context: "descriptor discovery"
+            )
             peripheral.discoverDescriptors(for: characteristic)
         case .completed(let completion):
+            cancelGattWatchdog(connection: connection)
             push(
                 .gattDiscovered(
                     commandId: completion.correlation.command.commandId,
@@ -741,6 +1010,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         connection: AppleConnectionCorrelation,
         error: BleEventError
     ) {
+        cancelGattWatchdog(connection: connection)
         guard let command = gattController.failCurrent(connection: connection) else {
             return
         }
@@ -776,7 +1046,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         rssi: NSNumber?,
         error: Error?
     ) {
-        if rssiController.consumeRetiredCallback(peripheral: peripheral) {
+        if gattIoController.consumeRetiredRssiCallback(peripheral: peripheral) {
             return
         }
         guard let connection = connectionController.connectedCorrelation(for: peripheral) else {
@@ -788,7 +1058,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 context: "CoreBluetooth RSSI read failed"
             )
         }
-        guard let completion = rssiController.didReadRssi(
+        guard let completion = gattIoController.didReadRssi(
             connection: connection,
             peripheral: peripheral,
             rssi: rssi,
@@ -796,7 +1066,9 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         ) else {
             return
         }
-        push(rssiEvents(completion))
+        cancelGattWatchdog(connection: connection)
+        push(gattIoEvents(completion))
+        driveGattIo(connection: connection, peripheral: peripheral)
     }
 
     private func bestEffortUnsubscribe(
@@ -808,7 +1080,15 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
                 Self.logger.fault("notification cleanup lost its CoreBluetooth characteristic")
                 continue
             }
+            notificationDiagnostics.record("setNotify.before", fields: notificationDiagnosticFields(
+                peripheral: peripheral, characteristic: characteristic,
+                extra: ["action": "disable", "origin": "cleanup"]
+            ))
             peripheral.setNotifyValue(false, for: characteristic)
+            notificationDiagnostics.record("setNotify.after", fields: notificationDiagnosticFields(
+                peripheral: peripheral, characteristic: characteristic,
+                extra: ["action": "disable", "origin": "cleanup"]
+            ))
         }
     }
 
@@ -818,6 +1098,7 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
             return false
         }
         lifecycle.markFaulted()
+        gattWatchdogs.cancelAll().forEach { $0.cancel() }
         var events: [BleEvent] = []
         if let scanSessionId = scanController.stopForUnavailableAdapter() {
             centralManager?.stopScan()
@@ -827,9 +1108,6 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
             let connection = route.correlation
             let retirement = gattIoController.retireAll(connection: connection, error: error)
             events.append(contentsOf: gattRetirementEvents(retirement))
-            if let rssiCompletion = rssiController.retire(connection: connection, error: error) {
-                events.append(contentsOf: rssiEvents(rssiCompletion))
-            }
             if let command = gattController.retire(connection: connection) {
                 events.append(gattFailureEvent(command: command, error: error))
             }
@@ -856,26 +1134,102 @@ public final class AppleBleBackend: NSObject, BleBackend, @unchecked Sendable {
         push(events)
     }
 
+    private func notificationDiagnosticFields(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        error: Error? = nil,
+        extra: [String: Any] = [:]
+    ) -> [String: Any] {
+        var fields = gattIoController.diagnosticNotificationRoute(
+            connection: connectionController.connectedCorrelation(for: peripheral),
+            peripheral: peripheral, characteristic: characteristic
+        )
+        fields["isNotifying"] = characteristic.isNotifying
+        fields["hasError"] = error != nil
+        if let error = error as NSError? {
+            fields["errorDomain"] = error.domain
+            fields["errorCode"] = String(error.code)
+        }
+        fields["valueNil"] = characteristic.value == nil
+        if let value = characteristic.value {
+            fields["valueLength"] = value.count
+            fields["valueHex"] = value.prefix(16).map { String(format: "%02x", $0) }.joined()
+            fields["valueTruncated"] = value.count > 16
+        }
+        fields.merge(extra) { _, new in new }
+        if extra["disposition"] as? String == "ignored" {
+            if error != nil { fields["reason"] = "callback-error" }
+            else if characteristic.value == nil { fields["reason"] = "nil-value" }
+            else if fields["routeMatches"] as? Bool == true { fields["reason"] = "subscription-phase-rejects-value" }
+            else { fields["reason"] = "no-matching-subscription-or-read" }
+        }
+        return fields
+    }
+
+    private func notificationIngressDiagnostic(_ event: BleEvent, result: String) {
+        guard notificationDiagnostics.isEnabled,
+              case let .notificationReceived(connection, session, subscription, characteristic, value) = event else { return }
+        notificationDiagnostics.record("notification.ingress", fields: [
+            "connectionId": String(connection.value), "gattSessionId": String(session.value),
+            "subscriptionId": String(subscription.value), "characteristicId": String(characteristic.value),
+            "valueLength": value.count, "valueHex": value.prefix(16).map { String(format: "%02x", $0) }.joined(),
+            "valueTruncated": value.count > 16, "result": result,
+        ])
+    }
+
     private func push(_ events: [BleEvent]) {
         guard let ingress else {
+            lastIngressStatus = "no-ingress"
+            if notificationDiagnostics.isEnabled {
+                for event in events { notificationIngressDiagnostic(event, result: "no-ingress") }
+            }
             return
         }
+        var delivered = 0
+        var closed = 0
+        var invalid = 0
+        var downstreamFailed = 0
         for event in events {
             switch ingress.push(event: event) {
             case .delivered:
-                continue
+                delivered += 1
+                notificationIngressDiagnostic(event, result: "delivered")
             case .closed:
-                return
+                closed += 1
+                notificationIngressDiagnostic(event, result: "closed")
             case .invalidEvent(let message):
+                invalid += 1
+                notificationIngressDiagnostic(event, result: "invalid-event")
                 Self.logger.error(
                     "event ingress rejected an invalid Apple event: \(message, privacy: .private)"
                 )
             case .downstreamFailed(let message):
+                downstreamFailed += 1
+                notificationIngressDiagnostic(event, result: "downstream-failed")
                 Self.logger.error(
                     "Apple downstream event sink failed: \(message, privacy: .private)"
                 )
             }
         }
+        lastIngressStatus = "delivered=\(delivered),closed=\(closed),invalid=\(invalid),downstreamFailed=\(downstreamFailed)"
+    }
+
+    private func recordLossDiagnostic(
+        callback: String,
+        adapterState: String,
+        retiredOperationCount: Int,
+        emittedEventCount: Int
+    ) {
+        lastLossDiagnostic = [
+            "last_callback": callback,
+            "adapter_state": adapterState,
+            "retired_operation_count": String(retiredOperationCount),
+            "emitted_event_count": String(emittedEventCount),
+            "ingress_status": lastIngressStatus,
+            "active_connections": String(connectionController.activeCount),
+            "pending_io": String(gattIoController.pendingCount),
+            "watchdogs": String(gattWatchdogs.diagnosticCount),
+        ]
     }
 
     private func onQueue<T>(_ action: () throws -> T) rethrows -> T {
@@ -905,9 +1259,19 @@ extension AppleBleBackend: CBCentralManagerDelegate {
             return
         }
 
+        let state = central.state
         let authorization = CBManager.authorization
+        if let completion = diagnosticCentralRecreateCompletion {
+            diagnosticCentralRecreateCompletion = nil
+            completion([
+                "recreated": "true",
+                "state": String(describing: state),
+                "authorization": String(describing: authorization),
+            ])
+        }
+        let pendingIoBefore = gattIoController.pendingCount
         let snapshot = AppleEventMapper.adapterSnapshot(
-            state: central.state,
+            state: state,
             authorization: authorization
         )
         var events: [BleEvent] = [
@@ -917,60 +1281,47 @@ extension AppleBleBackend: CBCentralManagerDelegate {
             events.append(.commandCompleted(commandId: commandId, error: nil))
         }
         if let error = AppleEventMapper.scanAvailabilityError(
-            state: central.state,
+            state: state,
             authorization: authorization
         ), let scanSessionId = scanController.stopForUnavailableAdapter() {
             central.stopScan()
             events.append(.scanStopped(scanId: scanSessionId, result: .err(error: error)))
         }
-        if let error = AppleEventMapper.connectionAvailabilityError(
-            state: central.state,
-            authorization: CBManager.authorization
-        ) {
-            for route in connectionController.drain() {
-                let retirement = gattIoController.retireAll(
-                    connection: route.correlation,
-                    error: error
-                )
-                events.append(contentsOf: gattRetirementEvents(retirement))
-                if let rssiCompletion = rssiController.retire(
-                    connection: route.correlation,
-                    error: error
-                ) {
-                    events.append(contentsOf: rssiEvents(rssiCompletion))
+        events.append(contentsOf: AppleUnavailableConnectionRetirement.retireIfUnavailable(
+            state: state,
+            authorization: authorization,
+            connections: connectionController,
+            gatt: gattController,
+            io: gattIoController,
+            watchdogs: gattWatchdogs
+        ) { connection, retirement in
+            if let peripheral = connection.peripheral as? CBPeripheral {
+                if state == .poweredOn {
+                    bestEffortUnsubscribe(retirement, peripheral: peripheral)
                 }
-                if let command = gattController.retire(connection: route.correlation) {
-                    events.append(gattFailureEvent(command: command, error: error))
+                peripheral.delegate = nil
+                if state == .poweredOn {
+                    central.cancelPeripheralConnection(peripheral)
                 }
-                if let peripheral = route.correlation.peripheral as? CBPeripheral {
-                    if central.state == .poweredOn {
-                        bestEffortUnsubscribe(retirement, peripheral: peripheral)
-                    }
-                    peripheral.delegate = nil
-                    if central.state == .poweredOn {
-                        central.cancelPeripheralConnection(peripheral)
-                    }
-                }
-                events.append(
-                    contentsOf: AppleConnectionEventComposer.unavailable(
-                        route: route,
-                        error: error
-                    )
-                )
             }
-            _ = gattController.drain()
-        }
+        })
         // CoreBluetooth's resetting state invalidates the manager's native peripheral
         // lifecycles. Its later callbacks carry no operation token, so this backend
         // must not reuse retained CBPeripheral objects after the reset. The caller
         // must dispose and assemble a fresh backend instead. Powered-off and
         // authorization transitions remain recoverable within the current backend.
-        if wasReady && central.state == .resetting {
+        if wasReady && state == .resetting {
             lifecycle.markFaulted()
             scanController.dispose()
         }
         push(events)
         _ = handleGattSafetyFaultIfNeeded()
+        recordLossDiagnostic(
+            callback: "centralManagerDidUpdateState",
+            adapterState: String(describing: state),
+            retiredOperationCount: max(0, pendingIoBefore - gattIoController.pendingCount),
+            emittedEventCount: events.count
+        )
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -1032,17 +1383,12 @@ extension AppleBleBackend: CBCentralManagerDelegate {
             error,
             context: "the CoreBluetooth connection ended during native activity"
         )
+        cancelGattWatchdog(connection: correlation)
         let retirement = gattIoController.retireAll(
             connection: correlation,
             error: connectionEndedError
         )
         var events = gattRetirementEvents(retirement)
-        if let rssiCompletion = rssiController.retire(
-            connection: correlation,
-            error: connectionEndedError
-        ) {
-            events.append(contentsOf: rssiEvents(rssiCompletion))
-        }
         if let command = gattController.retire(connection: correlation) {
             events.append(
                 gattFailureEvent(
@@ -1114,6 +1460,12 @@ extension AppleBleBackend: CBCentralManagerDelegate {
         }
         push(events)
         _ = handleGattSafetyFaultIfNeeded()
+        recordLossDiagnostic(
+            callback: "didDisconnectPeripheral",
+            adapterState: centralManager.map { String(describing: $0.state) } ?? "missing",
+            retiredOperationCount: retirement.completions.count,
+            emittedEventCount: events.count
+        )
     }
 
     public func centralManager(
@@ -1312,13 +1664,18 @@ extension AppleBleBackend: CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        notificationDiagnostics.record("value.entry", fields: notificationDiagnosticFields(
+            peripheral: peripheral, characteristic: characteristic, error: error
+        ))
         if gattIoController.consumeRetiredReadCallback(
             peripheral: peripheral,
             characteristic: characteristic
         ) {
+            notificationDiagnostics.record("value.drop", fields: ["reason": "retired-read-barrier"])
             return
         }
         guard let connection = connectionController.connectedCorrelation(for: peripheral) else {
+            notificationDiagnostics.record("value.drop", fields: ["reason": "no-connected-correlation"])
             return
         }
         let mappedError = error.map {
@@ -1334,8 +1691,19 @@ extension AppleBleBackend: CBPeripheralDelegate {
             value: characteristic.value.map { [UInt8]($0) },
             error: mappedError
         )
+        let diagnosticDisposition: String
+        switch disposition {
+        case .read: diagnosticDisposition = "read"
+        case .notification: diagnosticDisposition = "notification"
+        case .ignored: diagnosticDisposition = "ignored"
+        }
+        notificationDiagnostics.record("value.disposition", fields: notificationDiagnosticFields(
+            peripheral: peripheral, characteristic: characteristic, error: error,
+            extra: ["disposition": diagnosticDisposition]
+        ))
         switch disposition {
         case .read(let completion):
+            cancelGattWatchdog(connection: connection)
             push(gattIoEvents(completion))
             driveGattIo(connection: connection, peripheral: peripheral)
         case .notification(let notification):
@@ -1358,13 +1726,18 @@ extension AppleBleBackend: CBPeripheralDelegate {
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        notificationDiagnostics.record("notification-state.entry", fields: notificationDiagnosticFields(
+            peripheral: peripheral, characteristic: characteristic, error: error
+        ))
         if gattIoController.consumeRetiredNotificationStateCallback(
             peripheral: peripheral,
             characteristic: characteristic
         ) {
+            notificationDiagnostics.record("notification-state.drop", fields: ["reason": "retired-notification-state-barrier"])
             return
         }
         guard let connection = connectionController.connectedCorrelation(for: peripheral) else {
+            notificationDiagnostics.record("notification-state.drop", fields: ["reason": "no-connected-correlation"])
             return
         }
         let mappedError = error.map {
@@ -1380,8 +1753,25 @@ extension AppleBleBackend: CBPeripheralDelegate {
             isNotifying: characteristic.isNotifying,
             error: mappedError
         ) else {
+            notificationDiagnostics.record("notification-state.drop", fields: notificationDiagnosticFields(
+                peripheral: peripheral, characteristic: characteristic, error: error,
+                extra: ["reason": "controller-no-completion"]
+            ))
             return
         }
+        let diagnosticCompletion: String
+        switch completion {
+        case .enabled: diagnosticCompletion = "enabled"
+        case .disabled: diagnosticCompletion = "disabled"
+        case .failed: diagnosticCompletion = "failed"
+        case .rediscoveryRetired: diagnosticCompletion = "rediscovery-retired"
+        case .rediscoveryFailed: diagnosticCompletion = "rediscovery-failed"
+        }
+        notificationDiagnostics.record("notification-state.result", fields: notificationDiagnosticFields(
+            peripheral: peripheral, characteristic: characteristic, error: error,
+            extra: ["completion": diagnosticCompletion]
+        ))
+        cancelGattWatchdog(connection: connection)
         switch completion {
         case .rediscoveryRetired:
             if handleGattSafetyFaultIfNeeded() {
@@ -1444,6 +1834,7 @@ extension AppleBleBackend: CBPeripheralDelegate {
         ) else {
             return
         }
+        cancelGattWatchdog(connection: connection)
         push(gattIoEvents(completion))
         driveGattIo(connection: connection, peripheral: peripheral)
     }

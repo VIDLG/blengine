@@ -31,6 +31,8 @@ import dev.blehub.BleEvent
 import dev.blehub.BleEventError
 import dev.blehub.BleHubException
 import dev.blehub.BluetoothUuid
+import dev.blehub.blehubContractVersion
+import dev.blehub.CancelOperationRequest
 import dev.blehub.CommandDispatchException
 import dev.blehub.CommandId
 import dev.blehub.ConnectCommand
@@ -52,7 +54,7 @@ import dev.blehub.ManufacturerData
 import dev.blehub.NotificationAction
 import dev.blehub.NotificationMode
 import dev.blehub.NotificationModeRequest
-import dev.blehub.NotificationState
+
 import dev.blehub.Platform
 
 import dev.blehub.ReadCharacteristicCommand
@@ -72,6 +74,7 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
+private const val DEFAULT_ACTIVE_OPERATION_WATCHDOG_MS = 10_000L
 
 /**
  * Android Central backend for the production BleHub contract.
@@ -88,6 +91,7 @@ import java.util.concurrent.TimeUnit
 public class AndroidBleBackend(
     context: Context,
     private val handler: Handler,
+    private val activeOperationWatchdogMs: Long = DEFAULT_ACTIVE_OPERATION_WATCHDOG_MS,
 ) : BleBackend {
     private val appContext = context.applicationContext
     private val stateLock = Any()
@@ -103,14 +107,21 @@ public class AndroidBleBackend(
     private var activeScan: ActiveScan? = null
     private var ingressClosed = false
     private var nextPeripheralId = 1UL
-    private var nextConnectionGeneration = 1L
+
     private var nextGattObjectId = 1UL
     private val peripheralIds = mutableMapOf<String, ULong>()
     private val peripheralAddresses = mutableMapOf<ULong, String>()
-    private val connectionsById = mutableMapOf<ULong, ActiveConnection>()
-    private val connectionsByPeripheral = mutableMapOf<ULong, ActiveConnection>()
+    private val connections = AndroidConnectionLifecycle(
+        stateLock = stateLock,
+        removeWatchdog = { handler.removeCallbacks(it) },
+        closeGatt = ::closeGatt,
+        publish = ::push,
+    )
 
     init {
+        require(activeOperationWatchdogMs > 0) {
+            "active operation watchdog duration must be positive"
+        }
         check(handler.looper != Looper.getMainLooper()) {
             "AndroidBleBackend requires a caller-owned dedicated Handler/Looper"
         }
@@ -122,9 +133,45 @@ public class AndroidBleBackend(
         ownsLease = true
     }
 
+    /**
+     * Read-only private integration diagnostics, not the canonical BleBackend ABI.
+     * Call before stopping the caller-owned Handler. The Handler boundary plus stateLock
+     * observes adapter-confined fields and admission/teardown reservations together.
+     *
+     * Counts logical owned roots, not Android heap objects or OS callback quiescence:
+     * connections includes connecting/disconnecting and pending-dispose routes;
+     * gattAttributes counts retained characteristic/descriptor index entries (service
+     * containers belong to the GATT connection root); pendingIo includes discovery and
+     * the whole FIFO. callbackRoutes counts connection correlation entries, registered
+     * scan callbacks, active discovery/I/O correlations and subscription value routes.
+     * adapterDelegates counts the retained adapter control endpoint; this implementation
+     * registers no BroadcastReceiver. Peer cache counts identities, not both inverse maps.
+     */
+    @androidx.annotation.VisibleForTesting
+    public fun snapshotRfResources(): Map<String, Int> {
+        var snapshot: Map<String, Int>? = null
+        runOnHandlerSync {
+            synchronized(stateLock) {
+                val connectionCounts = connectionRfResourceCounts(
+                    connections.ownedRoutes + pendingDisposeConnections,
+                )
+                snapshot = (connectionCounts + linkedMapOf(
+                    "activeScans" to if (activeScan != null) 1 else 0,
+                    "callbackRoutes" to (connectionCounts.getValue("callbackRoutes") +
+                            if (activeScan?.callback != null) 1 else 0),
+                    "ingressRoots" to listOfNotNull(ingress, pendingDisposeIngress).size,
+                    "adapterDelegates" to if (bluetoothAdapter != null) 1 else 0,
+                    "peerCacheEntries" to (peripheralIds.values + peripheralAddresses.keys).toSet().size,
+                    "backendLeases" to if (ownsLease) 1 else 0,
+                )).also { counts -> check(counts.values.all { it >= 0 }) }
+            }
+        }
+        return checkNotNull(snapshot)
+    }
+
     override fun capabilities() = BackendCapabilities(
         platform = Platform.ANDROID,
-        contractVersion = 5u,
+        contractVersion = blehubContractVersion(),
         supportsDuplicateScanResults = true,
         supportsConnectableFlag = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O,
         supportsReadRssi = true,
@@ -222,23 +269,7 @@ public class AndroidBleBackend(
                 ?: throw CommandDispatchException.InvalidRequest(
                     "the peripheral ID was not discovered by this Android backend",
                 )
-            if (connectionsByPeripheral.containsKey(command.peripheralId.value)) {
-                throw CommandDispatchException.InvalidState(
-                    "the peripheral already has an active connection lifecycle",
-                )
-            }
-            if (connectionsById.containsKey(command.connectionId.value)) {
-                throw CommandDispatchException.InvalidRequest(
-                    "the connection ID is already in use by this Android backend",
-                )
-            }
-            route = ActiveConnection(
-                generation = nextConnectionGeneration++,
-                command = command,
-                address = address,
-            )
-            connectionsById[command.connectionId.value] = route
-            connectionsByPeripheral[command.peripheralId.value] = route
+            route = connections.reserve(command, address)
         }
         if (!handler.post { connectOnHandler(route) }) {
             removeConnection(route)
@@ -253,7 +284,7 @@ public class AndroidBleBackend(
         val route: ActiveConnection
         synchronized(stateLock) {
             requireOpenAndReady()
-            route = connectionsById[command.connectionId.value]
+            route = connections.find(command.connectionId.value)
                 ?: throw CommandDispatchException.InvalidState(
                     "connection lifecycle is not active",
                 )
@@ -267,7 +298,7 @@ public class AndroidBleBackend(
         }
         if (!handler.post { disconnectOnHandler(route) }) {
             synchronized(stateLock) {
-                if (connectionsById[command.connectionId.value] === route) {
+                if (connections.find(command.connectionId.value) === route) {
                     route.phase = if (route.connectCompleted) {
                         ConnectionPhase.CONNECTED
                     } else {
@@ -287,7 +318,7 @@ public class AndroidBleBackend(
         val route: ActiveConnection
         synchronized(stateLock) {
             requireOpenAndReady()
-            route = connectionsById[command.connectionId.value]
+            route = connections.find(command.connectionId.value)
                 ?: throw CommandDispatchException.InvalidState(
                     "connection lifecycle is not active",
                 )
@@ -301,7 +332,7 @@ public class AndroidBleBackend(
                     "GATT discovery is already pending for this Android connection",
                 )
             }
-            if (route.pendingIo != null) {
+            if (!route.pendingIo.isEmpty) {
                 throw CommandDispatchException.InvalidState(
                     "GATT discovery cannot replace a database while Android GATT I/O is pending",
                 )
@@ -335,20 +366,11 @@ public class AndroidBleBackend(
                 ?: throw CommandDispatchException.InvalidRequest(
                     "the characteristic ID is not present in the active Android GATT database",
                 )
-            if (route.pendingIo != null) {
-                throw CommandDispatchException.InvalidState(
-                    "a characteristic operation is already pending for this Android connection",
-                )
-            }
-            route.pendingIo = PendingIo.Read(command, characteristic)
+            enqueuePendingIoLocked(route, PendingIo.Read(command, characteristic))
         }
-        if (!handler.post { readCharacteristicOnHandler(route, characteristic) }) {
+        if (!handler.post { driveIoQueue(route) }) {
             synchronized(stateLock) {
-                if (isActive(route) && route.pendingIo is PendingIo.Read &&
-                    (route.pendingIo as PendingIo.Read).command.commandId.value == command.commandId.value
-                ) {
-                    route.pendingIo = null
-                }
+                if (isActive(route)) route.pendingIo.removeQueued(command.commandId)
             }
             throw CommandDispatchException.BackendUnavailable(
                 "Android backend handler rejected characteristic read",
@@ -368,20 +390,11 @@ public class AndroidBleBackend(
                 ?: throw CommandDispatchException.InvalidRequest(
                     "the characteristic ID is not present in the active Android GATT database",
                 )
-            if (route.pendingIo != null) {
-                throw CommandDispatchException.InvalidState(
-                    "a characteristic operation is already pending for this Android connection",
-                )
-            }
-            route.pendingIo = PendingIo.Write(command, characteristic)
+            enqueuePendingIoLocked(route, PendingIo.Write(command, characteristic))
         }
-        if (!handler.post { writeCharacteristicOnHandler(route, characteristic) }) {
+        if (!handler.post { driveIoQueue(route) }) {
             synchronized(stateLock) {
-                if (isActive(route) && route.pendingIo is PendingIo.Write &&
-                    (route.pendingIo as PendingIo.Write).command.commandId.value == command.commandId.value
-                ) {
-                    route.pendingIo = null
-                }
+                if (isActive(route)) route.pendingIo.removeQueued(command.commandId)
             }
             throw CommandDispatchException.BackendUnavailable(
                 "Android backend handler rejected characteristic write",
@@ -405,9 +418,11 @@ public class AndroidBleBackend(
                 ?: throw CommandDispatchException.InvalidRequest(
                     "the characteristic ID is not present in the active Android GATT database",
                 )
-            if (route.pendingIo != null) {
+            if (route.pendingIo.any {
+                    it is PendingIo.Notification<*, *> && it.characteristic === characteristic
+                }) {
                 throw CommandDispatchException.InvalidState(
-                    "a characteristic operation is already pending for this Android connection",
+                    "notification configuration for the characteristic is already queued",
                 )
             }
             when (val action = command.action) {
@@ -452,12 +467,15 @@ public class AndroidBleBackend(
                     "the characteristic has no Client Characteristic Configuration descriptor",
                 )
             if (!strictIndicationRejected) {
-                route.pendingIo = PendingIo.Notification(
-                    command = command,
-                    characteristic = characteristic,
-                    descriptor = descriptor,
-                    mode = actualMode,
-                    enabling = enabling,
+                enqueuePendingIoLocked(
+                    route,
+                    PendingIo.Notification(
+                        command = command,
+                        characteristic = characteristic,
+                        descriptor = descriptor,
+                        mode = actualMode,
+                        enabling = enabling,
+                    ),
                 )
             }
         }
@@ -480,14 +498,9 @@ public class AndroidBleBackend(
             }
             return
         }
-        if (!handler.post { configureNotificationsOnHandler(route, characteristic, descriptor) }) {
+        if (!handler.post { driveIoQueue(route) }) {
             synchronized(stateLock) {
-                if (isActive(route) && route.pendingIo is PendingIo.Notification &&
-                    (route.pendingIo as PendingIo.Notification).command.commandId.value ==
-                    command.commandId.value
-                ) {
-                    route.pendingIo = null
-                }
+                if (isActive(route)) route.pendingIo.removeQueued(command.commandId)
             }
             throw CommandDispatchException.BackendUnavailable(
                 "Android backend handler rejected notification configuration",
@@ -501,25 +514,36 @@ public class AndroidBleBackend(
         synchronized(stateLock) {
             requireOpenAndReady()
             route = requireConnectedRoute(command.connectionId.value)
-            if (route.pendingIo != null) {
-                throw CommandDispatchException.InvalidState(
-                    "a GATT operation is already pending for this Android connection",
-                )
-            }
-            route.pendingIo = PendingIo.Rssi(command)
+            enqueuePendingIoLocked(route, PendingIo.Rssi(command))
         }
-        if (!handler.post { readRssiOnHandler(route) }) {
+        if (!handler.post { driveIoQueue(route) }) {
             synchronized(stateLock) {
-                if (isActive(route) && route.pendingIo is PendingIo.Rssi &&
-                    (route.pendingIo as PendingIo.Rssi).command.commandId.value == command.commandId.value
-                ) {
-                    route.pendingIo = null
-                }
+                if (isActive(route)) route.pendingIo.removeQueued(command.commandId)
             }
             throw CommandDispatchException.BackendUnavailable(
                 "Android backend handler rejected RSSI read",
                 platformDetails(null, "Handler", "post returned false"),
             )
+        }
+    }
+
+    override fun cancelOperation(request: CancelOperationRequest) {
+        synchronized(stateLock) {
+            requireOpenAndReady()
+            connections.cancelOperation(request.targetCommandId)
+        }
+        val event = BleEvent.CommandCompleted(
+            request.targetCommandId,
+            BleEventError(
+                category = BleErrorCategory.CANCELLED,
+                message = "Android GATT operation was cancelled before native dispatch",
+                platformDetails = platformDetails(null, "AndroidBleBackend", null),
+            ),
+        )
+        if (!handler.post { push(event) }) {
+            // The operation is already retired from the native queue. Publishing
+            // directly is safer than returning success without a terminal event.
+            push(event)
         }
     }
 
@@ -533,9 +557,7 @@ public class AndroidBleBackend(
                     pendingDisposeIngress = ingress
                     ingress = null
                     ingressClosed = true
-                    pendingDisposeConnections = connectionsById.values.toList()
-                    connectionsById.clear()
-                    connectionsByPeripheral.clear()
+                    pendingDisposeConnections = connections.drain()
                 }
 
                 Lifecycle.CLOSING -> Unit
@@ -547,6 +569,17 @@ public class AndroidBleBackend(
         // posting or waiting fails, a later dispose call can retry without losing
         // native handles or the backend lease.
         runOnHandlerSync {
+            synchronized(stateLock) {
+                val error = operationAbortedError(
+                    "Android backend disposal retired the connection operation",
+                )
+                connectionsToClose.forEach { route ->
+                    // Disposal closes the ingress before native teardown; callers
+                    // own the local AbandonedByDispose projection and no terminal
+                    // event is fabricated for these retired commands.
+                    retireGattStateLocked(route, error)
+                }
+            }
             connectionsToClose.forEach { route ->
                 route.gatt?.let { gatt ->
                     runCatching { gatt.disconnect() }
@@ -724,6 +757,12 @@ public class AndroidBleBackend(
             )
             return
         }
+        armWatchdog(
+            route,
+            gatt,
+            ActiveNativeOperation.Discovery(pending),
+            "Android GATT service discovery",
+        )
         try {
             if (!gatt.discoverServices()) {
                 finishGattDiscovery(
@@ -751,7 +790,8 @@ public class AndroidBleBackend(
         val pendingEvents: List<BleEvent>
         synchronized(stateLock) {
             if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED || route.gatt !== gatt) return
-            retiredSubscriptions = route.subscriptionsById.values.map { it.characteristic }
+            retiredSubscriptions =
+                route.subscriptionsById.values.map { it.characteristic as BluetoothGattCharacteristic }
             pendingEvents = retireGattStateLocked(route, invalidationError)
             route.phase = ConnectionPhase.DISCONNECTING
             route.disconnectCommandId = null
@@ -795,6 +835,7 @@ public class AndroidBleBackend(
         }
         val command: DiscoverGattCommand
         val database: GattDatabase
+        val watchdog: Runnable?
         synchronized(stateLock) {
             val pending = route.pendingDiscovery
             if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
@@ -807,10 +848,12 @@ public class AndroidBleBackend(
                 services = draft.services,
             )
             route.pendingDiscovery = null
+            watchdog = route.activeWatchdog.clear()
             route.gattSessionId = command.gattSessionId
             route.characteristicsById = draft.characteristics
             route.descriptorsById = draft.descriptors
         }
+        watchdog?.let(handler::removeCallbacks)
         push(BleEvent.GattDiscovered(command.commandId, database))
         push(BleEvent.CommandCompleted(command.commandId, null))
     }
@@ -833,33 +876,175 @@ public class AndroidBleBackend(
         error: BleEventError,
     ) {
         val commandId: CommandId
+        val watchdog: Runnable?
         synchronized(stateLock) {
             if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
                 route.gatt !== gatt
             ) return
             commandId = route.pendingDiscovery?.command?.commandId ?: return
             route.pendingDiscovery = null
+            watchdog = route.activeWatchdog.clear()
         }
+        watchdog?.let(handler::removeCallbacks)
         push(BleEvent.CommandCompleted(commandId, error))
     }
 
-    private fun readRssiOnHandler(route: ActiveConnection) {
-        val gatt = synchronized(stateLock) {
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt == null || route.pendingIo !is PendingIo.Rssi
+    private fun driveIoQueue(route: ActiveConnection) {
+        val (gatt, operation) = synchronized(stateLock) {
+            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED) return
+            val gatt = route.gatt ?: return
+            val operation = route.pendingIo.begin() ?: return
+            gatt to operation
+        }
+        armWatchdog(
+            route,
+            gatt,
+            ActiveNativeOperation.Io(operation),
+            "Android GATT I/O operation ${operation.commandId.value}",
+        )
+        when (operation) {
+            is PendingIo.Read -> readCharacteristicOnHandler(route, gatt, operation)
+            is PendingIo.Write<*> -> writeCharacteristicOnHandler(route, gatt, operation)
+            is PendingIo.Notification<*, *> -> configureNotificationsOnHandler(route, gatt, operation)
+            is PendingIo.Rssi -> readRssiOnHandler(route, gatt, operation)
+        }
+    }
+
+    private fun armWatchdog(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        operation: ActiveNativeOperation,
+        context: String,
+    ) {
+        lateinit var watchdog: Runnable
+        watchdog = Runnable { handleWatchdog(route, gatt, operation, context, watchdog) }
+        val (armed, replaced) = synchronized(stateLock) {
+            if (!isActiveOperationLocked(route, gatt, operation)) {
+                false to null
+            } else {
+                true to route.activeWatchdog.install(watchdog)
+            }
+        }
+        if (!armed) return
+        replaced?.let(handler::removeCallbacks)
+        if (!handler.postDelayed(watchdog, activeOperationWatchdogMs)) {
+            // A rejected delayed post means the owner Handler is already stopping;
+            // fail closed instead of leaving the active native slot unbounded.
+            handleWatchdog(route, gatt, operation, context, watchdog)
+        }
+    }
+
+    private fun isActiveIo(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        operation: PendingIo,
+    ): Boolean = synchronized(stateLock) {
+        isActiveIoLocked(route, gatt, operation)
+    }
+
+    private fun isActiveIoLocked(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        operation: PendingIo,
+    ): Boolean = isActive(route) && route.phase == ConnectionPhase.CONNECTED &&
+            route.gatt === gatt && route.pendingIo.isActive(operation)
+
+    private fun completeIo(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        operation: PendingIo,
+    ): Boolean {
+        val watchdog: Runnable?
+        val completed: Boolean
+        synchronized(stateLock) {
+            completed = isActiveIoLocked(route, gatt, operation) &&
+                    route.pendingIo.complete(operation)
+            watchdog = if (completed) route.activeWatchdog.clear() else null
+        }
+        watchdog?.let(handler::removeCallbacks)
+        return completed
+    }
+
+    private fun isActiveOperationLocked(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        operation: ActiveNativeOperation,
+    ): Boolean = when (operation) {
+        is ActiveNativeOperation.Io -> isActiveIoLocked(route, gatt, operation.operation)
+        is ActiveNativeOperation.Discovery ->
+            isActive(route) && route.phase == ConnectionPhase.CONNECTED &&
+                    route.gatt === gatt && route.pendingDiscovery === operation.pending
+    }
+
+    private fun handleWatchdog(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        operation: ActiveNativeOperation,
+        context: String,
+        watchdog: Runnable,
+    ) {
+        val pendingEvents: List<BleEvent>
+        synchronized(stateLock) {
+            if (!isActiveOperationLocked(route, gatt, operation) ||
+                !route.activeWatchdog.takeIfCurrent(watchdog)
             ) return
-            route.gatt
-        } ?: return
+            val timeout = operationTimeoutError(
+                "$context exceeded the native callback watchdog",
+            )
+            val aborted = operationAbortedError(
+                "Android GATT connection recovery retired a pending operation",
+            )
+            pendingEvents = when (operation) {
+                is ActiveNativeOperation.Io -> retireGattStateLocked(
+                    route,
+                    error = aborted,
+                    activeOperationError = timeout,
+                    queuedOperationError = aborted,
+                )
+
+                is ActiveNativeOperation.Discovery -> retireGattStateLocked(
+                    route,
+                    error = timeout,
+                    activeOperationError = aborted,
+                    queuedOperationError = aborted,
+                )
+            }
+            removeConnectionLocked(route)
+        }
+
+        // The old route is already retired before native teardown. Any callback
+        // arriving after this point fails the exact route/gatt/operation checks.
+        runCatching { gatt.disconnect() }
+        runCatching { gatt.close() }
+        pendingEvents.forEach(::push)
+        push(
+            BleEvent.ConnectionStateChanged(
+                commandId = null,
+                connectionId = route.command.connectionId,
+                result = ConnectionStateResult.Err(
+                    connectionError("Android GATT operation watchdog retired the connection"),
+                ),
+            ),
+        )
+    }
+
+    private fun readRssiOnHandler(
+        route: ActiveConnection,
+        gatt: BluetoothGatt,
+        pending: PendingIo.Rssi,
+    ) {
+        if (!isActiveIo(route, gatt, pending)) return
         try {
             if (!gatt.readRemoteRssi()) {
-                finishRssi(route, gatt, 0, gattError("Android rejected the RSSI read request"))
+                finishRssi(route, gatt, pending, 0, gattError("Android rejected the RSSI read request"))
             }
         } catch (error: SecurityException) {
-            finishRssi(route, gatt, 0, permissionError(error.message))
+            finishRssi(route, gatt, pending, 0, permissionError(error.message))
         } catch (error: IllegalStateException) {
             finishRssi(
                 route,
                 gatt,
+                pending,
                 0,
                 gattError(error.message ?: "Android RSSI read is not available"),
             )
@@ -872,122 +1057,93 @@ public class AndroidBleBackend(
         rssi: Int,
         status: Int,
     ) {
-        if (status == BluetoothGatt.GATT_SUCCESS) {
-            finishRssi(route, gatt, rssi, null)
-        } else {
-            finishRssi(
-                route,
-                gatt,
-                rssi,
-                gattError("Android RSSI read ended with status $status", status),
-            )
-        }
+        val pending = synchronized(stateLock) {
+            if (!isActive(route) || route.gatt !== gatt) return
+            route.pendingIo.active() as? PendingIo.Rssi
+        } ?: return
+        finishRssi(
+            route,
+            gatt,
+            pending,
+            rssi,
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                null
+            } else {
+                gattError("Android RSSI read ended with status $status", status)
+            },
+        )
     }
 
     private fun finishRssi(
         route: ActiveConnection,
         gatt: BluetoothGatt,
+        pending: PendingIo.Rssi,
         rssi: Int,
         error: BleEventError?,
     ) {
-        val command: ReadRssiCommand
-        synchronized(stateLock) {
-            val pending = route.pendingIo
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt !== gatt || pending !is PendingIo.Rssi
-            ) return
-            command = pending.command
-            route.pendingIo = null
-        }
+        if (!completeIo(route, gatt, pending)) return
         if (error != null) {
-            push(BleEvent.CommandCompleted(command.commandId, error))
+            push(BleEvent.CommandCompleted(pending.command.commandId, error))
         } else {
             push(
                 BleEvent.RssiRead(
-                    commandId = command.commandId,
-                    connectionId = command.connectionId,
+                    commandId = pending.command.commandId,
+                    connectionId = pending.command.connectionId,
                     rssi = rssi.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort(),
                 ),
             )
-            push(BleEvent.CommandCompleted(command.commandId, null))
+            push(BleEvent.CommandCompleted(pending.command.commandId, null))
         }
+        driveIoQueue(route)
     }
 
     private fun configureNotificationsOnHandler(
         route: ActiveConnection,
-        characteristic: BluetoothGattCharacteristic,
-        descriptor: BluetoothGattDescriptor,
+        gatt: BluetoothGatt,
+        pending: PendingIo.Notification<*, *>,
     ) {
-        val pending: PendingIo.Notification
-        val gatt = synchronized(stateLock) {
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt == null || route.pendingIo !is PendingIo.Notification
-            ) {
-                return
-            }
-            pending = route.pendingIo as PendingIo.Notification
-            route.gatt
-        } ?: return
-        val enabled = pending.enabling
-        val localEnabled = try {
-            gatt.setCharacteristicNotification(characteristic, enabled)
-        } catch (error: SecurityException) {
-            finishNotification(route, gatt, descriptor, permissionError(error.message))
-            return
-        } catch (error: IllegalStateException) {
-            finishNotification(
-                route,
-                gatt,
-                descriptor,
-                gattError(error.message ?: "Android notification configuration is not available"),
-            )
-            return
-        }
-        if (!localEnabled) {
-            finishNotification(
-                route,
-                gatt,
-                descriptor,
-                gattError("Android rejected the local notification configuration"),
-            )
-            return
-        }
-        val value = when {
-            !enabled -> BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
-            pending.mode == NotificationMode.INDICATION ->
-                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-
-            else -> BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        }
-        try {
-            val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                gatt.writeDescriptor(descriptor, value.clone()) == 0
-            } else {
-                @Suppress("DEPRECATION")
-                run {
-                    descriptor.value = value.clone()
-                    gatt.writeDescriptor(descriptor)
-                }
-            }
-            if (!accepted) {
-                finishNotification(
-                    route,
-                    gatt,
-                    descriptor,
-                    gattError("Android rejected the Client Characteristic Configuration write"),
-                )
-            }
-        } catch (error: SecurityException) {
-            finishNotification(route, gatt, descriptor, permissionError(error.message))
-        } catch (error: IllegalStateException) {
-            finishNotification(
-                route,
-                gatt,
-                descriptor,
-                gattError(error.message ?: "Android CCCD configuration is not available"),
-            )
-        }
+        notificationLifecycle(route, gatt).submit(pending)
     }
+
+    private fun notificationLifecycle(route: ActiveConnection, gatt: BluetoothGatt) =
+        NotificationLifecycle(
+            stateLock = stateLock,
+            route = route,
+            ownsRoute = {
+                lifecycle != Lifecycle.CLOSING && lifecycle != Lifecycle.CLOSED &&
+                        isActive(route) && route.gatt === gatt
+            },
+            setLocalRegistration = { pending, enabled ->
+                gatt.setCharacteristicNotification(pending.characteristic as BluetoothGattCharacteristic, enabled)
+            },
+            submitDescriptor = { pending ->
+                val descriptor = pending.descriptor as BluetoothGattDescriptor
+                val value = when {
+                    !pending.enabling -> BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+                    pending.mode == NotificationMode.INDICATION -> BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                    else -> BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    gatt.writeDescriptor(descriptor, value.clone()) == 0
+                } else {
+                    @Suppress("DEPRECATION")
+                    run {
+                        descriptor.value = value.clone()
+                        gatt.writeDescriptor(descriptor)
+                    }
+                }
+            },
+            reportCompensationFailure = { commandId, error ->
+                Log.w(
+                    TAG,
+                    "Android best-effort local notification compensation failed for command ${commandId.value}",
+                    error
+                )
+            },
+            removeWatchdog = { handler.removeCallbacks(it) },
+            publish = ::push,
+            driveQueue = { driveIoQueue(route) },
+        )
 
     private fun handleDescriptorWrite(
         route: ActiveConnection,
@@ -995,67 +1151,7 @@ public class AndroidBleBackend(
         descriptor: BluetoothGattDescriptor,
         status: Int,
     ) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            finishNotification(
-                route,
-                gatt,
-                descriptor,
-                gattError("Android CCCD write ended with status $status", status),
-            )
-            return
-        }
-        finishNotification(route, gatt, descriptor, null)
-    }
-
-    private fun finishNotification(
-        route: ActiveConnection,
-        gatt: BluetoothGatt,
-        descriptor: BluetoothGattDescriptor,
-        error: BleEventError?,
-    ) {
-        val pending: PendingIo.Notification
-        synchronized(stateLock) {
-            val current = route.pendingIo
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt !== gatt || current !is PendingIo.Notification ||
-                current.descriptor !== descriptor
-            ) return
-            pending = current
-            route.pendingIo = null
-            if (error == null) {
-                if (pending.enabling) {
-                    route.subscriptionsById[pending.command.subscriptionId.value] =
-                        ActiveSubscription(
-                            subscriptionId = pending.command.subscriptionId,
-                            characteristicId = pending.command.characteristicId,
-                            characteristic = pending.characteristic,
-                            mode = pending.mode,
-                        )
-                } else {
-                    route.subscriptionsById.remove(pending.command.subscriptionId.value)
-                }
-            }
-        }
-        if (error != null) {
-            push(BleEvent.CommandCompleted(pending.command.commandId, error))
-            return
-        }
-        val state = if (pending.enabling) {
-            NotificationState.Enabled(pending.mode)
-        } else {
-            NotificationState.Disabled
-        }
-        push(
-            BleEvent.NotificationStateChanged(
-                commandId = pending.command.commandId,
-                connectionId = pending.command.connectionId,
-                gattSessionId = pending.command.gattSessionId,
-                subscriptionId = pending.command.subscriptionId,
-                characteristicId = pending.command.characteristicId,
-                state = state,
-            ),
-        )
-        push(BleEvent.CommandCompleted(pending.command.commandId, null))
+        notificationLifecycle(route, gatt).onCallback(descriptor, status)
     }
 
     private fun handleCharacteristicChanged(
@@ -1064,7 +1160,7 @@ public class AndroidBleBackend(
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray,
     ) {
-        val subscription: ActiveSubscription
+        val subscription: ActiveSubscription<*>
         synchronized(stateLock) {
             subscription = resolveCharacteristicNotificationRoute(
                 active = isActive(route) && route.phase == ConnectionPhase.CONNECTED,
@@ -1123,30 +1219,27 @@ public class AndroidBleBackend(
 
     private fun readCharacteristicOnHandler(
         route: ActiveConnection,
-        characteristic: BluetoothGattCharacteristic,
+        gatt: BluetoothGatt,
+        pending: PendingIo.Read,
     ) {
-        val gatt = synchronized(stateLock) {
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt == null || route.pendingIo !is PendingIo.Read
-            ) return
-            route.gatt
-        } ?: return
+        if (!isActiveIo(route, gatt, pending)) return
+        val characteristic = pending.characteristic
         try {
             if (!gatt.readCharacteristic(characteristic)) {
                 finishCharacteristicRead(
                     route,
                     gatt,
-                    characteristic,
+                    pending,
                     gattError("Android rejected the characteristic read request"),
                 )
             }
         } catch (error: SecurityException) {
-            finishCharacteristicRead(route, gatt, characteristic, permissionError(error.message))
+            finishCharacteristicRead(route, gatt, pending, permissionError(error.message))
         } catch (error: IllegalStateException) {
             finishCharacteristicRead(
                 route,
                 gatt,
-                characteristic,
+                pending,
                 gattError(error.message ?: "Android characteristic read is not available"),
             )
         }
@@ -1154,22 +1247,18 @@ public class AndroidBleBackend(
 
     private fun writeCharacteristicOnHandler(
         route: ActiveConnection,
-        characteristic: BluetoothGattCharacteristic,
+        gatt: BluetoothGatt,
+        pending: PendingIo.Write<*>,
     ) {
-        val command: WriteCharacteristicCommand
-        val gatt = synchronized(stateLock) {
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt == null || route.pendingIo !is PendingIo.Write
-            ) return
-            command = (route.pendingIo as PendingIo.Write).command
-            route.gatt
-        } ?: return
-        val writeType = when (command.writeType) {
-            WriteType.WITH_RESPONSE -> BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            WriteType.WITHOUT_RESPONSE -> BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        }
-        try {
-            val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        writeLifecycle(route, gatt).submit(pending) {
+            // Production admission always supplies the Framework characteristic.
+            val characteristic = pending.characteristic as BluetoothGattCharacteristic
+            val command = pending.command
+            val writeType = when (command.writeType) {
+                WriteType.WITH_RESPONSE -> BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                WriteType.WITHOUT_RESPONSE -> BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 gatt.writeCharacteristic(characteristic, command.value.clone(), writeType) == 0
             } else {
                 @Suppress("DEPRECATION")
@@ -1179,25 +1268,6 @@ public class AndroidBleBackend(
                     gatt.writeCharacteristic(characteristic)
                 }
             }
-            if (!accepted) {
-                finishCharacteristicWrite(
-                    route,
-                    gatt,
-                    characteristic,
-                    gattError("Android rejected the characteristic write request"),
-                )
-            } else if (command.writeType == WriteType.WITHOUT_RESPONSE) {
-                finishCharacteristicWrite(route, gatt, characteristic, null)
-            }
-        } catch (error: SecurityException) {
-            finishCharacteristicWrite(route, gatt, characteristic, permissionError(error.message))
-        } catch (error: IllegalStateException) {
-            finishCharacteristicWrite(
-                route,
-                gatt,
-                characteristic,
-                gattError(error.message ?: "Android characteristic write is not available"),
-            )
         }
     }
 
@@ -1208,35 +1278,35 @@ public class AndroidBleBackend(
         value: ByteArray,
         status: Int,
     ) {
+        val pending = synchronized(stateLock) {
+            if (!isActive(route) || route.gatt !== gatt || route.phase != ConnectionPhase.CONNECTED) {
+                null
+            } else {
+                (route.pendingIo.active() as? PendingIo.Read)
+                    ?.takeIf { it.characteristic === characteristic }
+            }
+        } ?: return
         if (status != BluetoothGatt.GATT_SUCCESS) {
             finishCharacteristicRead(
                 route,
                 gatt,
-                characteristic,
+                pending,
                 gattError("Android characteristic read ended with status $status", status),
             )
             return
         }
-        val command: ReadCharacteristicCommand
-        synchronized(stateLock) {
-            val pending = route.pendingIo
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt !== gatt || pending !is PendingIo.Read ||
-                pending.characteristic !== characteristic
-            ) return
-            command = pending.command
-            route.pendingIo = null
-        }
+        if (!completeIo(route, gatt, pending)) return
         push(
             BleEvent.CharacteristicRead(
-                commandId = command.commandId,
-                connectionId = command.connectionId,
-                gattSessionId = command.gattSessionId,
-                characteristicId = command.characteristicId,
+                commandId = pending.command.commandId,
+                connectionId = pending.command.connectionId,
+                gattSessionId = pending.command.gattSessionId,
+                characteristicId = pending.command.characteristicId,
                 value = value,
             ),
         )
-        push(BleEvent.CommandCompleted(command.commandId, null))
+        push(BleEvent.CommandCompleted(pending.command.commandId, null))
+        driveIoQueue(route)
     }
 
     private fun handleCharacteristicWrite(
@@ -1245,78 +1315,60 @@ public class AndroidBleBackend(
         characteristic: BluetoothGattCharacteristic,
         status: Int,
     ) {
-        if (status != BluetoothGatt.GATT_SUCCESS) {
-            finishCharacteristicWrite(
-                route,
-                gatt,
-                characteristic,
-                gattError("Android characteristic write ended with status $status", status),
-            )
-            return
-        }
-        finishCharacteristicWrite(route, gatt, characteristic, null)
+        writeLifecycle(route, gatt).onCallback(characteristic, status)
     }
 
     private fun finishCharacteristicRead(
         route: ActiveConnection,
         gatt: BluetoothGatt,
-        characteristic: BluetoothGattCharacteristic,
+        pending: PendingIo.Read,
         error: BleEventError,
     ) {
-        val command: ReadCharacteristicCommand
-        synchronized(stateLock) {
-            val pending = route.pendingIo
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt !== gatt || pending !is PendingIo.Read ||
-                pending.characteristic !== characteristic
-            ) return
-            command = pending.command
-            route.pendingIo = null
-        }
-        push(BleEvent.CommandCompleted(command.commandId, error))
+        if (!completeIo(route, gatt, pending)) return
+        push(BleEvent.CommandCompleted(pending.command.commandId, error))
+        driveIoQueue(route)
     }
 
-    private fun finishCharacteristicWrite(
-        route: ActiveConnection,
-        gatt: BluetoothGatt,
-        characteristic: BluetoothGattCharacteristic,
-        error: BleEventError?,
-    ) {
-        val command: WriteCharacteristicCommand
-        synchronized(stateLock) {
-            val pending = route.pendingIo
-            if (!isActive(route) || route.phase != ConnectionPhase.CONNECTED ||
-                route.gatt !== gatt || pending !is PendingIo.Write ||
-                pending.characteristic !== characteristic
-            ) return
-            command = pending.command
-            route.pendingIo = null
+    private fun writeLifecycle(route: ActiveConnection, gatt: BluetoothGatt) =
+        CharacteristicWriteLifecycle(
+            stateLock = stateLock,
+            route = route,
+            ownsRoute = {
+                lifecycle != Lifecycle.CLOSING && lifecycle != Lifecycle.CLOSED &&
+                        isActive(route) && route.gatt === gatt
+            },
+            removeWatchdog = { handler.removeCallbacks(it) },
+            publish = ::push,
+            driveQueue = { driveIoQueue(route) },
+        )
+
+    /** Called only while stateLock is held; admission never invokes native code. */
+    private fun enqueuePendingIoLocked(route: ActiveConnection, operation: PendingIo) {
+        if (route.pendingIo.contains(operation.commandId)) {
+            throw CommandDispatchException.InvalidRequest(
+                "the command ID is already pending for this Android connection",
+            )
         }
-        if (error == null) {
-            if (command.writeType == WriteType.WITH_RESPONSE) {
-                push(
-                    BleEvent.CharacteristicWritten(
-                        commandId = command.commandId,
-                        connectionId = command.connectionId,
-                        gattSessionId = command.gattSessionId,
-                        characteristicId = command.characteristicId,
-                    ),
-                )
-            }
-            push(BleEvent.CommandCompleted(command.commandId, null))
-        } else {
-            push(BleEvent.CommandCompleted(command.commandId, error))
+        if (!route.pendingIo.enqueue(operation)) {
+            throw CommandDispatchException.ResourceExhausted(
+                "Android connection GATT operation queue is full",
+            )
         }
     }
 
     private fun requireConnectedRoute(connectionId: ULong): ActiveConnection {
-        val route = connectionsById[connectionId]
+        val route = connections.find(connectionId)
             ?: throw CommandDispatchException.InvalidState(
                 "connection lifecycle is not active",
             )
         if (route.phase != ConnectionPhase.CONNECTED) {
             throw CommandDispatchException.InvalidState(
                 "connection lifecycle is not connected",
+            )
+        }
+        if (route.pendingDiscovery != null) {
+            throw CommandDispatchException.InvalidState(
+                "GATT discovery is pending on this Android connection",
             )
         }
         return route
@@ -1335,7 +1387,8 @@ public class AndroidBleBackend(
         val pendingEvents: List<BleEvent>
         synchronized(stateLock) {
             if (!isActive(route) || lifecycle == Lifecycle.CLOSED || lifecycle == Lifecycle.CLOSING) return
-            retiredSubscriptions = route.subscriptionsById.values.map { it.characteristic }
+            retiredSubscriptions =
+                route.subscriptionsById.values.map { it.characteristic as BluetoothGattCharacteristic }
             pendingEvents = retireGattStateLocked(
                 route,
                 connectionError("Android GATT activity was retired by disconnect"),
@@ -1462,76 +1515,7 @@ public class AndroidBleBackend(
     }
 
     private fun finishConnectionDisconnected(route: ActiveConnection, status: Int) {
-        val disconnectCommandId: CommandId?
-        val connectWasCompleted: Boolean
-        val pendingEvents: List<BleEvent>
-        val activityError = if (status == BluetoothGatt.GATT_SUCCESS) {
-            connectionError("Android GATT connection ended during native activity")
-        } else {
-            connectionError("Android GATT connection ended during native activity", status)
-        }
-        synchronized(stateLock) {
-            if (!removeConnectionLocked(route)) return
-            pendingEvents = retireGattStateLocked(route, activityError)
-            disconnectCommandId = route.disconnectCommandId
-            connectWasCompleted = route.connectCompleted
-        }
-        closeGatt(route)
-        pendingEvents.forEach(::push)
-        val error = if (status == BluetoothGatt.GATT_SUCCESS) {
-            null
-        } else {
-            connectionError(
-                "Android GATT connection ended with status $status",
-                status,
-            )
-        }
-        if (!connectWasCompleted) {
-            val connectError = error ?: connectionError(
-                "Android GATT connection ended before reaching the connected state",
-            )
-            push(
-                BleEvent.ConnectionStateChanged(
-                    commandId = route.command.commandId,
-                    connectionId = route.command.connectionId,
-                    result = ConnectionStateResult.Err(connectError),
-                ),
-            )
-            push(BleEvent.CommandCompleted(route.command.commandId, connectError))
-        }
-        if (disconnectCommandId != null) {
-            if (error == null) {
-                push(
-                    BleEvent.ConnectionStateChanged(
-                        commandId = disconnectCommandId,
-                        connectionId = route.command.connectionId,
-                        result = ConnectionStateResult.Ok(ConnectionState.DISCONNECTED),
-                    ),
-                )
-                push(BleEvent.CommandCompleted(disconnectCommandId, null))
-            } else {
-                push(
-                    BleEvent.ConnectionStateChanged(
-                        commandId = disconnectCommandId,
-                        connectionId = route.command.connectionId,
-                        result = ConnectionStateResult.Err(error),
-                    ),
-                )
-                push(BleEvent.CommandCompleted(disconnectCommandId, error))
-            }
-        } else if (connectWasCompleted) {
-            push(
-                BleEvent.ConnectionStateChanged(
-                    commandId = null,
-                    connectionId = route.command.connectionId,
-                    result = if (error == null) {
-                        ConnectionStateResult.Ok(ConnectionState.DISCONNECTED)
-                    } else {
-                        ConnectionStateResult.Err(error)
-                    },
-                ),
-            )
-        }
+        connections.disconnected(route, status)
     }
 
     private fun finishDisconnectFailure(route: ActiveConnection, error: BleEventError) {
@@ -1563,32 +1547,13 @@ public class AndroidBleBackend(
     private fun retireGattStateLocked(
         route: ActiveConnection,
         error: BleEventError,
+        activeOperationError: BleEventError = error,
+        queuedOperationError: BleEventError = error,
     ): List<BleEvent> {
-        val events = buildList {
-            route.pendingDiscovery?.let {
-                add(BleEvent.CommandCompleted(it.command.commandId, error))
-            }
-            route.pendingIo?.let { pending ->
-                val commandId = when (pending) {
-                    is PendingIo.Read -> pending.command.commandId
-                    is PendingIo.Write -> pending.command.commandId
-                    is PendingIo.Notification -> pending.command.commandId
-                    is PendingIo.Rssi -> pending.command.commandId
-                }
-                add(BleEvent.CommandCompleted(commandId, error))
-            }
-        }
-        route.pendingDiscovery = null
-        route.pendingIo = null
-        route.gattSessionId = null
-        route.characteristicsById = emptyMap()
-        route.descriptorsById = emptyMap()
-        route.subscriptionsById.clear()
-        return events
+        return connections.retireGattState(route, error, activeOperationError, queuedOperationError)
     }
 
-    private fun isActive(route: ActiveConnection): Boolean =
-        connectionsById[route.command.connectionId.value] === route
+    private fun isActive(route: ActiveConnection): Boolean = connections.isActive(route)
 
     private fun removeConnection(route: ActiveConnection) {
         synchronized(stateLock) {
@@ -1596,14 +1561,7 @@ public class AndroidBleBackend(
         }
     }
 
-    private fun removeConnectionLocked(route: ActiveConnection): Boolean {
-        if (!isActive(route)) return false
-        connectionsById.remove(route.command.connectionId.value)
-        if (connectionsByPeripheral[route.command.peripheralId.value] === route) {
-            connectionsByPeripheral.remove(route.command.peripheralId.value)
-        }
-        return true
-    }
+    private fun removeConnectionLocked(route: ActiveConnection): Boolean = connections.remove(route)
 
     private fun initializeOnHandler(command: InitializeCommand) {
         synchronized(stateLock) {

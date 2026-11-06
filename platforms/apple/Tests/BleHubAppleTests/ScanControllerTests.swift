@@ -291,6 +291,7 @@ final class ScanControllerTests: XCTestCase {
 
         let firstPeripheralId = try XCTUnwrap(controller.peripheralId(for: identifier))
         XCTAssertEqual(firstPeripheralId, controller.peripheralId(for: identifier))
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 1)
         XCTAssertThrowsError(
             try controller.stop(
                 command: StopScanCommand(
@@ -306,9 +307,15 @@ final class ScanControllerTests: XCTestCase {
         )
         XCTAssertEqual(try controller.stop(command: stop), .stopped(first.scanSessionId))
         XCTAssertEqual(try controller.stop(command: stop), .alreadyStopped)
+        XCTAssertNil(controller.activeSessionId)
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 1, "stopping does not erase warm identity")
 
         _ = try controller.begin(command: second)
         XCTAssertEqual(firstPeripheralId, controller.peripheralId(for: identifier))
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 1)
+        controller.dispose()
+        XCTAssertNil(controller.activeSessionId)
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 0)
     }
 
     private func startCommand(

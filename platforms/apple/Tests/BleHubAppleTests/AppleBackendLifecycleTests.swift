@@ -1,7 +1,7 @@
 import BleHubUniFfi
 
 import XCTest
-@testable import BleHubApple
+@_spi(AppleDiagnostics) @testable import BleHubApple
 
 final class AppleBackendLifecycleTests: XCTestCase {
     func testInitializationTransitionsExactlyOnceOnFirstStateCallback() throws {
@@ -69,6 +69,54 @@ final class AppleBackendLifecycleTests: XCTestCase {
         try replacement.dispose()
     }
 
+    func testResourceSnapshotObservesBoundIngressAndLeaseThenDisposedBackend() throws {
+        let backend = try AppleBleBackend(queueLabel: "dev.blehub.apple.tests.resources")
+        defer { try? backend.dispose() }
+        let hub = try BleHub(backend: backend, downstream: ResourceTestSink())
+        let bound = expectation(description: "bound backend ownership")
+        backend.diagnosticSnapshotRfResources { counts in
+            XCTAssertEqual(counts.count, 11)
+            XCTAssertEqual(counts["ingressRoots"], 1)
+            XCTAssertEqual(counts["backendLeases"], 1)
+            XCTAssertEqual(counts["adapterDelegates"], 0, "no manager before initialization")
+            bound.fulfill()
+        }
+        wait(for: [bound], timeout: 5)
+
+        try hub.dispose()
+        try backend.dispose()
+        let disposed = expectation(description: "observed zero on retained disposed backend")
+        backend.diagnosticSnapshotRfResources { counts in
+            XCTAssertEqual(counts.count, 11)
+            XCTAssertTrue(counts.values.allSatisfy { $0 == 0 }, "disposed backend: \(counts)")
+            disposed.fulfill()
+        }
+        wait(for: [disposed], timeout: 5)
+        // The backend remains strongly held throughout both observations.
+        XCTAssertThrowsError(try backend.initialize(command: InitializeCommand(commandId: CommandId(value: 99))))
+    }
+
+    func testFifoSnapshotMissingAndDisposedConnectionIsNilOnBackendQueue() throws {
+        let backend = try AppleBleBackend(queueLabel: "dev.blehub.apple.tests.fifo")
+        defer { try? backend.dispose() }
+        let missing = expectation(description: "missing connection observed on backend queue")
+        backend.diagnosticSnapshotGattIo(connectionId: ConnectionId(value: 10)) { snapshot in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            XCTAssertNil(snapshot)
+            // Reentrant backend work must not deadlock; the second observation is asynchronous.
+            do {
+                try backend.dispose()
+            } catch {
+                XCTFail("reentrant dispose failed: \(error)")
+            }
+            backend.diagnosticSnapshotGattIo(connectionId: ConnectionId(value: 10)) { disposed in
+                XCTAssertNil(disposed)
+                missing.fulfill()
+            }
+        }
+        wait(for: [missing], timeout: 5)
+    }
+
     func testBackendCapabilitiesAndClosedDispatchBoundary() throws {
         let backend = try AppleBleBackend(queueLabel: "dev.blehub.apple.tests.backend")
         let capabilities = try backend.capabilities()
@@ -106,4 +154,8 @@ final class AppleBackendLifecycleTests: XCTestCase {
             }
         }
     }
+}
+
+private final class ResourceTestSink: BleEventSink {
+    func onEvent(event: BleEvent) throws {}
 }

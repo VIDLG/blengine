@@ -21,4 +21,5 @@ bindgen = ["dep:uniffi", "uniffi/cli"]
 [dependencies]
 blehub = { path = "../blehub" }
 bleng = { path = "../bleng" }
+bleng-supervisor = { path = "../bleng-supervisor", features = ["ffi"] }
 uniffi = { workspace = true, optional = true }

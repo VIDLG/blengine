@@ -1,9 +1,10 @@
-use blehub::{BluetoothUuid, NotificationModeRequest, ScanOptions};
+use blehub::{AdapterSnapshot, BluetoothUuid, NotificationModeRequest, ScanOptions};
 use thiserror::Error;
 
 use crate::recovery::{
     OwnerBackendIdentity, OwnerGeneration, RecoveryAction, RecoveryAttemptId, RecoveryContext,
-    RecoveryLink, RecoveryObservation, RecoveryOperationId, RecoveryPolicyConfig, RecoverySignal,
+    RecoveryLink, RecoveryMode, RecoveryObservation, RecoveryOperationId, RecoveryOutcome,
+    RecoveryPolicyConfig, RecoverySignal,
 };
 use crate::{PlatformRecoveryAction, RecoveryTarget, SupervisorConfig, SupervisorError};
 
@@ -53,6 +54,141 @@ impl TryFrom<ForeignOwnerContext> for RecoveryContext {
     }
 }
 
+/// Evidence returned after the initial Rust-owned owner has been assembled and initialized.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ForeignOwnerStart {
+    pub context: ForeignOwnerContext,
+    pub initialization_command_id: u64,
+    pub adapter_snapshot: AdapterSnapshot,
+}
+
+impl From<crate::OwnerStart> for ForeignOwnerStart {
+    fn from(start: crate::OwnerStart) -> Self {
+        Self {
+            context: ForeignOwnerContext::from(&start.context),
+            initialization_command_id: start.initialization_command_id.value,
+            adapter_snapshot: start.adapter_snapshot,
+        }
+    }
+}
+
+/// Terminal owner state and cleanup outcome. Closed does not imply resource-zero.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ForeignOwnerClose {
+    pub owner_closed: bool,
+    pub failure: Option<ForeignOwnerCloseFailure>,
+}
+
+/// Identity-free product failure; both strings are fixed by Rust's error taxonomy.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct ForeignOwnerCloseFailure {
+    pub code: String,
+    pub message: String,
+}
+
+impl ForeignOwnerClose {
+    pub(super) fn busy() -> Self {
+        Self::not_closed(
+            "supervisor_busy",
+            "supervisor operation is already in progress",
+        )
+    }
+
+    pub(super) fn unavailable() -> Self {
+        Self::not_closed("supervisor_unavailable", "supervisor is unavailable")
+    }
+
+    fn not_closed(code: &str, message: &str) -> Self {
+        Self {
+            owner_closed: false,
+            failure: Some(ForeignOwnerCloseFailure::new(code, message)),
+        }
+    }
+}
+
+impl ForeignOwnerCloseFailure {
+    fn new(code: &str, message: &str) -> Self {
+        Self {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }
+    }
+
+    pub(super) fn from_supervisor(error: &SupervisorError) -> Self {
+        let (code, message) = match error {
+            SupervisorError::AlreadyActive => {
+                ("already_active", "supervisor already has an active session")
+            }
+            SupervisorError::AlreadyStarted => (
+                "already_started",
+                "supervisor has already started its initial session",
+            ),
+            SupervisorError::NoActiveSession => {
+                ("no_active_session", "supervisor has no active session")
+            }
+            SupervisorError::Platform { .. } => {
+                ("platform_failure", "platform session operation failed")
+            }
+            SupervisorError::Bleng(_) => ("bleng_failure", "BLeng operation failed"),
+            SupervisorError::Recovery(_) => (
+                "recovery_failure",
+                "recovery policy rejected the observation",
+            ),
+            SupervisorError::RecoveryConfiguration(_) => (
+                "recovery_configuration",
+                "recovery barrier configuration rejected",
+            ),
+            SupervisorError::PlatformContextMismatch => (
+                "platform_context_mismatch",
+                "platform session context does not match the requested context",
+            ),
+            SupervisorError::RequiredResourcesNotConfigured => (
+                "required_resources_not_configured",
+                "supervisor must configure at least one required zero resource",
+            ),
+            SupervisorError::BlankRequiredResourceName => (
+                "blank_required_resource_name",
+                "required zero resource name must not be blank",
+            ),
+            SupervisorError::MissingResource { .. } => (
+                "missing_resource",
+                "required resource is missing from the retirement snapshot",
+            ),
+            SupervisorError::NativeResourcesNotZero { .. } => (
+                "native_resources_not_zero",
+                "native resources remained after retirement",
+            ),
+            SupervisorError::StartupCleanup { .. } => (
+                "startup_cleanup_failed",
+                "session startup and cleanup failed",
+            ),
+            SupervisorError::RetirementCleanup { .. } => (
+                "retirement_cleanup_failed",
+                "owner retirement had multiple failures",
+            ),
+            SupervisorError::RecoveryActionNotPending { .. } => (
+                "recovery_action_not_pending",
+                "recovery action is not pending",
+            ),
+            SupervisorError::RecoveryActionNotPlatform { .. } => (
+                "recovery_action_not_platform",
+                "recovery action is not executable by the platform session",
+            ),
+            SupervisorError::RecoveryTargetMissing { .. } => {
+                ("recovery_target_missing", "recovery target is required")
+            }
+            SupervisorError::InvalidRecoveryTarget(_) => {
+                ("invalid_recovery_target", "recovery target is invalid")
+            }
+            SupervisorError::RecoveryActionSequenceMismatch { .. } => (
+                "recovery_action_sequence_mismatch",
+                "recovery action sequence does not match",
+            ),
+        };
+        Self::new(code, message)
+    }
+}
+
 /// One native resource count returned after owner retirement.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct ForeignResourceCount {
@@ -66,6 +202,16 @@ pub struct ForeignRecoveryLink {
     pub connection_id: String,
     pub gatt_session_id: String,
     pub subscription_id: String,
+}
+
+impl From<RecoveryLink> for ForeignRecoveryLink {
+    fn from(link: RecoveryLink) -> Self {
+        Self {
+            connection_id: link.connection_id().as_str().to_owned(),
+            gatt_session_id: link.gatt_session_id().as_str().to_owned(),
+            subscription_id: link.subscription_id().as_str().to_owned(),
+        }
+    }
 }
 
 impl TryFrom<ForeignRecoveryLink> for RecoveryLink {
@@ -131,8 +277,7 @@ pub struct ForeignRecoveryPolicyConfig {
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct ForeignSupervisorConfig {
     pub recovery: ForeignRecoveryPolicyConfig,
-    pub recovery_target: ForeignRecoveryTarget,
-    pub required_zero_resource_names: Vec<String>,
+    pub recovery_target: Option<ForeignRecoveryTarget>,
 }
 
 impl TryFrom<ForeignSupervisorConfig> for SupervisorConfig {
@@ -142,7 +287,6 @@ impl TryFrom<ForeignSupervisorConfig> for SupervisorConfig {
         let ForeignSupervisorConfig {
             recovery,
             recovery_target,
-            required_zero_resource_names,
         } = config;
         let ForeignRecoveryPolicyConfig {
             initial_context,
@@ -163,13 +307,33 @@ impl TryFrom<ForeignSupervisorConfig> for SupervisorConfig {
                 allow_central_recreation,
                 allow_fresh_owner,
             },
-            required_zero_resource_names: required_zero_resource_names.into_iter().collect(),
-            recovery_target: recovery_target.into(),
+            recovery_target: recovery_target.map(RecoveryTarget::from),
         })
     }
 }
 
-/// FFI representation of one policy observation.
+/// External signals that a native host may submit to start or explicitly stop recovery.
+/// Platform-generated progress must return through `ForeignPlatformActionResult` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ForeignExternalRecoverySignal {
+    RadioLost,
+    ManualReconnectRequired,
+}
+
+impl From<ForeignExternalRecoverySignal> for RecoverySignal {
+    fn from(signal: ForeignExternalRecoverySignal) -> Self {
+        match signal {
+            ForeignExternalRecoverySignal::RadioLost => Self::RadioLost,
+            ForeignExternalRecoverySignal::ManualReconnectRequired => {
+                Self::ManualReconnectRequired {
+                    reason: "manual reconnect requested by host".to_owned(),
+                }
+            }
+        }
+    }
+}
+
+/// FFI representation of a platform-observed recovery signal.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ForeignRecoverySignal {
     RadioLost,
@@ -328,17 +492,75 @@ pub struct ForeignPlatformActionResult {
     pub signal: ForeignRecoverySignal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ForeignRecoveryMode {
+    SameOwner,
+    FreshOwner,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum ForeignRecoveryOutcome {
+    Recovered {
+        context: ForeignOwnerContext,
+        mode: ForeignRecoveryMode,
+        link: ForeignRecoveryLink,
+    },
+    PlatformTimeout {
+        context: ForeignOwnerContext,
+        reason: String,
+    },
+    ManualReconnectRequired {
+        context: ForeignOwnerContext,
+        reason: String,
+    },
+}
+
+impl From<RecoveryOutcome> for ForeignRecoveryOutcome {
+    fn from(outcome: RecoveryOutcome) -> Self {
+        match outcome {
+            RecoveryOutcome::Recovered {
+                context,
+                mode,
+                link,
+            } => Self::Recovered {
+                context: ForeignOwnerContext::from(&context),
+                mode: match mode {
+                    RecoveryMode::SameOwner => ForeignRecoveryMode::SameOwner,
+                    RecoveryMode::FreshOwner => ForeignRecoveryMode::FreshOwner,
+                },
+                link: link.into(),
+            },
+            RecoveryOutcome::PlatformTimeout { context, reason } => Self::PlatformTimeout {
+                context: ForeignOwnerContext::from(&context),
+                reason,
+            },
+            RecoveryOutcome::ManualReconnectRequired { context, reason } => {
+                Self::ManualReconnectRequired {
+                    context: ForeignOwnerContext::from(&context),
+                    reason,
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct ForeignRecoveryPlan {
     pub execution_context: ForeignOwnerContext,
     pub sequence: u64,
     pub actions: Vec<ForeignRecoveryAction>,
+    pub outcome: Option<ForeignRecoveryOutcome>,
 }
 
 impl From<crate::recovery::RecoveryPlan> for ForeignRecoveryPlan {
     fn from(plan: crate::recovery::RecoveryPlan) -> Self {
         let execution_context = ForeignOwnerContext::from(plan.execution_context());
         let sequence = plan.sequence();
+        let outcome = plan
+            .outcome()
+            .as_ref()
+            .cloned()
+            .map(ForeignRecoveryOutcome::from);
         let actions = plan
             .into_actions()
             .into_iter()
@@ -348,6 +570,7 @@ impl From<crate::recovery::RecoveryPlan> for ForeignRecoveryPlan {
             execution_context,
             sequence,
             actions,
+            outcome,
         }
     }
 }
@@ -357,6 +580,10 @@ impl From<crate::recovery::RecoveryPlan> for ForeignRecoveryPlan {
 pub enum SupervisorFfiError {
     #[error("invalid supervisor context: {detail}")]
     InvalidContext { detail: String },
+    #[error("invalid supervisor configuration: {detail}")]
+    InvalidConfiguration { detail: String },
+    #[error("supervisor has no active owner context")]
+    NoActiveContext,
     #[error("native platform session failed: {detail}")]
     Platform { detail: String },
 }
@@ -368,6 +595,12 @@ impl SupervisorFfiError {
         }
     }
 
+    pub(super) fn from_recovery_configuration(error: impl std::fmt::Display) -> Self {
+        Self::InvalidConfiguration {
+            detail: error.to_string(),
+        }
+    }
+
     pub(super) fn into_supervisor(self) -> SupervisorError {
         SupervisorError::Platform {
             detail: self.to_string(),
@@ -375,8 +608,19 @@ impl SupervisorFfiError {
     }
 
     pub(super) fn from_supervisor(error: SupervisorError) -> Self {
-        Self::Platform {
-            detail: error.to_string(),
+        match error {
+            SupervisorError::RequiredResourcesNotConfigured => Self::InvalidConfiguration {
+                detail: "supervisor must configure at least one required zero resource".to_owned(),
+            },
+            SupervisorError::BlankRequiredResourceName => Self::InvalidConfiguration {
+                detail: "required zero resource name must not be blank".to_owned(),
+            },
+            SupervisorError::RecoveryConfiguration(error) => Self::InvalidConfiguration {
+                detail: error.to_string(),
+            },
+            error => Self::Platform {
+                detail: error.to_string(),
+            },
         }
     }
 }

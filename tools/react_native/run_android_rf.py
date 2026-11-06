@@ -11,9 +11,8 @@ import time
 from pathlib import Path
 
 from tests.peripherals.nrf52840 import multi_fixture, provider
-from tools.android.run_instrumentation import has_root
-from tools.android_toolchain import adb_executable
-from tools.check_peripheral_profiles import load_profile
+from tools.check_peripheral_profiles import NRF_MULTIFUNCTION_A_PATH, load_profile
+from tools.react_native import android_sdk
 from tools.react_native.rf_runner import (
     ProgressReporter,
     runtime_failure,
@@ -21,7 +20,9 @@ from tools.react_native.rf_runner import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SERVICE_UUID = "fd000000-0000-4000-8000-000000000000"
+DEFAULT_SERVICE_UUID = str(
+    load_profile(NRF_MULTIFUNCTION_A_PATH)["services"][0]["uuid"]
+).casefold()
 DEFAULT_TIMEOUT_SECONDS = 120
 LAUNCH_TIMEOUT_SECONDS = 20
 INITIALIZATION_TIMEOUT_SECONDS = 25
@@ -38,116 +39,23 @@ PASS_MARKERS = {
     "rf-notification": "BLEHUB_NITRO_RUNTIME rf-notification:passed:",
     "rf-indication": "BLEHUB_NITRO_RUNTIME rf-indication:passed:",
     "rf-passive-disconnect": "BLEHUB_NITRO_RUNTIME rf-passive-disconnect:passed:",
+    "rf-cancellation": "BLEHUB_NITRO_RUNTIME rf-cancellation:passed:",
 }
+RECOVERY_MODES = {
+    "rf-recovery": ("recovery", 3),
+    "rf-recovery-ten": ("recovery-ten", 10),
+}
+SUPPORTED_MODES = (*PASS_MARKERS, *RECOVERY_MODES)
 COORDINATION_MODES = {
     "rf-notification": "notification",
     "rf-indication": "indication",
     "rf-passive-disconnect": "passive-disconnect",
+    **{mode: coordination for mode, (coordination, _cycles) in RECOVERY_MODES.items()},
 }
 
 
 class AndroidRfError(RuntimeError):
     """Raised when the bounded Android RF controller cannot complete safely."""
-
-
-def _adb(serial: str, *arguments: str) -> list[str]:
-    return [str(adb_executable()), "-s", serial, *arguments]
-
-
-def _run(
-    command: list[str], *, timeout: float, check: bool = False
-) -> subprocess.CompletedProcess[str]:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=PROJECT_ROOT,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise AndroidRfError(
-            f"command failed to start or finish: {' '.join(command)}"
-        ) from error
-    if check and result.returncode:
-        raise AndroidRfError(
-            f"command failed (exit={result.returncode}): {' '.join(command)}; "
-            f"{result.stdout[-1500:]}"
-        )
-    return result
-
-
-def _grant_bluetooth_permissions(serial: str) -> None:
-    sdk = _run(
-        _adb(serial, "shell", "getprop", "ro.build.version.sdk"),
-        timeout=15,
-        check=True,
-    ).stdout.strip()
-    if not sdk.isdecimal() or int(sdk) <= 0:
-        raise AndroidRfError(f"invalid Android device API level: {sdk!r}")
-    api = int(sdk)
-    # Match the host's neverForLocation scan and maxSdkVersion=30 location grant.
-    permissions = (
-        ("android.permission.BLUETOOTH_SCAN", "android.permission.BLUETOOTH_CONNECT")
-        if api >= 31
-        else ("android.permission.ACCESS_FINE_LOCATION",)
-        if api >= 23
-        else ()
-    )
-    if not permissions:
-        return
-    try:
-        use_root = has_root(adb_executable(), serial)
-    except (OSError, subprocess.SubprocessError) as error:
-        raise AndroidRfError(
-            "unable to determine Android permission grant root access"
-        ) from error
-    for permission in permissions:
-        arguments = (
-            ("shell", "su", "-c", f"pm grant com.blehubnitrohost {permission}")
-            if use_root
-            else ("shell", "pm", "grant", "com.blehubnitrohost", permission)
-        )
-        _run(_adb(serial, *arguments), timeout=15, check=True)
-
-
-def _logcat(serial: str, *, timeout: float = 15) -> str:
-    return _run(
-        _adb(serial, "logcat", "-d", "-v", "brief"), timeout=timeout, check=True
-    ).stdout
-
-
-def runtime_alive(serial: str) -> bool:
-    """Return whether the RN host process is still alive on the selected device."""
-    result = _run(
-        _adb(serial, "shell", "pidof", "com.blehubnitrohost"),
-        timeout=5,
-        check=False,
-    )
-    return result.returncode == 0 and bool(result.stdout.strip())
-
-
-def adb_command(serial: str, *arguments: str) -> list[str]:
-    return _adb(serial, *arguments)
-
-
-def run_command(
-    command: list[str], *, timeout: float, check: bool = False
-) -> subprocess.CompletedProcess[str]:
-    return _run(command, timeout=timeout, check=check)
-
-
-def grant_bluetooth_permissions(serial: str) -> None:
-    _grant_bluetooth_permissions(serial)
-
-
-def logcat(serial: str, *, timeout: float = 15) -> str:
-    return _logcat(serial, timeout=timeout)
 
 
 def _advance_fixture_coordination(
@@ -186,6 +94,8 @@ def _wait_for_runtime(
     log_path: Path,
     timeout_seconds: float,
     coordination_path: Path | None = None,
+    pass_marker: str | None = None,
+    failure_marker: str | None = None,
 ) -> None:
     started = time.monotonic()
     deadline = started + timeout_seconds
@@ -201,8 +111,10 @@ def _wait_for_runtime(
     latest = "<none>"
     log = ""
     while time.monotonic() < min(deadline, phase_deadline):
-        log = _logcat(
-            serial, timeout=min(15, min(deadline, phase_deadline) - time.monotonic())
+        log = android_sdk.logcat(
+            serial,
+            cwd=PROJECT_ROOT,
+            timeout=min(15, min(deadline, phase_deadline) - time.monotonic()),
         )
         now = time.monotonic()
         _advance_fixture_coordination(mode, log, coordination_path)
@@ -210,10 +122,16 @@ def _wait_for_runtime(
         if markers:
             latest = markers[-1]
         failed_line = runtime_failure(log)
-        if failed_line is not None:
+        if failure_marker is None and failed_line is not None:
             log_path.write_text(log, encoding="utf-8")
             progress.failed(f"runtime:{failed_line}")
             raise AndroidRfError(f"Android RN RF failed: {failed_line}; see {log_path}")
+        if failure_marker is not None and failure_marker in log:
+            log_path.write_text(log, encoding="utf-8")
+            progress.failed(f"runtime:{failure_marker}")
+            raise AndroidRfError(
+                f"Android RN RF failed: {failure_marker}; see {log_path}"
+            )
         if latest not in seen and markers:
             progress.marker(
                 latest,
@@ -232,11 +150,13 @@ def _wait_for_runtime(
             phase = "rf"
             progress.phase_started(phase)
             phase_deadline = deadline
-        if phase == "rf" and PASS_MARKERS[mode] in log:
+        if phase == "rf" and (pass_marker or PASS_MARKERS[mode]) in log:
             progress.phase_passed("rf", marker=PASS_MARKERS[mode])
             log_path.write_text(log, encoding="utf-8")
             return
-        if phase != "launch" and not runtime_alive(serial):
+        if phase != "launch" and not android_sdk.runtime_alive(
+            serial, cwd=PROJECT_ROOT
+        ):
             log_path.write_text(log, encoding="utf-8")
             progress.failed("runtime-exited:com.blehubnitrohost")
             raise AndroidRfError(
@@ -254,6 +174,116 @@ def _wait_for_runtime(
     )
 
 
+def _wait_for_recovery(
+    serial: str,
+    log_path: Path,
+    coordination_path: Path,
+    mode: str,
+    cycles: int,
+    timeout_seconds: float,
+) -> None:
+    """Drive the real fixture ACK protocol for Android recovery cycles."""
+    prefix = mode
+    deadline = time.monotonic() + timeout_seconds
+    captured: list[str] = []
+    seen_runtime_lines: set[str] = set()
+    latest_log = ""
+
+    def refresh() -> str:
+        nonlocal latest_log
+        snapshot = android_sdk.logcat(serial, cwd=PROJECT_ROOT)
+        for line in snapshot.splitlines(keepends=True):
+            if "BLEHUB_NITRO_RUNTIME" in line and line not in seen_runtime_lines:
+                seen_runtime_lines.add(line)
+                captured.append(line)
+        latest_log = "".join(captured)
+        log_path.write_text(latest_log, encoding="utf-8")
+        failure = runtime_failure(latest_log)
+        if failure is not None:
+            raise AndroidRfError(
+                f"Android RN RF recovery failed: {failure}; see {log_path}"
+            )
+        if not android_sdk.runtime_alive(serial, cwd=PROJECT_ROOT):
+            raise AndroidRfError(
+                f"Android RN host exited during RF recovery; see {log_path}"
+            )
+        return latest_log
+
+    def wait_for_log(marker: str, label: str, timeout: float) -> None:
+        limit = min(deadline, time.monotonic() + timeout)
+        while time.monotonic() < limit:
+            if marker in refresh():
+                return
+            time.sleep(1)
+        raise AndroidRfError(
+            f"Android RF recovery timed out waiting for {label}: {marker}; see {log_path}"
+        )
+
+    def wait_for_file(path: Path, label: str, timeout: float) -> None:
+        limit = min(deadline, time.monotonic() + timeout)
+        while time.monotonic() < limit:
+            refresh()
+            if path.is_file():
+                return
+            time.sleep(1)
+        raise AndroidRfError(
+            f"Android RF recovery timed out waiting for {label}: {path}; see {log_path}"
+        )
+
+    wait_for_log(
+        f"BLEHUB_NITRO_RUNTIME {prefix}:listener:registered-before-initialize",
+        "listener registration",
+        30,
+    )
+    wait_for_log(
+        f"BLEHUB_NITRO_RUNTIME {prefix}:initialize:passed:",
+        "initialization",
+        45,
+    )
+    for cycle in range(cycles):
+        directory = coordination_path / f"cycle-{cycle}"
+        wait_for_file(
+            directory / "fixture-ready", f"cycle {cycle} fixture readiness", 90
+        )
+        wait_for_log(
+            f"BLEHUB_NITRO_RUNTIME {prefix}:cycle:{cycle}:notification-enable:passed:",
+            f"cycle {cycle} notification enable",
+            240,
+        )
+        (directory / "subscription-enabled").write_text("ready\n", encoding="ascii")
+        wait_for_file(
+            directory / "value-applied", f"cycle {cycle} value application", 90
+        )
+        wait_for_log(
+            f"BLEHUB_NITRO_RUNTIME {prefix}:cycle:{cycle}:notification-value:passed:",
+            f"cycle {cycle} notification value",
+            240,
+        )
+        (directory / "connected").write_text("ready\n", encoding="ascii")
+        wait_for_file(directory / "fault-triggered", f"cycle {cycle} fault trigger", 90)
+        wait_for_log(
+            f"BLEHUB_NITRO_RUNTIME {prefix}:cycle:{cycle}:passive-disconnect:passed:",
+            f"cycle {cycle} passive disconnect",
+            240,
+        )
+        (directory / "passive-disconnected").write_text("ready\n", encoding="ascii")
+        wait_for_file(
+            directory / "recovery-ready", f"cycle {cycle} recovery readiness", 90
+        )
+        wait_for_log(
+            f"BLEHUB_NITRO_RUNTIME {prefix}:cycle:{cycle}:cycle:passed:",
+            f"cycle {cycle} completion",
+            240,
+        )
+        (directory / "cycle-passed").write_text("ready\n", encoding="ascii")
+    wait_for_log(
+        f"BLEHUB_NITRO_RUNTIME {prefix}:close:passed:",
+        "recovery close",
+        60,
+    )
+    log_path.write_text(latest_log, encoding="utf-8")
+
+
 def _checker_arguments(mode: str, log_path: Path, service_uuid: str) -> list[str]:
     flag = {
         "rf": "--rf-service-uuid",
@@ -264,6 +294,9 @@ def _checker_arguments(mode: str, log_path: Path, service_uuid: str) -> list[str
         "rf-notification": "--rf-notification-service-uuid",
         "rf-indication": "--rf-indication-service-uuid",
         "rf-passive-disconnect": "--rf-passive-disconnect-service-uuid",
+        "rf-cancellation": "--rf-cancellation-service-uuid",
+        "rf-recovery": "--rf-recovery-service-uuid",
+        "rf-recovery-ten": "--rf-recovery-ten-service-uuid",
     }[mode]
     return [
         sys.executable,
@@ -275,6 +308,52 @@ def _checker_arguments(mode: str, log_path: Path, service_uuid: str) -> list[str
     ]
 
 
+def _wait_for_selected_runtime(
+    serial: str,
+    mode: str,
+    log_path: Path,
+    coordination_path: Path | None,
+    timeout_seconds: float,
+    suite_flow: str | None,
+) -> None:
+    if mode in RECOVERY_MODES:
+        if coordination_path is None:
+            raise AndroidRfError("recovery mode requires a coordination path")
+        _wait_for_recovery(
+            serial,
+            log_path,
+            coordination_path,
+            mode,
+            RECOVERY_MODES[mode][1],
+            timeout_seconds,
+        )
+        return
+    suite_marker = (
+        f"BLEHUB_NITRO_RUNTIME rf-lab-suite:flow-passed:index=0:mode={suite_flow}"
+        if suite_flow is not None
+        else None
+    )
+    _wait_for_runtime(
+        serial,
+        mode,
+        log_path,
+        timeout_seconds,
+        coordination_path,
+        pass_marker=suite_marker,
+        failure_marker=(
+            f"BLEHUB_NITRO_RUNTIME rf-lab-suite:flow-failed:index=0:mode={suite_flow}:"
+            if suite_flow is not None
+            else None
+        ),
+    )
+
+
+def _effective_timeout(mode: str, timeout_seconds: float) -> float:
+    if mode not in RECOVERY_MODES or timeout_seconds != DEFAULT_TIMEOUT_SECONDS:
+        return timeout_seconds
+    return 900 if RECOVERY_MODES[mode][1] == 10 else 450
+
+
 def run(
     serial: str,
     mode: str,
@@ -282,11 +361,21 @@ def run(
     timeout_seconds: float,
     *,
     fixture_device: str | None = None,
+    runtime_mode: str | None = None,
+    suite_flow: str | None = None,
 ) -> Path:
-    if mode not in PASS_MARKERS:
+    if mode == "rf-cancellation" or (
+        runtime_mode == "rf-lab-suite"
+        and suite_flow in (None, "rf-cancellation", "rf-watchdog")
+    ):
+        from tests.peripherals.nrf52840.direct_fixture import require_v2_coordination
+
+        require_v2_coordination("legacy-suite-runner")
+    if mode not in SUPPORTED_MODES:
         raise AndroidRfError(f"unsupported Android RN RF mode: {mode}")
     if timeout_seconds <= 0:
         raise AndroidRfError("RF timeout must be positive")
+    timeout_seconds = _effective_timeout(mode, timeout_seconds)
     log_path = (
         PROJECT_ROOT
         / "tests/consumers/react-native-internal/android/build"
@@ -307,6 +396,7 @@ def run(
     try:
         print("android-rf:fixture-start", flush=True)
         coordination_mode = COORDINATION_MODES.get(mode)
+
         if fixture_device is not None:
             devices = multi_fixture.load_devices(names=(fixture_device,))
             expected_service_uuid = str(
@@ -363,8 +453,9 @@ def run(
                         coordination_mode,
                     )
                 )
-            _run(
+            android_sdk.run_command(
                 fixture_command,
+                cwd=PROJECT_ROOT,
                 timeout=provider.DEFAULT_READY_TIMEOUT + 15,
                 check=True,
             )
@@ -374,29 +465,40 @@ def run(
                     "direct-start returned without a fixture PID/PGID marker"
                 )
         print("android-rf:fixture-ready", flush=True)
-        _run(
-            _adb(serial, "shell", "am", "force-stop", "com.blehubnitrohost"),
+        android_sdk.run_command(
+            android_sdk.adb_command(
+                serial, "shell", "am", "force-stop", "com.blehubnitrohost"
+            ),
+            cwd=PROJECT_ROOT,
             timeout=15,
             check=True,
         )
-        _run(_adb(serial, "logcat", "-c"), timeout=15, check=True)
-        _grant_bluetooth_permissions(serial)
+        android_sdk.run_command(
+            android_sdk.adb_command(serial, "logcat", "-c"),
+            cwd=PROJECT_ROOT,
+            timeout=15,
+            check=True,
+        )
+        android_sdk.grant_bluetooth_permissions(serial, cwd=PROJECT_ROOT)
         app_attempted = True
-        start = _run(
-            _adb(
-                serial,
-                "shell",
-                "am",
-                "start",
-                "-n",
-                "com.blehubnitrohost/.MainActivity",
-                "--es",
-                "blehub.runtimeMode",
-                mode,
-                "--es",
-                "blehub.rfServiceUuid",
-                service_uuid,
-            ),
+        launch_arguments = [
+            "shell",
+            "am",
+            "start",
+            "-n",
+            "com.blehubnitrohost/.MainActivity",
+            "--es",
+            "blehub.runtimeMode",
+            runtime_mode or mode,
+            "--es",
+            "blehub.rfServiceUuid",
+            service_uuid,
+        ]
+        if suite_flow is not None:
+            launch_arguments.extend(["--es", "blehub.rfLabSuiteFlow", suite_flow])
+        start = android_sdk.run_command(
+            android_sdk.adb_command(serial, *launch_arguments),
+            cwd=PROJECT_ROOT,
             timeout=20,
             check=True,
         )
@@ -404,23 +506,41 @@ def run(
             raise AndroidRfError(
                 f"unable to start a fresh RN host: {start.stdout[-1000:]}"
             )
-        _wait_for_runtime(serial, mode, log_path, timeout_seconds, coordination_path)
-        _run(_checker_arguments(mode, log_path, service_uuid), timeout=30, check=True)
+        _wait_for_selected_runtime(
+            serial,
+            mode,
+            log_path,
+            coordination_path,
+            timeout_seconds,
+            suite_flow,
+        )
+        android_sdk.run_command(
+            _checker_arguments(mode, log_path, service_uuid),
+            cwd=PROJECT_ROOT,
+            timeout=30,
+            check=True,
+        )
         return log_path
     except provider.Nrf52840Error as error:
+        raise AndroidRfError(str(error)) from error
+    except android_sdk.AndroidSdkError as error:
         raise AndroidRfError(str(error)) from error
     finally:
         primary_error = sys.exc_info()[1]
         cleanup_errors: list[Exception] = []
         if app_attempted:
             try:
-                _run(
-                    _adb(serial, "shell", "am", "force-stop", "com.blehubnitrohost"),
+                android_sdk.run_command(
+                    android_sdk.adb_command(
+                        serial, "shell", "am", "force-stop", "com.blehubnitrohost"
+                    ),
+                    cwd=PROJECT_ROOT,
                     timeout=15,
                     check=True,
                 )
             except (
                 AndroidRfError,
+                android_sdk.AndroidSdkError,
                 OSError,
                 provider.Nrf52840Error,
                 subprocess.SubprocessError,
@@ -440,7 +560,7 @@ def run(
                                 "fixture identity changed; refusing to stop it"
                             )
                         pid, pgid = owned_identity
-                        _run(
+                        android_sdk.run_command(
                             [
                                 sys.executable,
                                 "-m",
@@ -451,11 +571,13 @@ def run(
                                 "--pgid",
                                 str(pgid),
                             ],
+                            cwd=PROJECT_ROOT,
                             timeout=35,
                             check=True,
                         )
             except (
                 AndroidRfError,
+                android_sdk.AndroidSdkError,
                 OSError,
                 provider.Nrf52840Error,
                 multi_fixture.MultiFixtureError,
@@ -482,7 +604,7 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     _ = parser.add_argument("serial", help="ADB serial of the Android Central device")
-    _ = parser.add_argument("--mode", choices=sorted(PASS_MARKERS), default="rf")
+    _ = parser.add_argument("--mode", choices=sorted(SUPPORTED_MODES), default="rf")
     _ = parser.add_argument("--service-uuid", default=DEFAULT_SERVICE_UUID)
     _ = parser.add_argument(
         "--fixture-device",
