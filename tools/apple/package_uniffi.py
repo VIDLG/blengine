@@ -33,7 +33,7 @@ class PackageLayout:
 
     @property
     def bleng(self) -> bool:
-        return self.components == ("blehub", "bleng")
+        return self.components == ("blehub", "bleng", "bleng_supervisor")
 
     @property
     def bindings_root(self) -> Path:
@@ -55,7 +55,7 @@ def _package_layout(bleng: bool = False) -> PackageLayout:
             target_dir=TARGET_BASE / "bleng-uniffi-apple",
             work_root=PROJECT_ROOT / ".work" / "bleng-uniffi-apple",
             package_root=PROJECT_ROOT / ".work" / "staged" / "apple-bleng",
-            components=("blehub", "bleng"),
+            components=("blehub", "bleng", "bleng_supervisor"),
             static_library_name="libbleng_uniffi.a",
         )
     return PackageLayout(
@@ -333,7 +333,38 @@ def _create_xcframework(
         )
     command.extend(["-output", str(destination)])
     _run(command)
+    _canonicalize_xcframework_info(destination)
     return destination
+
+
+def _canonicalize_xcframework_info(xcframework: Path) -> None:
+    """Stabilize Xcode's slice ordering without discarding any metadata."""
+    info_path = xcframework / "Info.plist"
+    info_value = cast(object, plistlib.loads(info_path.read_bytes()))
+    if not isinstance(info_value, dict):
+        raise TypeError("XCFramework Info.plist is not a dictionary")
+    info = cast(dict[str, object], info_value)
+    libraries_value = info.get("AvailableLibraries")
+    if not isinstance(libraries_value, list):
+        raise TypeError("XCFramework Info.plist has no AvailableLibraries array")
+
+    libraries: dict[str, dict[str, object]] = {}
+    for library_value in cast(list[object], libraries_value):
+        if not isinstance(library_value, dict):
+            raise TypeError("XCFramework contains an invalid library entry")
+        library = cast(dict[str, object], library_value)
+        identifier = library.get("LibraryIdentifier")
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise TypeError(
+                "XCFramework library entry has an invalid LibraryIdentifier"
+            )
+        if identifier in libraries:
+            raise RuntimeError(f"duplicate XCFramework LibraryIdentifier: {identifier}")
+        libraries[identifier] = library
+
+    # Xcode may reorder AvailableLibraries even with fixed -library arguments.
+    info["AvailableLibraries"] = [libraries[key] for key in sorted(libraries)]
+    info_path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_XML, sort_keys=True))
 
 
 def _validate_component_symbols(
@@ -361,23 +392,39 @@ def _validate_component_symbols(
                 unexpected[0] if unexpected else result.stderr.strip().splitlines()[0]
             )
             raise RuntimeError(f"nm failed for {slice_name}: {detail}")
-        symbols = result.stdout
-        actual = set(re.findall(r"^_uniffi_([a-z][a-z0-9]*)_", symbols, re.MULTILINE))
+        actual: set[str] = set()
+        for symbol in result.stdout.splitlines():
+            if not symbol.startswith(("_uniffi_", "_ffi_")):
+                continue
+            if any(
+                token in symbol.lower()
+                for token in (
+                    "ffi_test",
+                    "ffitest",
+                    "test_harness",
+                    "foreignprobe",
+                    "foreign_probe",
+                    "asyncprobe",
+                    "async_spike",
+                )
+            ):
+                raise RuntimeError(
+                    f"{slice_name} archive contains test-only UniFFI symbols"
+                )
+            # Generated family delimiters bound namespaces containing underscores.
+            match = re.fullmatch(
+                r"_uniffi_([a-z][a-z0-9_]*?)_(?:fn|checksum)_\w+"
+                r"|_ffi_([a-z][a-z0-9_]*?)_"
+                r"(?:uniffi_contract_version|rustbuffer_\w+|rust_future_\w+)",
+                symbol,
+            )
+            if match is None:
+                raise RuntimeError(f"unexpected {slice_name} UniFFI symbol: {symbol}")
+            actual.add(match.group(1) or match.group(2))
         if actual != expected:
             raise RuntimeError(
                 f"unexpected {slice_name} UniFFI components: "
                 f"expected {sorted(expected)}, got {sorted(actual)}"
-            )
-        if any(
-            token in symbols
-            for token in (
-                "_uniffi_blehub_ffi_test_harness_",
-                "_uniffi_bleng_foreignprobe_",
-                "_uniffi_bleng_async_spike_",
-            )
-        ):
-            raise RuntimeError(
-                f"{slice_name} archive contains test-only UniFFI symbols"
             )
     print("apple_uniffi_component_symbols=passed")
 
@@ -435,7 +482,10 @@ def _validate_xcframework(xcframework: Path, components: tuple[str, ...]) -> Non
         ):
             raise TypeError("XCFramework library entry has invalid architectures")
         architectures = cast(list[str], architecture_values)
-        actual[(platform, variant)] = set(architectures)
+        key = (platform, variant)
+        if key in actual:
+            raise RuntimeError(f"duplicate XCFramework slice: {key}")
+        actual[key] = set(architectures)
 
     expected = {
         ("ios", None): {"arm64"},

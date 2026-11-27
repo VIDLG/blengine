@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from tools.apple import consumer_ios, xcodegen_toolchain
+from tools.react_native import ios_device, ios_sdk
 
 ROOT = Path(__file__).resolve().parents[2]
-SPEC = ROOT / "tests/consumers/apple/bleng-ios/project.yml"
+SPEC = ROOT / "tests/consumers/apple/bleng/ios/project.yml"
 PACKAGE = ROOT / ".work/staged/apple-bleng"
 WORK = ROOT / ".work/apple-bleng-ios-consumer"
 PROJECT = WORK / "BlengIOSArtifactConsumer.xcodeproj"
@@ -32,6 +33,7 @@ def verify_package() -> None:
         PACKAGE / "BleHubUniFfiNative.xcframework/Info.plist",
         PACKAGE / "Sources/BleHubUniFfi/blehub.swift",
         PACKAGE / "Sources/BleHubUniFfi/bleng.swift",
+        PACKAGE / "Sources/BleHubUniFfi/bleng_supervisor.swift",
     )
     flavor = PACKAGE / "BleHubUniFfi.flavor"
     if (
@@ -40,29 +42,82 @@ def verify_package() -> None:
         or any(not path.is_file() for path in required)
     ):
         raise RuntimeError(
-            "missing staged two-component BLeng package; run "
+            "missing staged three-component BLeng package; run "
             "`pixi run just ffi apple-bleng-package`"
         )
+    bindings = PACKAGE / "Sources/BleHubUniFfi"
+    expected = {"blehub.swift", "bleng.swift", "bleng_supervisor.swift"}
+    entries = tuple(bindings.iterdir())
+    actual = {path.name for path in entries}
+    invalid = sorted(
+        path.name for path in entries if path.is_symlink() or not path.is_file()
+    )
+    if actual != expected or invalid:
+        raise RuntimeError(
+            "unexpected staged BLeng binding surface: "
+            f"expected {sorted(expected)}, got {sorted(actual)}; "
+            f"non-regular or symlink entries {invalid}"
+        )
+    for name in sorted(expected):
+        source = (bindings / name).read_text(encoding="utf-8").lower()
+        if any(
+            token in source
+            for token in (
+                "ffi_test",
+                "ffitest",
+                "test_harness",
+                "foreignprobe",
+                "foreign_probe",
+                "asyncprobe",
+                "async_spike",
+            )
+        ):
+            raise RuntimeError(
+                f"staged BLeng binding contains a test-only symbol: {name}"
+            )
 
 
 def validate_linked_symbols(symbols: str) -> None:
-    actual = set(re.findall(r"^_uniffi_([a-z][a-z0-9]*)_", symbols, re.MULTILINE))
-    expected = {"blehub", "bleng"}
+    actual: set[str] = set()
+    for symbol in symbols.splitlines():
+        if not symbol.startswith(("_uniffi_", "_ffi_")):
+            continue
+        if any(
+            token in symbol.lower()
+            for token in (
+                "ffi_test",
+                "ffitest",
+                "test_harness",
+                "foreignprobe",
+                "foreign_probe",
+                "asyncprobe",
+                "async_spike",
+            )
+        ):
+            raise RuntimeError("iOS consumer linked a test-only UniFFI symbol")
+        # Generated family delimiters bound namespaces containing underscores.
+        match = re.fullmatch(
+            r"_uniffi_([a-z][a-z0-9_]*?)_(?:fn|checksum)_\w+"
+            r"|_ffi_([a-z][a-z0-9_]*?)_"
+            r"(?:uniffi_contract_version|rustbuffer_\w+|rust_future_\w+)",
+            symbol,
+        )
+        if match is None:
+            raise RuntimeError(f"unexpected iOS consumer UniFFI symbol: {symbol}")
+        actual.add(match.group(1) or match.group(2))
+    expected = {"blehub", "bleng", "bleng_supervisor"}
     if actual != expected:
         raise RuntimeError(
             f"unexpected iOS consumer UniFFI components: "
             f"expected {sorted(expected)}, got {sorted(actual)}"
         )
-    for token in ("_uniffi_blehub_ffi_test_harness_", "_uniffi_bleng_foreignprobe_"):
-        if token in symbols:
-            raise RuntimeError("iOS consumer linked a test-only UniFFI symbol")
 
 
 def validate_linked_images(images: dict[str, str]) -> None:
     owners = {
         name: symbols
         for name, symbols in images.items()
-        if re.search(r"^_uniffi_", symbols, re.MULTILINE)
+        if re.search(r"^_(?:uniffi|ffi)_", symbols, re.MULTILINE)
     }
     if len(owners) != 1:
         raise RuntimeError(
@@ -93,19 +148,27 @@ def generate() -> None:
     print(f"apple_bleng_ios_project={PROJECT}", flush=True)
 
 
-def run_signed_build(command: list[str], log: Path) -> None:
+def run_signed_build(
+    command: list[str],
+    log: Path,
+    *,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+    timeout: float = 600.0,
+) -> None:
     # Apple signing must never inherit a terminal or receive a password from
     # configuration. A human prepares the login keychain outside this recipe.
     with log.open("w", encoding="utf-8") as output:
         process = subprocess.Popen(
             command,
-            cwd=ROOT,
+            cwd=cwd or ROOT,
+            env=env,
             stdin=subprocess.DEVNULL,
             stdout=output,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-        deadline = time.monotonic() + 600
+        deadline = time.monotonic() + timeout
         try:
             while True:
                 remaining = deadline - time.monotonic()
@@ -212,10 +275,21 @@ def classify_result(contents: str, run_id: str) -> bool | None:
     lines = contents.splitlines()
     if f"apple_bleng_ios_run_id={run_id}" not in lines:
         return None
+    identities = [line for line in lines if line.startswith("apple_bleng_ios_run_id=")]
+    if identities != [f"apple_bleng_ios_run_id={run_id}"]:
+        raise RuntimeError("BLeng iOS app result has ambiguous run identity")
     if "apple_bleng_ios_artifact_consumer=failed" in lines:
         raise RuntimeError(f"BLeng iOS app reported failure: {contents.strip()}")
-    if "apple_bleng_ios_artifact_consumer=passed" not in lines:
-        raise RuntimeError("BLeng iOS app result has no terminal status")
+    terminals = [
+        line for line in lines if line.startswith("apple_bleng_ios_artifact_consumer=")
+    ]
+    if terminals != ["apple_bleng_ios_artifact_consumer=passed"]:
+        raise RuntimeError(
+            "BLeng iOS app result has no terminal status or is ambiguous"
+        )
+    markers = [line for line in lines if line.startswith("typed_operations=")]
+    if markers != ["typed_operations=passed"]:
+        raise RuntimeError("BLeng iOS app result lacks successful typed operations")
     return True
 
 
@@ -223,38 +297,24 @@ def device_json(
     xcrun: str, args: list[str], name: str, *, timeout: int = 60, work: Path = WORK
 ) -> dict[str, Any]:
     output = work / name
-    is_launch = args[:3] == ["device", "process", "launch"]
-    device_id = None
-    if "--device" in args:
-        device_id = args[args.index("--device") + 1]
-    for attempt in range(4):
-        output.unlink(missing_ok=True)
-        result = subprocess.run(
-            [xcrun, "devicectl", *args, "--quiet", "--json-output", str(output)],
-            cwd=ROOT,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-        if not result.returncode and output.is_file():
-            value: dict[str, Any] = json.loads(output.read_text(encoding="utf-8"))
-            return value
-        locked = output.is_file() and "Locked" in output.read_text(
-            encoding="utf-8", errors="replace"
-        )
-        if not (is_launch and locked and device_id and attempt < 3):
-            raise RuntimeError(
-                f"devicectl {' '.join(args[:3])} failed (exit {result.returncode})"
-            )
-        print(
-            f"apple_bleng_device=launch_retry_locked attempt={attempt + 1}",
-            flush=True,
-        )
-        wait_for_unlocked_device(xcrun, device_id, timeout=45, work=work)
-        time.sleep(1)
-    raise AssertionError("unreachable launch retry loop")
+    output.unlink(missing_ok=True)
+    result = subprocess.run(
+        [xcrun, "devicectl", *args, "--quiet", "--json-output", str(output)],
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    if not result.returncode and output.is_file():
+        value: dict[str, Any] = json.loads(output.read_text(encoding="utf-8"))
+        return value
+    detail = (result.stderr or result.stdout).strip()[-1500:]
+    raise RuntimeError(
+        f"devicectl {' '.join(args[:3])} failed (exit {result.returncode}): "
+        f"{detail}; receipt: {output}"
+    )
 
 
 def wait_for_connected_device(
@@ -366,21 +426,56 @@ def connected_device(xcrun: str, *, work: Path = WORK) -> tuple[str, str, str]:
     return consumer_ios.device_and_team(xcrun)
 
 
+def refuse_running_consumer(xcrun: str, device_id: str, bundle: str) -> None:
+    """Refuse an unknown consumer process; this never authorizes PID cleanup."""
+    receipt = WORK / "device-processes.json"
+    receipt.unlink(missing_ok=True)
+    command = ios_sdk.devicectl_processes(device_id, receipt)
+    command[0] = xcrun
+    ios_sdk.run_command(command, cwd=ROOT, timeout=10, check=True)
+    result = ios_sdk.official_result(
+        receipt, "devicectl.device.info.processes", device_id
+    )
+    rows = result.get("runningProcesses")
+    if result["deviceIdentifier"] != device_id:
+        raise RuntimeError("foreign consumer process device identity")
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("executable"), str)
+        or not row["executable"]
+        or type(row.get("processIdentifier")) is not int
+        or row["processIdentifier"] <= 0
+        for row in rows
+    ):
+        raise RuntimeError("missing/malformed CoreDevice process list")
+    # Match the complete App/executable pair, not a basename or a guessed PID.
+    if any(
+        row.get("bundleIdentifier") == bundle
+        or row["executable"].endswith(f"/{SCHEME}.app/{SCHEME}")
+        for row in rows
+    ):
+        raise RuntimeError("BLeng iOS consumer already running; refusing takeover")
+
+
 def device_run() -> None:
     xcrun = consumer_ios.executable("xcrun")
     device_id, udid, team = connected_device(xcrun)
     bundle = f"dev.blehub.{team.lower()}.bleng-ios-artifact-consumer"
+    ios_device.require_ready_unlocked_device(udid, cwd=ROOT, timeout=10)
     print("apple_bleng_ios_device=building_signed", flush=True)
     app = build(f"id={udid}", "ios-signed-device", team=team)
+    ios_device.require_ready_unlocked_device(udid, cwd=ROOT, timeout=10)
+    refuse_running_consumer(xcrun, device_id, bundle)
     print("apple_bleng_ios_device=installing", flush=True)
     device_json(
         xcrun,
         ["device", "install", "app", "--device", device_id, str(app)],
         "device-install.json",
         timeout=120,
+        work=WORK,
     )
-    device_id, _, _ = wait_for_connected_device(xcrun, work=WORK)
-    wait_for_unlocked_device(xcrun, device_id)
+    ios_device.require_ready_unlocked_device(udid, cwd=ROOT, timeout=10)
+    refuse_running_consumer(xcrun, device_id, bundle)
     run_id = str(uuid.uuid4())
     print(f"apple_bleng_ios_device=launching run_id={run_id}", flush=True)
     device_json(
@@ -391,7 +486,6 @@ def device_run() -> None:
             "launch",
             "--device",
             device_id,
-            "--terminate-existing",
             "--activate",
             bundle,
             "--run-id",
@@ -399,6 +493,7 @@ def device_run() -> None:
         ],
         "device-launch.json",
         timeout=60,
+        work=WORK,
     )
     result_file = WORK / "device-result.txt"
     deadline = time.monotonic() + 90
@@ -425,6 +520,7 @@ def device_run() -> None:
                 ],
                 "device-copy-result.json",
                 timeout=30,
+                work=WORK,
             )
         except RuntimeError:
             pass  # The result file may not exist immediately after launch.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,19 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_ROOT = PROJECT_ROOT / "platforms" / "apple"
 DERIVED_DATA_ROOT = PROJECT_ROOT / ".work" / "apple-backend-derived-data"
+# `platforms/apple/Package.swift` treats the UniFFI package as a build input, so every
+# `swift`/`xcodebuild` invocation has to name the staged package explicitly.
+UNIFFI_PACKAGE_ROOT = PROJECT_ROOT / ".work" / "staged" / "apple-production"
+UNIFFI_PACKAGE_ENV = "BLEHUB_APPLE_UNIFFI_PACKAGE_PATH"
+
+
+def _environment() -> dict[str, str]:
+    """Require the staged UniFFI package instead of letting the manifest fail opaquely."""
+    if not (UNIFFI_PACKAGE_ROOT / "Package.swift").is_file():
+        raise RuntimeError(
+            f"missing {UNIFFI_PACKAGE_ROOT}; run `pixi run just apple prepare` first"
+        )
+    return {**os.environ, UNIFFI_PACKAGE_ENV: str(UNIFFI_PACKAGE_ROOT)}
 
 
 def _required_executable(name: str) -> str:
@@ -20,7 +34,7 @@ def _required_executable(name: str) -> str:
 
 def _run(command: list[str], *, cwd: Path | None = None) -> None:
     print("+", " ".join(command), flush=True)
-    _ = subprocess.run(command, cwd=cwd, check=True)
+    _ = subprocess.run(command, cwd=cwd, env=_environment(), check=True)
 
 
 def _run_success_quiet(command: list[str], *, cwd: Path | None = None) -> None:
@@ -28,6 +42,7 @@ def _run_success_quiet(command: list[str], *, cwd: Path | None = None) -> None:
     result = subprocess.run(
         command,
         cwd=cwd,
+        env=_environment(),
         check=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

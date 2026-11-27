@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -151,11 +152,31 @@ def android_executable() -> Path:
     return Path(executable).resolve()
 
 
-def _run_output(command: list[str]) -> tuple[int, str]:
-    result = subprocess.run(command, check=False, capture_output=True, text=True)
-    output = "\n".join(
-        part.strip() for part in (result.stdout, result.stderr) if part.strip()
-    )
+def _run_output(command: list[str], *, timeout: float = 30) -> tuple[int, str]:
+    # Android CLI may leave a metrics uploader holding inherited stdout/stderr.
+    # Regular files let us wait for the probe itself, not those background pipes.
+    with (
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdout,
+        tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr,
+    ):
+        try:
+            result = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=stdout,
+                stderr=stderr,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"Android toolchain probe timed out after {timeout}s: {command!r}"
+            ) from error
+        stdout.seek(0)
+        stderr.seek(0)
+        output = "\n".join(
+            part.strip() for part in (stdout.read(), stderr.read()) if part.strip()
+        )
     return result.returncode, output
 
 

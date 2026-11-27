@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from tools import host_command
 from tools.apple.rf_fixture import (
     EXTERNAL_MACOS_SCENARIOS,
     RfFixtureConfig,
@@ -22,7 +23,8 @@ from tools.apple.rf_fixture import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 HIL_ROOT = PROJECT_ROOT / "tests" / "hil" / "apple" / "macos"
 HIL_SUPPORT_ROOT = PROJECT_ROOT / "tests" / "hil" / "apple" / "support"
-NRF_PROFILE_PATH = (
+# Historical compatibility metadata, never a live RF default or authorization.
+HISTORICAL_NRF_PROFILE_PATH = (
     PROJECT_ROOT
     / "tests"
     / "conformance"
@@ -31,6 +33,15 @@ NRF_PROFILE_PATH = (
 )
 APPLE_SOURCE_ROOT = PROJECT_ROOT / "platforms" / "apple" / "Sources" / "BleHubApple"
 PRODUCTION_PACKAGE_ROOT = PROJECT_ROOT / ".work" / "staged" / "apple-production"
+MACOS_RF_BLOCKED = (
+    "macOS RF blocked: an immutable v2 --fixture-request with matching contract/profile "
+    "snapshots and a live receipt under the same physical lease is required. "
+    "The native Mac host does not yet verify that session/owner, bridge subscription "
+    "and passive-disconnect markers, or perform identity-bound cleanup; RF admission "
+    "is disabled even when a request is supplied. No build, signing, fixture start/stop "
+    "or BLE action was attempted. Use test-rf-host for software checks or "
+    "build-macos-hil for an explicitly requested build/sign without RF."
+)
 WORK_ROOT = PROJECT_ROOT / ".work" / "apple-macos-runtime"
 PACKAGE_ROOT = WORK_ROOT / "package"
 BUNDLE_ROOT = WORK_ROOT / "BleHubAppleMacOSProbe.app"
@@ -90,6 +101,11 @@ EXTERNAL_RF_COMMANDS = {
 }
 
 
+def _require_macos_rf_session() -> None:
+    """Reject admission until live session verification and owned cleanup are connected."""
+    raise RuntimeError(MACOS_RF_BLOCKED)
+
+
 def _required_executable(name: str) -> str:
     executable = shutil.which(name)
     if executable is None:
@@ -118,11 +134,11 @@ def _file_sha256(path: Path) -> str:
 
 def _android_fixture_service_uuid() -> str:
     try:
-        document = json.loads(NRF_PROFILE_PATH.read_text(encoding="utf-8"))
+        document = json.loads(HISTORICAL_NRF_PROFILE_PATH.read_text(encoding="utf-8"))
         service_uuids = document["advertising"]["service_uuids"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise RuntimeError(
-            f"cannot read Android Peripheral service UUID from {NRF_PROFILE_PATH}"
+            f"cannot read historical Peripheral service UUID from {HISTORICAL_NRF_PROFILE_PATH}"
         ) from error
     if not isinstance(service_uuids, list) or len(service_uuids) != 1:
         raise RuntimeError(
@@ -346,13 +362,7 @@ def _run_notification_coordination(
         stdout, stderr = process.communicate(timeout=30)
     except BaseException:
         _terminate_probe_app(coordination_root)
-        if process.poll() is None:
-            process.terminate()
-            try:
-                _ = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                _ = process.wait(timeout=5)
+        host_command.stop(process)
         raise
     if stdout:
         print(stdout, end="")
@@ -381,13 +391,7 @@ def _run_provider_passive_disconnect_coordination(
         stdout, stderr = process.communicate(timeout=30)
     except BaseException:
         _terminate_probe_app(coordination_root)
-        if process.poll() is None:
-            process.terminate()
-            try:
-                _ = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                _ = process.wait(timeout=5)
+        host_command.stop(process)
         raise
     if stdout:
         print(stdout, end="")
@@ -430,13 +434,7 @@ def _run_passive_disconnect_coordination(
         stdout, stderr = process.communicate(timeout=30)
     except BaseException:
         _terminate_probe_app(coordination_root)
-        if process.poll() is None:
-            process.terminate()
-            try:
-                _ = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                _ = process.wait(timeout=5)
+        host_command.stop(process)
         if not radio_recovered:
             try:
                 _run_android_recipe("android-radio-enable")
@@ -465,6 +463,9 @@ def _launch(
     fixture: RfFixtureConfig | None = None,
     coordination_path: Path | None = None,
 ) -> None:
+    # Keep this boundary closed for direct callers as well as CLI/Just entry points.
+    if fixture is not None or command_name != "authorize":
+        _require_macos_rf_session()
     if fixture is not None and command_name not in set(EXTERNAL_RF_COMMANDS.values()):
         raise RuntimeError(
             "external fixture scenario must not invoke Android coordination"
@@ -623,7 +624,21 @@ def main() -> int:
         type=Path,
         help="provider-owned coordination directory for external RF scenarios",
     )
+    _ = parser.add_argument(
+        "--fixture-request",
+        type=Path,
+        help="immutable v2 session request; RF remains blocked until the live receipt/owner bridge is implemented",
+    )
     args = parser.parse_args()
+    if args.command in {"rf-external", "rf-android"}:
+        try:
+            _require_macos_rf_session()
+        except RuntimeError as error:
+            parser.error(str(error))
+    if args.fixture_request is not None:
+        parser.error(
+            "--fixture-request is an RF input, not a build/runtime authorization"
+        )
     fixture = None
     if args.command == "rf-external":
         if args.scenario not in EXTERNAL_MACOS_SCENARIOS:

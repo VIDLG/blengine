@@ -1,0 +1,1 @@
+scope=settings-bluetooth-switch-inspection-only; switch_value=1; radio-control-gate-not-run

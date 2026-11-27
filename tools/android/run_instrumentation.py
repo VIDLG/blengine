@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import argparse
 import codecs
-import os
+import math
 import queue
 import re
-import signal
 import subprocess
 import sys
 import threading
@@ -17,7 +16,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO, Final, TextIO, cast, final
 
-from tools.android_toolchain import adb_environment, adb_executable, select_test_device
+from tools import host_command
+from tools.android import adb
+from tools.android_toolchain import adb_environment, select_test_device
 
 DEFAULT_TIMEOUT_SECONDS = 300
 PROGRESS_SECONDS = 15
@@ -135,25 +136,17 @@ def parse_instrumentation_output(output: str, *, returncode: int = 0) -> None:
     parser.finish(returncode)
 
 
-def _adb(adb: Path, serial: str, *arguments: str) -> list[str]:
-    return [str(adb), "-s", serial, *arguments]
+def _adb(serial: str, *arguments: str) -> list[str]:
+    return adb.adb_command(serial, *arguments)
 
 
 def _log_name(log: TextIO) -> str:
     return str(getattr(log, "name", "instrumentation log"))
 
 
-def has_root(adb: Path, serial: str) -> bool:
+def has_root(serial: str) -> bool:
     """Return whether ``adb shell su`` exposes uid 0 without changing device state."""
-    result = subprocess.run(
-        _adb(adb, serial, "shell", "su", "-c", "id"),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-        timeout=15,
-    )
+    result = adb.run_command(_adb(serial, "shell", "su", "-c", "id"), timeout=15)
     return (
         result.returncode == 0
         and re.search(r"uid=0(?:\(|\s|$)", result.stdout or "") is not None
@@ -161,36 +154,97 @@ def has_root(adb: Path, serial: str) -> bool:
 
 
 def install_apk(
-    adb: Path,
     serial: str,
     apk: Path,
     *,
     test_only: bool,
     use_root: bool = False,
+    grant: bool = False,
     log: TextIO,
+    deadline: float | None = None,
+    require_owner: Callable[[], None] | None = None,
+    cwd: Path | None = None,
 ) -> None:
+    """Install once; optional owner/deadline bracket every device command.
+
+    Cleanup is limited to this invocation's attempted upload, under the same
+    authority and remaining budget. A failed cleanup is never reported as success.
+    """
+    if deadline is not None and (
+        type(deadline) not in (int, float) or not math.isfinite(deadline)
+    ):
+        raise ValueError("deadline must be a finite absolute monotonic time")
     if not apk.is_file():
         raise AndroidInstrumentationError(f"missing APK: {apk}")
     remote = f"/data/local/tmp/blehub-instrumentation-{uuid.uuid4().hex}.apk"
+    upload_attempted = False
+
+    def command(
+        arguments: list[str],
+        *,
+        timeout: float,
+        label: str,
+        success_marker: str | None = None,
+        upload: bool = False,
+    ) -> None:
+        nonlocal upload_attempted
+
+        def guard() -> None:
+            if require_owner is not None:
+                require_owner()
+            if deadline is not None and deadline <= time.monotonic():
+                raise TimeoutError("Android install deadline exceeded")
+
+        guard()
+        budget = (
+            timeout if deadline is None else min(timeout, deadline - time.monotonic())
+        )
+        if budget <= 0:
+            raise TimeoutError("Android install deadline exceeded")
+        if upload:
+            upload_attempted = True
+        try:
+            _run_logged(
+                _adb(serial, *arguments),
+                log=log,
+                timeout=budget,
+                label=label,
+                success_marker=success_marker,
+                cwd=cwd,
+                deadline=deadline,
+            )
+        except BaseException as error:
+            try:
+                guard()
+            except Exception as boundary:  # noqa: BLE001 -- preserve the primary device failure.
+                error.add_note(f"Android post-install-command boundary: {boundary}")
+            raise
+        guard()
+
+    def cleanup() -> None:
+        if upload_attempted:
+            command(
+                ["shell", "rm", "-f", remote], timeout=15, label="temporary APK cleanup"
+            )
+
     try:
         if use_root:
             for stale_package in (
                 "com.android.packageinstaller",
                 "com.oplus.appdetail",
             ):
-                _run_logged(
-                    _adb(adb, serial, "shell", "am", "force-stop", stale_package),
-                    log=log,
+                command(
+                    ["shell", "am", "force-stop", stale_package],
                     timeout=15,
                     label=f"force-stop stale installer {stale_package}",
                 )
-        _run_logged(
-            _adb(adb, serial, "push", str(apk), remote),
-            log=log,
+        command(
+            ["push", str(apk), remote],
+            upload=True,
             timeout=60,
             label=f"push {apk.name}",
         )
-        install_flags = "-r" + (" -t" if test_only else "")
+        install_flags = "-r" + (" -g" if grant else "") + (" -t" if test_only else "")
         if use_root:
             install_arguments = [
                 "shell",
@@ -200,48 +254,64 @@ def install_apk(
             ]
         else:
             install_arguments = ["shell", "pm", "install", "-r"]
+            if grant:
+                install_arguments.append("-g")
             if test_only:
                 install_arguments.append("-t")
             install_arguments.append(remote)
-        _run_logged(
-            _adb(adb, serial, *install_arguments),
-            log=log,
+        command(
+            install_arguments,
             timeout=90,
             label=f"install {apk.name}",
             success_marker="Success",
         )
-    finally:
+    except BaseException as error:
         try:
-            _ = subprocess.run(
-                _adb(adb, serial, "shell", "rm", "-f", remote),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=15,
-            )
-        except (OSError, subprocess.SubprocessError) as error:
-            _ = log.write(f"temporary APK cleanup failed: {error}\n")
-            _ = log.flush()
+            cleanup()
+        except Exception as cleanup_error:  # noqa: BLE001 -- preserve primary and cleanup separately.
+            error.add_note(f"temporary APK cleanup failed: {cleanup_error}")
+            try:
+                log.write(f"temporary APK cleanup failed: {cleanup_error}\n")
+                log.flush()
+            except Exception as publication:  # noqa: BLE001 -- do not replace the install failure.
+                error.add_note(f"Android cleanup evidence: {publication}")
+        raise
+    cleanup()
 
 
 def _run_logged(
     command: list[str],
     *,
     log: TextIO,
-    timeout: int,
+    timeout: float,
     label: str,
     success_marker: str | None = None,
+    cwd: Path | None = None,
+    deadline: float | None = None,
 ) -> None:
     _ = log.write(f"$ {' '.join(command)}\n")
-    result = subprocess.run(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
+    _ = log.flush()
+    if deadline is not None:
+        timeout = min(timeout, deadline - time.monotonic())
+        if timeout <= 0:
+            raise TimeoutError("Android install deadline exceeded before dispatch")
+    try:
+        result = adb.run_command(command, cwd=cwd, timeout=timeout, check=False)
+    except (host_command.HostCommandError, subprocess.SubprocessError) as error:
+        partial = (
+            getattr(error, "stdout", "") or getattr(error.__cause__, "stdout", "") or ""
+        )
+        try:
+            log.write(
+                partial.decode(errors="replace")
+                if isinstance(partial, bytes)
+                else partial
+            )
+            log.write(f"\n{label} failed: {error}\n")
+            log.flush()
+        except Exception as publication:  # noqa: BLE001 -- keep subprocess failure primary.
+            error.add_note(f"Android command evidence: {publication}")
+        raise
     output = result.stdout or ""
     _ = log.write(output)
     _ = log.flush()
@@ -249,8 +319,9 @@ def _run_logged(
         raise AndroidInstrumentationError(
             f"{label} failed with exit code {result.returncode}: {output.strip()[-1000:]}"
         )
-    if success_marker is not None and not re.search(
-        rf"(?m)^\s*{re.escape(success_marker)}\s*$", output
+    if success_marker is not None and (
+        output.splitlines().count(success_marker) != 1
+        or output.splitlines()[-1:] != [success_marker]
     ):
         raise AndroidInstrumentationError(
             f"{label} did not report {success_marker!r}: {output.strip()[-1000:]}"
@@ -263,9 +334,12 @@ def _read_output(
     stop: threading.Event,
 ) -> None:
     """Drain a child pipe without relying on selectable text streams."""
+    # Buffered read(size) can withhold a short status until EOF, deadlocking a
+    # child that needs the host to act on that status before it can continue.
+    read = getattr(stream, "read1", stream.read)
     try:
         while not stop.is_set():
-            chunk = stream.read(_OUTPUT_CHUNK_SIZE)
+            chunk = read(_OUTPUT_CHUNK_SIZE)
             if not chunk:
                 break
             while not stop.is_set():
@@ -283,32 +357,6 @@ def _read_output(
                 continue
 
 
-def _terminate(process: subprocess.Popen[bytes]) -> None:
-    """Terminate the host process and its POSIX process group, boundedly."""
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "posix":
-            _ = os.killpg(process.pid, signal.SIGTERM)
-        else:
-            process.terminate()
-    except (OSError, ProcessLookupError):
-        pass
-    try:
-        _ = process.wait(timeout=5)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        if os.name == "posix":
-            _ = os.killpg(process.pid, signal.SIGKILL)
-        else:
-            process.kill()
-    except (OSError, ProcessLookupError):
-        pass
-    _ = process.wait(timeout=5)
-
-
 def _run_instrumentation(
     command: list[str],
     *,
@@ -320,13 +368,7 @@ def _run_instrumentation(
     """Run instrumentation while validating output and cleaning up on every exit."""
     _ = log.write(f"$ {' '.join(command)}\n")
     _ = log.flush()
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        start_new_session=os.name == "posix",
-    )
+    process = adb.start_command(command)
     assert process.stdout is not None
     chunks: queue.Queue[bytes | None] = queue.Queue(maxsize=_OUTPUT_QUEUE_SIZE)
     stop_reader = threading.Event()
@@ -416,7 +458,7 @@ def _run_instrumentation(
         stop_reader.set()
         if process.poll() is None:
             try:
-                _terminate(process)
+                host_command.stop(process)
             except (OSError, ProcessLookupError, subprocess.SubprocessError) as error:
                 if failure is None:
                     failure = AndroidInstrumentationError(
@@ -476,23 +518,21 @@ def run(args: argparse.Namespace) -> None:
     if serial:
         environment["BLEHUB_ANDROID_SERIAL"] = serial
     device = select_test_device(device_mode, environment=environment)
-    adb = adb_executable()
     test_package = _package_from_component(test_component)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as log:
-        use_root = has_root(adb, device.serial)
+        use_root = has_root(device.serial)
         print(f"android_instrumentation_device={device.serial}", flush=True)
         print(f"android_instrumentation_root={str(use_root).lower()}", flush=True)
         print(f"android_instrumentation_log={log_path}", flush=True)
         _run_logged(
-            _adb(adb, device.serial, "wait-for-device"),
+            _adb(device.serial, "wait-for-device"),
             log=log,
             timeout=30,
             label="wait for device",
         )
         if app_apk is not None:
             install_apk(
-                adb,
                 device.serial,
                 app_apk,
                 test_only=False,
@@ -500,7 +540,6 @@ def run(args: argparse.Namespace) -> None:
                 log=log,
             )
         install_apk(
-            adb,
             device.serial,
             test_apk,
             test_only=True,
@@ -508,7 +547,6 @@ def run(args: argparse.Namespace) -> None:
             log=log,
         )
         instrument = _adb(
-            adb,
             device.serial,
             "shell",
             "am",
@@ -525,7 +563,7 @@ def run(args: argparse.Namespace) -> None:
             timeout=timeout,
             progress_label=test_component,
             cleanup=lambda: _run_logged(
-                _adb(adb, device.serial, "shell", "am", "force-stop", test_package),
+                _adb(device.serial, "shell", "am", "force-stop", test_package),
                 log=log,
                 timeout=30,
                 label=f"force-stop {test_package}",

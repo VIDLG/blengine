@@ -25,9 +25,11 @@ def verify() -> Path:
     executable = _required_executable("xcodegen")
     result = subprocess.run(
         [str(executable), "--version"],
+        stdin=subprocess.DEVNULL,
         check=True,
         capture_output=True,
         text=True,
+        timeout=15,
     )
     output = (result.stdout or result.stderr).strip()
     match = re.search(r"\b(\d+\.\d+\.\d+)\b", output)

@@ -1,337 +1,481 @@
 set working-directory := "../.."
 
-integration := "integrations/react-native-internal"
-host := "tests/consumers/react-native-internal"
+bleng_integration := "integrations/react-native-bleng"
+formal_host := "tests/consumers/react-native-bleng"
+# Expected export path only: no contract is generated or borrowed from v1.
+fault_contract := "tests/peripherals/nrf52840/firmware/contracts/multifunction-rf-v2-a.json"
+fault_profile := "tests/peripherals/nrf52840/firmware/profiles/multifunction-rf-v2-a.json"
 
-# Install the pinned Nitro module dependencies. Ordinary checks never install toolchains.
-[working-directory("integrations/react-native-internal")]
-install:
+# The formal consumer is intentionally independent from the transitional internal host.
+[working-directory("tests/consumers/react-native-bleng")]
+formal-host-install:
     npm ci --ignore-scripts --no-audit --no-fund
 
-# Type-check the module and regenerate ignored Swift/Kotlin/C++ Nitro glue.
-[working-directory("integrations/react-native-internal")]
-check:
-    npm run check
+# Read-only dependency use: bootstrap/lock changes require explicit formal-host-install.
+[working-directory("tests/consumers/react-native-bleng")]
+formal-host-check:
+    npm run typecheck
+    node -e 'const {execFileSync}=require("node:child_process"); const config=JSON.parse(execFileSync("./node_modules/.bin/react-native",["config","--platform","android"],{encoding:"utf8"})); const dependency=config.dependencies["@blehub/react-native-bleng"]; if (!dependency?.platforms?.android) throw new Error("formal RN Android dependency was not autolinked"); if (config.dependencies["@blehub/react-native-internal"]) throw new Error("transitional internal dependency leaked into formal host"); console.log("formal RN consumer autolinking passed")'
 
-# Stage the existing production UniFFI package and canonical Apple backend sources.
-# This never builds or creates another Rust native image.
-stage-apple-production:
-    test -f .work/staged/apple-production/Sources/BleHubUniFfi/blehub.swift
-    test -d .work/staged/apple-production/BleHubUniFfiNative.xcframework
-    rm -rf {{integration}}/apple-production \
-        {{integration}}/apple-pods/BleHubUniFfi/Sources \
-        {{integration}}/apple-pods/BleHubUniFfi/BleHubUniFfiNative.xcframework \
-        {{integration}}/apple-pods/BleHubUniFfi/Package.swift \
-        {{integration}}/apple-pods/BleHubUniFfi/BleHubUniFfi.flavor \
-        {{integration}}/apple-pods/BleHubApple/Sources
+# Debug includes native contract tests; explicit release packages JS without Metro.
+formal-host-android-build variant="debug": formal-host-check
+    pixi run python tools/react_native/run_quiet.py --no-tty --progress-seconds 20 {{ quote(".work/logs/formal-host-android-" + variant + "-build.log") }} -- pixi run -e android {{ formal_host }}/android/gradlew -p {{ formal_host }}/android {{ if variant == "debug" { ":app:assembleDebug :app:assembleDebugAndroidTest" } else if variant == "release" { ":app:assembleRelease" } else { error("formal-host-android-build variant must be debug or release") } }} --no-daemon
 
-    mkdir -p {{integration}}/apple-pods/BleHubUniFfi
-    cp -R .work/staged/apple-production/. {{integration}}/apple-pods/BleHubUniFfi/
-    mkdir -p {{integration}}/apple-pods/BleHubApple/Sources
-    cp -R platforms/apple/Sources/BleHubApple {{integration}}/apple-pods/BleHubApple/Sources/
+# Formal App tests mock only the package boundary, not the transitional probe API.
+[working-directory("tests/consumers/react-native-bleng")]
+formal-host-test:
+    npm test
 
-# Standalone Android module build. Android runtime is intentionally not an extraction blocker.
-android-build:
-    pixi run python tools/react_native/run_quiet.py {{integration}}/android/build/module-debug.log -- pixi run -e android gradle -p {{integration}}/android :assembleDebug --no-daemon
+# Ordinary builds verify local Pods evidence; only explicit true permits refresh/network.
+formal-host-ios-build refresh_pods="false": stage-apple-bleng bleng-check formal-host-check
+    pixi run python tools/react_native/run_quiet.py --no-tty --progress-seconds 20 .work/logs/formal-host-ios-build.log -- pixi run -e apple-ci python -m tools.react_native.bleng_ios_consumer {{ if refresh_pods == "true" { "--refresh-pods" } else if refresh_pods == "false" { "" } else { error("refresh_pods must be true or false") } }}
 
-android-test-build:
-    pixi run python tools/react_native/run_quiet.py {{integration}}/android/build/module-android-test.log -- pixi run -e android gradle -p {{integration}}/android :assembleDebugAndroidTest --no-daemon
+# Signed App for one physical iPhone. Uses only signing material already on this Mac
+# (Team, Apple Development identity, downloaded development profile) and never requests
+# a provisioning update, registers a device or touches an Apple account. Pods are keyed by
+# the package's own spec/bridge hashes, so a changed spec needs the explicit refresh: a
+# device build must never silently compile against an older preparation than it claims.
+[macos]
+formal-host-ios-device-build device refresh_pods="false":
+    pixi run just react-native::stage-apple-bleng
+    pixi run just react-native::bleng-check
+    pixi run just react-native::formal-host-check
+    pixi run python tools/react_native/run_quiet.py --no-tty --progress-seconds 20 .work/logs/formal-host-ios-device-build.log -- pixi run -e apple-ci python -m tools.react_native.bleng_ios_consumer --device {{ quote(device) }} {{ if refresh_pods == "true" { "--refresh-pods" } else if refresh_pods == "false" { "" } else { error("refresh_pods must be true or false") } }}
 
-# Host instrumentation uses the project runner's adb push + root pm install path.
-# Do not replace this with Gradle connected tests: those may invoke adb install and
-# surface the OEM package-installer confirmation UI on the rooted physical phone.
-android-test device test_class="": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-instrumentation-build.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon
-    if test -n "{{test_class}}"; then \
-        pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{device}} --app-apk {{host}}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{host}}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubnitrohost.test/androidx.test.runner.AndroidJUnitRunner --test-class {{quote(test_class)}} --log {{host}}/android/build/host-instrumentation.log --timeout 120; \
-    else \
-        pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{device}} --app-apk {{host}}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{host}}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubnitrohost.test/androidx.test.runner.AndroidJUnitRunner --log {{host}}/android/build/host-instrumentation.log --timeout 120; \
-    fi
+# Pure JVM retirement mechanics; no device, BLE initialization or tool installation.
+bleng-android-unit-test:
+    pixi run python tools/react_native/run_quiet.py --no-tty --progress-seconds 20 .work/logs/bleng-android-unit-test.log -- pixi run -e android gradle -p {{ bleng_integration }}/android testDebugUnitTest --offline --no-daemon
 
-# Install downstream mobile-host dependencies from the private local integration.
-host-install: install check
-    npm --prefix {{host}} install --ignore-scripts --no-audit --no-fund
+# Native bridge contracts are distinct from the UI scene lanes. Device execution is opt-in.
+formal-host-android-native-test device: formal-host-android-build
+    test -n {{ quote(device) }}
+    pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{ quote(device) }} --app-apk {{ formal_host }}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{ formal_host }}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubblenghost.test/androidx.test.runner.AndroidJUnitRunner --test-class com.blehubblenghost.HybridBlengCentralInstrumentedTest --log {{ formal_host }}/android/build/native-contract-test.log --timeout 120
 
-host-check:
-    {{host}}/node_modules/.bin/tsc -p {{host}}/tsconfig.json --noEmit
+# Platform-simulated companion presence through the real backend and the library's own
+# CompanionDeviceService. CDM creates a synthetic association for this package and simulates
+# appear/disappear; no chooser, no physical peer and no RF. The test creates and removes the
+# association itself, and asserts the presence lane reports both transitions with one key.
+formal-host-android-companion-presence device: formal-host-android-build
+    test -n {{ quote(device) }}
+    pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{ quote(device) }} --app-apk {{ formal_host }}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{ formal_host }}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubblenghost.test/androidx.test.runner.AndroidJUnitRunner --test-class com.blehubblenghost.BlengCompanionPresenceInstrumentedTest --log {{ formal_host }}/android/build/companion-presence-test.log --timeout 180
 
-# Deterministic native handoff/close tests without CocoaPods, signing or hardware.
-host-ios-handoff-test:
-    pixi run -e apple-ci swift test --package-path {{integration}}/ios --scratch-path .work/rn-handoff-swift-test
+# Real system companion chooser through the library's own `beginAssociateCompanion(..., true)`.
+# Requires the advertising nRF52840 fixture on the filtered service; the test first proves the
+# phone can see it, selects the single LE-filtered row with key events (the chooser exposes no
+# accessibility nodes), then asserts the library armed presence and the fixture appears with one
+# owner-scoped key. The disappearance uses CDM's own hook so the lane stays bounded.
+formal-host-android-companion-association device: formal-host-android-build
+    test -n {{ quote(device) }}
+    pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{ quote(device) }} --app-apk {{ formal_host }}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{ formal_host }}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubblenghost.test/androidx.test.runner.AndroidJUnitRunner --test-class com.blehubblenghost.BlengCompanionAssociationInstrumentedTest#chooserAssociationArmsPresenceAndReportsTheAdvertisingPeer --log {{ formal_host }}/android/build/companion-association-test.log --timeout 240
 
-[working-directory("tests/consumers/react-native-internal/ios")]
-host-ios-native-lifecycle-test simulator="": host-ios-pods
-    test -n "{{simulator}}"
-    pixi run python ../../../../tools/react_native/run_quiet.py build/native-test-build.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubNitroHost.xcworkspace -scheme BleHubNitroHost -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/native-test-derived CODE_SIGNING_ALLOWED=NO build-for-testing
-    pixi run python ../../../../tools/react_native/run_quiet.py build/native-test-run.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubNitroHost.xcworkspace -scheme BleHubNitroHost -configuration Debug -destination 'platform=iOS Simulator,id={{simulator}}' -derivedDataPath build/native-test-derived CODE_SIGNING_ALLOWED=NO -only-testing:BleHubNitroHostNativeTests/BleHubNitroHostNativeTests test-without-building
+# The final human-in-the-loop transition. Start the advertising fixture, run this, and when the
+# real appear lands (~20 s) carry the DK out of range (or power it off). The test waits up to 180 s
+# for the real disappearance and asserts it keeps the same owner-scoped key. The same transition
+# has also been verified automatically by stopping the fixture's advertising.
+formal-host-android-companion-peer-leaves device: formal-host-android-build
+    test -n {{ quote(device) }}
+    pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{ quote(device) }} --app-apk {{ formal_host }}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{ formal_host }}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubblenghost.test/androidx.test.runner.AndroidJUnitRunner --test-class com.blehubblenghost.BlengCompanionAssociationInstrumentedTest#realDisappearanceAfterThePeerLeaves --log {{ formal_host }}/android/build/companion-peer-leaves-test.log --timeout 300
 
-# Confirm RN CLI Android autolinking resolves the Nitro package and loader-only package.
-host-android-config-check: host-install
-    cd {{host}} && node -e 'const {execFileSync}=require("node:child_process"); const assert=require("node:assert/strict"); const config=JSON.parse(execFileSync("./node_modules/.bin/react-native",["config","--platform","android"],{encoding:"utf8"})); const dependency=config.dependencies["@blehub/react-native-internal"]; assert(dependency?.platforms?.android, "Nitro Android dependency was not autolinked"); assert.match(dependency.platforms.android.packageImportPath,/BleHubReactNativePackage/); assert.match(dependency.platforms.android.packageInstance,/BleHubReactNativePackage/); console.log("RN CLI autolinks @blehub/react-native-internal -> BleHubReactNativePackage")'
+# Real-device engine reload gate: a test-owned ReactHost proves RN delivers invalidation.
+formal-host-android-engine-reload-test device: formal-host-android-build
+    test -n {{ quote(device) }}
+    pixi run -e android python -m tools.android.run_instrumentation --device physical --serial {{ quote(device) }} --app-apk {{ formal_host }}/android/app/build/outputs/apk/debug/app-debug.apk --test-apk {{ formal_host }}/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk --test-component com.blehubblenghost.test/androidx.test.runner.AndroidJUnitRunner --test-class com.blehubblenghost.BlengEngineReloadInstrumentedTest --log {{ formal_host }}/android/build/engine-reload-test.log --timeout 300
 
-host-android-build: host-install host-check host-android-config-check
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-debug.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleDebug --no-daemon
+[working-directory("tests/consumers/react-native-bleng/ios")]
+formal-host-ios-native-test simulator: formal-host-ios-build
+    test -n {{ quote(simulator) }}
+    pixi run python ../../../../tools/react_native/run_quiet.py --no-tty --progress-seconds 20 build/native-test-run.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubBlengHost.xcworkspace -scheme BleHubBlengHost -configuration Debug -destination {{ quote("platform=iOS Simulator,id=" + simulator) }} -derivedDataPath build/simulator-derived CODE_SIGNING_ALLOWED=NO -only-testing:BleHubBlengHostNativeTests -parallel-testing-enabled NO -collect-test-diagnostics never test-without-building
 
-host-android-single-image-check: host-android-build
-    pixi run python tools/react_native/check_single_image.py android {{host}}/android/app/build/outputs/apk/debug/app-debug.apk
+# Release bundled UI gate. The UI-only scheme builds App + UI tests without the
+# native @testable target, so no testability override enters the production App.
+[working-directory("tests/consumers/react-native-bleng/ios")]
+formal-host-ios-ui-test simulator: formal-host-ios-build
+    test -n {{ quote(simulator) }}
+    pixi run python ../../../../tools/react_native/run_quiet.py --no-tty --progress-seconds 20 build/ui-test-build.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubBlengHost.xcworkspace -scheme BleHubBlengHostUISimulator -configuration Release -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/simulator-ui-derived CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build-for-testing
+    pixi run python ../../../../tools/react_native/run_quiet.py --no-tty --progress-seconds 20 build/ui-test-run.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubBlengHost.xcworkspace -scheme BleHubBlengHostUISimulator -configuration Release -destination {{ quote("platform=iOS Simulator,id=" + simulator) }} -derivedDataPath build/simulator-ui-derived CODE_SIGNING_ALLOWED=NO -only-testing:BleHubBlengHostUITests -parallel-testing-enabled NO -collect-test-diagnostics never test-without-building
 
-# Build an isolated Android RN consumer from an npm tarball and published fixture Maven artifacts.
-host-android-artifact-consumer: install check
-    pixi run python -m tools.react_native.android_artifact_consumer
+# Explicit managed scan: prebuilt candidate, test APK and exact fixture identity/contract.
+# The scene runs inside the App's own instrumentation; no build, firmware provisioning or
+# reset is a prerequisite, and every managed scene shares this one entry point.
+[positional-arguments]
+formal-host-android-managed-scan +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene scan "$@"
 
-# Optional physical-device lifecycle gate from the clean npm-tarball consumer.
-# The default artifact consumer remains static-only and device-free.
-host-android-artifact-device-lifecycle device: install check
-    test -n "{{device}}"
-    pixi run python -m tools.react_native.android_artifact_consumer --device {{device}}
+# Every managed Android scene in one command, in dependency order: the normal path, then
+# the fault-armed scenes, then one and ten recovery cycles. Each scene keeps its own run id,
+# phone lease and evidence root (<output>/<scene>); the sequence stops at the first scene
+# that does not pass, and hands a repeating scene the budget that scene itself declares.
+[positional-arguments]
+formal-host-android-managed-sequence +args:
+    pixi run python -m tools.react_native.run_bleng_android_scenes "$@"
 
-host-android-runtime device="": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/apk-install.log
-    pixi run python -m tools.react_native.run_android_runtime {{device}} --mode basic --log {{host}}/android/build/runtime.log
+# Explicit managed notification scene: same producer/admission as the scan scene; the
+# scene fixes the evidence scope and the expected trace, the profile fixes the target.
+[positional-arguments]
+formal-host-android-managed-notification +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene notification "$@"
 
-# Android RN close/recreate, listener removal, late-callback and post-close dispatch gate.
-# This is host-only: it does not start a Peripheral or require RF hardware.
-host-android-lifecycle-stress device="": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-lifecycle-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/lifecycle-apk-install.log
-    pixi run python -m tools.react_native.run_android_runtime {{device}} --mode stress --log {{host}}/android/build/lifecycle-stress.log --timeout 90
+# Native notification scene: the App process itself opens the subscription and the host
+# proves what crossed the air. No UI automation server is involved; requires the frozen
+# App and test APKs plus explicit install/fixture-start authorization.
+[positional-arguments]
+formal-host-android-native-notification +args:
+    pixi run python -m tools.react_native.run_bleng_android_native_notification "$@"
 
-# Android RN JS runtime invalidation through ReactDelegate.reload().
-# This is distinct from Activity/process restart and uses the host's test-only intent hook.
-host-android-runtime-reload device="": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-reload-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/reload-apk-install.log
-    pixi run python -m tools.react_native.run_android_runtime {{device}} --mode reload --log {{host}}/android/build/runtime-reload.log --timeout 120
+# Multi-link isolation on one owner: the host ends the first declared peer's link and every
+# other declared peer must still deliver a value applied *after* that end. Each `--peer`
+# carries its own port, contract, profile and canonical identity, so the topology is the
+# declaration, not this recipe. No UI automation server is involved.
+[positional-arguments]
+formal-host-android-native-multi-link +args:
+    pixi run python -m tools.react_native.run_bleng_android_multi_link "$@"
 
-# Android RN JS -> Nitro -> production Android scan gate against the standalone nRF DK.
-# The runner owns fixture readiness, bounded progress, failure-fast log handling and cleanup.
-host-android-rf device mode="rf" service_uuid="fd000000-0000-4000-8000-000000000000": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-rf-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android adb -s {{device}} wait-for-device
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/rf-apk-install.log
-    pixi run python -m tools.react_native.run_android_rf {{device}} --mode {{mode}} --service-uuid {{service_uuid}}
+# Adapter OFF -> ON recovery on the formal App's own native surface: the host owns the phone
+# radio and the fixture, the App owns the reported adapter state, the refused scan and its own
+# retry once the radio is back. No UI automation server and no retired consumer App in the path.
+[positional-arguments]
+formal-host-android-native-adapter-transition +args:
+    pixi run python -m tools.react_native.run_bleng_android_adapter_transition "$@"
 
-# Profile-aware single-DK control used for per-device Android RF diagnosis.
-# fixture_device and service_uuid must name the same local DK/profile pair.
-host-android-rf-single device fixture_device service_uuid mode="rf": host-install host-check host-android-config-check
-    test -n "{{device}}" && test -n "{{fixture_device}}" && test -n "{{service_uuid}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-rf-single-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android adb -s {{device}} wait-for-device
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/rf-single-apk-install.log
-    pixi run python -m tools.react_native.run_android_rf {{device}} --mode {{mode}} --service-uuid {{service_uuid}} --fixture-device {{fixture_device}}
+# Permission transition on the formal App's own native surface: three processes (denied /
+# active read parked in the fixture then ended by the OS / restored). The host owns every
+# permission mutation and the reason-8 death proof; the App owns only the product facts.
+[positional-arguments]
+formal-host-android-native-permission-transition +args:
+    pixi run python -m tools.react_native.run_bleng_android_permission_transition "$@"
 
-# Private two-DK gate. The runner derives both service UUIDs from the explicit
-# local device/profile mapping and fails before the RN host if either DK is not ready.
-host-android-rf-multi device notification_mode="both" subscription_mode="notification" cycles="1": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-rf-multi-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android adb -s {{device}} wait-for-device
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/rf-multi-apk-install.log
-    pixi run python -m tools.react_native.run_android_multi_rf {{device}} --notification-mode {{notification_mode}} --subscription-mode {{subscription_mode}} --cycles {{cycles}}
+# The same scene on the iPhone lane: a hosted XCTest bundle inside the signed formal App drives
+# the real Nitro surface, and stage markers come from the device syslog. The App and the
+# `build-for-testing` manifest are inputs, so this entry never builds, signs or installs on its
+# own authority.
+[positional-arguments]
+formal-host-ios-native-multi-link +args:
+    pixi run python -m tools.react_native.run_bleng_ios_multi_link "$@"
 
-# One RN process/probe continuous multi-DK pressure gate. Unlike --cycles above,
-# this keeps the fixture and probe alive across all inner ledgers.
-host-android-rf-multi-soak device subscription_mode="notification" cycles="10": host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-rf-multi-soak-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android adb -s {{device}} wait-for-device
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/rf-multi-soak-apk-install.log
-    pixi run python -m tools.react_native.run_android_multi_rf {{device}} --runtime-mode rf-multi-soak --subscription-mode {{subscription_mode}} --soak-cycles {{cycles}}
+# App-specific Bluetooth authorization on the formal App's own UI test target: allowed -> denied
+# -> allowed, read from the App's initialization snapshot. Consumes the signed App + manifest from
+# `formal-host-ios-device-test-build`; never builds, signs or touches radio/fixture. The only
+# destructive action is this App's authorization reset/restore, hence the explicit flag.
+[positional-arguments]
+formal-host-ios-permission-authorization +args:
+    pixi run python -m tools.react_native.run_bleng_ios_permission_ui "$@"
 
-# Destructive private two-DK fault gate: stop only DK-A, require DK-B survival,
-# then restart DK-A and verify a fresh connection/GATT route.
-host-android-rf-multi-fault device: host-install host-check host-android-config-check
-    test -n "{{device}}"
-    pixi run python tools/react_native/run_quiet.py {{host}}/android/build/host-rf-multi-fault-release.log -- pixi run -e android {{host}}/android/gradlew -p {{host}}/android :app:assembleRelease --no-daemon
-    pixi run -e android adb -s {{device}} wait-for-device
-    pixi run -e android python -m tools.android.install_apk --serial {{device}} --device physical --apk {{host}}/android/app/build/outputs/apk/release/app-release.apk --log {{host}}/android/build/rf-multi-fault-apk-install.log
-    pixi run python -m tools.react_native.run_android_multi_fault_rf {{device}}
+# Drive one UI scene in-process with XCTest: no WebDriverAgent, Appium server or tunnel.
+# The host still owns fixture/lease/evidence; this entry only drives identifiers and
+# returns per-step timings. Plans are host-owned (`smoke`, `scan`).
+[positional-arguments]
+formal-host-ios-scene-driver +args:
+    pixi run python -m tools.react_native.run_ios_scene_driver "$@"
 
-host-android-bundle: host-install host-check
-    cd {{host}} && ./node_modules/.bin/react-native bundle --platform android --dev false --entry-file index.js --bundle-output /tmp/blehub-nitro-host.android.bundle --assets-dest /tmp/blehub-nitro-host-assets
+# Produce the two inputs that entry needs (signed App + manifest) from the formal host project,
+# using only signing material already on this Mac. Never installs, launches or registers.
+#
+# The signed product links the *staged* Apple backend, not `platforms/apple`, so the same
+# prerequisites as the host build apply: a Swift fix that was never staged would otherwise ship
+# silently and look like a device bug.
+[macos]
+[positional-arguments]
+formal-host-ios-device-test-build +args: stage-apple-bleng bleng-check formal-host-check
+    pixi run python -m tools.react_native.run_bleng_ios_device_test_build "$@"
 
-[working-directory("tests/consumers/react-native-internal/ios")]
-host-ios-pods: stage-apple-production host-install host-check
-    pixi run python ../../../../tools/react_native/run_quiet.py build/pod-install.log -- pixi run -e apple-ci pod install
+# Explicit managed indication scene; a strict indication CCC, not a notification fallback.
+[positional-arguments]
+formal-host-android-managed-indication +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene indication "$@"
 
-[working-directory("tests/consumers/react-native-internal/ios")]
-host-ios-build: host-ios-pods
-    pixi run python ../../../../tools/react_native/run_quiet.py build/simulator-build.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubNitroHost.xcworkspace -scheme BleHubNitroHost -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/simulator-derived CODE_SIGNING_ALLOWED=NO build
+# Explicit managed read/write scene: read the profile's read-write characteristic, write
+# a declared payload, read it back (a write receipt is not a stored value) and read RSSI.
+[positional-arguments]
+formal-host-android-managed-io +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene io "$@"
 
-host-ios-single-image-check: host-ios-build
-    pixi run -e apple-ci python tools/react_native/check_single_image.py ios {{host}}/ios/build/simulator-derived/Build/Products/Debug-iphonesimulator/BleHubNitroHost.app/BleHubNitroHost.debug.dylib
+# Explicit managed cancellation scene: the fixture holds the first read, the App queues a
+# second, the UI cancels the queued one, the held read is released and completes, then a
+# later read proves the lane recovered. Fault-armed, so it stays a separate entry.
+[positional-arguments]
+formal-host-android-managed-cancellation +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene cancellation "$@"
 
-# Build an isolated, unsigned iOS RN consumer from an npm tarball, never the module source.
-host-ios-artifact-consumer: install check
-    pixi run python -m tools.react_native.ios_artifact_consumer
+# Managed iOS scan: the same evidence vocabulary as the Android scenes with the iOS
+# preparation steps instead — frozen .app tree, a host-built WebDriverAgent runner,
+# no helper APKs and no permission scope. Pass --app-tree-sha256 from the reviewed
+# signed device build; the producer refuses a different tree.
+[positional-arguments]
+formal-host-ios-managed-scan +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene scan "$@"
 
-# Signed clean-artifact iPhone runtime smoke; no RF or Peripheral is involved.
-host-ios-artifact-device-runtime udid team: install check
-    pixi run python -m tools.react_native.ios_artifact_consumer --device-udid {{quote(udid)}} --development-team {{quote(team)}}
+[positional-arguments]
+formal-host-ios-managed-notification +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene notification "$@"
 
-# Signed clean-artifact iPhone XCUITest launched directly after artifact install.
-# This remains a bridge/UI lifecycle gate, not an RF test.
-host-ios-artifact-ui-test udid team: install check
-    pixi run python -m tools.react_native.ios_artifact_consumer --device-udid {{quote(udid)}} --development-team {{quote(team)}} --ui-test
+[positional-arguments]
+formal-host-ios-managed-indication +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene indication "$@"
 
-[working-directory("tests/consumers/react-native-internal/ios")]
-host-ios-runtime udid="": host-ios-pods
-    test -n "{{udid}}"
-    xcrun simctl boot {{udid}} >/dev/null 2>&1 || true
-    xcrun simctl bootstatus {{udid}} -b
-    pixi run python ../../../../tools/react_native/run_quiet.py build/simulator-runtime-build.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubNitroHost.xcworkspace -scheme BleHubNitroHost -configuration Release -sdk iphonesimulator -destination 'platform=iOS Simulator,id={{udid}}' -derivedDataPath build/runtime-derived CODE_SIGNING_ALLOWED=NO build
-    xcrun simctl install {{udid}} build/runtime-derived/Build/Products/Release-iphonesimulator/BleHubNitroHost.app
-    xcrun simctl launch {{udid}} org.reactjs.native.example.BleHubNitroHost
-    sleep 5
-    xcrun simctl spawn {{udid}} log show --last 30s --info --debug --style compact --predicate 'eventMessage CONTAINS "BLEHUB_NITRO_RUNTIME"' > build/runtime.log
-    pixi run python ../../../../tools/react_native/check_runtime_log.py build/runtime.log
+# The same read/write scene on the iPhone lane.
+[positional-arguments]
+formal-host-ios-managed-io +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene io "$@"
 
-[working-directory("tests/consumers/react-native-internal/ios")]
-host-ios-device-build udid="" team="": host-ios-pods
-    test -n "{{udid}}"
-    test -n "{{team}}"
-    pixi run python ../../../../tools/react_native/run_quiet.py --no-tty build/device-build.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubNitroHost.xcworkspace -scheme BleHubNitroHost -configuration Debug -sdk iphoneos -destination 'id={{udid}}' -derivedDataPath build/device-derived DEVELOPMENT_TEAM={{team}} PRODUCT_BUNDLE_IDENTIFIER=org.reactjs.native.example.BleHubNitroHost CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY='Apple Development' ONLY_ACTIVE_ARCH=YES build
-    test -d build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app
+# The fault-armed cancellation scene on the iPhone lane, on its own: one held read, one
+# queued and cancelled read, then a recovery read. The sequence runs it too; this entry is
+# for a targeted rerun.
+[positional-arguments]
+formal-host-ios-managed-cancellation +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene cancellation "$@"
 
-host-ios-device-single-image-check udid="" team="":
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python tools/react_native/check_single_image.py ios {{host}}/ios/build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app/BleHubNitroHost.debug.dylib
+# Explicit managed write-reject scene: the firmware parks the exact write and the host
+# refuses it, so the App must report a failed write with the peer's ATT status, change
+# nothing, and then write and read back normally.
+[positional-arguments]
+formal-host-android-managed-write-reject +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene write-reject "$@"
 
-host-ios-device-runtime udid="" team="":
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run -e apple-ci xcrun devicectl device install app --device {{udid}} --json-output {{host}}/ios/build/device-install.json {{host}}/ios/build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app
-    pixi run python tools/react_native/run_ios_device_runtime.py {{udid}} {{host}}/ios/build/device-runtime.log --seconds 20
-    pixi run python tools/react_native/check_runtime_log.py {{host}}/ios/build/device-runtime.log
+# Explicit managed CCC-enable-reject scene: the firmware refuses the subscription's own
+# CCC write, the App must end that attempt as a failed subscription, and a second enable
+# must subscribe and deliver a value the host emitted.
+[positional-arguments]
+formal-host-android-managed-ccc-enable-reject +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene ccc-enable-reject "$@"
 
-host-ios-device-lifecycle-stress udid="" team="":
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run -e apple-ci xcrun devicectl device install app --device {{udid}} --json-output {{host}}/ios/build/device-stress-install.json {{host}}/ios/build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app
-    pixi run python tools/react_native/run_ios_device_runtime.py {{udid}} {{host}}/ios/build/device-lifecycle-stress.log --seconds 35 --stress
-    pixi run python tools/react_native/check_runtime_log.py {{host}}/ios/build/device-lifecycle-stress.log --stress
+# Explicit managed CCC-disable-reject scene: the refused disable must leave the
+# subscription subscribed and still delivering; a second disable retires it.
+[positional-arguments]
+formal-host-android-managed-ccc-disable-reject +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene ccc-disable-reject "$@"
 
-host-ios-device-reload udid="" team="":
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run -e apple-ci xcrun devicectl device install app --device {{udid}} --json-output {{host}}/ios/build/device-reload-install.json {{host}}/ios/build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app
-    pixi run python tools/react_native/run_ios_device_runtime.py {{udid}} {{host}}/ios/build/device-reload.log --seconds 40 --reload
-    pixi run python tools/react_native/check_runtime_log.py {{host}}/ios/build/device-reload.log --reload
+# A peer-initiated link end: the host ends the link from the peripheral side, and the App
+# must announce it by itself — from the connection's own end lane, attributed to nobody
+# here — then hold that reason over a stated quiet window with no command submitted.
+[positional-arguments]
+formal-host-android-managed-passive-disconnect +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene passive-disconnect "$@"
 
-# iPhone RN JS -> Nitro -> production Apple scan gate against the standalone nRF.
-# RN gates share an atomic lock; other Apple native gates do not use it.
-host-ios-device-rf-scan udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}}
+# The same link scene on the iPhone lane.
+[positional-arguments]
+formal-host-ios-managed-passive-disconnect +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene passive-disconnect "$@"
 
-# Separate RN JS-driven nRF connect/disconnect gate; scan-only pass is not connection evidence.
-host-ios-device-rf-connect udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --connect
+# The operator's own end of a live link: read once, subscribe, receive one emitted value,
+# then submit the App's own disconnect. The App must attribute the end to the operator (not
+# to a peer), retire the subscription with the link, count no further value, and withdraw
+# every control that needs a link.
+[positional-arguments]
+formal-host-android-managed-disconnect +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene disconnect "$@"
 
-# RN JS-driven aggregate GATT discovery gate against the connected nRF profile.
-host-ios-device-rf-gatt udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --gatt
+[positional-arguments]
+formal-host-ios-managed-disconnect +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene disconnect "$@"
 
-# RN JS-driven canonical read/write gate after aggregate GATT discovery.
-host-ios-device-rf-io udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --io
+# The peer's own CCCD across a subscription's whole life: read it disabled, subscribe, read it
+# enabled, write back the same bytes, read it unchanged, disable, read it cleared. The descriptor
+# is the second witness a subscription claim otherwise never has.
+[positional-arguments]
+formal-host-android-managed-descriptor-io +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene descriptor-io "$@"
 
-# Connected RSSI read through the production Apple backend; no synthetic fixture value.
-host-ios-device-rf-rssi udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --rssi
+[positional-arguments]
+formal-host-ios-managed-descriptor-io +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene descriptor-io "$@"
 
-# RN JS-driven PlatformDefault Notification enable/value/disable gate.
-host-ios-device-rf-notification udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --notification
+# The platform's own `connected` inventory, checked against the link this run holds: the peer
+# the App is linked to must appear in the list, matched by the owner-scoped key. A list that
+# merely came back is not the claim.
+[positional-arguments]
+formal-host-android-managed-devices-query +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene devices-query "$@"
 
-# RN JS-driven strict Indication gate: dual-property rejection plus pure-Indication value flow.
-host-ios-device-rf-indication udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --indication
+[positional-arguments]
+formal-host-ios-managed-devices-query +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene devices-query "$@"
 
-# iPhone RN JS -> Nitro -> production Apple multi-DK gate. The runner shares
-# the explicit two-DK controller and checker with the Android lane.
-host-ios-device-rf-multi udid="" team="" subscription_mode="notification" cycles="1":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_multi_rf {{quote(udid)}} --subscription-mode {{subscription_mode}} --cycles {{cycles}}
+# The two inventories the observation main line never needs: `bonded` and `companion`. No peer
+# and no link — each platform either reports its own inventory or refuses the capability.
+[positional-arguments]
+formal-host-android-managed-devices-kinds +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene devices-kinds "$@"
 
-# One RN process/probe continuous multi-DK pressure gate. Unlike --cycles above,
-# this keeps the fixture and probe alive across all inner ledgers.
-host-ios-device-rf-multi-soak udid="" team="" subscription_mode="notification" cycles="10":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_multi_rf {{quote(udid)}} --runtime-mode rf-multi-soak --subscription-mode {{subscription_mode}} --soak-cycles {{cycles}}
+[positional-arguments]
+formal-host-ios-managed-devices-kinds +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene devices-kinds "$@"
 
-# Destructive private two-DK fault gate: stop only DK-A, require DK-B survival,
-# then restart DK-A and verify a fresh connection/GATT route.
-host-ios-device-rf-multi-fault udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_multi_fault_rf {{quote(udid)}}
+# Radio power, both directions. An adapter fact with no peer and no link: each answer is either
+# the platform changing the radio or refusing with its own code, and both platforms we test
+# refuse (API 33+ excludes ordinary apps; CoreBluetooth exposes no radio control).
+[positional-arguments]
+formal-host-android-managed-adapter-control +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene adapter-control "$@"
 
-# Opt-in non-destructive RF matrix: build once, then retain each independent
-# checker/fixture lifecycle and its own log; stop immediately on first failure.
-host-ios-device-rf-baseline udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python tools/react_native/check_single_image.py ios {{host}}/ios/build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app/BleHubNitroHost.debug.dylib
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --connect
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --gatt
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --io
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --rssi
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --notification
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --indication
+[positional-arguments]
+formal-host-ios-managed-adapter-control +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene adapter-control "$@"
 
-# Opt-in diagnostic pending-ATT reload; never builds/flashes/resets DK firmware.
-# The confirmed SHA validates only a previously built local HEX, not DK flash.
-host-ios-device-rf-pending-read-reload udid team probe_serial confirmed_sha:
-    pixi run just react-native host-ios-device-build {{quote(udid)}} {{quote(team)}}
-    pixi run python tools/react_native/check_single_image.py ios {{host}}/ios/build/device-derived/Build/Products/Debug-iphoneos/BleHubNitroHost.app/BleHubNitroHost.debug.dylib
-    pixi run python -m tools.react_native.run_ios_pending_read_reload --udid {{quote(udid)}} --probe-serial {{quote(probe_serial)}} --confirm-hex-sha256 {{quote(confirmed_sha)}}
+# A standing "connect when the peer appears" request: the host withdraws the peer, the App
+# asks for a link while it is gone, the host restores it, and the platform either links or
+# refuses the capability as itself.
+[positional-arguments]
+formal-host-android-managed-auto-connect +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene auto-connect "$@"
 
-# RN JS-driven passive-disconnect/recovery gate with an active notification route.
-host-ios-device-rf-passive-disconnect udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --passive-disconnect
+[positional-arguments]
+formal-host-ios-managed-auto-connect +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene auto-connect "$@"
 
-# Real engine reload with an active RF subscription; the fixture observes host disconnect.
-host-ios-device-rf-reload udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --rf-reload
+# Facts about the live link itself: query the MTU, request one, ask for high connection
+# priority, and invalidate the GATT cache. Each answer is either the platform doing it or the
+# platform saying it has no such capability; the App must not turn either into a timeout.
+[positional-arguments]
+formal-host-android-managed-link-facts +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene link-facts "$@"
 
-# Repeated RF fault/recovery pressure using one RN probe/listener across ten cycles.
-host-ios-device-rf-recovery-ten udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --recovery-ten
+[positional-arguments]
+formal-host-ios-managed-link-facts +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene link-facts "$@"
 
-# One RN probe/listener and production Apple backend across three passive fault/recovery cycles.
-host-ios-device-rf-recovery udid="" team="":
-    test -n "{{udid}}" && test -n "{{team}}"
-    pixi run just react-native host-ios-device-build {{udid}} {{team}}
-    pixi run python -m tools.react_native.run_ios_rf_scan {{quote(udid)}} --recovery
+# A subscription that must outlive a background/foreground cycle: the App is sent away for a
+# declared dwell, the host emits while it is away, and the value is only observable after it
+# returns. Its own entry because the dwell makes it the slowest scene to debug in a sequence.
+[positional-arguments]
+formal-host-android-managed-background +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene background "$@"
 
-[working-directory("tests/consumers/react-native-internal/ios")]
-host-ios-device-ui-test udid="" team="": host-ios-pods
-    test -n "{{udid}}"
-    test -n "{{team}}"
-    pixi run python ../../../../tools/react_native/run_quiet.py --no-tty build/device-ui-test.log -- pixi run -e apple-ci xcodebuild -quiet -workspace BleHubNitroHost.xcworkspace -scheme BleHubNitroHost -configuration Debug -destination 'id={{udid}}' -derivedDataPath build/device-ui-derived DEVELOPMENT_TEAM={{team}} CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY='Apple Development' ONLY_ACTIVE_ARCH=YES -only-testing:BleHubNitroHostUITests/BleHubNitroHostUITests/testContractLabCompletesAndRecreatesProbe test
+[positional-arguments]
+formal-host-ios-managed-background +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene background "$@"
+
+# A connect the peer cannot answer: the scan matches the fixture, the host then withdraws its
+# advertising (proved on the controller's own readback), and the App submits a connect it can
+# never complete. The App must report the failure as a failure — no link, no invented end, the
+# identity its own record carries — and withdraw every control that needs a link.
+[positional-arguments]
+formal-host-android-managed-connect-failure +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene connect-failure "$@"
+
+[positional-arguments]
+formal-host-ios-managed-connect-failure +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene connect-failure "$@"
+
+# N peer-initiated ends on one owner: every cycle repeats scan/link/discover/read on the
+# *same* owner, so a stale capability or a needed owner replacement shows up as a cycle
+# that cannot reach its own read.
+[positional-arguments]
+formal-host-android-managed-recovery +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene recovery "$@"
+
+[positional-arguments]
+formal-host-ios-managed-recovery +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene recovery "$@"
+
+# The same cycle ten times on one owner. The scene declares the budget it needs (~9 s per
+# iOS click and six clicks per cycle), so the run must declare at least that: `--timeout`
+# below the scene's own minimum is refused before the App is driven.
+[positional-arguments]
+formal-host-android-managed-recovery-ten +args:
+    pixi run python -m tools.react_native.run_bleng_android_scan --scene recovery-ten "$@"
+
+[positional-arguments]
+formal-host-ios-managed-recovery-ten +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene recovery-ten "$@"
+
+# The same three fault-armed scenes on the iPhone lane.
+[positional-arguments]
+formal-host-ios-managed-write-reject +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene write-reject "$@"
+
+[positional-arguments]
+formal-host-ios-managed-ccc-enable-reject +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene ccc-enable-reject "$@"
+
+[positional-arguments]
+formal-host-ios-managed-ccc-disable-reject +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scan --scene ccc-disable-reject "$@"
+
+# Release this repository's own formal iOS App if it is still running. A passing scene
+# keeps it as evidence and the platform can restore it later, so the next run would refuse
+# takeover. Attribution is the device's own installation for this bundle, it terminates at
+# most one process, and it is not a resource-zero, radio or gate claim.
+[positional-arguments]
+formal-host-ios-release-app +args:
+    pixi run python -m tools.react_native.ios_app_cleanup "$@"
+
+# Every managed iOS scene in one command, in the same dependency order as the Android
+# sequence (scene_sequence.ORDER). Each scene keeps its own run id, phone lease and evidence
+# root (<output>/<scene>), the sequence stops at the first scene that does not pass, and a
+# repeating scene is handed the budget it declares. --release-retained-app is always applied,
+# because a retained App would block the next scene's takeover.
+[positional-arguments]
+formal-host-ios-managed-sequence +args:
+    pixi run python -m tools.react_native.run_bleng_ios_scenes "$@"
+
+# Offline scan replay cannot authorize hardware or upgrade the RF verdict.
+formal-host-scan-verify attempt:
+    pixi run python -m tools.react_native.bleng_scan_evidence {{ quote(attempt) }}
+
+# Stage the combined Apple BLeng UniFFI image and the canonical Apple backend for
+# the formal React Native BLeng package. This never mutates apple-production.
+[private]
+stage-apple-bleng:
+    pixi run just ffi apple-bleng-package
+    test -f .work/staged/apple-bleng/Sources/BleHubUniFfi/bleng.swift
+    test -f .work/staged/apple-bleng/Sources/BleHubUniFfi/blehub.swift
+    test -d .work/staged/apple-bleng/BleHubUniFfiNative.xcframework
+    rm -rf .work/staged/apple-bleng-react-native {{ bleng_integration }}/apple-pods
+    pixi run python -m tools.react_native.stage_bleng_apple
+    test -f .work/staged/apple-bleng-react-native/BleHubUniFfi/Sources/BleHubUniFfi/bleng.swift
+    test -f .work/staged/apple-bleng-react-native/BleHubApple/BleHubApple.podspec
+    test -d .work/staged/apple-bleng-react-native/BleHubApple/Sources/BleHubApple
+
+# Validate the formal BLeng Nitro spec and refresh its ignored generated glue.
+[private]
+bleng-check:
+    npm --prefix {{ bleng_integration }} run check
+
+# The runnable example's type layer is its contract: it compiles against the same package source a
+# consumer resolves. Reuses the formal host's installed toolchain (no second install, nothing
+# written into the example) and fails closed when that toolchain is absent.
+quickstart-typecheck:
+    pixi run python -m tools.react_native.quickstart_typecheck
+
+# The example's Babel config is executed, not assumed: every source must compile with it and every
+# component must actually be transformed by React Compiler. Same host toolchain, example read-only.
+quickstart-compile:
+    pixi run python -m tools.react_native.quickstart_compile
+
+# Signature-level reference generated from the package's public entry point (`src/index.ts`). The
+# site is derived from the specs, never hand-edited, and behaviour contracts stay in API.md /
+# API.zh.md — see docs/research/react-native/typedoc-site.md.
+api-site:
+    npm run docs:api
+
+# Same entry point validated without writing a site; any TypeDoc warning fails the check.
+api-site-check:
+    npm run docs:api:check
+
+# Hardware-free tooling regressions. One discovery root: `tools/tests` holds the tool
+# suites, `tools/tests/react_native` the RN lanes, so a new test file is found by adding it
+# to that tree — never by naming a runner.
+#
+# Parallel by default: these cases are hardware-free and file-independent, and `loadfile`
+# keeps one module on one worker, so counts are identical and the wall clock is a third
+# (597 s -> 161 s on ten cores). `-k` narrows a targeted regression.
+# `tools-fixture-test` deliberately stays on `unittest discover`: it also loads the
+# peripheral tree, which must not be collected by pytest.
+tools-test filter="":
+    python -m pytest tools/tests -q -n auto --dist loadfile --durations=10 {{ if filter != "" { "-k " + quote(filter) } else { "" } }}
+
+# Stable hardware-free responsibility slices; each remains a filter over the same discovery.
+tools-test-android-safety:
+    python -m pytest tools/tests -q -n auto --dist loadfile --durations=10 -k android_
+tools-test-lifecycle:
+    python -m pytest tools/tests -q -n auto --dist loadfile --durations=10 -k lifecycle
+# The device-observed population: real device answers, not synthesized payloads. Same
+# discovery, one filter, so `-k regression_` and this recipe can never disagree.
+tools-test-observed:
+    python -m pytest tools/tests -q -n auto --dist loadfile --durations=10 -k regression_
+
+# Exercise host, provider and Android OS controllers together; no RF/build/install.
+# The three named modules live beside their subject (`tools/android`) because the runner is
+# not RN-specific; naming them here is what makes them run at all.
+tools-fixture-test:
+    python -c 'import unittest; loader = unittest.TestLoader(); suite = unittest.TestSuite([loader.discover("tools/tests", pattern="test_*.py", top_level_dir="."), loader.discover("tests/peripherals/nrf52840", pattern="test_*.py", top_level_dir="."), loader.loadTestsFromNames(["tools.android.test_run_instrumentation", "tools.android.test_state_control"])]); result = unittest.TextTestRunner(verbosity=2, durations=10).run(suite); raise SystemExit(not result.wasSuccessful())'

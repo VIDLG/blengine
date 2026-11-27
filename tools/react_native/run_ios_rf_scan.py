@@ -13,6 +13,8 @@ from types import FrameType
 from typing import Literal, cast
 
 from tests.peripherals.nrf52840 import provider
+from tools import host_command
+from tools.check_peripheral_profiles import NRF_MULTIFUNCTION_A_PATH, load_profile
 from tools.react_native.host_contract import APP_NAME
 from tools.react_native.rf_runner import (
     DEFAULT_HEARTBEAT_SECONDS,
@@ -26,7 +28,9 @@ from tools.react_native.rf_runner import (
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 HOST_BUILD = PROJECT_ROOT / "tests/consumers/react-native-internal/ios/build"
 APP = HOST_BUILD / "device-derived/Build/Products/Debug-iphoneos" / APP_NAME
-SERVICE_UUID = "fd000000-0000-4000-8000-000000000000"
+SERVICE_UUID = str(
+    load_profile(NRF_MULTIFUNCTION_A_PATH)["services"][0]["uuid"]
+).casefold()
 LOCK = provider.WORK_ROOT / "rn-ios-scan.lock"
 # Kept as a module-level compatibility alias for existing runner tests/tools.
 HEARTBEAT_SECONDS = DEFAULT_HEARTBEAT_SECONDS
@@ -160,10 +164,15 @@ def run(
     rssi: bool = False,
     subscription: str | None = None,
     passive_disconnect: bool = False,
+    cancellation: bool = False,
     recovery: bool = False,
-    recovery_cycles: int = 3,
     rf_reload: bool = False,
+    suite_flow: str | None = None,
 ) -> None:
+    if cancellation or suite_flow in ("rf-cancellation", "rf-watchdog"):
+        from tests.peripherals.nrf52840.direct_fixture import require_v2_coordination
+
+        require_v2_coordination("legacy-suite-runner")
     provider.WORK_ROOT.mkdir(parents=True, exist_ok=True)
     try:
         LOCK.mkdir()  # Atomic among RN gates; other Apple gates do not use this lock.
@@ -177,21 +186,42 @@ def run(
             or io
             or subscription is not None
             or passive_disconnect
+            or cancellation
             or recovery
             or rf_reload
         ):
             raise ValueError("connected RSSI is a separate RF gate")
-        if recovery_cycles not in (3, 10) or (recovery_cycles == 10 and not recovery):
-            raise ValueError("recovery cycles must be 3 or 10 in recovery mode")
-        recovery_prefix = "rf-recovery-ten" if recovery_cycles == 10 else "rf-recovery"
+        recovery_prefix = "rf-recovery"
         if subscription not in (None, "notification", "indication"):
             raise ValueError(f"unsupported RN RF subscription mode: {subscription}")
+        if suite_flow is not None and suite_flow not in {
+            "rf",
+            "rf-connect",
+            "rf-gatt",
+            "rf-io",
+            "rf-rssi",
+            "rf-notification",
+            "rf-indication",
+            "rf-passive-disconnect",
+            "rf-cancellation",
+        }:
+            raise ValueError(f"unsupported RF Lab suite flow: {suite_flow}")
         if rf_reload and (
-            passive_disconnect or recovery or io or subscription is not None
+            passive_disconnect
+            or cancellation
+            or recovery
+            or io
+            or subscription is not None
         ):
             raise ValueError("RF reload is a separate Notification gate")
-        if passive_disconnect and recovery:
-            raise ValueError("passive disconnect and recovery are separate gates")
+        if passive_disconnect and (cancellation or recovery):
+            raise ValueError(
+                "passive disconnect, cancellation, and recovery are separate gates"
+            )
+        if cancellation and (
+            passive_disconnect or recovery or io or subscription is not None
+        ):
+            raise ValueError("cancellation is a separate GATT gate")
         if (passive_disconnect or recovery) and (
             io or subscription not in (None, "notification")
         ):
@@ -202,7 +232,7 @@ def run(
             subscription = "notification"
             connect = True
             gatt = True
-        elif io or subscription is not None:
+        elif cancellation or io or subscription is not None:
             connect = True
             gatt = True
         elif rssi:
@@ -227,6 +257,8 @@ def run(
                 if recovery
                 else "device-rf-passive-disconnect"
                 if passive_disconnect
+                else "device-rf-cancellation"
+                if cancellation
                 else f"device-rf-{subscription}"
                 if subscription is not None
                 else "device-rf-io"
@@ -260,8 +292,6 @@ def run(
                         "--coordination-mode",
                         "host-close"
                         if rf_reload
-                        else "recovery-ten"
-                        if recovery and recovery_cycles == 10
                         else "recovery"
                         if recovery
                         else "passive-disconnect"
@@ -313,19 +343,17 @@ def run(
                 udid,
                 str(attempt_log),
                 "--seconds",
-                "900"
-                if recovery and recovery_cycles == 10
-                else "450"
-                if recovery or rf_reload
-                else "210",
-                "--rf-reload-service-uuid"
+                "450" if recovery or rf_reload else "210",
+                "--rf-lab-suite-service-uuid"
+                if suite_flow is not None
+                else "--rf-reload-service-uuid"
                 if rf_reload
-                else "--rf-recovery-ten-service-uuid"
-                if recovery and recovery_cycles == 10
                 else "--rf-recovery-service-uuid"
                 if recovery
                 else "--rf-passive-disconnect-service-uuid"
                 if passive_disconnect
+                else "--rf-cancellation-service-uuid"
+                if cancellation
                 else "--rf-indication-service-uuid"
                 if subscription == "indication"
                 else "--rf-notification-service-uuid"
@@ -341,6 +369,8 @@ def run(
                 else "--rf-service-uuid",
                 SERVICE_UUID,
             ]
+            if suite_flow is not None:
+                runtime_command.extend(["--rf-lab-suite-flow", suite_flow])
             if subscription is not None or recovery:
                 progress.phase_started("runtime-launch")
                 runtime_process = subprocess.Popen(
@@ -436,7 +466,7 @@ def run(
                         progress=progress,
                     )
                 elif recovery:
-                    for cycle in range(recovery_cycles):
+                    for cycle in range(3):
                         directory = coordination_path / f"cycle-{cycle}"
                         wait_for_coordination_marker(
                             directory / "fixture-ready",
@@ -596,11 +626,7 @@ def run(
                 progress.phase_started("runtime-exit")
                 wait_for_runtime_exit(
                     runtime_process,
-                    925
-                    if recovery and recovery_cycles == 10
-                    else 475
-                    if recovery or rf_reload
-                    else 235,
+                    475 if recovery or rf_reload else 235,
                     progress=progress,
                 )
                 runtime_process = None
@@ -649,12 +675,12 @@ def run(
                     str(attempt_log),
                     "--rf-reload-service-uuid"
                     if rf_reload
-                    else "--rf-recovery-ten-service-uuid"
-                    if recovery and recovery_cycles == 10
                     else "--rf-recovery-service-uuid"
                     if recovery
                     else "--rf-passive-disconnect-service-uuid"
                     if passive_disconnect
+                    else "--rf-cancellation-service-uuid"
+                    if cancellation
                     else "--rf-indication-service-uuid"
                     if subscription == "indication"
                     else "--rf-notification-service-uuid"
@@ -678,13 +704,9 @@ def run(
             attempt_log.replace(log)
         finally:
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
-            if runtime_process is not None and runtime_process.poll() is None:
-                runtime_process.terminate()
-                try:
-                    runtime_process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    runtime_process.kill()
-                    _ = runtime_process.wait()
+            if runtime_process is not None:
+                # Bounded: a runtime that survives SIGKILL is reported, never waited on forever.
+                host_command.stop(runtime_process, grace=10)
             if coordination_path is not None:
                 shutil.rmtree(coordination_path, ignore_errors=True)
             primary_error = sys.exc_info()[1]
@@ -719,8 +741,9 @@ def main() -> int:
     _ = parser.add_argument("--io", action="store_true")
     _ = parser.add_argument("--rssi", action="store_true")
     _ = parser.add_argument("--passive-disconnect", action="store_true")
+    _ = parser.add_argument("--cancellation", action="store_true")
     _ = parser.add_argument("--recovery", action="store_true")
-    _ = parser.add_argument("--recovery-ten", action="store_true")
+
     _ = parser.add_argument("--rf-reload", action="store_true")
     subscription = parser.add_mutually_exclusive_group()
     _ = subscription.add_argument(
@@ -739,8 +762,8 @@ def main() -> int:
     io = cast(bool, args.io)
     rssi = cast(bool, args.rssi)
     passive_disconnect = cast(bool, args.passive_disconnect)
-    recovery_ten = cast(bool, args.recovery_ten)
-    recovery = cast(bool, args.recovery) or recovery_ten
+    cancellation = cast(bool, args.cancellation)
+    recovery = cast(bool, args.recovery)
     rf_reload = cast(bool, args.rf_reload)
     subscription_mode = cast(
         Literal["notification", "indication"] | None, args.subscription
@@ -751,6 +774,7 @@ def main() -> int:
         or rssi
         or subscription_mode is not None
         or passive_disconnect
+        or cancellation
         or recovery
     ) and not connect:
         connect = True
@@ -762,8 +786,8 @@ def main() -> int:
         rssi=rssi,
         subscription=subscription_mode,
         passive_disconnect=passive_disconnect,
+        cancellation=cancellation,
         recovery=recovery,
-        recovery_cycles=10 if recovery_ten else 3,
         rf_reload=rf_reload,
     )
     return 0

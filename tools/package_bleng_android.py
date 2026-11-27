@@ -1,4 +1,4 @@
-"""Formal two-component BLeng Android package and artifact-only build."""
+"""Formal three-component BLeng Android package and artifact-only build."""
 
 from __future__ import annotations
 
@@ -21,8 +21,9 @@ TARGET_ROOT = PROJECT_ROOT / ".work" / "cargo-target" / "bleng-uniffi-android"
 GENERATED_ROOT = WORK_ROOT / "generated"
 MAVEN_ROOT = PROJECT_ROOT / ".work" / "staged" / "android-bleng-maven"
 ARTIFACT_PATH = Path("dev/blehub/bleng/0.0.0/bleng-0.0.0.aar")
+BLENG_LIBRARY_NAME = "libbleng_uniffi.so"
 PACKAGING_PROJECT = PROJECT_ROOT / "tests/ffi/runtime/android-bleng"
-CONSUMER_PROJECT = PROJECT_ROOT / "tests/consumers/android-bleng"
+CONSUMER_PROJECT = PROJECT_ROOT / "tests/consumers/android/bleng"
 CONFIG = PROJECT_ROOT / "tests/ffi/config/uniffi.bleng.android.toml"
 MANIFEST = PROJECT_ROOT / "crates/bleng-uniffi/Cargo.toml"
 FORBIDDEN = (
@@ -34,22 +35,90 @@ FORBIDDEN = (
     "test_harness",
     "toy",
 )
-BLENG_METHODS = {
-    "assemble_backend",
-    "initialize",
-    "start_scan",
-    "stop_scan",
-    "connect",
-    "disconnect",
-    "discover_gatt",
-    "read_characteristic",
-    "write_characteristic",
-    "enable_notifications",
-    "disable_notifications",
-    "read_rssi",
-    "next_event",
-    "shutdown",
+TYPED_OPERATIONS = {
+    "InitializeOperation": "begin_initialize",
+    "StartScanOperation": "begin_start_scan",
+    "StopScanOperation": "begin_stop_scan",
+    "ConnectOperation": "begin_connect",
+    "DisconnectOperation": "begin_disconnect",
+    "DiscoverGattOperation": "begin_discover_gatt",
+    "ReadOperation": "begin_read_characteristic",
+    "WriteOperation": "begin_write_characteristic",
+    "EnableNotificationsOperation": "begin_enable_notifications",
+    "DisableNotificationsOperation": "begin_disable_notifications",
+    "ReadRssiOperation": "begin_read_rssi",
+    "MtuOperation": "begin_request_mtu",
+    "SetConnectionPriorityOperation": "begin_set_connection_priority",
+    "BondOperation": "begin_create_bond",
+    "ReadDescriptorOperation": "begin_read_descriptor",
+    "WriteDescriptorOperation": "begin_write_descriptor",
+    "SetAdapterEnabledOperation": "begin_set_adapter_enabled",
+    "QueryDevicesOperation": "begin_query_devices",
+    "AssociateCompanionDeviceOperation": "begin_associate_companion",
+    "RefreshGattCacheOperation": "begin_refresh_gatt_cache",
 }
+SUPERVISOR_METHODS = {
+    "create_fresh_owner",
+    "is_active",
+    "retire_for_recovery",
+    "start",
+    "shutdown",
+    "observe",
+}
+BLENG_METHODS = (
+    {
+        "assemble_backend",
+        "cancel_operation",
+        "initialize",
+        "start_scan",
+        "stop_scan",
+        "connect",
+        "disconnect",
+        "discover_gatt",
+        "read_characteristic",
+        "write_characteristic",
+        "enable_notifications",
+        "disable_notifications",
+        "read_rssi",
+        "request_mtu",
+        "query_mtu",
+        "set_connection_priority",
+        "create_bond",
+        "remove_bond",
+        "read_descriptor",
+        "write_descriptor",
+        "next_event",
+        "shutdown",
+    }
+    | set(TYPED_OPERATIONS.values())
+    | {
+        "begin_query_mtu",
+        "begin_remove_bond",
+        "begin_connect_with_options",
+        "connect_with_options",
+        "set_adapter_enabled",
+        "query_devices",
+        "refresh_gatt_cache",
+    }
+)
+OPERATION_METHODS = {"command_id", "cancel", "wait"}
+REQUIRED_CLASSES = {
+    "dev/blehub/BleHub.class",
+    "dev/bleng/Bleng.class",
+    *(f"dev/bleng/{name}.class" for name in TYPED_OPERATIONS),
+    "dev/bleng_supervisor/Supervisor.class",
+    "dev/bleng_supervisor/ForeignPlatformOwnerSession.class",
+    "dev/bleng_supervisor/ForeignPlatformOwnerSessionFactory.class",
+    "dev/bleng_supervisor/ForeignOwnerContext.class",
+    "dev/bleng_supervisor/ForeignResourceCount.class",
+    "dev/bleng_supervisor/ForeignSupervisorConfig.class",
+    "dev/bleng_supervisor/SupervisorFfiException.class",
+}
+REQUIRED_CONSUMER_RULES = (
+    "-keep class dev.blehub.** { *; }",
+    "-keep class dev.bleng.** { *; }",
+    "-keep class dev.bleng_supervisor.** { *; }",
+)
 
 
 def run_step(label: str, command: list[str], environment: dict[str, str]) -> None:
@@ -80,7 +149,11 @@ def run_step(label: str, command: list[str], environment: dict[str, str]) -> Non
 
 def validate_bindings(root: Path) -> set[str]:
     """Reject default namespaces, extra components and mechanism-only probe surfaces."""
-    expected = {Path("dev/blehub/blehub.kt"), Path("dev/bleng/bleng.kt")}
+    expected = {
+        Path("dev/blehub/blehub.kt"),
+        Path("dev/bleng/bleng.kt"),
+        Path("dev/bleng_supervisor/bleng_supervisor.kt"),
+    }
     actual = {path.relative_to(root) for path in root.rglob("*.kt")}
     if actual != expected:
         raise RuntimeError(f"unexpected BLeng Kotlin files: {sorted(actual)}")
@@ -88,6 +161,7 @@ def validate_bindings(root: Path) -> set[str]:
     for relative, package in (
         (Path("dev/blehub/blehub.kt"), "dev.blehub"),
         (Path("dev/bleng/bleng.kt"), "dev.bleng"),
+        (Path("dev/bleng_supervisor/bleng_supervisor.kt"), "dev.bleng_supervisor"),
     ):
         text = (root / relative).read_text(encoding="utf-8")
         if not re.search(rf"^package {re.escape(package)}$", text, re.MULTILINE):
@@ -110,24 +184,53 @@ def validate_bindings(root: Path) -> set[str]:
         "uniffi_bleng_fn_clone_bleng",
         "uniffi_bleng_fn_free_bleng",
         *(f"uniffi_bleng_fn_method_bleng_{method}" for method in BLENG_METHODS),
+        *(
+            f"uniffi_bleng_fn_{action}_{name.lower()}"
+            for name in TYPED_OPERATIONS
+            for action in ("clone", "free")
+        ),
+        *(
+            f"uniffi_bleng_fn_method_{name.lower()}_{method}"
+            for name in TYPED_OPERATIONS
+            for method in OPERATION_METHODS
+        ),
     }
     object_symbols = {
         symbol for symbol in symbols if symbol.startswith("uniffi_bleng_fn_")
     }
     if object_symbols != expected_object:
         raise RuntimeError(f"unexpected Bleng object exports: {sorted(object_symbols)}")
+    supervisor_symbols = {
+        "uniffi_bleng_supervisor_fn_constructor_supervisor_new",
+        "uniffi_bleng_supervisor_fn_clone_supervisor",
+        "uniffi_bleng_supervisor_fn_free_supervisor",
+        *(
+            f"uniffi_bleng_supervisor_fn_method_supervisor_{method}"
+            for method in SUPERVISOR_METHODS
+        ),
+    }
+    if not supervisor_symbols <= symbols:
+        raise RuntimeError(
+            "unexpected Supervisor object exports: "
+            f"missing={sorted(supervisor_symbols - symbols)}"
+        )
     return symbols
 
 
 def validate_symbols(symbols: set[str], expected: set[str]) -> None:
-    """Require precisely the generated two-component FFI surface, not just a marker."""
+    """Require precisely the generated three-component FFI surface, not just a marker."""
     exports = {symbol for symbol in symbols if symbol.startswith(("uniffi_", "ffi_"))}
+    known_components = {"blehub", "bleng", "bleng_supervisor"}
     components = {
-        match[1]
-        for symbol in exports
-        if (match := re.match(r"(?:uniffi|ffi)_([^_]+)_", symbol))
+        component
+        for component in known_components
+        if any(
+            symbol.startswith(f"{prefix}_{component}_")
+            for prefix in ("uniffi", "ffi")
+            for symbol in exports
+        )
     }
-    if components != {"blehub", "bleng"}:
+    if components != known_components:
         raise RuntimeError(f"unexpected UniFFI components: {sorted(components)}")
     if any(token in symbol.lower() for symbol in symbols for token in FORBIDDEN):
         raise RuntimeError("probe/test export in BLeng ELF")
@@ -137,11 +240,24 @@ def validate_symbols(symbols: set[str], expected: set[str]) -> None:
         )
 
 
-def audit_aar(aar: Path, nm: Path, expected: set[str]) -> None:
+def audit_aar(
+    aar: Path,
+    nm: Path,
+    expected: set[str],
+    *,
+    library_name: str = DEFAULT_LIBRARY_NAME,
+) -> None:
     """Inspect the actual AAR ELFs with NDK llvm-nm; one Rust image per ABI."""
-    expected_images = {f"jni/{target.abi}/{DEFAULT_LIBRARY_NAME}" for target in TARGETS}
+    expected_images = {f"jni/{target.abi}/{library_name}" for target in TARGETS}
     with zipfile.ZipFile(aar) as archive:
         names = archive.namelist()
+        try:
+            consumer_rules = archive.read("proguard.txt").decode("utf-8").splitlines()
+        except (KeyError, UnicodeDecodeError) as error:
+            raise RuntimeError("AAR is missing UTF-8 consumer rules") from error
+        missing_rules = set(REQUIRED_CONSUMER_RULES) - set(consumer_rules)
+        if missing_rules:
+            raise RuntimeError(f"AAR consumer rules missing: {sorted(missing_rules)}")
         images = {name for name in names if name.endswith(".so")}
         if images != expected_images or any(names.count(name) != 1 for name in images):
             raise RuntimeError(
@@ -149,18 +265,19 @@ def audit_aar(aar: Path, nm: Path, expected: set[str]) -> None:
             )
         with zipfile.ZipFile(io.BytesIO(archive.read("classes.jar"))) as classes:
             class_names = classes.namelist()
-            if not {"dev/blehub/BleHub.class", "dev/bleng/Bleng.class"}.issubset(
-                class_names
-            ):
-                raise RuntimeError("AAR lacks both generated component classes")
+            missing_classes = REQUIRED_CLASSES - set(class_names)
+            if missing_classes:
+                raise RuntimeError(
+                    f"AAR lacks required generated component classes: {sorted(missing_classes)}"
+                )
             if any(
                 token in name.lower() for name in class_names for token in FORBIDDEN
             ):
                 raise RuntimeError("probe/test class in BLeng AAR")
         for target in TARGETS:
-            image = WORK_ROOT / "audit" / target.abi / DEFAULT_LIBRARY_NAME
+            image = WORK_ROOT / "audit" / target.abi / library_name
             image.parent.mkdir(parents=True, exist_ok=True)
-            image.write_bytes(archive.read(f"jni/{target.abi}/{DEFAULT_LIBRARY_NAME}"))
+            image.write_bytes(archive.read(f"jni/{target.abi}/{library_name}"))
             if image.read_bytes()[:4] != b"\x7fELF":
                 raise RuntimeError(f"not an ELF: {image}")
             result = subprocess.run(
@@ -180,7 +297,7 @@ def audit_aar(aar: Path, nm: Path, expected: set[str]) -> None:
             validate_symbols(set(result.stdout.split()), expected)
             (image.parent / "exports.txt").write_text(result.stdout, encoding="utf-8")
             print(
-                f"bleng_elf_audit_{target.abi}=blehub+bleng single-image",
+                f"bleng_elf_audit_{target.abi}=blehub+bleng+bleng_supervisor single-image",
                 flush=True,
             )
 
@@ -227,6 +344,7 @@ def main() -> int:
                 MAVEN_ROOT / ARTIFACT_PATH,
                 nm,
                 validate_bindings(GENERATED_ROOT / "kotlin"),
+                library_name=BLENG_LIBRARY_NAME,
             )
             return 0
         # Only this BLeng lane's generated and published outputs are replaced.
@@ -302,7 +420,7 @@ def main() -> int:
                 "--manifest",
                 str(MANIFEST),
                 "--library-name",
-                "libbleng_uniffi.so",
+                BLENG_LIBRARY_NAME,
                 "--target-dir",
                 str(TARGET_ROOT),
                 "--output-root",
@@ -316,7 +434,7 @@ def main() -> int:
             environment,
         )
         built = WORK_ROOT / "packaging/bindings/outputs/aar/bindings-release.aar"
-        audit_aar(built, nm, expected)
+        audit_aar(built, nm, expected, library_name=BLENG_LIBRARY_NAME)
         run_step(
             "publish-aar",
             gradle(
@@ -328,7 +446,7 @@ def main() -> int:
         staged = MAVEN_ROOT / ARTIFACT_PATH
         if staged.read_bytes() != built.read_bytes():
             raise RuntimeError("published BLeng AAR differs from audited build")
-        audit_aar(staged, nm, expected)
+        audit_aar(staged, nm, expected, library_name=BLENG_LIBRARY_NAME)
         run_step(
             "consumer-build",
             gradle(

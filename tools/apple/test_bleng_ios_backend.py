@@ -1,14 +1,21 @@
 """Protect run-ID correlation and terminal status of the Apple backend HIL."""
 
+import io
+import json
+import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from tools.apple import bleng_ios_backend as backend
 from tools.apple import rf_fixture, test_ios_runtime
 from tools.apple.bleng_ios_backend import (
+    classify_central_recovery_spike_result,
     classify_connection_result,
+    classify_fresh_owner_lifecycle_result,
     classify_gatt_result,
     classify_indication_result,
     classify_io_result,
@@ -84,6 +91,88 @@ class AppleBlengResultTests(unittest.TestCase):
                 "apple_bleng_corebluetooth_scan=failed\nerror=Timeout\n",
                 "current",
                 service,
+            )
+
+    def test_central_recovery_spike_is_diagnostic_only_and_accepts_platform_timeout(
+        self,
+    ) -> None:
+        timeout = (
+            "apple_bleng_corebluetooth_run_id=current\n"
+            "apple_bleng_corebluetooth_central_recovery_spike=attempted\n"
+            "central_recovery_spike_outcome=platform-timeout\n"
+            "first_scan_session_id=1\nfirst_matching_advertisements=2\n"
+            "second_scan_session_id=2\nsecond_matching_advertisements=0\n"
+            "production_gate_claim=none\n"
+        )
+        self.assertEqual(
+            classify_central_recovery_spike_result(timeout, "current")[
+                "central_recovery_spike_outcome"
+            ],
+            "platform-timeout",
+        )
+        observed = timeout.replace(
+            "central_recovery_spike_outcome=platform-timeout",
+            "central_recovery_spike_outcome=advertisement-observed",
+        ).replace(
+            "second_matching_advertisements=0", "second_matching_advertisements=1"
+        )
+        self.assertEqual(
+            classify_central_recovery_spike_result(observed, "current")[
+                "central_recovery_spike_outcome"
+            ],
+            "advertisement-observed",
+        )
+        self.assertIsNone(classify_central_recovery_spike_result(timeout, "old"))
+        with self.assertRaisesRegex(RuntimeError, "production gate"):
+            classify_central_recovery_spike_result(
+                timeout.replace(
+                    "production_gate_claim=none", "production_gate_claim=passed"
+                ),
+                "current",
+            )
+        with self.assertRaisesRegex(RuntimeError, "second-scan evidence"):
+            classify_central_recovery_spike_result(
+                observed.replace(
+                    "second_matching_advertisements=1",
+                    "second_matching_advertisements=0",
+                ),
+                "current",
+            )
+
+    def test_fresh_owner_lifecycle_requires_new_identities_and_no_gate_claim(
+        self,
+    ) -> None:
+        result = (
+            "apple_bleng_corebluetooth_run_id=current\n"
+            "apple_bleng_fresh_owner_lifecycle=attempted\n"
+            "fresh_owner_lifecycle_outcome=fresh-owner-created-and-retired\n"
+            "old_owner_id=11111111-1111-4111-8111-111111111111\n"
+            "new_owner_id=22222222-2222-4222-8222-222222222222\n"
+            "old_backend_id=33333333-3333-4333-8333-333333333333\n"
+            "new_backend_id=44444444-4444-4444-8444-444444444444\n"
+            "production_gate_claim=none\n"
+        )
+        self.assertEqual(
+            classify_fresh_owner_lifecycle_result(result, "current")[
+                "fresh_owner_lifecycle_outcome"
+            ],
+            "fresh-owner-created-and-retired",
+        )
+        self.assertIsNone(classify_fresh_owner_lifecycle_result(result, "old"))
+        with self.assertRaisesRegex(RuntimeError, "reused owner"):
+            classify_fresh_owner_lifecycle_result(
+                result.replace(
+                    "new_owner_id=22222222-2222-4222-8222-222222222222",
+                    "new_owner_id=11111111-1111-4111-8111-111111111111",
+                ),
+                "current",
+            )
+        with self.assertRaisesRegex(RuntimeError, "production gate"):
+            classify_fresh_owner_lifecycle_result(
+                result.replace(
+                    "production_gate_claim=none", "production_gate_claim=passed"
+                ),
+                "current",
             )
 
     def test_connection_requires_matching_run_scan_and_ordered_active_lifecycle(
@@ -926,6 +1015,332 @@ class AppleBlengRecoveryTests(unittest.TestCase):
                         "xcrun", "device", "bundle", fixture, mode="recovery"
                     )
                 stop.assert_called_once_with(("123", "123"))
+
+
+class AppleBlengRecoveryHostTests(unittest.TestCase):
+    def _check_host_cli(
+        self,
+        *,
+        stage: str = "summary",
+        outcome: int | subprocess.TimeoutExpired = 0,
+        raw_summary: bytes | None = None,
+        error: str | None = None,
+        stale: str | None = None,
+        missing_bundle: bool = False,
+    ) -> None:
+        summary = {
+            "result": "Passed",
+            "totalTestCount": 3,
+            "passedTests": 3,
+            "failedTests": 0,
+            "skippedTests": 0,
+            "expectedFailures": 0,
+            "testFailures": [],
+        }
+        if raw_summary is None:
+            raw_summary = json.dumps(summary).encode("utf-8")
+        with tempfile.TemporaryDirectory() as temp:
+            work = Path(temp)
+            project = work / backend.PROJECT.name
+            run_id = backend.uuid.UUID("11111111-2222-4333-8444-555555555555")
+            results = work / "recovery-host/Results"
+            bundle = results / f"{run_id}.xcresult"
+            attempt = results / str(run_id)
+            log = attempt / "xcodebuild.log"
+            summary_path = attempt / "summary.json"
+            summary_log = attempt / "summary.log"
+            results.mkdir(parents=True)
+            old_report = results / "old-run.xcresult"
+            old_report.mkdir()
+            (old_report / "evidence").write_bytes(b"old evidence")
+            if stale == "bundle":
+                bundle.mkdir()
+                (bundle / "evidence").write_bytes(b"do not adopt")
+            elif stale == "symlink":
+                bundle.symlink_to(results / "missing")
+            elif stale == "attempt":
+                attempt.mkdir()
+                log.write_bytes(b"old log")
+            generate_command = [
+                "/managed/xcodegen",
+                "generate",
+                "--quiet",
+                "--spec",
+                str(backend.SPEC),
+                "--project",
+                str(work),
+            ]
+            test_command = [
+                "/xcode/xcodebuild",
+                "-quiet",
+                "-project",
+                str(project),
+                "-scheme",
+                "BlengAppleRecoveryHostTests",
+                "-destination",
+                "platform=macOS",
+                "-derivedDataPath",
+                str(work / "recovery-host/DerivedData"),
+                "-resultBundlePath",
+                str(bundle),
+                "CODE_SIGNING_ALLOWED=NO",
+                "test",
+            ]
+            summary_command = [
+                "/xcode/xcrun",
+                "xcresulttool",
+                "get",
+                "test-results",
+                "summary",
+                "--path",
+                str(bundle),
+                "--compact",
+            ]
+
+            def run(
+                command: list[str], **kwargs: Any
+            ) -> subprocess.CompletedProcess[str]:
+                # Only these real process boundaries are permitted, even on failure paths.
+                self.assertIn(
+                    command, (generate_command, test_command, summary_command)
+                )
+                current_stage = (
+                    "generate"
+                    if command == generate_command
+                    else "test"
+                    if command == test_command
+                    else "summary"
+                )
+                if current_stage == "test":
+                    kwargs["stdout"].write("XCTest output retained\n")
+                    if not missing_bundle:
+                        bundle.mkdir()
+                        (bundle / "evidence").write_bytes(b"this run")
+                elif current_stage == "summary":
+                    kwargs["stdout"].write(raw_summary)
+                    kwargs["stderr"].write(b"summary diagnostics retained\n")
+                if stage == current_stage:
+                    if isinstance(outcome, subprocess.TimeoutExpired):
+                        raise outcome
+                    if outcome:
+                        return subprocess.CompletedProcess(command, outcome, "", "")
+                if current_stage == "generate":
+                    project.mkdir()
+                    (project / "project.pbxproj").write_text("// generated\n")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                mock.patch.object(backend, "WORK", work),
+                mock.patch.object(backend, "PROJECT", project),
+                mock.patch.object(backend.platform, "system", return_value="Darwin"),
+                mock.patch.object(backend.consumer, "verify_package") as verify,
+                mock.patch.object(
+                    backend.uuid, "uuid4", return_value=run_id
+                ) as unique_id,
+                mock.patch.object(
+                    backend.xcodegen_toolchain,
+                    "verify",
+                    return_value=Path("/managed/xcodegen"),
+                ),
+                mock.patch.object(
+                    backend.consumer_ios,
+                    "executable",
+                    side_effect={
+                        "xcodebuild": "/xcode/xcodebuild",
+                        "xcrun": "/xcode/xcrun",
+                    }.__getitem__,
+                ),
+                mock.patch.object(
+                    backend.subprocess, "run", side_effect=run
+                ) as process,
+                mock.patch.object(
+                    backend.sys, "argv", ["bleng_ios_backend", "test-recovery-host"]
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                status = backend.main()
+
+            verify.assert_called_once_with()
+            self.assertEqual(status, 0 if error is None else 1)
+            self.assertEqual(
+                "apple_bleng_recovery_host=passed" in stdout.getvalue(), error is None
+            )
+            if error:
+                self.assertIn(error, stderr.getvalue())
+            else:
+                self.assertIn(
+                    "apple_bleng_recovery_host_test_count=3", stdout.getvalue()
+                )
+            self.assertEqual((old_report / "evidence").read_bytes(), b"old evidence")
+            process.assert_any_call(
+                generate_command,
+                cwd=backend.ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            if stage == "generate":
+                self.assertEqual(process.call_count, 1)
+                unique_id.assert_not_called()
+                return
+            unique_id.assert_called_once_with()
+            if stale:
+                self.assertEqual(process.call_count, 1)
+                if stale == "bundle":
+                    self.assertEqual(
+                        (bundle / "evidence").read_bytes(), b"do not adopt"
+                    )
+                    self.assertFalse(attempt.exists())
+                elif stale == "symlink":
+                    self.assertTrue(bundle.is_symlink())
+                    self.assertFalse(attempt.exists())
+                else:
+                    self.assertEqual(log.read_bytes(), b"old log")
+                return
+            self.assertEqual(log.read_text(), "XCTest output retained\n")
+            for path in (bundle, log, summary_path, summary_log):
+                self.assertIn(str(path), stdout.getvalue())
+                if error:
+                    self.assertIn(str(path), stderr.getvalue())
+            test_call = process.call_args_list[1]
+            self.assertEqual(
+                test_call,
+                mock.call(
+                    test_command,
+                    cwd=backend.ROOT,
+                    stdin=subprocess.DEVNULL,
+                    stdout=mock.ANY,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                    timeout=180,
+                ),
+            )
+            if stage == "test" or missing_bundle:
+                self.assertEqual(process.call_count, 2)
+                self.assertFalse(summary_path.exists())
+            else:
+                self.assertEqual(process.call_count, 3)
+                process.assert_called_with(
+                    summary_command,
+                    cwd=backend.ROOT,
+                    stdin=subprocess.DEVNULL,
+                    stdout=mock.ANY,
+                    stderr=mock.ANY,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(summary_path.read_bytes(), raw_summary)
+                self.assertEqual(
+                    summary_log.read_bytes(), b"summary diagnostics retained\n"
+                )
+            if not missing_bundle:
+                self.assertEqual((bundle / "evidence").read_bytes(), b"this run")
+
+    def test_cli_generates_then_runs_only_unsigned_macos_xctest(self) -> None:
+        cases = (
+            ("summary", 0, None),
+            ("test", 65, "exit 65"),
+            ("test", subprocess.TimeoutExpired("xcodebuild", 180), "timed out"),
+            ("generate", 23, "exit 23"),
+            ("generate", subprocess.TimeoutExpired("xcodegen", 60), "timed out"),
+            ("summary", 17, "exit 17"),
+            ("summary", subprocess.TimeoutExpired("xcresulttool", 30), "timed out"),
+        )
+        for stage, outcome, error in cases:
+            with self.subTest(stage=stage, outcome=outcome):
+                self._check_host_cli(stage=stage, outcome=outcome, error=error)
+
+    def test_summary_requires_complete_strict_counts_and_actual_passing_execution(
+        self,
+    ) -> None:
+        passed = {
+            "result": "Passed",
+            "totalTestCount": 3,
+            "passedTests": 3,
+            "failedTests": 0,
+            "skippedTests": 0,
+            "expectedFailures": 0,
+            "testFailures": [],
+        }
+        invalid = [
+            b"",
+            b"{broken",
+            b"\xff",
+            b"null",
+            b"[]",
+            b'"Passed"',
+            json.dumps({**passed, "result": "Failed"}).encode(),
+            json.dumps({**passed, "totalTestCount": 0, "passedTests": 0}).encode(),
+            json.dumps({**passed, "passedTests": 0, "skippedTests": 3}).encode(),
+            json.dumps({**passed, "passedTests": 2, "skippedTests": 1}).encode(),
+            json.dumps({**passed, "passedTests": 2, "failedTests": 1}).encode(),
+            json.dumps({**passed, "passedTests": 2}).encode(),
+            json.dumps({**passed, "expectedFailures": 1}).encode(),
+            json.dumps(
+                {
+                    **passed,
+                    "testFailures": [{"failureText": "runner initialization failed"}],
+                }
+            ).encode(),
+            json.dumps({**passed, "testFailures": None}).encode(),
+        ]
+        for key in passed:
+            invalid.append(
+                json.dumps({k: v for k, v in passed.items() if k != key}).encode()
+            )
+        for key in (
+            "totalTestCount",
+            "passedTests",
+            "failedTests",
+            "skippedTests",
+            "expectedFailures",
+        ):
+            for value in (True, False, 0.0, "0", None):
+                invalid.append(json.dumps({**passed, key: value}).encode())
+        for raw in invalid:
+            with self.subTest(summary=raw):
+                self._check_host_cli(raw_summary=raw, error="summary")
+
+    def test_existing_or_missing_result_artifacts_are_never_adopted(self) -> None:
+        for stale in ("bundle", "symlink", "attempt"):
+            with self.subTest(stale=stale):
+                self._check_host_cli(stale=stale, error="existing")
+        self._check_host_cli(missing_bundle=True, error="missing")
+
+    def test_host_target_reuses_sources_and_the_sole_staged_product_without_app(
+        self,
+    ) -> None:
+        spec = backend.SPEC.read_text(encoding="utf-8")
+        host, scheme = spec.split("  BlengAppleRecoveryHostTests:\n")[1:]
+        host = host.split("\nschemes:")[0]
+        self.assertIn("    type: bundle.unit-test\n    platform: macOS\n", host)
+        self.assertIn('        TEST_HOST: ""\n        BUNDLE_LOADER: ""\n', host)
+        sources = host.split("    sources:\n")[1].split("    settings:\n")[0]
+        ios = spec.split("  BlengAppleIOSProbeTests:\n")[1]
+        self.assertEqual(
+            sources, ios.split("    sources:\n")[1].split("    settings:\n")[0]
+        )
+        for line in sources.splitlines():
+            if "- path: " in line:
+                self.assertTrue(
+                    (backend.SPEC.parent / line.split("- path: ")[1]).exists(), line
+                )
+        self.assertEqual(
+            host.split("    dependencies:\n")[1].strip(),
+            "- package: BleHubUniFfi\n        product: BleHubUniFfi",
+        )
+        self.assertIn("path: ../../../../.work/staged/apple-bleng\n", spec)
+        self.assertNotIn("platforms/apple", host)
+        self.assertNotIn("ApplePlatformSession", host)
+        self.assertNotIn("AppleRustSupervisorOwner", host)
+        self.assertEqual(
+            scheme,
+            "    build:\n      targets:\n        BlengAppleRecoveryHostTests: all\n"
+            "    test:\n      targets:\n        - BlengAppleRecoveryHostTests\n",
+        )
 
 
 if __name__ == "__main__":

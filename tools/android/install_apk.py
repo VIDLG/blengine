@@ -12,7 +12,7 @@ from tools.android.run_instrumentation import (
     has_root,
     install_apk,
 )
-from tools.android_toolchain import adb_environment, adb_executable, select_test_device
+from tools.android_toolchain import adb_environment, select_test_device
 
 
 def main() -> int:
@@ -36,14 +36,12 @@ def main() -> int:
         if serial:
             environment["BLEHUB_ANDROID_SERIAL"] = serial
         device = select_test_device(device_mode, environment=environment)
-        adb = adb_executable()
-        use_root = has_root(adb, device.serial)
+        use_root = has_root(device.serial)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("w", encoding="utf-8") as log:
             print(f"android_apk_install_device={device.serial}", flush=True)
             print(f"android_apk_install_root={str(use_root).lower()}", flush=True)
             install_apk(
-                adb,
                 device.serial,
                 apk,
                 test_only=test_only,

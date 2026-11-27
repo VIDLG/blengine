@@ -45,6 +45,12 @@ snapshot-update: generate
 snapshot-check: generate
     python -m tools.api_snapshots check
 
+# Render the human-readable freeze inventory from the reviewed snapshots.
+# It is a summary for a human signature, never a freeze itself; the machine
+# form above is what gates drift.
+freeze-inventory:
+    python -m tools.freeze_inventory
+
 # Build the formal BLeng package from its own final native-image owner.
 [private]
 bleng-build:
