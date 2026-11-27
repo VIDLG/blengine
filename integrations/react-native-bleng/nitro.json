@@ -1,0 +1,24 @@
+{
+  "cxxNamespace": ["blehubreactnativebleng"],
+  "ios": {
+    "iosModuleName": "BleHubReactNativeBleng"
+  },
+  "android": {
+    "androidNamespace": ["blehubreactnativebleng"],
+    "androidCxxLibName": "BleHubReactNativeBleng"
+  },
+  "autolinking": {
+    "BlengCentral": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridBlengCentral"
+      },
+      "android": {
+        "language": "kotlin",
+        "implementationClassName": "HybridBlengCentral"
+      }
+    }
+  },
+  "ignorePaths": ["**/node_modules"],
+  "gitAttributesGeneratedFlag": false
+}

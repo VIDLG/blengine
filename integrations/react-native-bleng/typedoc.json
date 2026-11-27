@@ -1,0 +1,20 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "@blehub/react-native-bleng",
+  "entryPoints": ["src/index.ts"],
+  "tsconfig": "tsconfig.json",
+  "out": "site/api",
+  "readme": "typedoc-readme.md",
+  "excludeExternals": true,
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "cleanOutputDir": true,
+  "githubPages": false,
+  "searchInComments": true,
+  "sort": ["source-order"],
+  "validation": {
+    "notExported": false,
+    "invalidLink": true,
+    "notDocumented": false
+  }
+}

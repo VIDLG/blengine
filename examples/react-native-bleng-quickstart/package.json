@@ -1,0 +1,26 @@
+{
+  "name": "@blehub/react-native-bleng-quickstart",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Minimal runnable example for @blehub/react-native-bleng",
+  "main": "index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "compile": "node ../../tools/react_native/quickstart_compile.mjs"
+  },
+  "dependencies": {
+    "@blehub/react-native-bleng": "file:../../integrations/react-native-bleng",
+    "react": "19.3.0",
+    "react-native": "0.87.1",
+    "react-native-nitro-modules": "0.37.1"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/runtime": "7.29.7",
+    "@react-native/babel-preset": "0.87.1",
+    "@react-native/metro-config": "0.87.1",
+    "@types/react": "19.3.0",
+    "babel-plugin-react-compiler": "1.0.0",
+    "typescript": "6.0.3"
+  }
+}
