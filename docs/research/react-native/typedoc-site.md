@@ -47,13 +47,13 @@ Two workflows exist; neither commits a build artifact.
    `administration:write` + `pages:write`; this repository deliberately has no such secret, so the
    action runs in read-only configuration mode.
 2. **Pages must be entitled to serve this repository.** GitHub Pages serves private repositories only
-   on GitHub Pro, GitHub Team, GitHub Enterprise Cloud/Server. `VIDLG/blehub` is a private repository
+   on GitHub Pro, GitHub Team, GitHub Enterprise Cloud/Server. `VIDLG/blengine` is a private repository
    owned by a Free organization, so a deploy is refused today. Two independent ways to unblock it:
    upgrade the organization to GitHub Team, or make the repository public.
 
 When both hold, nothing else changes: add the prepared `push: branches: [main]` trigger that is
 commented at the top of `docs-pages.yml` and the same job publishes on `main`. The site would live at
-`https://vidlg.github.io/blehub/` (a project page, not an organization root site), and TypeDoc's
+`https://vidlg.github.io/blengine/` (a project page, not an organization root site), and TypeDoc's
 relative asset paths already work under that subpath. Until then, `workflow_dispatch` is the only
 trigger, so a refused entitlement surfaces as one explicit run rather than a failing `main`.
 
