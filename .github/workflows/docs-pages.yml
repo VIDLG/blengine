@@ -1,35 +1,26 @@
 # Publish the generated TypeDoc reference as the repository's GitHub Pages site.
 #
 # The site is a generated artifact: nothing is committed, nothing is edited. `docs-checks.yml` is the
-# gate; this workflow only builds and deploys it.
+# gate for the same inputs; this workflow only builds and deploys it.
 #
-# Two preconditions before the first run, neither of which a workflow can do for itself:
-#
-# 1. GitHub Pages must be enabled for the repository once (Settings -> Pages -> Source: GitHub
-#    Actions). `actions/configure-pages` can also do this, but only with a non-`GITHUB_TOKEN` token
-#    that has `administration:write` + `pages:write`; this repository is not configured with such a
-#    secret on purpose.
-# 2. Pages must be entitled to serve this repository. GitHub Pages serves private repositories only
-#    on GitHub Pro, GitHub Team, GitHub Enterprise Cloud/Server. `VIDLG/blehub` is a private
-#    repository owned by a Free organization, so deployment is refused until the organization is
-#    upgraded to Team or the repository becomes public.
-#
-# Once both hold, add the push trigger below and this workflow publishes on `main` automatically:
-#
-#   push:
-#     branches: [main]
-#     paths:
-#       - "integrations/react-native-bleng/specs/**"
-#       - "integrations/react-native-bleng/src/**"
-#       - "integrations/react-native-bleng/typedoc.json"
-#       - "integrations/react-native-bleng/typedoc-readme.md"
-#       - "integrations/react-native-bleng/package*.json"
-#       - "package.json"
-#       - "package-lock.json"
-#       - ".github/workflows/docs-pages.yml"
+# Hosting is already provisioned: Pages is enabled for this repository with "GitHub Actions" as the
+# source, and the repository is public, so deployment is entitled. The push trigger below publishes
+# on `main` when the API surface or its documentation inputs change; `workflow_dispatch` stays for
+# manual republishing. The site lives at https://vidlg.github.io/blengine/ (a project page).
 name: Docs site
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "integrations/react-native-bleng/specs/**"
+      - "integrations/react-native-bleng/src/**"
+      - "integrations/react-native-bleng/typedoc.json"
+      - "integrations/react-native-bleng/typedoc-readme.md"
+      - "integrations/react-native-bleng/package*.json"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs-pages.yml"
   workflow_dispatch:
 
 # The official Pages template permissions: build reads, deploy writes Pages with an OIDC token.

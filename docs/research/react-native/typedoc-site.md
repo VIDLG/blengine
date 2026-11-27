@@ -38,31 +38,21 @@ Two workflows exist; neither commits a build artifact.
 | workflow | trigger | does |
 |---|---|---|
 | `.github/workflows/docs-checks.yml` | PR / push to `main`, docs paths | API reference tests, site-ownership tests, Mermaid syntax, `docs:api:check` |
-| `.github/workflows/docs-pages.yml` | `workflow_dispatch` | builds the site, uploads the Pages artifact, deploys it |
+| `.github/workflows/docs-pages.yml` | push to `main` (API paths) or `workflow_dispatch` | builds the site, uploads the Pages artifact, deploys it |
 
-**Two preconditions, neither of which the workflow can satisfy itself.**
-
-1. **Pages must be enabled once for the repository** (Settings → Pages → Source: GitHub Actions).
-   `actions/configure-pages` can enable it, but only with a non-`GITHUB_TOKEN` token holding
-   `administration:write` + `pages:write`; this repository deliberately has no such secret, so the
-   action runs in read-only configuration mode.
-2. **Pages must be entitled to serve this repository.** GitHub Pages serves private repositories only
-   on GitHub Pro, GitHub Team, GitHub Enterprise Cloud/Server. `VIDLG/blengine` is a private repository
-   owned by a Free organization, so a deploy is refused today. Two independent ways to unblock it:
-   upgrade the organization to GitHub Team, or make the repository public.
-
-When both hold, nothing else changes: add the prepared `push: branches: [main]` trigger that is
-commented at the top of `docs-pages.yml` and the same job publishes on `main`. The site would live at
+**Hosting is provisioned and entitled.** Pages is enabled for this repository with "GitHub Actions"
+as the source, and the repository is public, so the deploy job can publish. The site lives at
 `https://vidlg.github.io/blengine/` (a project page, not an organization root site), and TypeDoc's
-relative asset paths already work under that subpath. Until then, `workflow_dispatch` is the only
-trigger, so a refused entitlement surfaces as one explicit run rather than a failing `main`.
+relative asset paths already work under that subpath.
 
-**Publishing is also deferred by decision, not only by entitlement.** The package is `0.0.0` with an
-unfrozen ABI, and a public reference site is a release-shaped commitment. Until the release work is
-done, the deploy workflow stays inert (`workflow_dispatch` only) even if the organization is upgraded
-first — `docs-checks.yml` keeps validating the same entry point in the meantime.
+The `push` trigger fires on `main` whenever the API surface or its inputs change;
+`workflow_dispatch` stays available for a manual republish. `docs-checks.yml` remains the gate — the
+deploy workflow only builds inputs the check can validate too.
 
-Do not “fix” the refusal by committing `site/api` into the repository. The site is regenerable; a
+Publishing does not freeze the ABI: the site tracks the `0.0.0` declarations and is regenerated on
+every change, so it shows what the specs say today, not a released contract.
+
+Do not “fix” a failed deploy by committing `site/api` into the repository. The site is regenerable; a
 committed copy is the drift this whole design avoids.
 
 ## Not a replacement for `API.md`
