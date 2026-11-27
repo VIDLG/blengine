@@ -1,39 +1,141 @@
-use blehub::{BleEvent, CommandId, ConnectionId, GattDatabase, GattSessionId};
+use blehub::{
+    BleEvent, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId, GattDatabase,
+    GattDescriptorId, GattSessionId,
+};
 
-use crate::waiter::{WaiterOutcome, WaiterSuccess};
+use crate::waiter::{WaiterError, WaiterOutcome, WaiterSuccess};
 
-use super::{CommandProgress, connection::connection_lost};
+use super::{
+    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
+    is_connection_lost,
+};
 
 /// GATT state under one connection. A committed database survives while a
 /// later discovery transition is in flight, so failed rediscovery cannot erase
-/// the last usable session.
+/// the last usable session. Read/write commands and subscription routes belong
+/// to sibling owners; this is not an umbrella for every GATT operation.
 #[derive(Default)]
 pub(super) struct GattReservation {
     database: Option<GattDatabase>,
-    pub(super) discovery: Option<GattDiscoveryReservation>,
-}
-
-/// Operation-specific admission policy; this does not describe native capabilities.
-#[derive(Clone, Copy, Debug)]
-pub enum GattAccess {
-    Read,
-    Write,
-    EnableNotifications,
+    discovery: Option<GattDiscoveryReservation>,
 }
 
 impl GattReservation {
-    pub(super) fn committed_database(&self, session_id: GattSessionId) -> Option<&GattDatabase> {
-        self.database
+    pub(super) fn reserve_discovery(&mut self, command_id: CommandId, session_id: GattSessionId) {
+        self.discovery = Some(GattDiscoveryReservation::new(command_id, session_id));
+    }
+
+    pub(super) fn require_characteristic(
+        &self,
+        session_id: GattSessionId,
+        characteristic_id: GattCharacteristicId,
+    ) -> Result<(), WaiterError> {
+        let database = self
+            .database
             .as_ref()
             .filter(|database| database.gatt_session_id == session_id)
+            .ok_or(WaiterError::GattNotReady)?;
+        if !database.services.iter().any(|service| {
+            service
+                .characteristics
+                .iter()
+                .any(|characteristic| characteristic.id == characteristic_id)
+        }) {
+            return Err(WaiterError::GattNotReady);
+        }
+        Ok(())
     }
 
-    pub(super) fn has_pending_discovery(&self) -> bool {
-        self.discovery.is_some()
+    pub(super) fn require_descriptor(
+        &self,
+        session_id: GattSessionId,
+        characteristic_id: GattCharacteristicId,
+        descriptor_id: GattDescriptorId,
+    ) -> Result<(), WaiterError> {
+        let database = self
+            .database
+            .as_ref()
+            .filter(|database| database.gatt_session_id == session_id)
+            .ok_or(WaiterError::GattNotReady)?;
+        let characteristic = database
+            .services
+            .iter()
+            .flat_map(|service| &service.characteristics)
+            .find(|characteristic| characteristic.id == characteristic_id)
+            .ok_or(WaiterError::GattNotReady)?;
+        if !characteristic
+            .descriptors
+            .iter()
+            .any(|descriptor| descriptor.id == descriptor_id)
+        {
+            return Err(WaiterError::GattNotReady);
+        }
+        Ok(())
     }
 
-    pub(super) fn begin_discovery(&mut self, command_id: CommandId, session_id: GattSessionId) {
-        self.discovery = Some(GattDiscoveryReservation::new(command_id, session_id));
+    delegate::delegate! {
+        to self.discovery {
+            #[call(is_some)]
+            pub(super) fn has_pending_discovery(&self) -> bool;
+        }
+    }
+
+    pub(super) fn progress(&self) -> Option<&CommandProgress> {
+        self.discovery.as_ref().map(|discovery| &discovery.progress)
+    }
+
+    pub(super) fn progress_mut(&mut self) -> Option<&mut CommandProgress> {
+        self.discovery
+            .as_mut()
+            .map(|discovery| &mut discovery.progress)
+    }
+
+    pub(super) fn pending_progress_for_event_mut(
+        &mut self,
+        event: &BleEvent,
+        connection_id: ConnectionId,
+    ) -> Option<&mut CommandProgress> {
+        self.discovery
+            .as_mut()
+            .filter(|discovery| discovery.should_buffer_event(event, connection_id))
+            .map(|discovery| &mut discovery.progress)
+    }
+
+    /// Reconciles early evidence before releasing a rejected discovery slot.
+    /// The connection supplies rejection policy; the committed database is untouched.
+    pub(super) fn resolve_dispatch(
+        &mut self,
+        command_id: CommandId,
+        result: &Result<(), CommandDispatchError>,
+        classify_rejection: impl Fn(&BleEvent) -> BufferedEventDisposition,
+    ) -> Option<DispatchResolution> {
+        let discovery = self
+            .discovery
+            .as_mut()
+            .filter(|discovery| discovery.progress.owns_command(command_id))?;
+        if result.is_ok() {
+            return Some(discovery.progress.resolve_accepted_dispatch());
+        }
+
+        let resolution = discovery
+            .progress
+            .resolve_rejected_dispatch(DispatchAction::NoAction, classify_rejection);
+        self.discovery = None;
+        Some(resolution)
+    }
+
+    pub(super) fn record_event(&mut self, event: &BleEvent, connection_id: ConnectionId) {
+        if let Some(discovery) = self.discovery.as_mut() {
+            discovery.record_event(event, connection_id);
+        }
+    }
+
+    /// Queries the matching discovery without committing or retiring its draft.
+    pub(super) fn waiter_result(&self, command_id: CommandId) -> Option<WaiterOutcome> {
+        self.discovery
+            .as_ref()
+            .filter(|discovery| discovery.progress.owns_command(command_id))?
+            .waiter_result()
     }
 
     /// Retires discovery only after dispatch acknowledgement and completion.
@@ -56,8 +158,8 @@ impl GattReservation {
 }
 
 /// One in-flight GATT discovery/rediscovery transition.
-pub(super) struct GattDiscoveryReservation {
-    pub(super) progress: CommandProgress,
+struct GattDiscoveryReservation {
+    progress: CommandProgress,
     session_id: GattSessionId,
     /// Database drafted by this discovery; it becomes committed only after
     /// accepted dispatch and successful terminal, following waiter settlement.
@@ -65,9 +167,22 @@ pub(super) struct GattDiscoveryReservation {
 }
 
 impl GattDiscoveryReservation {
+    fn new(command_id: CommandId, session_id: GattSessionId) -> Self {
+        Self {
+            progress: CommandProgress::new(command_id),
+            session_id,
+            draft_database: None,
+        }
+    }
+
+    /// Dispatch timing applies only to buffering, not domain evidence recording.
+    fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    }
+
     /// Records the latest correlated discovery draft. Terminal and loss events
     /// are related for routing but do not carry a database draft.
-    pub(super) fn record_event(&mut self, event: &BleEvent, expected: ConnectionId) {
+    fn record_event(&mut self, event: &BleEvent, expected: ConnectionId) {
         if self.matches_related_event(event, expected)
             && let BleEvent::GattDiscovered { database, .. } = event
         {
@@ -75,13 +190,27 @@ impl GattDiscoveryReservation {
         }
     }
 
-    /// Dispatch timing applies only to buffering, not domain evidence recording.
-    pub(super) fn should_buffer_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
-        self.progress.is_awaiting_dispatch_result() && self.matches_related_event(event, expected)
+    /// Queries this already-selected discovery; None means incomplete evidence.
+    /// Does not commit the draft or retire discovery; settlement must happen first.
+    fn waiter_result(&self) -> Option<WaiterOutcome> {
+        if let Err(error) = self.progress.terminal_result()? {
+            return Some(Err(error));
+        }
+        Some(Ok(WaiterSuccess::GattDiscovered(
+            self.draft_database.clone()?,
+        )))
+    }
+
+    fn is_retirable(&self) -> bool {
+        self.progress.is_complete(self.draft_database.is_some())
+    }
+
+    fn is_successful(&self) -> bool {
+        self.draft_database.is_some() && self.progress.has_successful_terminal()
     }
 
     /// Correlates database, terminal, or connection loss; not a success predicate.
-    pub(super) fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
+    fn matches_related_event(&self, event: &BleEvent, expected: ConnectionId) -> bool {
         match event {
             BleEvent::GattDiscovered {
                 command_id,
@@ -94,34 +223,7 @@ impl GattDiscoveryReservation {
             BleEvent::CommandCompleted { command_id, .. } => {
                 self.progress.owns_command(*command_id)
             }
-            _ => connection_lost(event, expected),
+            _ => is_connection_lost(event, expected),
         }
-    }
-
-    fn new(command_id: CommandId, session_id: GattSessionId) -> Self {
-        Self {
-            progress: CommandProgress::new(command_id),
-            session_id,
-            draft_database: None,
-        }
-    }
-
-    fn is_retirable(&self) -> bool {
-        self.progress.is_complete(self.draft_database.is_some())
-    }
-
-    fn is_successful(&self) -> bool {
-        self.draft_database.is_some() && self.progress.is_terminal_succeeded()
-    }
-
-    /// Queries this already-selected discovery; None means incomplete evidence.
-    /// Does not commit the draft or retire discovery; settlement must happen first.
-    pub(super) fn waiter_result(&self) -> Option<WaiterOutcome> {
-        if let Err(error) = self.progress.terminal_result()? {
-            return Some(Err(error));
-        }
-        Some(Ok(WaiterSuccess::GattDiscovered(
-            self.draft_database.clone()?,
-        )))
     }
 }

@@ -25,6 +25,34 @@ pub struct AdvertisementObservation {
     pub connectable: Option<bool>,
 }
 
+pub enum AndroidScanMode {
+    LowPower,
+    Balanced,
+    LowLatency,
+    Opportunistic,
+}
+
+pub struct AndroidScanOptions {
+    pub scan_mode: Option<AndroidScanMode>,
+    pub phy: Option<AndroidScanPhy>,
+    pub report_delay_ms: Option<u32>,
+    pub legacy: Option<bool>,
+}
+
+pub enum AndroidScanPhy {
+    Le1m,
+    Le2m,
+    LeCoded,
+}
+
+pub struct AssociateCompanionDeviceCommand {
+    pub command_id: CommandId,
+    pub service_uuids: Vec<BluetoothUuid>,
+    pub display_name: Option<String>,
+    pub device_profile: Option<String>,
+    pub notify_on_device_nearby: bool,
+}
+
 pub enum AuthorizationState {
     NotRequired,
     NotDetermined,
@@ -33,7 +61,7 @@ pub enum AuthorizationState {
     Authorized,
 }
 
-pub const BLEHUB_CONTRACT_VERSION: u32 = 5;
+pub const BLEHUB_CONTRACT_VERSION: u32 = 7;
 
 pub struct BackendAssembly;
 
@@ -68,6 +96,9 @@ pub trait BleBackend: Send + Sync {
     fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
     fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>,) -> Result<(), BleHubError>;
     fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+    fn set_adapter_enabled(&self, command: SetAdapterEnabledCommand,) -> Result<(), CommandDispatchError>;
+    fn query_devices(&self, command: QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+    fn associate_companion_device(&self, command: AssociateCompanionDeviceCommand,) -> Result<(), CommandDispatchError>;
     fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
     fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
     fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
@@ -75,8 +106,16 @@ pub trait BleBackend: Send + Sync {
     fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError>;
     fn read_characteristic(&self, command: ReadCharacteristicCommand,) -> Result<(), CommandDispatchError>;
     fn write_characteristic(&self, command: WriteCharacteristicCommand,) -> Result<(), CommandDispatchError>;
+    fn read_descriptor(&self, command: ReadDescriptorCommand) -> Result<(), CommandDispatchError>;
+    fn write_descriptor(&self, command: WriteDescriptorCommand) -> Result<(), CommandDispatchError>;
     fn set_notifications(&self, command: SetNotificationsCommand,) -> Result<(), CommandDispatchError>;
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+    fn mtu(&self, command: MtuCommand) -> Result<(), CommandDispatchError>;
+    fn set_connection_priority(&self, command: SetConnectionPriorityCommand,) -> Result<(), CommandDispatchError>;
+    fn create_bond(&self, command: CreateBondCommand) -> Result<(), CommandDispatchError>;
+    fn remove_bond(&self, command: RemoveBondCommand) -> Result<(), CommandDispatchError>;
+    fn refresh_gatt_cache(&self, command: RefreshGattCacheCommand,) -> Result<(), CommandDispatchError>;
+    fn cancel_operation(&self, request: CancelOperationRequest) -> Result<(), CommandDispatchError>;
     fn dispose(&self) -> Result<(), BleHubError>;
 }
 
@@ -87,6 +126,7 @@ pub enum BleErrorCategory {
     NotFound,
     Timeout,
     Cancelled,
+    OperationAborted,
     Connection,
     Gatt,
     Protocol,
@@ -104,9 +144,15 @@ pub enum BleEvent {
     GattDiscovered {command_id: CommandId, database: GattDatabase,},
     CharacteristicRead {command_id: CommandId, connection_id: ConnectionId, gatt_session_id: GattSessionId, characteristic_id: GattCharacteristicId, value: Vec<u8>,},
     CharacteristicWritten {command_id: CommandId, connection_id: ConnectionId, gatt_session_id: GattSessionId, characteristic_id: GattCharacteristicId,},
+    DescriptorRead {command_id: CommandId, connection_id: ConnectionId, gatt_session_id: GattSessionId, characteristic_id: GattCharacteristicId, descriptor_id: GattDescriptorId, value: Vec<u8>,},
+    DescriptorWritten {command_id: CommandId, connection_id: ConnectionId, gatt_session_id: GattSessionId, characteristic_id: GattCharacteristicId, descriptor_id: GattDescriptorId,},
     NotificationStateChanged {command_id: CommandId, connection_id: ConnectionId, gatt_session_id: GattSessionId, subscription_id: SubscriptionId, characteristic_id: GattCharacteristicId, state: NotificationState,},
     NotificationReceived {connection_id: ConnectionId, gatt_session_id: GattSessionId, subscription_id: SubscriptionId, characteristic_id: GattCharacteristicId, value: Vec<u8>,},
     RssiRead {command_id: CommandId, connection_id: ConnectionId, rssi: i16,},
+    MtuRead {command_id: CommandId, connection_id: ConnectionId, info: MtuInfo,},
+    DevicesListed {command_id: CommandId, devices: Vec<DeviceRecord>,},
+    CompanionPresenceChanged {present: bool, key: String, local_name: Option<String>,},
+    BondStateChanged {command_id: Option<CommandId>, connection_id: ConnectionId, state: BondState,},
     CommandCompleted {command_id: CommandId, error: Option<BleEventError>,},
     BackendError {error: BleEventError,},
 }
@@ -118,7 +164,7 @@ impl BleEvent {
 pub struct BleEventError {
     pub category: BleErrorCategory,
     pub message: String,
-    pub platform_details: Option<PlatformErrorDetails>,
+    pub platform_details: Option<Box<PlatformErrorDetails>>,
 }
 
 pub trait BleEventSink: Send + Sync {
@@ -131,6 +177,9 @@ impl BleHub {
     pub fn new(backend: Arc<dyn BleBackend>, downstream: Arc<dyn BleEventSink>,) -> Result<Arc<Self>, BleHubError>;
     pub fn capabilities(&self) -> BackendCapabilities;
     pub fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+    pub fn set_adapter_enabled(&self, command: SetAdapterEnabledCommand,) -> Result<(), CommandDispatchError>;
+    pub fn query_devices(&self, command: QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+    pub fn associate_companion_device(&self, command: AssociateCompanionDeviceCommand,) -> Result<(), CommandDispatchError>;
     pub fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
     pub fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
     pub fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
@@ -138,14 +187,22 @@ impl BleHub {
     pub fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError>;
     pub fn read_characteristic(&self, command: ReadCharacteristicCommand,) -> Result<(), CommandDispatchError>;
     pub fn write_characteristic(&self, command: WriteCharacteristicCommand,) -> Result<(), CommandDispatchError>;
+    pub fn read_descriptor(&self, command: ReadDescriptorCommand,) -> Result<(), CommandDispatchError>;
+    pub fn write_descriptor(&self, command: WriteDescriptorCommand,) -> Result<(), CommandDispatchError>;
     pub fn set_notifications(&self, command: SetNotificationsCommand,) -> Result<(), CommandDispatchError>;
     pub fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+    pub fn mtu(&self, command: MtuCommand) -> Result<(), CommandDispatchError>;
+    pub fn set_connection_priority(&self, command: SetConnectionPriorityCommand,) -> Result<(), CommandDispatchError>;
+    pub fn create_bond(&self, command: CreateBondCommand) -> Result<(), CommandDispatchError>;
+    pub fn remove_bond(&self, command: RemoveBondCommand) -> Result<(), CommandDispatchError>;
+    pub fn refresh_gatt_cache(&self, command: RefreshGattCacheCommand,) -> Result<(), CommandDispatchError>;
+    pub fn cancel_operation(&self, target_command_id: crate::CommandId,) -> Result<(), CommandDispatchError>;
     pub fn dispose(&self) -> Result<(), BleHubError>;
 }
 
 pub enum BleHubError {
     BackendAssembly {detail: String},
-    BackendCleanup {detail: String, platform_details: Option<PlatformErrorDetails>,},
+    BackendCleanup {detail: String, platform_details: Option<Box<PlatformErrorDetails>>,},
     ResourceBusy {detail: String},
     InvalidConfiguration {field: String, detail: String},
     FfiContract {detail: String},
@@ -157,6 +214,16 @@ pub struct BluetoothUuid {
 
 impl BluetoothUuid {
     pub fn canonicalize(value: &str) -> Option<Self>;
+}
+
+pub enum BondState {
+    None,
+    Bonding,
+    Bonded,
+}
+
+pub struct CancelOperationRequest {
+    pub target_command_id: CommandId,
 }
 
 pub struct CharacteristicProperties {
@@ -171,7 +238,12 @@ pub enum CommandDispatchError {
     Closed,
     InvalidRequest {detail: String},
     InvalidState {detail: String},
-    BackendUnavailable {detail: String, platform_details: Option<PlatformErrorDetails>,},
+    OperationNotFound {target_command_id: super::CommandId},
+    OperationAlreadyCompleted {target_command_id: super::CommandId},
+    OperationNotCancellable {target_command_id: super::CommandId},
+    ResourceExhausted {detail: String},
+    BackendUnavailable {detail: String, platform_details: Option<Box<PlatformErrorDetails>>,},
+    NotSupported {detail: String},
     FfiContract {detail: String},
 }
 
@@ -181,6 +253,9 @@ pub struct CommandId {
 
 pub enum CommandKind {
     Initialize,
+    SetAdapterEnabled,
+    QueryDevices,
+    AssociateCompanionDevice,
     StartScan,
     StopScan,
     Connect,
@@ -188,18 +263,32 @@ pub enum CommandKind {
     DiscoverGatt,
     ReadCharacteristic,
     WriteCharacteristic,
+    ReadDescriptor,
+    WriteDescriptor,
     SetNotifications,
     ReadRssi,
+    Mtu,
+    SetConnectionPriority,
+    CreateBond,
+    RemoveBond,
+    RefreshGattCache,
 }
 
 pub struct ConnectCommand {
     pub command_id: CommandId,
     pub connection_id: ConnectionId,
     pub peripheral_id: PeripheralId,
+    pub auto_connect: bool,
 }
 
 pub struct ConnectionId {
     pub value: u64,
+}
+
+pub enum ConnectionPriority {
+    Balanced,
+    High,
+    LowPower,
 }
 
 pub enum ConnectionState {
@@ -212,6 +301,25 @@ pub enum ConnectionState {
 pub enum ConnectionStateResult {
     Ok {state: ConnectionState},
     Err {error: BleEventError},
+}
+
+pub struct CreateBondCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub pin: Option<String>,
+}
+
+pub enum DeviceQueryKind {
+    Connected,
+    Bonded,
+    Companion,
+}
+
+pub struct DeviceRecord {
+    pub key: String,
+    pub local_name: Option<String>,
+    pub connected: bool,
+    pub bonded: bool,
 }
 
 pub struct DisconnectCommand {
@@ -282,13 +390,39 @@ pub struct InitializeCommand {
     pub command_id: CommandId,
 }
 
-pub const MAX_SCAN_NAME_PREFIX_BYTES: usize = 248;
+pub const MAX_COMPANION_PROFILE_BYTES: usize = 128;
+
+pub const MAX_LOCAL_NAME_BYTES: usize = 248;
+
+pub const MAX_MTU: u16 = 517;
+
+pub const MAX_SCAN_REPORT_DELAY_MS: u32 = 5000;
 
 pub const MAX_WRITE_VALUE_BYTES: usize = 512;
+
+pub const MIN_MTU: u16 = 23;
 
 pub struct ManufacturerData {
     pub company_id: u16,
     pub payload: Vec<u8>,
+}
+
+pub struct ManufacturerDataFilter {
+    pub company_id: u16,
+    pub data: Vec<u8>,
+    pub mask: Option<Vec<u8>>,
+}
+
+pub struct MtuCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub request: Option<u16>,
+}
+
+pub struct MtuInfo {
+    pub mtu: Option<u16>,
+    pub maximum_write_with_response: Option<u16>,
+    pub maximum_write_without_response: Option<u16>,
 }
 
 pub enum NotificationAction {
@@ -329,6 +463,14 @@ pub struct PlatformErrorDetails {
     pub code: Option<String>,
     pub name: Option<String>,
     pub message: Option<String>,
+    pub status: Option<i32>,
+    pub att_code: Option<i32>,
+}
+
+pub struct QueryDevicesCommand {
+    pub command_id: CommandId,
+    pub kind: DeviceQueryKind,
+    pub service_uuids: Vec<BluetoothUuid>,
 }
 
 pub struct ReadCharacteristicCommand {
@@ -338,7 +480,25 @@ pub struct ReadCharacteristicCommand {
     pub characteristic_id: GattCharacteristicId,
 }
 
+pub struct ReadDescriptorCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub gatt_session_id: GattSessionId,
+    pub characteristic_id: GattCharacteristicId,
+    pub descriptor_id: GattDescriptorId,
+}
+
 pub struct ReadRssiCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+}
+
+pub struct RefreshGattCacheCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+}
+
+pub struct RemoveBondCommand {
     pub command_id: CommandId,
     pub connection_id: ConnectionId,
 }
@@ -346,11 +506,16 @@ pub struct ReadRssiCommand {
 pub struct ScanOptions {
     pub service_uuids: Vec<BluetoothUuid>,
     pub name_prefix: Option<String>,
+    pub exact_name: Option<String>,
     pub company_id: Option<u16>,
+    pub min_rssi: Option<i16>,
+    pub manufacturer_data: Option<ManufacturerDataFilter>,
+    pub android: Option<AndroidScanOptions>,
     pub allow_duplicates: bool,
 }
 
 impl ScanOptions {
+    pub fn validated(mut self) -> Result<Self, CommandDispatchError>;
     pub fn matches(&self, observation: &AdvertisementObservation) -> bool;
 }
 
@@ -371,6 +536,17 @@ pub enum ScanStopResult {
 pub struct ServiceData {
     pub service_uuid: BluetoothUuid,
     pub payload: Vec<u8>,
+}
+
+pub struct SetAdapterEnabledCommand {
+    pub command_id: CommandId,
+    pub enabled: bool,
+}
+
+pub struct SetConnectionPriorityCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub priority: ConnectionPriority,
 }
 
 pub struct SetNotificationsCommand {
@@ -404,6 +580,15 @@ pub struct WriteCharacteristicCommand {
     pub characteristic_id: GattCharacteristicId,
     pub value: Vec<u8>,
     pub write_type: WriteType,
+}
+
+pub struct WriteDescriptorCommand {
+    pub command_id: CommandId,
+    pub connection_id: ConnectionId,
+    pub gatt_session_id: GattSessionId,
+    pub characteristic_id: GattCharacteristicId,
+    pub descriptor_id: GattDescriptorId,
+    pub value: Vec<u8>,
 }
 
 pub enum WriteType {

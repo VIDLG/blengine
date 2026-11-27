@@ -1,6 +1,9 @@
 //! Backend assembly and non-blocking event ingress for one BLeng runtime.
 
-use std::sync::Arc;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
 
 use blehub::{
     BackendAssembly, BleBackend, BleEvent, BleEventSink, BleHubError, EventSinkError,
@@ -8,7 +11,7 @@ use blehub::{
 };
 use kameo::prelude::ActorRef;
 
-use crate::cleanup::AssemblyAdmissionError;
+use crate::cleanup::{AssemblyAdmissionError, CleanupError};
 
 use super::{BlengActor, RuntimeLifecycle, messages::IngressEvent};
 
@@ -45,13 +48,31 @@ impl BackendPort {
         backend: Arc<dyn BleBackend>,
     ) -> Result<(), AssemblyError> {
         self.lifecycle.with_admission(|admission| {
-            let sink: Arc<dyn BleEventSink> = self.clone();
-            let assembly = BackendAssembly::new(sink);
-            attach_backend(assembly.ticket(), backend).map_err(AssemblyError::Backend)?;
-            let hub = assembly.finish().map_err(AssemblyError::Backend)?;
-            admission
-                .commit(hub, || self.lifecycle.is_open())
-                .map_err(AssemblyError::from)
+            // Keep admission outside the unwind boundary. The blocking worker
+            // owns failure accounting even after its async caller is dropped.
+            let assembled = catch_unwind(AssertUnwindSafe(|| {
+                let sink: Arc<dyn BleEventSink> = self.clone();
+                let assembly = BackendAssembly::new(sink);
+                attach_backend(assembly.ticket(), backend)?;
+                assembly.finish()
+            }));
+            match assembled {
+                Ok(Ok(hub)) => admission
+                    .commit(hub, || self.lifecycle.is_open())
+                    .map_err(AssemblyError::from),
+                Ok(Err(error)) => {
+                    if matches!(error, BleHubError::BackendCleanup { .. }) {
+                        admission.record_failure(CleanupError::Backend(error.clone()));
+                        self.lifecycle.fault();
+                    }
+                    Err(AssemblyError::Backend(error))
+                }
+                Err(_) => {
+                    admission.record_failure(CleanupError::WorkerStopped);
+                    self.lifecycle.fault();
+                    Err(AssemblyError::WorkerStopped)
+                }
+            }
         })
     }
 }

@@ -7,7 +7,9 @@ pub use crate::error::{
     BlengBusyReason, BlengContractFailure, BlengError, BlengNotReadyReason, BlengResource,
 };
 pub use crate::facade::{
-    Bleng, ConnectOperation, DisableNotificationsOperation, DisconnectOperation,
-    DiscoverGattOperation, EnableNotificationsOperation, InitializeOperation, ReadOperation,
-    ReadRssiOperation, StartScanOperation, StopScanOperation, WriteOperation,
+    AssociateCompanionDeviceOperation, Bleng, BondOperation, ConnectOperation,
+    DisableNotificationsOperation, DisconnectOperation, DiscoverGattOperation,
+    EnableNotificationsOperation, InitializeOperation, MtuOperation, NotificationSubscription,
+    ReadDescriptorOperation, ReadOperation, ReadRssiOperation, SetConnectionPriorityOperation,
+    StartScanOperation, StopScanOperation, WriteDescriptorOperation, WriteOperation,
 };

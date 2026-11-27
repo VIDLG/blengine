@@ -100,7 +100,7 @@ use std::{
 
 use blehub::{
     BleEvent, BleHub, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId,
-    GattSessionId, PeripheralId, ScanSessionId, SubscriptionId,
+    GattDescriptorId, GattSessionId, PeripheralId, ScanSessionId, SubscriptionId,
 };
 use kameo::prelude::{Actor, ActorRef, Context};
 use tokio::sync::mpsc;
@@ -112,7 +112,7 @@ use super::{
     messages::{CancellationResolved, DispatchResolved},
     reservations::{
         CancellationDecision, CancellationReceiver, DispatchAction, GattAccess,
-        PublicationDecision, ReservationCoordinator, connection_lost,
+        PublicationDecision, ReservationCoordinator, is_connection_lost,
     },
     shared::{IdGenerator, OperationSubmission},
 };
@@ -194,6 +194,12 @@ impl BlengActor {
 
             pub(super) fn require_not_started(&self) -> Result<(), WaiterError>;
 
+            pub(super) fn require_adapter_available(&self) -> Result<(), WaiterError>;
+
+            pub(super) fn require_devices_query_available(&self) -> Result<(), WaiterError>;
+
+            pub(super) fn require_companion_association_available(&self) -> Result<(), WaiterError>;
+
 
             pub(super) fn require_peripheral_available(&self, peripheral_id: PeripheralId) -> Result<(), WaiterError>;
 
@@ -202,6 +208,24 @@ impl BlengActor {
             pub(super) fn validate_gatt_discovery(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
 
             pub(super) fn validate_rssi(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+
+            pub(super) fn validate_mtu(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+
+            pub(super) fn validate_set_connection_priority(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+
+            pub(super) fn validate_create_bond(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+
+            pub(super) fn validate_remove_bond(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+
+            pub(super) fn validate_refresh_gatt_cache(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+
+            pub(super) fn validate_descriptor_access(
+                &self,
+                connection_id: ConnectionId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+                descriptor_id: GattDescriptorId,
+            ) -> Result<PeripheralId, WaiterError>;
 
             pub(super) fn validate_gatt_access(
                 &self,
@@ -382,7 +406,10 @@ impl BlengActor {
     ) {
         let public_events = self
             .reservations
-            .resolve_cancellation_and_drain_events(command_id, result.clone());
+            .resolve_cancellation_and_release_public_events(command_id, result.clone());
+        if let Some(completion) = self.reservations.command_completion(command_id) {
+            completion.resolve_cancellation_outcome(result.is_ok());
+        }
         // Evidence was already recorded. Publish only, preserving arrival order;
         // replaying process_event here would settle/reconcile the same callback twice.
         for event in public_events {
@@ -433,6 +460,9 @@ impl BlengActor {
         result: Result<(), CommandDispatchError>,
         actor: ActorRef<Self>,
     ) {
+        // Dispatch reconciliation may release the reservation; retain only its
+        // existing completion link long enough to publish authoritative rejection.
+        let completion = self.reservations.command_completion(command_id);
         let cancellation_requested =
             result.is_err() && self.reservations.is_cancellation_requested(command_id);
         if cancellation_requested {
@@ -464,6 +494,9 @@ impl BlengActor {
             && !cancellation_requested
         {
             // Rejection wins before replayed passive loss can affect this waiter.
+            if let Some(completion) = completion {
+                completion.record_outcome(false, false);
+            }
             self.waiters
                 .finish(command_id, Err(WaiterError::DispatchRejected(error)));
         }
@@ -515,13 +548,26 @@ impl BlengActor {
     /// Settle caller delivery before retiring native reservations, including for late callbacks.
     fn settle_event_waiters(&mut self, event: &BleEvent) {
         if let BleEvent::ConnectionStateChanged { connection_id, .. } = event
-            && connection_lost(event, *connection_id)
+            && is_connection_lost(event, *connection_id)
         {
             // Dispatch-pending callbacks stay buffered until dispatch resolves.
             // Completed results survive in the waiter owner; all unfinished
             // connection-bound waiters still fail immediately, even during cancel.
-            self.waiters
-                .disconnect_commands(self.reservations.accepted_command_ids(*connection_id));
+            let command_ids = self.reservations.accepted_command_ids(*connection_id);
+            let disconnect_command = self.reservations.disconnect_command(*connection_id);
+            for command_id in &command_ids {
+                // Explicit disconnect still requires its own terminal. A completed
+                // native result awaiting cancellation must keep its deferred outcome.
+                if Some(*command_id) == disconnect_command {
+                    continue;
+                }
+                if let Some(completion) = self.reservations.command_completion(*command_id)
+                    && !completion.is_completed()
+                {
+                    completion.record_outcome(false, false);
+                }
+            }
+            self.waiters.disconnect_commands(command_ids);
             // Passive loss may complete an explicit disconnect's domain evidence,
             // but its own terminal is still required for successful settlement.
             if let Some(command_id) = self.reservations.disconnect_command(*connection_id) {
@@ -585,6 +631,9 @@ impl BlengActor {
         if let Some(result) = self.reservations.waiter_result(command_id) {
             if let Some(completion) = completion {
                 completion.confirm_completed();
+                // This summary survives caller pruning but must not freeze a
+                // native success while cancellation still owns the final result.
+                completion.record_outcome(result.is_ok(), cancellation_requested);
             }
             // Control owns delivery while pending or accepted, but not the
             // authoritative native completion observation retained by the handle.

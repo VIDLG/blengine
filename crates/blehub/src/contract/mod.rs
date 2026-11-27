@@ -12,11 +12,16 @@ pub use capabilities::{
     BackendCapabilities, Platform, blehub_contract_version,
 };
 pub use commands::{
-    CancelOperationRequest, CommandKind, ConnectCommand, DisconnectCommand, DiscoverGattCommand,
-    InitializeCommand, MAX_SCAN_NAME_PREFIX_BYTES, MAX_WRITE_VALUE_BYTES, NotificationAction,
-    NotificationMode, NotificationModeRequest, ReadCharacteristicCommand, ReadRssiCommand,
-    ScanOptions, SetNotificationsCommand, StartScanCommand, StopScanCommand,
-    WriteCharacteristicCommand, WriteType,
+    AndroidScanMode, AndroidScanOptions, AndroidScanPhy, AssociateCompanionDeviceCommand,
+    BondState, CancelOperationRequest, CommandKind, ConnectCommand, ConnectionPriority,
+    CreateBondCommand, DeviceQueryKind, DeviceRecord, DisconnectCommand, DiscoverGattCommand,
+    InitializeCommand, MAX_COMPANION_PROFILE_BYTES, MAX_LOCAL_NAME_BYTES, MAX_MTU,
+    MAX_SCAN_REPORT_DELAY_MS, MAX_WRITE_VALUE_BYTES, MIN_MTU, ManufacturerDataFilter, MtuCommand,
+    MtuInfo, NotificationAction, NotificationMode, NotificationModeRequest, QueryDevicesCommand,
+    ReadCharacteristicCommand, ReadDescriptorCommand, ReadRssiCommand, RefreshGattCacheCommand,
+    RemoveBondCommand, ScanOptions, SetAdapterEnabledCommand, SetConnectionPriorityCommand,
+    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    WriteDescriptorCommand, WriteType,
 };
 pub use errors::{
     BleErrorCategory, BleEventError, BleHubError, CommandDispatchError, PlatformErrorDetails,

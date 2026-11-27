@@ -25,6 +25,34 @@ struct AdvertisementObservation {
     public var connectable: Bool?
 }
 
+enum AndroidScanMode {
+    case lowPower
+    case balanced
+    case lowLatency
+    case opportunistic
+}
+
+struct AndroidScanOptions {
+    public var scanMode: AndroidScanMode?
+    public var phy: AndroidScanPhy?
+    public var reportDelayMs: UInt32?
+    public var legacy: Bool?
+}
+
+enum AndroidScanPhy {
+    case le1m
+    case le2m
+    case leCoded
+}
+
+struct AssociateCompanionDeviceCommand {
+    public var commandId: CommandId
+    public var serviceUuids: [BluetoothUuid]
+    public var displayName: String?
+    public var deviceProfile: String?
+    public var notifyOnDeviceNearby: Bool
+}
+
 enum AuthorizationState {
     case notRequired
     case notDetermined
@@ -54,6 +82,9 @@ protocol BleBackend {
     func capabilities() throws -> BackendCapabilities
     func bindEventIngress(ingress: BackendEventIngressHandle) throws
     func initialize(command: InitializeCommand) throws
+    func setAdapterEnabled(command: SetAdapterEnabledCommand) throws
+    func queryDevices(command: QueryDevicesCommand) throws
+    func associateCompanionDevice(command: AssociateCompanionDeviceCommand) throws
     func startScan(command: StartScanCommand) throws
     func stopScan(command: StopScanCommand) throws
     func connect(command: ConnectCommand) throws
@@ -61,8 +92,16 @@ protocol BleBackend {
     func discoverGatt(command: DiscoverGattCommand) throws
     func readCharacteristic(command: ReadCharacteristicCommand) throws
     func writeCharacteristic(command: WriteCharacteristicCommand) throws
+    func readDescriptor(command: ReadDescriptorCommand) throws
+    func writeDescriptor(command: WriteDescriptorCommand) throws
     func setNotifications(command: SetNotificationsCommand) throws
     func readRssi(command: ReadRssiCommand) throws
+    func mtu(command: MtuCommand) throws
+    func setConnectionPriority(command: SetConnectionPriorityCommand) throws
+    func createBond(command: CreateBondCommand) throws
+    func removeBond(command: RemoveBondCommand) throws
+    func refreshGattCache(command: RefreshGattCacheCommand) throws
+    func cancelOperation(request: CancelOperationRequest) throws
     func dispose() throws
 }
 
@@ -73,6 +112,7 @@ enum BleErrorCategory {
     case notFound
     case timeout
     case cancelled
+    case operationAborted
     case connection
     case gatt
     case `protocol`
@@ -90,9 +130,15 @@ enum BleEvent {
     case gattDiscovered(commandId: CommandId, database: GattDatabase)
     case characteristicRead(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId, value: Data)
     case characteristicWritten(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId)
+    case descriptorRead(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId, descriptorId: GattDescriptorId, value: Data)
+    case descriptorWritten(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId, descriptorId: GattDescriptorId)
     case notificationStateChanged(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, subscriptionId: SubscriptionId, characteristicId: GattCharacteristicId, state: NotificationState)
     case notificationReceived(connectionId: ConnectionId, gattSessionId: GattSessionId, subscriptionId: SubscriptionId, characteristicId: GattCharacteristicId, value: Data)
     case rssiRead(commandId: CommandId, connectionId: ConnectionId, rssi: Int16)
+    case mtuRead(commandId: CommandId, connectionId: ConnectionId, info: MtuInfo)
+    case devicesListed(commandId: CommandId, devices: [DeviceRecord])
+    case companionPresenceChanged(present: Bool, key: String, localName: String?)
+    case bondStateChanged(commandId: CommandId?, connectionId: ConnectionId, state: BondState)
     case commandCompleted(commandId: CommandId, error: BleEventError?)
     case backendError(error: BleEventError)
 }
@@ -116,22 +162,43 @@ enum BleHubError {
 }
 
 protocol BleHubProtocol {
+    func associateCompanionDevice(command: AssociateCompanionDeviceCommand) throws
+    func cancelOperation(targetCommandId: CommandId) throws
     func capabilities() -> BackendCapabilities
     func connect(command: ConnectCommand) throws
+    func createBond(command: CreateBondCommand) throws
     func disconnect(command: DisconnectCommand) throws
     func discoverGatt(command: DiscoverGattCommand) throws
     func dispose() throws
     func initialize(command: InitializeCommand) throws
+    func mtu(command: MtuCommand) throws
+    func queryDevices(command: QueryDevicesCommand) throws
     func readCharacteristic(command: ReadCharacteristicCommand) throws
+    func readDescriptor(command: ReadDescriptorCommand) throws
     func readRssi(command: ReadRssiCommand) throws
+    func refreshGattCache(command: RefreshGattCacheCommand) throws
+    func removeBond(command: RemoveBondCommand) throws
+    func setAdapterEnabled(command: SetAdapterEnabledCommand) throws
+    func setConnectionPriority(command: SetConnectionPriorityCommand) throws
     func setNotifications(command: SetNotificationsCommand) throws
     func startScan(command: StartScanCommand) throws
     func stopScan(command: StopScanCommand) throws
     func writeCharacteristic(command: WriteCharacteristicCommand) throws
+    func writeDescriptor(command: WriteDescriptorCommand) throws
 }
 
 struct BluetoothUuid {
     public var value: String
+}
+
+enum BondState {
+    case none
+    case bonding
+    case bonded
+}
+
+struct CancelOperationRequest {
+    public var targetCommandId: CommandId
 }
 
 struct CharacteristicProperties {
@@ -146,7 +213,12 @@ enum CommandDispatchError {
     case Closed
     case InvalidRequest(detail: String)
     case InvalidState(detail: String)
+    case OperationNotFound(targetCommandId: CommandId)
+    case OperationAlreadyCompleted(targetCommandId: CommandId)
+    case OperationNotCancellable(targetCommandId: CommandId)
+    case ResourceExhausted(detail: String)
     case BackendUnavailable(detail: String, platformDetails: PlatformErrorDetails?)
+    case NotSupported(detail: String)
     case FfiContract(detail: String)
 }
 
@@ -156,6 +228,9 @@ struct CommandId {
 
 enum CommandKind {
     case initialize
+    case setAdapterEnabled
+    case queryDevices
+    case associateCompanionDevice
     case startScan
     case stopScan
     case connect
@@ -163,18 +238,32 @@ enum CommandKind {
     case discoverGatt
     case readCharacteristic
     case writeCharacteristic
+    case readDescriptor
+    case writeDescriptor
     case setNotifications
     case readRssi
+    case mtu
+    case setConnectionPriority
+    case createBond
+    case removeBond
+    case refreshGattCache
 }
 
 struct ConnectCommand {
     public var commandId: CommandId
     public var connectionId: ConnectionId
     public var peripheralId: PeripheralId
+    public var autoConnect: Bool
 }
 
 struct ConnectionId {
     public var value: UInt64
+}
+
+enum ConnectionPriority {
+    case balanced
+    case high
+    case lowPower
 }
 
 enum ConnectionState {
@@ -187,6 +276,25 @@ enum ConnectionState {
 enum ConnectionStateResult {
     case ok(state: ConnectionState)
     case err(error: BleEventError)
+}
+
+struct CreateBondCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+    public var pin: String?
+}
+
+enum DeviceQueryKind {
+    case connected
+    case bonded
+    case companion
+}
+
+struct DeviceRecord {
+    public var key: String
+    public var localName: String?
+    public var connected: Bool
+    public var bonded: Bool
 }
 
 struct DisconnectCommand {
@@ -262,6 +370,24 @@ struct ManufacturerData {
     public var payload: Data
 }
 
+struct ManufacturerDataFilter {
+    public var companyId: UInt16
+    public var data: Data
+    public var mask: Data?
+}
+
+struct MtuCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+    public var request: UInt16?
+}
+
+struct MtuInfo {
+    public var mtu: UInt16?
+    public var maximumWriteWithResponse: UInt16?
+    public var maximumWriteWithoutResponse: UInt16?
+}
+
 enum NotificationAction {
     case enable(mode: NotificationModeRequest)
     case disable
@@ -300,6 +426,14 @@ struct PlatformErrorDetails {
     public var code: String?
     public var name: String?
     public var message: String?
+    public var status: Int32?
+    public var attCode: Int32?
+}
+
+struct QueryDevicesCommand {
+    public var commandId: CommandId
+    public var kind: DeviceQueryKind
+    public var serviceUuids: [BluetoothUuid]
 }
 
 struct ReadCharacteristicCommand {
@@ -309,7 +443,25 @@ struct ReadCharacteristicCommand {
     public var characteristicId: GattCharacteristicId
 }
 
+struct ReadDescriptorCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+    public var gattSessionId: GattSessionId
+    public var characteristicId: GattCharacteristicId
+    public var descriptorId: GattDescriptorId
+}
+
 struct ReadRssiCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+}
+
+struct RefreshGattCacheCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+}
+
+struct RemoveBondCommand {
     public var commandId: CommandId
     public var connectionId: ConnectionId
 }
@@ -317,7 +469,11 @@ struct ReadRssiCommand {
 struct ScanOptions {
     public var serviceUuids: [BluetoothUuid]
     public var namePrefix: String?
+    public var exactName: String?
     public var companyId: UInt16?
+    public var minRssi: Int16?
+    public var manufacturerData: ManufacturerDataFilter?
+    public var android: AndroidScanOptions?
     public var allowDuplicates: Bool
 }
 
@@ -338,6 +494,17 @@ enum ScanStopResult {
 struct ServiceData {
     public var serviceUuid: BluetoothUuid
     public var payload: Data
+}
+
+struct SetAdapterEnabledCommand {
+    public var commandId: CommandId
+    public var enabled: Bool
+}
+
+struct SetConnectionPriorityCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+    public var priority: ConnectionPriority
 }
 
 struct SetNotificationsCommand {
@@ -371,6 +538,15 @@ struct WriteCharacteristicCommand {
     public var characteristicId: GattCharacteristicId
     public var value: Data
     public var writeType: WriteType
+}
+
+struct WriteDescriptorCommand {
+    public var commandId: CommandId
+    public var connectionId: ConnectionId
+    public var gattSessionId: GattSessionId
+    public var characteristicId: GattCharacteristicId
+    public var descriptorId: GattDescriptorId
+    public var value: Data
 }
 
 enum WriteType {

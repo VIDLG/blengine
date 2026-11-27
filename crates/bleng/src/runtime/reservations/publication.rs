@@ -4,14 +4,14 @@ use super::command_progress::ReconciliationFault;
 
 /// Maximum number of public events retained by one connection or scan scope
 /// while cancellation ordering is unresolved.
-pub(super) const MAX_DEFERRED_PUBLIC_EVENTS_PER_SCOPE: usize = 64;
+const MAX_DEFERRED_PUBLIC_EVENTS_PER_SCOPE: usize = 64;
 
 /// Publication ordering owned by one connection or scan session. Pending
 /// control delays the whole scope so passive teardown cannot overtake earlier
 /// success. Owners supply their existing progress facts; this is not a routing
 /// registry.
 #[derive(Default)]
-pub(crate) struct ScopedPublication {
+pub(super) struct ScopedPublication {
     // This is a scope-wide FIFO, not a per-command queue. A passive event may
     // have no command ID but still must not overtake an unresolved cancellation
     // in the same connection or scan session.
@@ -22,7 +22,7 @@ pub(crate) struct ScopedPublication {
 /// decision. An accepted target cancellation and another pending cancellation
 /// can coexist, so these facts must remain separate.
 #[derive(Clone, Copy)]
-pub(crate) struct PublicationGate {
+pub(super) struct PublicationGate {
     pub(super) cancellation_accepted_for_event: bool,
     pub(super) cancellation_pending: bool,
 }
@@ -31,13 +31,13 @@ pub(crate) struct PublicationGate {
 /// scope. The two fields describe different things: whether this command was
 /// accepted, and whether another cancellation still blocks the scope.
 #[derive(Clone, Copy)]
-pub(crate) struct PublicationRelease {
+pub(super) struct PublicationRelease {
     pub(super) cancellation_accepted: bool,
     pub(super) another_cancellation_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PublicationDecision {
+pub(in crate::runtime) enum PublicationDecision {
     /// Publish the event immediately.
     Publish,
     /// Retain the event and publish it after the pending control is resolved.
@@ -48,8 +48,10 @@ pub(crate) enum PublicationDecision {
 }
 
 impl ScopedPublication {
-    pub(super) fn is_empty(&self) -> bool {
-        self.events.is_empty()
+    delegate::delegate! {
+        to self.events {
+            pub(super) fn is_empty(&self) -> bool;
+        }
     }
 
     /// Chooses the public disposition for one event. Internal evidence is

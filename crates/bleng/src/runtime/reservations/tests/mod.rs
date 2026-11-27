@@ -4,15 +4,15 @@
 use super::{ConnectionReservations, InitializationState, ReservationCoordinator, ScanState};
 
 impl ReservationCoordinator {
-    pub(crate) fn test_initialization(&mut self) -> &mut InitializationState {
+    pub(in crate::runtime) fn test_initialization(&mut self) -> &mut InitializationState {
         &mut self.initialization
     }
 
-    pub(crate) fn test_scan(&mut self) -> &mut ScanState {
+    pub(in crate::runtime) fn test_scan(&mut self) -> &mut ScanState {
         &mut self.scan
     }
 
-    pub(crate) fn test_connections(&mut self) -> &mut ConnectionReservations {
+    pub(in crate::runtime) fn test_connections(&mut self) -> &mut ConnectionReservations {
         &mut self.connections
     }
 }

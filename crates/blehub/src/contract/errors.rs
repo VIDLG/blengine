@@ -17,12 +17,19 @@ pub enum BleErrorCategory {
     Internal,
 }
 
+/// Platform diagnostics are boxed at every error-embedding site: the record is large (three
+/// optional strings plus two numeric codes), and an unboxed copy in each error payload pushes
+/// every `Result` return past clippy's error-size budget without adding value to the hot path.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct PlatformErrorDetails {
     pub platform: Platform,
     pub code: Option<String>,
     pub name: Option<String>,
     pub message: Option<String>,
+    /// Numeric platform status when the platform reports one.
+    pub status: Option<i32>,
+    /// Bluetooth ATT error code when the failure came from an ATT response.
+    pub att_code: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, uniffi::Record)]
@@ -30,7 +37,7 @@ pub struct PlatformErrorDetails {
 pub struct BleEventError {
     pub category: BleErrorCategory,
     pub message: String,
-    pub platform_details: Option<PlatformErrorDetails>,
+    pub platform_details: Option<Box<PlatformErrorDetails>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
@@ -40,7 +47,7 @@ pub enum BleHubError {
     #[error("backend cleanup failed: {detail}")]
     BackendCleanup {
         detail: String,
-        platform_details: Option<PlatformErrorDetails>,
+        platform_details: Option<Box<PlatformErrorDetails>>,
     },
     #[error("backend resource is busy: {detail}")]
     ResourceBusy { detail: String },
@@ -77,8 +84,10 @@ pub enum CommandDispatchError {
     #[error("backend unavailable for command dispatch: {detail}")]
     BackendUnavailable {
         detail: String,
-        platform_details: Option<PlatformErrorDetails>,
+        platform_details: Option<Box<PlatformErrorDetails>>,
     },
+    #[error("backend does not support this operation: {detail}")]
+    NotSupported { detail: String },
     #[error("unexpected foreign backend exception: {detail}")]
     FfiContract { detail: String },
 }

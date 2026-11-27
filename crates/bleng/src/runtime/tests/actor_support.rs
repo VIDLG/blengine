@@ -64,7 +64,7 @@ impl Message<AssumeInitialized> for BlengActor {
         assert!(
             self.reservations
                 .test_initialization()
-                .record_terminal(command_id, &Ok(()))
+                .try_record_terminal(command_id, &Ok(()))
         );
         self.reservations
             .test_initialization()

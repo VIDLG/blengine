@@ -9,29 +9,35 @@ use super::cancellation::{CancellationDecision, CancellationState};
 const MAX_BUFFERED_DISPATCH_EVENTS_PER_COMMAND: usize = 64;
 
 #[derive(Debug)]
-pub(crate) enum ReconciliationFault {
+pub(in crate::runtime) enum ReconciliationFault {
     BufferOverflow,
     UnexpectedNotificationMode,
     DispatchEvidenceConflict,
 }
 
+/// Runtime work requested by reconciliation; only the actor executes it.
+/// This is not a backend BLE command or an already-completed lifecycle effect.
 #[derive(Default)]
-pub(crate) enum DispatchAction {
+pub(in crate::runtime) enum DispatchAction {
     #[default]
     NoAction,
     StartCleanup,
     FaultRuntime(ReconciliationFault),
 }
 
+/// Transient work produced by reconciling a native dispatch return with early callbacks.
+/// Transfers owned callbacks to the actor, which handles the action before permitted replay.
+/// This is neither the operation's terminal result nor the caller submission/claim handoff;
+/// it does not transfer native ownership or prove cleanup has completed.
 #[derive(Default)]
-pub(crate) struct DispatchResolution {
-    pub(crate) events_to_replay: Vec<BleEvent>,
-    pub(crate) action: DispatchAction,
+pub(in crate::runtime) struct DispatchResolution {
+    pub(in crate::runtime) events_to_replay: Vec<BleEvent>,
+    pub(in crate::runtime) action: DispatchAction,
 }
 
 /// How to handle one buffered event after dispatch rejection. The reservation
 /// supplies the context-dependent decision; it is not an intrinsic event property.
-pub(crate) enum BufferedEventDisposition {
+pub(super) enum BufferedEventDisposition {
     Replay,
     Discard,
     Conflict,
@@ -39,11 +45,12 @@ pub(crate) enum BufferedEventDisposition {
 
 /// Common dispatch and terminal progress, not a generic BLE operation.
 /// Domain evidence and operation-specific error precedence remain in each record.
-pub(crate) struct CommandProgress {
+pub(super) struct CommandProgress {
     command_id: CommandId,
     completion_observer: CompletionObserver,
     dispatch_accepted: bool,
-    pre_dispatch_events: Vec<BleEvent>,
+    // Native callbacks can arrive during dispatch, before its result is reconciled.
+    dispatch_pending_events: Vec<BleEvent>,
     terminal_evidence: Option<Result<(), BleEventError>>,
     cancellation: CancellationState,
 }
@@ -54,7 +61,7 @@ impl CommandProgress {
             command_id,
             completion_observer: CompletionObserver::default(),
             dispatch_accepted: false,
-            pre_dispatch_events: Vec::new(),
+            dispatch_pending_events: Vec::new(),
             terminal_evidence: None,
             cancellation: CancellationState::default(),
         }
@@ -68,7 +75,7 @@ impl CommandProgress {
         to self.cancellation {
             #[call(is_accepted)]
             pub(super) fn is_cancellation_accepted(&self) -> bool;
-            #[call(is_active)]
+            #[call(has_request)]
             pub(super) fn is_cancellation_requested(&self) -> bool;
             #[call(is_awaiting_result)]
             pub(super) fn is_awaiting_cancellation_result(&self) -> bool;
@@ -85,6 +92,11 @@ impl CommandProgress {
 
     pub(super) fn owns_command(&self, command_id: CommandId) -> bool {
         self.command_id == command_id
+    }
+
+    /// Matches this command only after dispatch acceptance, not terminal success.
+    pub(super) fn owns_accepted_command(&self, command_id: CommandId) -> bool {
+        self.owns_command(command_id) && self.dispatch_accepted
     }
 
     pub(super) fn is_awaiting_dispatch_result(&self) -> bool {
@@ -104,50 +116,51 @@ impl CommandProgress {
         self.cancellation.try_claim_native_dispatch()
     }
 
-    pub(super) fn buffer_pre_dispatch_event(
+    pub(super) fn buffer_dispatch_pending_event(
         &mut self,
         event: BleEvent,
     ) -> Result<(), ReconciliationFault> {
-        if self.pre_dispatch_events.len() >= MAX_BUFFERED_DISPATCH_EVENTS_PER_COMMAND {
+        if self.dispatch_pending_events.len() >= MAX_BUFFERED_DISPATCH_EVENTS_PER_COMMAND {
             return Err(ReconciliationFault::BufferOverflow);
         }
-        self.pre_dispatch_events.push(event);
+        self.dispatch_pending_events.push(event);
         Ok(())
     }
 
     /// Transfers evidence without acknowledging dispatch or choosing a replay policy.
-    fn take_pre_dispatch_events(&mut self) -> Vec<BleEvent> {
-        std::mem::take(&mut self.pre_dispatch_events)
+    fn take_dispatch_pending_events(&mut self) -> Vec<BleEvent> {
+        std::mem::take(&mut self.dispatch_pending_events)
     }
 
     /// Acknowledges acceptance and transfers early callbacks for ordered replay.
     /// Normal acceptance requests no cleanup or fault action.
-    pub(super) fn accepted_resolution(&mut self) -> DispatchResolution {
+    pub(super) fn resolve_accepted_dispatch(&mut self) -> DispatchResolution {
         if self.dispatch_accepted {
             // A duplicate acknowledgement cannot replay early callbacks again.
             return DispatchResolution::default();
         }
         self.dispatch_accepted = true;
         DispatchResolution {
-            events_to_replay: self.take_pre_dispatch_events(),
+            events_to_replay: self.take_dispatch_pending_events(),
             action: DispatchAction::NoAction,
         }
     }
 
     /// Drains early evidence without acknowledging acceptance. The reservation
     /// chooses replay, discard, or conflict for each event and owns resource teardown.
-    /// Any conflict overrides the clean-rejection action, but classification continues
-    /// so permitted events retain their order. The actor executes the resulting action.
-    pub(super) fn rejected_resolution(
+    /// Replay and Discard retain action_if_no_conflict; any Conflict overrides it
+    /// with a fault. Classification continues so permitted events retain their order.
+    /// The actor executes the resulting action.
+    pub(super) fn resolve_rejected_dispatch(
         &mut self,
-        on_clean_rejection: DispatchAction,
+        action_if_no_conflict: DispatchAction,
         classify: impl Fn(&BleEvent) -> BufferedEventDisposition,
     ) -> DispatchResolution {
         let mut resolution = DispatchResolution {
             events_to_replay: Vec::new(),
-            action: on_clean_rejection,
+            action: action_if_no_conflict,
         };
-        for event in self.take_pre_dispatch_events() {
+        for event in self.take_dispatch_pending_events() {
             match classify(&event) {
                 BufferedEventDisposition::Replay => resolution.events_to_replay.push(event),
                 BufferedEventDisposition::Discard => {}
@@ -167,16 +180,25 @@ impl CommandProgress {
         }
     }
 
-    pub(super) fn has_terminal(&self) -> bool {
-        self.terminal_evidence.is_some()
+    delegate::delegate! {
+        to self.terminal_evidence {
+            #[call(is_some)]
+            pub(super) fn has_terminal(&self) -> bool;
+        }
     }
 
-    pub(super) fn is_terminal_succeeded(&self) -> bool {
+    pub(super) fn has_successful_terminal(&self) -> bool {
         self.terminal_evidence == Some(Ok(()))
     }
 
-    pub(super) fn is_terminal_failed(&self) -> bool {
+    pub(super) fn has_failed_terminal(&self) -> bool {
         self.terminal_evidence.as_ref().is_some_and(Result::is_err)
+    }
+
+    /// Accepted dispatch and a failed terminal do not prove native teardown.
+    /// The reservation still owns retirement policy and any additional barriers.
+    pub(super) fn has_accepted_terminal_failure(&self) -> bool {
+        self.dispatch_accepted && self.has_failed_terminal()
     }
 
     /// Returns the recorded terminal only after dispatch acceptance. Success says

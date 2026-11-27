@@ -216,6 +216,10 @@ fn completed_close_with_pending_control(faulted: bool, failed: bool, waiting_sta
                 fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
                 fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>) -> Result<(), BleHubError>;
                 fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+                fn set_adapter_enabled(&self, command: blehub::SetAdapterEnabledCommand) -> Result<(), CommandDispatchError>;
+                fn query_devices(&self, command: blehub::QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+            fn associate_companion_device(&self, command: blehub::AssociateCompanionDeviceCommand) -> Result<(), CommandDispatchError>;
+                fn refresh_gatt_cache(&self, command: blehub::RefreshGattCacheCommand) -> Result<(), CommandDispatchError>;
                 fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
                 fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
                 fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
@@ -225,6 +229,12 @@ fn completed_close_with_pending_control(faulted: bool, failed: bool, waiting_sta
                 fn write_characteristic(&self, command: WriteCharacteristicCommand) -> Result<(), CommandDispatchError>;
                 fn set_notifications(&self, command: SetNotificationsCommand) -> Result<(), CommandDispatchError>;
                 fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+                fn mtu(&self, command: blehub::MtuCommand) -> Result<(), CommandDispatchError>;
+            fn set_connection_priority(&self, command: blehub::SetConnectionPriorityCommand) -> Result<(), CommandDispatchError>;
+            fn create_bond(&self, command: blehub::CreateBondCommand) -> Result<(), CommandDispatchError>;
+            fn remove_bond(&self, command: blehub::RemoveBondCommand) -> Result<(), CommandDispatchError>;
+            fn read_descriptor(&self, command: blehub::ReadDescriptorCommand) -> Result<(), CommandDispatchError>;
+            fn write_descriptor(&self, command: blehub::WriteDescriptorCommand) -> Result<(), CommandDispatchError>;
                 fn dispose(&self) -> Result<(), BleHubError>;
             }
         }

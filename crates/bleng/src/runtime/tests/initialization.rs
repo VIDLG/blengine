@@ -128,6 +128,76 @@ fn initialize_requires_correlated_snapshot_and_terminal_in_either_order() {
     }
 }
 
+#[test]
+fn initialization_keeps_first_snapshot_while_publishing_changed_duplicates_and_passive_updates() {
+    for before_dispatch_return in [false, true] {
+        for terminal_position in [0, 1, 3] {
+            let owner = RuntimeOwner::new().unwrap();
+            let first = init_snapshot_event(Some(1));
+            let mut changed_snapshot = init_snapshot();
+            changed_snapshot.state = AdapterState::PoweredOff;
+            changed_snapshot.name = Some("different duplicate initialization response".into());
+            let duplicate = BleEvent::AdapterSnapshotChanged {
+                command_id: Some(1.into()),
+                snapshot: changed_snapshot,
+            };
+            let passive = init_publication_passive_snapshot(true, "later passive update");
+            let mut events = vec![first, duplicate, passive];
+            events.insert(terminal_position, command_completed(1, None));
+            let scenario = if before_dispatch_return {
+                EventScenario::emit_before_return(init_command(1), events.clone())
+            } else {
+                EventScenario::complete(init_command(1), events.clone())
+            };
+            let (backend, handle) = FakeBackend::scripted([scenario]);
+            owner
+                .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+                .unwrap();
+            let host = tokio::runtime::Builder::new_multi_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            host.block_on(async {
+                let mut initialize = Box::pin(owner.initialize(Duration::from_secs(2)));
+                if !before_dispatch_return {
+                    tokio::time::timeout(Duration::from_secs(2), async {
+                        loop {
+                            tokio::select! {
+                                result = &mut initialize => panic!("initialization finished before callbacks: {result:?}"),
+                                _ = tokio::task::yield_now() => {}
+                            }
+                            if handle.pending_event_count() == events.len() {
+                                break;
+                            }
+                        }
+                    })
+                    .await
+                    .unwrap();
+                    for _ in &events {
+                        assert_eq!(handle.advance(), Some(EventIngressStatus::Delivered));
+                    }
+                }
+                assert_eq!(
+                    initialize.await,
+                    Ok(init_snapshot()),
+                    "first correlated snapshot wins regardless of terminal/dispatch timing"
+                );
+                for expected in events {
+                    assert_eq!(
+                        owner.next_event(Duration::from_secs(2)).await,
+                        Ok(Some(expected)),
+                        "result selection must not discard or reorder public observations"
+                    );
+                }
+                assert!(!owner.faulted_for_test());
+                owner.close().await.unwrap();
+            });
+            assert_eq!(handle.commands(), vec![init_command(1)]);
+            assert_eq!(handle.dispose_count(), 1);
+        }
+    }
+}
+
 fn init_publication_passive_snapshot(denied: bool, name: &str) -> BleEvent {
     let mut snapshot = init_snapshot();
     snapshot.name = Some(name.to_owned());

@@ -4,11 +4,11 @@ use async_trait::async_trait;
 use blehub::BleBackend;
 use bleng::Bleng;
 
-use super::types::*;
+use super::{scan::SessionEventProjection, types::*};
 use crate::recovery::RecoveryContext;
 use crate::{
     PlatformActionResult, PlatformOwnerSession, PlatformOwnerSessionFactory,
-    PlatformRecoveryAction, ResourceSnapshot, SupervisorError,
+    PlatformRecoveryAction, ResourceSnapshot, SessionObservationProjection, SupervisorError,
 };
 /// Foreign implementation of one native platform session.
 ///
@@ -23,7 +23,12 @@ pub trait ForeignPlatformOwnerSession: Send + Sync {
 
     fn dispose_unassembled(&self) -> Result<(), SupervisorFfiError>;
 
-    fn start_event_reader(&self, owner: Arc<Bleng>) -> Result<(), SupervisorFfiError>;
+    /// The same single reader feeds this Rust-created, owner-bound projection.
+    fn start_event_reader(
+        &self,
+        owner: Arc<Bleng>,
+        event_projection: Arc<SessionEventProjection>,
+    ) -> Result<(), SupervisorFfiError>;
 
     async fn wait_event_reader(&self) -> Result<(), SupervisorFfiError>;
 
@@ -39,6 +44,9 @@ pub trait ForeignPlatformOwnerSession: Send + Sync {
 /// Foreign factory that creates native sessions for a requested context.
 #[uniffi::export(foreign)]
 pub trait ForeignPlatformOwnerSessionFactory: Send + Sync {
+    /// Resource names owned by the platform and required to reach zero after retirement.
+    fn required_zero_resource_names(&self) -> Vec<String>;
+
     fn create(
         &self,
         context: ForeignOwnerContext,
@@ -57,6 +65,13 @@ impl ForeignPlatformOwnerSessionFactoryAdapter {
 }
 
 impl PlatformOwnerSessionFactory for ForeignPlatformOwnerSessionFactoryAdapter {
+    fn required_zero_resource_names(&self) -> std::collections::BTreeSet<String> {
+        self.factory
+            .required_zero_resource_names()
+            .into_iter()
+            .collect()
+    }
+
     fn create(
         &self,
         context: &RecoveryContext,
@@ -67,10 +82,28 @@ impl PlatformOwnerSessionFactory for ForeignPlatformOwnerSessionFactoryAdapter {
             .create(requested)
             .map_err(SupervisorFfiError::into_supervisor)?;
         let actual = RecoveryContext::try_from(session.context())
-            .map_err(SupervisorFfiError::into_supervisor)?;
-        if actual != *context {
-            return Err(SupervisorError::PlatformContextMismatch);
-        }
+            .map_err(SupervisorFfiError::into_supervisor)
+            .and_then(|actual| {
+                if actual == *context {
+                    Ok(actual)
+                } else {
+                    Err(SupervisorError::PlatformContextMismatch)
+                }
+            });
+        let actual = match actual {
+            Ok(actual) => actual,
+            Err(primary_error) => {
+                // The foreign factory already created a session, but no backend has
+                // transferred to BLeng. Arc destruction is not native disposal.
+                return Err(match session.dispose_unassembled() {
+                    Ok(()) => primary_error,
+                    Err(cleanup_error) => SupervisorError::StartupCleanup {
+                        primary_error: primary_error.to_string(),
+                        cleanup_error: cleanup_error.to_string(),
+                    },
+                });
+            }
+        };
         Ok(Box::new(ForeignPlatformOwnerSessionAdapter {
             session,
             context: actual,
@@ -98,9 +131,13 @@ impl PlatformOwnerSession for ForeignPlatformOwnerSessionAdapter {
             .map_err(SupervisorFfiError::into_supervisor)
     }
 
-    fn start_event_reader(&self, owner: Arc<Bleng>) -> Result<(), SupervisorError> {
+    fn start_event_reader(
+        &self,
+        owner: Arc<Bleng>,
+        event_projection: Arc<SessionObservationProjection>,
+    ) -> Result<(), SupervisorError> {
         self.session
-            .start_event_reader(owner)
+            .start_event_reader(owner, SessionEventProjection::new(event_projection))
             .map_err(SupervisorFfiError::into_supervisor)
     }
 

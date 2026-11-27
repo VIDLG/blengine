@@ -49,7 +49,7 @@ fn pre_ack_buffer_is_bounded_and_replays_correlated_evidence_in_order() {
         initialization.record_event(event);
     }
     assert_eq!(initialization.waiter_result(1.into()), None);
-    assert!(initialization.record_terminal(1.into(), &Ok(())));
+    assert!(initialization.try_record_terminal(1.into(), &Ok(())));
     let mut expected_snapshot = init_snapshot();
     expected_snapshot.name = Some("0".to_owned());
     assert_eq!(
@@ -109,7 +109,7 @@ fn init_publication_uses_one_64_event_buffer_and_keeps_earlier_passive_snapshots
         assert_eq!(resolution.events_to_replay, events);
         for event in &resolution.events_to_replay[..63] {
             if let BleEvent::CommandCompleted { command_id, .. } = event {
-                initialization.record_terminal(*command_id, &Ok(()));
+                initialization.try_record_terminal(*command_id, &Ok(()));
             } else {
                 initialization.record_event(event);
             }
@@ -117,7 +117,7 @@ fn init_publication_uses_one_64_event_buffer_and_keeps_earlier_passive_snapshots
         assert_eq!(initialization.waiter_result(1.into()), None);
         let last = resolution.events_to_replay.last().unwrap();
         if let BleEvent::CommandCompleted { command_id, .. } = last {
-            initialization.record_terminal(*command_id, &Ok(()));
+            initialization.try_record_terminal(*command_id, &Ok(()));
         } else {
             initialization.record_event(last);
         }
@@ -179,7 +179,7 @@ fn initialization_dispatch_rejection_is_final_and_correlates_late_evidence() {
         ));
         initialization.record_event(&late);
     }
-    assert!(!initialization.record_terminal(1.into(), &Ok(())));
+    assert!(!initialization.try_record_terminal(1.into(), &Ok(())));
     assert_eq!(initialization.waiter_result(1.into()), None);
     initialization.advance_after_settlement().unwrap();
     assert_eq!(
@@ -198,7 +198,7 @@ fn scan_stop_rejection_discards_terminals_and_preserves_replay_order_across_conf
             command_id: 1.into(),
             scan_id: 10.into(),
         });
-        assert!(scan.record_terminal(1.into(), &Ok(())));
+        assert!(scan.try_record_terminal(1.into(), &Ok(())));
         scan.reserve_scan_stop(2.into());
 
         let terminal = BleEvent::CommandCompleted {
@@ -221,7 +221,19 @@ fn scan_stop_rejection_discards_terminals_and_preserves_replay_order_across_conf
                 },
             },
         };
-        let mut events = vec![terminal.clone(), suspended.clone()];
+        let foreign_requested = BleEvent::ScanStopped {
+            scan_id: 10.into(),
+            result: ScanStopResult::Ok {
+                reason: ScanStopReason::Requested {
+                    command_id: 99.into(),
+                },
+            },
+        };
+        let mut events = vec![
+            terminal.clone(),
+            foreign_requested.clone(),
+            suspended.clone(),
+        ];
         if include_conflict {
             events.push(BleEvent::ScanStopped {
                 scan_id: 10.into(),
@@ -241,7 +253,10 @@ fn scan_stop_rejection_discards_terminals_and_preserves_replay_order_across_conf
             detail: "stop rejected after early callbacks".to_owned(),
         });
         let resolution = scan.resolve_dispatch(2.into(), &rejection).unwrap();
-        assert_eq!(resolution.events_to_replay, vec![suspended, failed]);
+        assert_eq!(
+            resolution.events_to_replay,
+            vec![foreign_requested, suspended, failed]
+        );
         if include_conflict {
             assert!(matches!(
                 resolution.action,

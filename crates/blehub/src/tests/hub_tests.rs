@@ -9,15 +9,17 @@ use std::{
 };
 
 use crate::{
-    AdvertisementObservation, BLEHUB_CONTRACT_VERSION, BackendCapabilities,
-    BackendEventIngressHandle, BleBackend, BleEvent, BleEventSink, BleHubError, BluetoothUuid,
-    CancelOperationRequest, CharacteristicProperties, CommandDispatchError, CommandId,
-    ConnectCommand, ConnectionId, DisconnectCommand, DiscoverGattCommand, EventIngressStatus,
-    EventSinkError, GattCharacteristic, GattCharacteristicId, GattDatabase, GattDescriptor,
-    GattDescriptorId, GattService, GattServiceId, GattSessionId, InitializeCommand,
-    MAX_SCAN_NAME_PREFIX_BYTES, MAX_WRITE_VALUE_BYTES, PeripheralId, Platform,
-    ReadCharacteristicCommand, ReadRssiCommand, ScanOptions, ScanSessionId, ServiceData,
-    SetNotificationsCommand, StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
+    AdvertisementObservation, AssociateCompanionDeviceCommand, BLEHUB_CONTRACT_VERSION,
+    BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleEventSink,
+    BleHubError, BluetoothUuid, CancelOperationRequest, CharacteristicProperties,
+    CommandDispatchError, CommandId, ConnectCommand, ConnectionId, CreateBondCommand,
+    DisconnectCommand, DiscoverGattCommand, EventIngressStatus, EventSinkError, GattCharacteristic,
+    GattCharacteristicId, GattDatabase, GattDescriptor, GattDescriptorId, GattService,
+    GattServiceId, GattSessionId, InitializeCommand, MAX_LOCAL_NAME_BYTES, MAX_MTU,
+    MAX_WRITE_VALUE_BYTES, MIN_MTU, MtuCommand, PeripheralId, Platform, QueryDevicesCommand,
+    ReadCharacteristicCommand, ReadRssiCommand, RefreshGattCacheCommand, ScanOptions,
+    ScanSessionId, ServiceData, SetAdapterEnabledCommand, SetNotificationsCommand,
+    StartScanCommand, StopScanCommand, WriteCharacteristicCommand, WriteDescriptorCommand,
     WriteType,
 };
 
@@ -56,6 +58,8 @@ struct ConstructorBackendState {
     dispatch_count: AtomicUsize,
     scan_commands: Mutex<Vec<StartScanCommand>>,
     write_commands: Mutex<Vec<WriteCharacteristicCommand>>,
+    priority_commands: Mutex<Vec<crate::SetConnectionPriorityCommand>>,
+    descriptor_writes: Mutex<Vec<crate::WriteDescriptorCommand>>,
     dispose_count: AtomicUsize,
     bind_push_status: Mutex<Option<EventIngressStatus>>,
 }
@@ -74,6 +78,8 @@ impl ConstructorBackend {
             dispatch_count: AtomicUsize::new(0),
             scan_commands: Mutex::new(Vec::new()),
             write_commands: Mutex::new(Vec::new()),
+            priority_commands: Mutex::new(Vec::new()),
+            descriptor_writes: Mutex::new(Vec::new()),
             dispose_count: AtomicUsize::new(0),
             bind_push_status: Mutex::new(None),
         });
@@ -150,6 +156,25 @@ impl BleBackend for ConstructorBackend {
         Ok(())
     }
 
+    fn set_adapter_enabled(&self, _: SetAdapterEnabledCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn query_devices(&self, _: QueryDevicesCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn associate_companion_device(
+        &self,
+        _: AssociateCompanionDeviceCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn refresh_gatt_cache(&self, _: RefreshGattCacheCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
     fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError> {
         self.state.scan_commands.lock().unwrap().push(command);
         self.reject_dispatch()
@@ -191,6 +216,38 @@ impl BleBackend for ConstructorBackend {
     }
 
     fn read_rssi(&self, _: ReadRssiCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn mtu(&self, _: crate::MtuCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn set_connection_priority(
+        &self,
+        command: crate::SetConnectionPriorityCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.state.priority_commands.lock().unwrap().push(command);
+        self.reject_dispatch()
+    }
+
+    fn create_bond(&self, _: crate::CreateBondCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn remove_bond(&self, _: crate::RemoveBondCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn read_descriptor(&self, _: crate::ReadDescriptorCommand) -> Result<(), CommandDispatchError> {
+        self.reject_dispatch()
+    }
+
+    fn write_descriptor(
+        &self,
+        command: crate::WriteDescriptorCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.state.descriptor_writes.lock().unwrap().push(command);
         self.reject_dispatch()
     }
 
@@ -381,10 +438,10 @@ fn facade_rejects_invalid_scan_and_write_without_dispatch_or_events_at_utf8_boun
     let (event_tx, event_rx) = mpsc::channel();
     let hub = BleHub::new(backend, Arc::new(ChannelSink(event_tx))).unwrap();
     let name_at_limit = format!("{}ab", "测".repeat(82));
-    assert_eq!(name_at_limit.len(), MAX_SCAN_NAME_PREFIX_BYTES);
+    assert_eq!(name_at_limit.len(), MAX_LOCAL_NAME_BYTES);
     let name_over_limit = format!("{name_at_limit}x");
-    assert_eq!(name_over_limit.len(), MAX_SCAN_NAME_PREFIX_BYTES + 1);
-    assert!(name_over_limit.chars().count() < MAX_SCAN_NAME_PREFIX_BYTES);
+    assert_eq!(name_over_limit.len(), MAX_LOCAL_NAME_BYTES + 1);
+    assert!(name_over_limit.chars().count() < MAX_LOCAL_NAME_BYTES);
     let assert_no_dispatch_or_events = || {
         assert_eq!(state.dispatch_count.load(Ordering::Acquire), 0);
         assert!(state.scan_commands.lock().unwrap().is_empty());
@@ -476,6 +533,116 @@ fn facade_rejects_invalid_scan_and_write_without_dispatch_or_events_at_utf8_boun
     assert_eq!(*state.scan_commands.lock().unwrap(), vec![valid_scan]);
     assert_eq!(*state.write_commands.lock().unwrap(), vec![valid_write]);
     assert_eq!(state.dispatch_count.load(Ordering::Acquire), 2);
+    assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+}
+
+#[test]
+fn facade_validates_mtu_range_before_dispatch_and_preserves_query_and_bounds() {
+    let (backend, state) = backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
+    let (event_tx, event_rx) = mpsc::channel();
+    let hub = BleHub::new(backend, Arc::new(ChannelSink(event_tx))).unwrap();
+
+    // Out-of-range requests never reach a backend: the range is a contract, not platform policy.
+    for (index, request) in [Some(MIN_MTU - 1), Some(MAX_MTU + 1)]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(matches!(
+            hub.mtu(MtuCommand {
+                command_id: CommandId {
+                    value: index as u64 + 1
+                },
+                connection_id: ConnectionId { value: 30 },
+                request,
+            }),
+            Err(CommandDispatchError::InvalidRequest { .. })
+        ));
+    }
+    assert_eq!(state.dispatch_count.load(Ordering::Acquire), 0);
+    assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+    // Query-only, both inclusive bounds, and a mid-range request dispatch unchanged.
+    for (index, request) in [None, Some(MIN_MTU), Some(MAX_MTU), Some(185)]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(matches!(
+            hub.mtu(MtuCommand {
+                command_id: CommandId {
+                    value: index as u64 + 10
+                },
+                connection_id: ConnectionId { value: 30 },
+                request,
+            }),
+            Err(CommandDispatchError::InvalidState { .. })
+        ));
+    }
+    assert_eq!(state.dispatch_count.load(Ordering::Acquire), 4);
+    assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+}
+
+#[test]
+fn facade_validates_bond_pin_and_descriptor_write_before_dispatch() {
+    let (backend, state) = backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
+    let (event_tx, event_rx) = mpsc::channel();
+    let hub = BleHub::new(backend, Arc::new(ChannelSink(event_tx))).unwrap();
+
+    // A PIN shape no platform can consume is refused by the contract, not by one backend.
+    for (index, pin) in ["", "12345678901234567", "12a456", "12 456"]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(matches!(
+            hub.create_bond(CreateBondCommand {
+                command_id: CommandId {
+                    value: index as u64 + 1
+                },
+                connection_id: ConnectionId { value: 20 },
+                pin: Some(pin.to_owned()),
+            }),
+            Err(CommandDispatchError::InvalidRequest { .. })
+        ));
+    }
+    assert!(matches!(
+        hub.write_descriptor(WriteDescriptorCommand {
+            command_id: CommandId { value: 10 },
+            connection_id: ConnectionId { value: 20 },
+            gatt_session_id: GattSessionId { value: 21 },
+            characteristic_id: GattCharacteristicId { value: 22 },
+            descriptor_id: GattDescriptorId { value: 23 },
+            value: vec![0; MAX_WRITE_VALUE_BYTES + 1],
+        }),
+        Err(CommandDispatchError::InvalidRequest { .. })
+    ));
+    assert_eq!(state.dispatch_count.load(Ordering::Acquire), 0);
+    assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+    // The same commands with a valid shape do reach the backend, which then refuses them.
+    for (index, pin) in [None, Some("123456")].into_iter().enumerate() {
+        assert!(matches!(
+            hub.create_bond(CreateBondCommand {
+                command_id: CommandId {
+                    value: index as u64 + 20
+                },
+                connection_id: ConnectionId { value: 20 },
+                pin: pin.map(str::to_owned),
+            }),
+            Err(CommandDispatchError::InvalidState { .. })
+        ));
+    }
+    assert!(matches!(
+        hub.write_descriptor(WriteDescriptorCommand {
+            command_id: CommandId { value: 30 },
+            connection_id: ConnectionId { value: 20 },
+            gatt_session_id: GattSessionId { value: 21 },
+            characteristic_id: GattCharacteristicId { value: 22 },
+            descriptor_id: GattDescriptorId { value: 23 },
+            value: vec![0; MAX_WRITE_VALUE_BYTES],
+        }),
+        Err(CommandDispatchError::InvalidState { .. })
+    ));
+    assert_eq!(state.dispatch_count.load(Ordering::Acquire), 3);
+    assert_eq!(state.descriptor_writes.lock().unwrap().len(), 1);
     assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
 }
 
@@ -830,6 +997,79 @@ fn nested_invalid_events_are_rejected_without_sink_delivery() {
 }
 
 #[test]
+fn inventory_and_presence_keys_are_validated_at_ingress() {
+    let (backend, state) = backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
+    let (event_tx, event_rx) = mpsc::channel();
+    let hub = BleHub::new(backend, Arc::new(ChannelSink(event_tx))).unwrap();
+    let ingress = observed_ingress(&state).upgrade().unwrap();
+
+    let record = |key: &str| crate::DeviceRecord {
+        key: key.to_owned(),
+        local_name: None,
+        connected: true,
+        bonded: false,
+    };
+
+    // A key the App maps or adopts must exist and be unique within one answer.
+    for (event, path) in [
+        (
+            BleEvent::DevicesListed {
+                command_id: CommandId { value: 1 },
+                devices: vec![record(""), record("peer")],
+            },
+            "devices[0].key must not be empty",
+        ),
+        (
+            BleEvent::DevicesListed {
+                command_id: CommandId { value: 2 },
+                devices: vec![record("peer"), record("peer")],
+            },
+            "devices[1].key duplicates another device key",
+        ),
+        (
+            BleEvent::CompanionPresenceChanged {
+                present: true,
+                key: String::new(),
+                local_name: None,
+            },
+            "presence key must not be empty",
+        ),
+    ] {
+        let status = ingress.push(event.clone());
+        assert!(
+            matches!(&status, EventIngressStatus::InvalidEvent { message } if message.contains(path)),
+            "expected InvalidEvent at {path}, got {status:?} for {event:?}"
+        );
+        assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    }
+
+    // Distinct keys, and an empty inventory, are valid answers.
+    for event in [
+        BleEvent::DevicesListed {
+            command_id: CommandId { value: 3 },
+            devices: vec![record("first"), record("second")],
+        },
+        BleEvent::DevicesListed {
+            command_id: CommandId { value: 4 },
+            devices: Vec::new(),
+        },
+        BleEvent::CompanionPresenceChanged {
+            present: false,
+            key: "peer".to_owned(),
+            local_name: Some("Watch".to_owned()),
+        },
+    ] {
+        assert_eq!(ingress.push(event.clone()), EventIngressStatus::Delivered);
+        assert_eq!(
+            event_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            event
+        );
+    }
+    assert_eq!(event_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+    hub.dispose().unwrap();
+}
+
+#[test]
 fn dispose_releases_command_gate_before_waiting_for_ingress_drain() {
     let (backend, state) = backend(Ok(BackendCapabilities::new(Platform::Test)), Ok(()), Ok(()));
     let entered = Arc::new(Barrier::new(2));
@@ -866,9 +1106,13 @@ fn dispose_releases_command_gate_before_waiting_for_ingress_drain() {
         command_id: CommandId { value: 3 },
         scan_session_id: ScanSessionId { value: 4 },
         options: ScanOptions {
+            android: None,
             service_uuids: Vec::new(),
             name_prefix: None,
             company_id: None,
+            exact_name: None,
+            min_rssi: None,
+            manufacturer_data: None,
             allow_duplicates: false,
         },
     };

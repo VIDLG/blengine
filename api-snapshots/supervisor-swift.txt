@@ -1,0 +1,762 @@
+# Reviewed BLeng supervisor Swift API shape; ABI remains unfrozen.
+
+struct ForeignAdapterControlBeginResult {
+    public var control: SupervisedAdapterControl?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignAdapterEnd {
+    public var reason: ForeignAdapterEndReason
+}
+
+enum ForeignAdapterEndReason {
+    case ownerClosed
+    case detached
+}
+
+struct ForeignAdapterObservation {
+    public var snapshot: AdapterSnapshot?
+    public var ended: ForeignAdapterEnd?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignAdapterObservationBeginResult {
+    public var adapterObservation: SupervisedAdapterObservation?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignAndroidScanOptions {
+    public var scanMode: AndroidScanMode?
+    public var phy: AndroidScanPhy?
+    public var reportDelayMs: Double?
+    public var legacy: Bool?
+}
+
+struct ForeignBondBeginResult {
+    public var bond: SupervisedBond?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignBondProgress {
+    public var state: BondState?
+    public var ended: Bool
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignBondValueResult {
+    public var state: BondState?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignCompanionAssociationBeginResult {
+    public var association: SupervisedCompanionAssociation?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignCompanionPresence {
+    public var present: Bool
+    public var key: String
+    public var localName: String?
+}
+
+struct ForeignCompanionPresenceBeginResult {
+    public var presenceObservation: SupervisedCompanionPresenceObservation?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignCompanionPresenceEnd {
+    public var reason: ForeignCompanionPresenceEndReason
+}
+
+enum ForeignCompanionPresenceEndReason {
+    case ownerClosed
+    case detached
+}
+
+struct ForeignCompanionPresenceObservation {
+    public var presence: ForeignCompanionPresence?
+    public var ended: ForeignCompanionPresenceEnd?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignConnectBeginResult {
+    public var connect: SupervisedConnect?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignConnectResult {
+    public var connection: SupervisedConnection?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignConnectionEnd {
+    public var by: ForeignConnectionEndBy
+    public var failure: ForeignOperationFailure?
+}
+
+enum ForeignConnectionEndBy {
+    case `operator`
+    case unrequested
+    case owner
+}
+
+struct ForeignConnectionEndObservation {
+    public var ended: ForeignConnectionEnd?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignDescriptorReadBeginResult {
+    public var read: SupervisedDescriptorRead?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignDescriptorReadValueResult {
+    public var value: Data?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignDescriptorWriteBeginResult {
+    public var write: SupervisedDescriptorWrite?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignDeviceListResult {
+    public var devices: [ForeignDeviceRecord]?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignDeviceQueryBeginResult {
+    public var query: SupervisedDeviceQuery?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignDeviceRecord {
+    public var key: String
+    public var localName: String?
+    public var connected: Bool
+    public var bonded: Bool
+}
+
+struct ForeignDisconnectBeginResult {
+    public var disconnect: SupervisedDisconnect?
+    public var failure: ForeignOperationFailure?
+}
+
+enum ForeignExternalRecoverySignal {
+    case radioLost
+    case manualReconnectRequired
+}
+
+struct ForeignGattDiscoveryBeginResult {
+    public var discovery: SupervisedGattDiscovery?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignGattDiscoveryResult {
+    public var session: SupervisedGattSession?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignManufacturerDataFilter {
+    public var companyId: Double
+    public var data: Data
+    public var mask: Data?
+}
+
+struct ForeignMtuBeginResult {
+    public var mtu: SupervisedMtu?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignMtuValueResult {
+    public var info: MtuInfo?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignNotificationDeliverySnapshot {
+    public var queuedValues: UInt64
+    public var queuedBytes: UInt64
+    public var bound: Bool
+    public var pullPending: Bool
+}
+
+struct ForeignNotificationDisableResult {
+    public var operation: SupervisedNotificationDisable?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignNotificationEnd {
+    public var reason: ForeignNotificationEndReason
+}
+
+enum ForeignNotificationEndReason {
+    case disabled
+    case connectionClosed
+    case ownerClosed
+    case overflow
+}
+
+struct ForeignNotificationObservation {
+    public var value: Data?
+    public var ended: ForeignNotificationEnd?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignNotificationSubscribeBeginResult {
+    public var notifications: SupervisedNotifications?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignNotificationSubscribeResult {
+    public var actualMode: NotificationMode?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignOperationCommandResult {
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignOperationFailure {
+    public var domain: ForeignOperationFailureDomain
+    public var code: String
+    public var message: String
+    public var platformDetails: PlatformErrorDetails?
+}
+
+enum ForeignOperationFailureDomain {
+    case input
+    case submission
+    case operation
+    case observation
+    case delivery
+    case lifecycle
+}
+
+struct ForeignOwnerClose {
+    public var ownerClosed: Bool
+    public var failure: ForeignOwnerCloseFailure?
+}
+
+struct ForeignOwnerCloseFailure {
+    public var code: String
+    public var message: String
+}
+
+struct ForeignOwnerContext {
+    public var ownerId: String
+    public var backendId: String
+    public var ownerGeneration: UInt64
+    public var recoveryAttempt: UInt64
+}
+
+struct ForeignOwnerStart {
+    public var context: ForeignOwnerContext
+    public var initializationCommandId: UInt64
+    public var adapterSnapshot: AdapterSnapshot
+}
+
+struct ForeignPeripheralAdoptResult {
+    public var peripheral: SupervisedPeripheral?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignPlatformActionResult {
+    public var sequence: UInt64
+    public var signal: ForeignRecoverySignal
+}
+
+protocol ForeignPlatformOwnerSession {
+    func context() -> ForeignOwnerContext
+    func backend() -> BleBackend
+    func disposeUnassembled() throws
+    func startEventReader(owner: Bleng, eventProjection: SessionEventProjection) throws
+    func waitEventReader() async throws
+    func resourceSnapshot() async throws -> [ForeignResourceCount]
+    func executeRecoveryAction(sequence: UInt64, action: ForeignPlatformRecoveryAction) async throws -> ForeignPlatformActionResult
+}
+
+protocol ForeignPlatformOwnerSessionFactory {
+    func requiredZeroResourceNames() -> [String]
+    func create(context: ForeignOwnerContext) throws -> ForeignPlatformOwnerSession
+}
+
+enum ForeignPlatformRecoveryAction {
+    case waitForRadioOn
+    case awaitOldOperationTerminals(remaining: [String])
+    case attemptSameOwnerRecovery(afterCentralRecreation: Bool, target: ForeignRecoveryTarget)
+    case recreateCentral
+    case attemptFreshOwnerRecovery(target: ForeignRecoveryTarget)
+}
+
+struct ForeignPriorityBeginResult {
+    public var priority: SupervisedConnectionPriority?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignReadBeginResult {
+    public var read: SupervisedRead?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignReadValueResult {
+    public var value: Data?
+    public var failure: ForeignOperationFailure?
+}
+
+enum ForeignRecoveryAction {
+    case waitForRadioOn
+    case awaitOldOperationTerminals(remaining: [String])
+    case attemptSameOwnerRecovery(afterCentralRecreation: Bool)
+    case recreateCentral
+    case retireOldOwner
+    case createFreshOwner
+    case attemptFreshOwnerRecovery
+}
+
+struct ForeignRecoveryLink {
+    public var connectionId: String
+    public var gattSessionId: String
+    public var subscriptionId: String
+}
+
+enum ForeignRecoveryMode {
+    case sameOwner
+    case freshOwner
+}
+
+struct ForeignRecoveryObservation {
+    public var sourceContext: ForeignOwnerContext
+    public var signal: ForeignRecoverySignal
+}
+
+enum ForeignRecoveryOutcome {
+    case recovered(context: ForeignOwnerContext, mode: ForeignRecoveryMode, link: ForeignRecoveryLink)
+    case platformTimeout(context: ForeignOwnerContext, reason: String)
+    case manualReconnectRequired(context: ForeignOwnerContext, reason: String)
+}
+
+struct ForeignRecoveryPlan {
+    public var executionContext: ForeignOwnerContext
+    public var sequence: UInt64
+    public var actions: [ForeignRecoveryAction]
+    public var outcome: ForeignRecoveryOutcome?
+}
+
+struct ForeignRecoveryPolicyConfig {
+    public var initialContext: ForeignOwnerContext
+    public var oldLink: ForeignRecoveryLink?
+    public var expectedOldOperationIds: [String]
+    public var allowCentralRecreation: Bool
+    public var allowFreshOwner: Bool
+}
+
+enum ForeignRecoverySignal {
+    case radioLost
+    case oldOperationTerminal(operationId: String)
+    case radioOn
+    case sameOwnerRecovered(link: ForeignRecoveryLink)
+    case sameOwnerRecoveryFailed(reason: String)
+    case centralRecreated
+    case centralRecreationFailed(reason: String)
+    case ownerRetired(resourcesZero: Bool)
+    case freshOwnerCreated
+    case freshOwnerRecovered(link: ForeignRecoveryLink)
+    case freshOwnerRecoveryFailed(reason: String)
+    case platformTimedOut(reason: String)
+    case manualReconnectRequired(reason: String)
+}
+
+struct ForeignRecoveryTarget {
+    public var scanOptions: ScanOptions
+    public var serviceUuid: BluetoothUuid
+    public var characteristicUuid: BluetoothUuid
+    public var notificationMode: NotificationModeRequest
+    public var expectedValue: Data
+}
+
+struct ForeignRefreshBeginResult {
+    public var refresh: SupervisedRefreshGattCache?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignResourceCount {
+    public var name: String
+    public var count: UInt64
+}
+
+struct ForeignRssiBeginResult {
+    public var rssi: SupervisedRssi?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignRssiValueResult {
+    public var rssi: Int16?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignScanAdvertisement {
+    public var peripheral: SupervisedPeripheral
+    public var localName: String?
+    public var advertisedServices: [String]
+    public var manufacturerData: [ManufacturerData]
+    public var serviceData: [ServiceData]
+    public var rssi: Int16?
+    public var connectable: Bool?
+}
+
+struct ForeignScanBeginResult {
+    public var scan: SupervisedScan?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignScanDeliverySnapshot {
+    public var queuedAdvertisements: UInt64
+    public var queuedBytes: UInt64
+    public var queuedStopBytes: UInt64
+    public var pullPending: Bool
+}
+
+struct ForeignScanEnd {
+    public var reason: ForeignScanEndReason
+    public var failure: ForeignOperationFailure?
+}
+
+enum ForeignScanEndReason {
+    case requested
+    case systemSuspended
+    case failed
+    case ownerClosed
+    case overflow
+}
+
+struct ForeignScanEventEnvelope {
+    public var sourceContext: ForeignOwnerContext
+    public var event: ScanEvent
+}
+
+struct ForeignScanObservation {
+    public var advertisement: ForeignScanAdvertisement?
+    public var ended: ForeignScanEnd?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignScanOptions {
+    public var serviceUuids: [String]
+    public var namePrefix: String?
+    public var exactName: String?
+    public var companyId: Double?
+    public var minRssi: Double?
+    public var manufacturerData: ForeignManufacturerDataFilter?
+    public var android: ForeignAndroidScanOptions?
+    public var allowDuplicates: Bool
+}
+
+struct ForeignScanStopResult {
+    public var operation: SupervisedScanStop?
+    public var failure: ForeignOperationFailure?
+}
+
+struct ForeignSupervisorConfig {
+    public var recovery: ForeignRecoveryPolicyConfig
+    public var recoveryTarget: ForeignRecoveryTarget?
+}
+
+struct ForeignWriteBeginResult {
+    public var write: SupervisedWrite?
+    public var failure: ForeignOperationFailure?
+}
+
+enum ScanEvent {
+    case started(commandId: CommandId, scanId: ScanSessionId)
+    case advertisement(advertisement: AdvertisementObservation)
+    case stopped(scanId: ScanSessionId, result: ScanStopResult)
+}
+
+class SessionEventProjection : SessionEventProjectionProtocol
+
+protocol SessionEventProjectionProtocol {
+    func project(event: BleEvent) -> ForeignScanEventEnvelope?
+}
+
+class SupervisedAdapterControl : SupervisedAdapterControlProtocol
+
+protocol SupervisedAdapterControlProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedAdapterObservation : SupervisedAdapterObservationProtocol
+
+protocol SupervisedAdapterObservationProtocol {
+    func detach()
+    func nextSnapshot(timeoutMs: Double) async -> ForeignAdapterObservation
+}
+
+class SupervisedBond : SupervisedBondProtocol
+
+protocol SupervisedBondProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func nextState(timeoutMs: Double) async -> ForeignBondProgress
+    func waitResult(timeoutMs: Double) async -> ForeignBondValueResult
+}
+
+class SupervisedCompanionAssociation : SupervisedCompanionAssociationProtocol
+
+protocol SupervisedCompanionAssociationProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedCompanionPresenceObservation : SupervisedCompanionPresenceObservationProtocol
+
+protocol SupervisedCompanionPresenceObservationProtocol {
+    func detach()
+    func nextEvent(timeoutMs: Double) async -> ForeignCompanionPresenceObservation
+}
+
+class SupervisedConnect : SupervisedConnectProtocol
+
+protocol SupervisedConnectProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignConnectResult
+}
+
+class SupervisedConnection : SupervisedConnectionProtocol
+
+class SupervisedConnectionPriority : SupervisedConnectionPriorityProtocol
+
+protocol SupervisedConnectionPriorityProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+protocol SupervisedConnectionProtocol {
+    func awaitEnd(timeoutMs: Double) async -> ForeignConnectionEndObservation
+    func beginDisconnect() -> ForeignDisconnectBeginResult
+    func isConnected() -> Bool
+    func localName() -> String?
+    func sameConnection(other: SupervisedConnection) -> Bool
+    func beginCreateBond(pin: String?) -> ForeignBondBeginResult
+    func beginDiscoverGatt() -> ForeignGattDiscoveryBeginResult
+    func beginQueryMtu() -> ForeignMtuBeginResult
+    func beginReadRssi() -> ForeignRssiBeginResult
+    func beginRefreshGattCache() -> ForeignRefreshBeginResult
+    func beginRemoveBond() -> ForeignBondBeginResult
+    func beginRequestMtu(mtu: UInt16) -> ForeignMtuBeginResult
+    func beginSetConnectionPriority(priority: ConnectionPriority) -> ForeignPriorityBeginResult
+}
+
+class SupervisedDescriptorRead : SupervisedDescriptorReadProtocol
+
+protocol SupervisedDescriptorReadProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignDescriptorReadValueResult
+}
+
+class SupervisedDescriptorWrite : SupervisedDescriptorWriteProtocol
+
+protocol SupervisedDescriptorWriteProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedDeviceQuery : SupervisedDeviceQueryProtocol
+
+protocol SupervisedDeviceQueryProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignDeviceListResult
+}
+
+class SupervisedDisconnect : SupervisedDisconnectProtocol
+
+protocol SupervisedDisconnectProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedGattCharacteristic : SupervisedGattCharacteristicProtocol
+
+protocol SupervisedGattCharacteristicProtocol {
+    func beginRead() -> ForeignReadBeginResult
+    func beginWrite(value: Data, writeType: WriteType) -> ForeignWriteBeginResult
+    func descriptors() -> [SupervisedGattDescriptor]
+    func properties() -> CharacteristicProperties
+    func uuid() -> BluetoothUuid
+    func beginEnableNotifications(mode: NotificationModeRequest) -> ForeignNotificationSubscribeBeginResult
+}
+
+class SupervisedGattDescriptor : SupervisedGattDescriptorProtocol
+
+protocol SupervisedGattDescriptorProtocol {
+    func beginRead() -> ForeignDescriptorReadBeginResult
+    func beginWrite(value: Data) -> ForeignDescriptorWriteBeginResult
+    func uuid() -> BluetoothUuid
+}
+
+class SupervisedGattDiscovery : SupervisedGattDiscoveryProtocol
+
+protocol SupervisedGattDiscoveryProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignGattDiscoveryResult
+}
+
+class SupervisedGattService : SupervisedGattServiceProtocol
+
+protocol SupervisedGattServiceProtocol {
+    func characteristics() -> [SupervisedGattCharacteristic]
+    func primary() -> Bool?
+    func uuid() -> BluetoothUuid
+}
+
+class SupervisedGattSession : SupervisedGattSessionProtocol
+
+protocol SupervisedGattSessionProtocol {
+    func sameSession(other: SupervisedGattSession) -> Bool
+    func services() -> [SupervisedGattService]
+}
+
+class SupervisedMtu : SupervisedMtuProtocol
+
+protocol SupervisedMtuProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignMtuValueResult
+}
+
+class SupervisedNotificationDisable : SupervisedNotificationDisableProtocol
+
+protocol SupervisedNotificationDisableProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedNotifications : SupervisedNotificationsProtocol
+
+protocol SupervisedNotificationsProtocol {
+    func beginDisableView() -> ForeignNotificationDisableResult
+    func deliverySnapshot() -> ForeignNotificationDeliverySnapshot
+    func detach()
+    func nextObservation(timeoutMs: Double) async -> ForeignNotificationObservation
+    func waitResult(timeoutMs: Double) async -> ForeignNotificationSubscribeResult
+}
+
+class SupervisedPeripheral : SupervisedPeripheralProtocol
+
+protocol SupervisedPeripheralProtocol {
+    func beginConnect(autoConnect: Bool) -> ForeignConnectBeginResult
+    func key() -> String
+    func localName() -> String?
+    func samePeripheral(other: SupervisedPeripheral) -> Bool
+}
+
+class SupervisedRead : SupervisedReadProtocol
+
+protocol SupervisedReadProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignReadValueResult
+}
+
+class SupervisedRefreshGattCache : SupervisedRefreshGattCacheProtocol
+
+protocol SupervisedRefreshGattCacheProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedRssi : SupervisedRssiProtocol
+
+protocol SupervisedRssiProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignRssiValueResult
+}
+
+class SupervisedScan : SupervisedScanProtocol
+
+protocol SupervisedScanProtocol {
+    func detach()
+    func isScanning() -> Bool
+    func observationSnapshot() -> ForeignScanDeliverySnapshot
+    func beginStopView() -> ForeignScanStopResult
+    func cancelStartResult() async -> ForeignOperationCommandResult
+    func nextObservation(timeoutMs: Double) async -> ForeignScanObservation
+    func startResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedScanStop : SupervisedScanStopProtocol
+
+protocol SupervisedScanStopProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class SupervisedWrite : SupervisedWriteProtocol
+
+protocol SupervisedWriteProtocol {
+    func cancelResult() async -> ForeignOperationCommandResult
+    func waitResult(timeoutMs: Double) async -> ForeignOperationCommandResult
+}
+
+class Supervisor : SupervisorProtocol
+
+enum SupervisorFfiError {
+    case InvalidContext(detail: String)
+    case InvalidConfiguration(detail: String)
+    case NoActiveContext
+    case Busy
+    case Timeout(detail: String)
+    case Platform(detail: String)
+}
+
+enum SupervisorOperationError {
+    case NoActiveSession
+    case StaleContext
+    case RecoveryNotReady
+    case SupervisorBusy
+    case SupervisorUnavailable
+    case InvalidContext(detail: String)
+    case Bleng(error: BlengError)
+}
+
+protocol SupervisorProtocol {
+    func beginObserveAdapterView(context: ForeignOwnerContext) -> ForeignAdapterObservationBeginResult
+    func beginObserveCompanionPresenceView(context: ForeignOwnerContext) -> ForeignCompanionPresenceBeginResult
+    func activeContext() throws -> ForeignOwnerContext?
+    func activeOwnerStart() throws -> ForeignOwnerStart?
+    func configureOldOperationBarrier(oldLink: ForeignRecoveryLink?, expectedOldOperationIds: [String]) throws
+    func createFreshOwner(context: ForeignOwnerContext) async throws -> ForeignRecoveryPlan
+    func drivePlatformActionsUntilBoundary() async throws -> ForeignRecoveryPlan
+    func executePlatformAction() async throws -> ForeignRecoveryPlan
+    func isActive() throws -> Bool
+    func lastRetiredResources() throws -> [ForeignResourceCount]?
+    func observe(observation: ForeignRecoveryObservation) throws -> ForeignRecoveryPlan
+    func observeExternalSignal(signal: ForeignExternalRecoverySignal) throws -> ForeignRecoveryPlan
+    func observeSignal(signal: ForeignRecoverySignal) throws -> ForeignRecoveryPlan
+    func retireForRecovery() async throws -> ForeignRecoveryPlan
+    func shutdown() async throws -> [ForeignResourceCount]
+    func shutdownView() async -> ForeignOwnerClose
+    func start() async throws -> ForeignOwnerStart
+    func beginAssociateCompanion(context: ForeignOwnerContext, serviceUuids: [String], displayName: String?, deviceProfile: String?, notifyOnDeviceNearby: Bool) throws -> SupervisedCompanionAssociation
+    func beginAssociateCompanionView(context: ForeignOwnerContext, serviceUuids: [String], displayName: String?, deviceProfile: String?, notifyOnDeviceNearby: Bool) -> ForeignCompanionAssociationBeginResult
+    func beginConnect(context: ForeignOwnerContext, peripheral: PeripheralId) throws -> ConnectOperation
+    func beginCreateBond(context: ForeignOwnerContext, connection: ConnectionId, pin: String?) throws -> BondOperation
+    func beginDisableNotifications(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId) throws -> DisableNotificationsOperation
+    func beginDisconnect(context: ForeignOwnerContext, connection: ConnectionId) throws -> DisconnectOperation
+    func beginDiscoverGatt(context: ForeignOwnerContext, connection: ConnectionId) throws -> DiscoverGattOperation
+    func beginEnableNotifications(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest) throws -> EnableNotificationsOperation
+    func beginQueryDevicesView(context: ForeignOwnerContext, kind: DeviceQueryKind, serviceUuids: [String]) -> ForeignDeviceQueryBeginResult
+    func beginQueryMtu(context: ForeignOwnerContext, connection: ConnectionId) throws -> MtuOperation
+    func beginReadCharacteristic(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId) throws -> ReadOperation
+    func beginReadDescriptor(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId) throws -> ReadDescriptorOperation
+    func beginReadRssi(context: ForeignOwnerContext, connection: ConnectionId) throws -> ReadRssiOperation
+    func beginRefreshGattCacheView(context: ForeignOwnerContext, connection: ConnectionId) -> ForeignRefreshBeginResult
+    func beginRemoveBond(context: ForeignOwnerContext, connection: ConnectionId) throws -> BondOperation
+    func beginRequestMtu(context: ForeignOwnerContext, connection: ConnectionId, mtu: UInt16) throws -> MtuOperation
+    func beginSetAdapterEnabled(context: ForeignOwnerContext, enabled: Bool) throws -> SupervisedAdapterControl
+    func beginSetAdapterEnabledView(context: ForeignOwnerContext, enabled: Bool) -> ForeignAdapterControlBeginResult
+    func beginSetConnectionPriority(context: ForeignOwnerContext, connection: ConnectionId, priority: ConnectionPriority) throws -> SetConnectionPriorityOperation
+    func beginStartScan(context: ForeignOwnerContext, options: ScanOptions) throws -> StartScanOperation
+    func beginStopScan(context: ForeignOwnerContext, session: ScanSessionId) throws -> StopScanOperation
+    func beginWriteCharacteristic(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Data, writeType: WriteType) throws -> WriteOperation
+    func beginWriteDescriptor(context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, value: Data) throws -> WriteDescriptorOperation
+    func adoptPeripheral(context: ForeignOwnerContext, key: String) -> ForeignPeripheralAdoptResult
+    func beginScanView(context: ForeignOwnerContext, options: ForeignScanOptions) -> ForeignScanBeginResult
+}

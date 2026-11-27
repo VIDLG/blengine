@@ -1,0 +1,762 @@
+# Reviewed BLeng supervisor FFI API shape; ABI remains unfrozen.
+
+pub struct ForeignAdapterControlBeginResult {
+    pub control: Option<Arc<SupervisedAdapterControl>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignAdapterEnd {
+    pub reason: ForeignAdapterEndReason,
+}
+
+pub enum ForeignAdapterEndReason {
+    OwnerClosed,
+    Detached,
+}
+
+pub struct ForeignAdapterObservation {
+    pub snapshot: Option<AdapterSnapshot>,
+    pub ended: Option<ForeignAdapterEnd>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignAdapterObservationBeginResult {
+    pub adapter_observation: Option<Arc<SupervisedAdapterObservation>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignAndroidScanOptions {
+    pub scan_mode: Option<AndroidScanMode>,
+    pub phy: Option<AndroidScanPhy>,
+    pub report_delay_ms: Option<f64>,
+    pub legacy: Option<bool>,
+}
+
+pub struct ForeignBondBeginResult {
+    pub bond: Option<Arc<SupervisedBond>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignBondProgress {
+    pub state: Option<BondState>,
+    pub ended: bool,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignBondValueResult {
+    pub state: Option<BondState>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignCompanionAssociationBeginResult {
+    pub association: Option<Arc<SupervisedCompanionAssociation>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignCompanionPresence {
+    pub present: bool,
+    pub key: String,
+    pub local_name: Option<String>,
+}
+
+pub struct ForeignCompanionPresenceBeginResult {
+    pub presence_observation: Option<Arc<SupervisedCompanionPresenceObservation>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignCompanionPresenceEnd {
+    pub reason: ForeignCompanionPresenceEndReason,
+}
+
+pub enum ForeignCompanionPresenceEndReason {
+    OwnerClosed,
+    Detached,
+}
+
+pub struct ForeignCompanionPresenceObservation {
+    pub presence: Option<ForeignCompanionPresence>,
+    pub ended: Option<ForeignCompanionPresenceEnd>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignConnectBeginResult {
+    pub connect: Option<Arc<SupervisedConnect>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignConnectResult {
+    pub connection: Option<Arc<SupervisedConnection>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignConnectionEnd {
+    pub by: ForeignConnectionEndBy,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub enum ForeignConnectionEndBy {
+    Operator,
+    Unrequested,
+    Owner,
+}
+
+pub struct ForeignConnectionEndObservation {
+    pub ended: Option<ForeignConnectionEnd>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignDescriptorReadBeginResult {
+    pub read: Option<Arc<SupervisedDescriptorRead>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignDescriptorReadValueResult {
+    pub value: Option<Vec<u8>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignDescriptorWriteBeginResult {
+    pub write: Option<Arc<SupervisedDescriptorWrite>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignDeviceListResult {
+    pub devices: Option<Vec<ForeignDeviceRecord>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignDeviceQueryBeginResult {
+    pub query: Option<Arc<SupervisedDeviceQuery>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignDeviceRecord {
+    pub key: String,
+    pub local_name: Option<String>,
+    pub connected: bool,
+    pub bonded: bool,
+}
+
+pub struct ForeignDisconnectBeginResult {
+    pub disconnect: Option<Arc<SupervisedDisconnect>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub enum ForeignExternalRecoverySignal {
+    RadioLost,
+    ManualReconnectRequired,
+}
+
+pub struct ForeignGattDiscoveryBeginResult {
+    pub discovery: Option<Arc<SupervisedGattDiscovery>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignGattDiscoveryResult {
+    pub session: Option<Arc<SupervisedGattSession>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignManufacturerDataFilter {
+    pub company_id: f64,
+    pub data: Vec<u8>,
+    pub mask: Option<Vec<u8>>,
+}
+
+pub struct ForeignMtuBeginResult {
+    pub mtu: Option<Arc<SupervisedMtu>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignMtuValueResult {
+    pub info: Option<MtuInfo>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignNotificationDeliverySnapshot {
+    pub queued_values: u64,
+    pub queued_bytes: u64,
+    pub bound: bool,
+    pub pull_pending: bool,
+}
+
+pub struct ForeignNotificationDisableResult {
+    pub operation: Option<Arc<SupervisedNotificationDisable>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignNotificationEnd {
+    pub reason: ForeignNotificationEndReason,
+}
+
+pub enum ForeignNotificationEndReason {
+    Disabled,
+    ConnectionClosed,
+    OwnerClosed,
+    Overflow,
+}
+
+pub struct ForeignNotificationObservation {
+    pub value: Option<Vec<u8>>,
+    pub ended: Option<ForeignNotificationEnd>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignNotificationSubscribeBeginResult {
+    pub notifications: Option<Arc<SupervisedNotifications>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignNotificationSubscribeResult {
+    pub actual_mode: Option<NotificationMode>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignOperationCommandResult {
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignOperationFailure {
+    pub domain: ForeignOperationFailureDomain,
+    pub code: String,
+    pub message: String,
+    pub platform_details: Option<PlatformErrorDetails>,
+}
+
+pub enum ForeignOperationFailureDomain {
+    Input,
+    Submission,
+    Operation,
+    Observation,
+    Delivery,
+    Lifecycle,
+}
+
+pub struct ForeignOwnerClose {
+    pub owner_closed: bool,
+    pub failure: Option<ForeignOwnerCloseFailure>,
+}
+
+pub struct ForeignOwnerCloseFailure {
+    pub code: String,
+    pub message: String,
+}
+
+pub struct ForeignOwnerContext {
+    pub owner_id: String,
+    pub backend_id: String,
+    pub owner_generation: u64,
+    pub recovery_attempt: u64,
+}
+
+pub struct ForeignOwnerStart {
+    pub context: ForeignOwnerContext,
+    pub initialization_command_id: u64,
+    pub adapter_snapshot: AdapterSnapshot,
+}
+
+pub struct ForeignPeripheralAdoptResult {
+    pub peripheral: Option<Arc<SupervisedPeripheral>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignPlatformActionResult {
+    pub sequence: u64,
+    pub signal: ForeignRecoverySignal,
+}
+
+pub trait ForeignPlatformOwnerSession: Send + Sync {
+    fn context(&self) -> ForeignOwnerContext;
+    fn backend(&self) -> Arc<dyn BleBackend>;
+    fn dispose_unassembled(&self) -> Result<(), SupervisorFfiError>;
+    fn start_event_reader(&self, owner: Arc<Bleng>, event_projection: Arc<SessionEventProjection>,) -> Result<(), SupervisorFfiError>;
+}
+
+pub trait ForeignPlatformOwnerSessionFactory: Send + Sync {
+    fn required_zero_resource_names(&self) -> Vec<String>;
+    fn create(&self, context: ForeignOwnerContext,) -> Result<Arc<dyn ForeignPlatformOwnerSession>, SupervisorFfiError>;
+}
+
+pub struct ForeignPlatformOwnerSessionFactoryAdapter;
+
+pub enum ForeignPlatformRecoveryAction {
+    WaitForRadioOn,
+    AwaitOldOperationTerminals {remaining: Vec<String>,},
+    AttemptSameOwnerRecovery {after_central_recreation: bool, target: ForeignRecoveryTarget,},
+    RecreateCentral,
+    AttemptFreshOwnerRecovery {target: ForeignRecoveryTarget,},
+}
+
+pub struct ForeignPriorityBeginResult {
+    pub priority: Option<Arc<SupervisedConnectionPriority>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignReadBeginResult {
+    pub read: Option<Arc<SupervisedRead>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignReadValueResult {
+    pub value: Option<Vec<u8>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub enum ForeignRecoveryAction {
+    WaitForRadioOn,
+    AwaitOldOperationTerminals {remaining: Vec<String>},
+    AttemptSameOwnerRecovery {after_central_recreation: bool},
+    RecreateCentral,
+    RetireOldOwner,
+    CreateFreshOwner,
+    AttemptFreshOwnerRecovery,
+}
+
+pub struct ForeignRecoveryLink {
+    pub connection_id: String,
+    pub gatt_session_id: String,
+    pub subscription_id: String,
+}
+
+pub enum ForeignRecoveryMode {
+    SameOwner,
+    FreshOwner,
+}
+
+pub struct ForeignRecoveryObservation {
+    pub source_context: ForeignOwnerContext,
+    pub signal: ForeignRecoverySignal,
+}
+
+pub enum ForeignRecoveryOutcome {
+    Recovered {context: ForeignOwnerContext, mode: ForeignRecoveryMode, link: ForeignRecoveryLink,},
+    PlatformTimeout {context: ForeignOwnerContext, reason: String,},
+    ManualReconnectRequired {context: ForeignOwnerContext, reason: String,},
+}
+
+pub struct ForeignRecoveryPlan {
+    pub execution_context: ForeignOwnerContext,
+    pub sequence: u64,
+    pub actions: Vec<ForeignRecoveryAction>,
+    pub outcome: Option<ForeignRecoveryOutcome>,
+}
+
+pub struct ForeignRecoveryPolicyConfig {
+    pub initial_context: ForeignOwnerContext,
+    pub old_link: Option<ForeignRecoveryLink>,
+    pub expected_old_operation_ids: Vec<String>,
+    pub allow_central_recreation: bool,
+    pub allow_fresh_owner: bool,
+}
+
+pub enum ForeignRecoverySignal {
+    RadioLost,
+    OldOperationTerminal {operation_id: String},
+    RadioOn,
+    SameOwnerRecovered {link: ForeignRecoveryLink},
+    SameOwnerRecoveryFailed {reason: String},
+    CentralRecreated,
+    CentralRecreationFailed {reason: String},
+    OwnerRetired {resources_zero: bool},
+    FreshOwnerCreated,
+    FreshOwnerRecovered {link: ForeignRecoveryLink},
+    FreshOwnerRecoveryFailed {reason: String},
+    PlatformTimedOut {reason: String},
+    ManualReconnectRequired {reason: String},
+}
+
+pub struct ForeignRecoveryTarget {
+    pub scan_options: ScanOptions,
+    pub service_uuid: BluetoothUuid,
+    pub characteristic_uuid: BluetoothUuid,
+    pub notification_mode: NotificationModeRequest,
+    pub expected_value: Vec<u8>,
+}
+
+pub struct ForeignRefreshBeginResult {
+    pub refresh: Option<Arc<SupervisedRefreshGattCache>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignResourceCount {
+    pub name: String,
+    pub count: u64,
+}
+
+pub struct ForeignRssiBeginResult {
+    pub rssi: Option<Arc<SupervisedRssi>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignRssiValueResult {
+    pub rssi: Option<i16>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignScanAdvertisement {
+    pub peripheral: Arc<SupervisedPeripheral>,
+    pub local_name: Option<String>,
+    pub advertised_services: Vec<String>,
+    pub manufacturer_data: Vec<ManufacturerData>,
+    pub service_data: Vec<ServiceData>,
+    pub rssi: Option<i16>,
+    pub connectable: Option<bool>,
+}
+
+pub struct ForeignScanBeginResult {
+    pub scan: Option<Arc<SupervisedScan>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignScanDeliverySnapshot {
+    pub queued_advertisements: u64,
+    pub queued_bytes: u64,
+    pub queued_stop_bytes: u64,
+    pub pull_pending: bool,
+}
+
+pub struct ForeignScanEnd {
+    pub reason: ForeignScanEndReason,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub enum ForeignScanEndReason {
+    Requested,
+    SystemSuspended,
+    Failed,
+    OwnerClosed,
+    Overflow,
+}
+
+pub struct ForeignScanEventEnvelope {
+    pub source_context: ForeignOwnerContext,
+    pub event: ScanEvent,
+}
+
+pub struct ForeignScanObservation {
+    pub advertisement: Option<ForeignScanAdvertisement>,
+    pub ended: Option<ForeignScanEnd>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignScanOptions {
+    pub service_uuids: Vec<String>,
+    pub name_prefix: Option<String>,
+    pub exact_name: Option<String>,
+    pub company_id: Option<f64>,
+    pub min_rssi: Option<f64>,
+    pub manufacturer_data: Option<ForeignManufacturerDataFilter>,
+    pub android: Option<ForeignAndroidScanOptions>,
+    pub allow_duplicates: bool,
+}
+
+pub struct ForeignScanStopResult {
+    pub operation: Option<Arc<SupervisedScanStop>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub struct ForeignSupervisorConfig {
+    pub recovery: ForeignRecoveryPolicyConfig,
+    pub recovery_target: Option<ForeignRecoveryTarget>,
+}
+
+pub struct ForeignWriteBeginResult {
+    pub write: Option<Arc<SupervisedWrite>>,
+    pub failure: Option<ForeignOperationFailure>,
+}
+
+pub enum ScanEvent {
+    Started {command_id: CommandId, scan_id: ScanSessionId,},
+    Advertisement {advertisement: AdvertisementObservation,},
+    Stopped {scan_id: ScanSessionId, result: ScanStopResult,},
+}
+
+pub struct SessionEventProjection;
+
+impl SessionEventProjection {
+    pub fn project(&self, event: BleEvent) -> Option<ForeignScanEventEnvelope>;
+}
+
+pub struct SupervisedAdapterControl;
+
+impl SupervisedAdapterControl {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedAdapterObservation;
+
+impl SupervisedAdapterObservation {
+    pub fn detach(&self);
+    pub async fn next_snapshot(&self, timeout_ms: f64) -> ForeignAdapterObservation;
+}
+
+pub struct SupervisedBond;
+
+impl SupervisedBond {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignBondValueResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+    pub async fn next_state(&self, timeout_ms: f64) -> ForeignBondProgress;
+}
+
+pub struct SupervisedCompanionAssociation;
+
+impl SupervisedCompanionAssociation {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedCompanionPresenceObservation;
+
+impl SupervisedCompanionPresenceObservation {
+    pub fn detach(&self);
+    pub async fn next_event(&self, timeout_ms: f64) -> ForeignCompanionPresenceObservation;
+}
+
+pub struct SupervisedConnect;
+
+impl SupervisedConnect {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignConnectResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedConnection;
+
+impl SupervisedConnection {
+    pub fn same_connection(&self, other: Arc<Self>) -> bool;
+    pub fn is_connected(&self) -> bool;
+    pub fn local_name(&self) -> Option<String>;
+    pub fn begin_disconnect(&self) -> ForeignDisconnectBeginResult;
+    pub async fn await_end(&self, timeout_ms: f64) -> ForeignConnectionEndObservation;
+    pub fn begin_discover_gatt(&self) -> ForeignGattDiscoveryBeginResult;
+    pub fn begin_read_rssi(&self) -> ForeignRssiBeginResult;
+    pub fn begin_request_mtu(&self, mtu: u16) -> ForeignMtuBeginResult;
+    pub fn begin_query_mtu(&self) -> ForeignMtuBeginResult;
+    pub fn begin_set_connection_priority(&self, priority: ConnectionPriority,) -> ForeignPriorityBeginResult;
+    pub fn begin_create_bond(&self, pin: Option<String>) -> ForeignBondBeginResult;
+    pub fn begin_remove_bond(&self) -> ForeignBondBeginResult;
+    pub fn begin_refresh_gatt_cache(&self) -> ForeignRefreshBeginResult;
+}
+
+pub struct SupervisedConnectionPriority;
+
+impl SupervisedConnectionPriority {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedDescriptorRead;
+
+impl SupervisedDescriptorRead {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignDescriptorReadValueResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedDescriptorWrite;
+
+impl SupervisedDescriptorWrite {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedDeviceQuery;
+
+impl SupervisedDeviceQuery {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignDeviceListResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedDisconnect;
+
+impl SupervisedDisconnect {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedGattCharacteristic;
+
+impl SupervisedGattCharacteristic {
+    pub fn uuid(&self) -> BluetoothUuid;
+    pub fn properties(&self) -> CharacteristicProperties;
+    pub fn descriptors(&self) -> Vec<Arc<SupervisedGattDescriptor>>;
+    pub fn begin_read(&self) -> ForeignReadBeginResult;
+    pub fn begin_write(&self, value: Vec<u8>, write_type: WriteType) -> ForeignWriteBeginResult;
+    pub fn begin_enable_notifications(&self, mode: NotificationModeRequest,) -> ForeignNotificationSubscribeBeginResult;
+}
+
+pub struct SupervisedGattDescriptor;
+
+impl SupervisedGattDescriptor {
+    pub fn uuid(&self) -> BluetoothUuid;
+    pub fn begin_read(&self) -> ForeignDescriptorReadBeginResult;
+    pub fn begin_write(&self, value: Vec<u8>) -> ForeignDescriptorWriteBeginResult;
+}
+
+pub struct SupervisedGattDiscovery;
+
+impl SupervisedGattDiscovery {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignGattDiscoveryResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedGattService;
+
+impl SupervisedGattService {
+    pub fn uuid(&self) -> BluetoothUuid;
+    pub fn primary(&self) -> Option<bool>;
+    pub fn characteristics(&self) -> Vec<Arc<SupervisedGattCharacteristic>>;
+}
+
+pub struct SupervisedGattSession;
+
+impl SupervisedGattSession {
+    pub fn same_session(&self, other: Arc<Self>) -> bool;
+    pub fn services(&self) -> Vec<Arc<SupervisedGattService>>;
+}
+
+pub struct SupervisedMtu;
+
+impl SupervisedMtu {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignMtuValueResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedNotificationDisable;
+
+impl SupervisedNotificationDisable {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedNotifications;
+
+impl SupervisedNotifications {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignNotificationSubscribeResult;
+    pub async fn next_observation(&self, timeout_ms: f64) -> ForeignNotificationObservation;
+    pub fn begin_disable_view(&self) -> ForeignNotificationDisableResult;
+    pub fn detach(&self);
+    pub fn delivery_snapshot(&self) -> ForeignNotificationDeliverySnapshot;
+}
+
+pub struct SupervisedPeripheral;
+
+impl SupervisedPeripheral {
+    pub fn begin_connect(&self, auto_connect: bool) -> ForeignConnectBeginResult;
+    pub fn same_peripheral(&self, other: Arc<Self>) -> bool;
+    pub fn key(&self) -> String;
+    pub fn local_name(&self) -> Option<String>;
+}
+
+pub struct SupervisedRead;
+
+impl SupervisedRead {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignReadValueResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedRefreshGattCache;
+
+impl SupervisedRefreshGattCache {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedRssi;
+
+impl SupervisedRssi {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignRssiValueResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedScan;
+
+impl SupervisedScan {
+    pub fn detach(&self);
+    pub fn is_scanning(&self) -> bool;
+    pub fn observation_snapshot(&self) -> ForeignScanDeliverySnapshot;
+    pub async fn start_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_start_result(&self) -> ForeignOperationCommandResult;
+    pub async fn next_observation(&self, timeout_ms: f64) -> ForeignScanObservation;
+    pub fn begin_stop_view(&self) -> ForeignScanStopResult;
+}
+
+pub struct SupervisedScanStop;
+
+impl SupervisedScanStop {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct SupervisedWrite;
+
+impl SupervisedWrite {
+    pub async fn wait_result(&self, timeout_ms: f64) -> ForeignOperationCommandResult;
+    pub async fn cancel_result(&self) -> ForeignOperationCommandResult;
+}
+
+pub struct Supervisor;
+
+impl Supervisor {
+    pub fn begin_observe_adapter_view(self: Arc<Self>, context: ForeignOwnerContext,) -> ForeignAdapterObservationBeginResult;
+    pub fn begin_observe_companion_presence_view(self: Arc<Self>, context: ForeignOwnerContext,) -> ForeignCompanionPresenceBeginResult;
+    pub fn new(factory: Arc<dyn ForeignPlatformOwnerSessionFactory>, config: ForeignSupervisorConfig,) -> Result<Arc<Self>, SupervisorFfiError>;
+    pub fn is_active(&self) -> Result<bool, SupervisorFfiError>;
+    pub fn active_context(&self) -> Result<Option<ForeignOwnerContext>, SupervisorFfiError>;
+    pub fn active_owner_start(&self) -> Result<Option<ForeignOwnerStart>, SupervisorFfiError>;
+    pub async fn start(&self) -> Result<ForeignOwnerStart, SupervisorFfiError>;
+    pub fn last_retired_resources(&self,) -> Result<Option<Vec<ForeignResourceCount>>, SupervisorFfiError>;
+    pub fn configure_old_operation_barrier(&self, old_link: Option<ForeignRecoveryLink>, expected_old_operation_ids: Vec<String>,) -> Result<(), SupervisorFfiError>;
+    pub async fn execute_platform_action(&self) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn drive_platform_actions_until_boundary(&self,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn retire_for_recovery(&self) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn create_fresh_owner(&self, context: ForeignOwnerContext,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub async fn shutdown(&self) -> Result<Vec<ForeignResourceCount>, SupervisorFfiError>;
+    pub async fn shutdown_view(&self) -> ForeignOwnerClose;
+    pub fn observe(&self, observation: ForeignRecoveryObservation,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub fn observe_external_signal(&self, signal: ForeignExternalRecoverySignal,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub fn observe_signal(&self, signal: ForeignRecoverySignal,) -> Result<ForeignRecoveryPlan, SupervisorFfiError>;
+    pub fn begin_start_scan(&self, context: ForeignOwnerContext, options: ScanOptions,) -> Result<Arc<StartScanOperation>, SupervisorOperationError>;
+    pub fn begin_stop_scan(&self, context: ForeignOwnerContext, session: ScanSessionId,) -> Result<Arc<StopScanOperation>, SupervisorOperationError>;
+    pub fn begin_connect(&self, context: ForeignOwnerContext, peripheral: PeripheralId,) -> Result<Arc<ConnectOperation>, SupervisorOperationError>;
+    pub fn begin_disconnect(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<DisconnectOperation>, SupervisorOperationError>;
+    pub fn begin_discover_gatt(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<DiscoverGattOperation>, SupervisorOperationError>;
+    pub fn begin_read_characteristic(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId,) -> Result<Arc<ReadOperation>, SupervisorOperationError>;
+    pub fn begin_write_characteristic(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Vec<u8>, write_type: WriteType,) -> Result<Arc<WriteOperation>, SupervisorOperationError>;
+    pub fn begin_enable_notifications(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest,) -> Result<Arc<EnableNotificationsOperation>, SupervisorOperationError>;
+    pub fn begin_disable_notifications(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId,) -> Result<Arc<DisableNotificationsOperation>, SupervisorOperationError>;
+    pub fn begin_read_rssi(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<ReadRssiOperation>, SupervisorOperationError>;
+    pub fn begin_request_mtu(&self, context: ForeignOwnerContext, connection: ConnectionId, mtu: u16,) -> Result<Arc<MtuOperation>, SupervisorOperationError>;
+    pub fn begin_query_mtu(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<MtuOperation>, SupervisorOperationError>;
+    pub fn begin_read_descriptor(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId,) -> Result<Arc<ReadDescriptorOperation>, SupervisorOperationError>;
+    pub fn begin_write_descriptor(&self, context: ForeignOwnerContext, connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, value: Vec<u8>,) -> Result<Arc<WriteDescriptorOperation>, SupervisorOperationError>;
+    pub fn begin_set_connection_priority(&self, context: ForeignOwnerContext, connection: ConnectionId, priority: ConnectionPriority,) -> Result<Arc<SetConnectionPriorityOperation>, SupervisorOperationError>;
+    pub fn begin_set_adapter_enabled(&self, context: ForeignOwnerContext, enabled: bool,) -> Result<Arc<SupervisedAdapterControl>, SupervisorOperationError>;
+    pub fn begin_set_adapter_enabled_view(&self, context: ForeignOwnerContext, enabled: bool,) -> ForeignAdapterControlBeginResult;
+    pub fn begin_associate_companion(&self, context: ForeignOwnerContext, service_uuids: Vec<String>, display_name: Option<String>, device_profile: Option<String>, notify_on_device_nearby: bool,) -> Result<Arc<SupervisedCompanionAssociation>, SupervisorOperationError>;
+    pub fn begin_associate_companion_view(&self, context: ForeignOwnerContext, service_uuids: Vec<String>, display_name: Option<String>, device_profile: Option<String>, notify_on_device_nearby: bool,) -> ForeignCompanionAssociationBeginResult;
+    pub fn begin_query_devices_view(&self, context: ForeignOwnerContext, kind: DeviceQueryKind, service_uuids: Vec<String>,) -> ForeignDeviceQueryBeginResult;
+    pub fn begin_refresh_gatt_cache_view(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> ForeignRefreshBeginResult;
+    pub fn begin_create_bond(&self, context: ForeignOwnerContext, connection: ConnectionId, pin: Option<String>,) -> Result<Arc<BondOperation>, SupervisorOperationError>;
+    pub fn begin_remove_bond(&self, context: ForeignOwnerContext, connection: ConnectionId,) -> Result<Arc<BondOperation>, SupervisorOperationError>;
+    pub fn adopt_peripheral(self: Arc<Self>, context: ForeignOwnerContext, key: String,) -> ForeignPeripheralAdoptResult;
+    pub fn begin_scan_view(self: Arc<Self>, context: ForeignOwnerContext, options: ForeignScanOptions,) -> ForeignScanBeginResult;
+}
+
+pub enum SupervisorFfiError {
+    InvalidContext {detail: String},
+    InvalidConfiguration {detail: String},
+    NoActiveContext,
+    Busy,
+    Timeout {detail: String},
+    Platform {detail: String},
+}
+
+pub enum SupervisorOperationError {
+    NoActiveSession,
+    StaleContext,
+    RecoveryNotReady,
+    SupervisorBusy,
+    SupervisorUnavailable,
+    InvalidContext {detail: String},
+    Bleng {error: BlengError,},
+}

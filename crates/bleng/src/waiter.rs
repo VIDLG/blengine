@@ -15,8 +15,9 @@ use std::{
 };
 
 use blehub::{
-    AdapterSnapshot, BleEventError, CommandDispatchError, CommandId, ConnectionId,
-    GattCharacteristicId, GattDatabase, GattSessionId, NotificationMode, SubscriptionId,
+    AdapterSnapshot, BleEventError, BondState, CommandDispatchError, CommandId, ConnectionId,
+    GattCharacteristicId, GattDatabase, GattDescriptorId, GattSessionId, MtuInfo, NotificationMode,
+    SubscriptionId,
 };
 use tokio::sync::oneshot;
 
@@ -28,19 +29,44 @@ const MAX_PENDING: usize = 64;
 /// backend. Reservation state owns callback correlation; this value tells the
 /// registry which connection-bound waiters must be failed after a passive loss
 /// and documents the type of result the actor will send.
+///
+/// Naming: an expectation names the **operation**, while [`WaiterSuccess`] names the
+/// **answer**. They differ where the honest answer is weaker than the request — an
+/// adapter request completes, it does not prove the radio changed — and match
+/// everywhere else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WaiterExpectation {
     #[cfg(test)]
     TerminalOnly,
     Initialized,
+    AdapterControl,
+    DevicesListed,
+    CompanionAssociation,
     ScanStarted(blehub::ScanSessionId),
     ScanStopped(blehub::ScanSessionId),
     Connected(ConnectionId),
     Disconnected(ConnectionId),
     RssiRead(ConnectionId),
+    MtuRead(ConnectionId),
+    ConnectionPriority(ConnectionId),
+    BondState(ConnectionId),
+    BondRemoval(ConnectionId),
+    GattCacheRefreshed(ConnectionId),
     GattDiscovered(ConnectionId, GattSessionId),
     CharacteristicRead(ConnectionId, GattSessionId, GattCharacteristicId),
     CharacteristicWritten(ConnectionId, GattSessionId, GattCharacteristicId),
+    DescriptorRead(
+        ConnectionId,
+        GattSessionId,
+        GattCharacteristicId,
+        GattDescriptorId,
+    ),
+    DescriptorWritten(
+        ConnectionId,
+        GattSessionId,
+        GattCharacteristicId,
+        GattDescriptorId,
+    ),
     NotificationsEnabled(
         ConnectionId,
         GattSessionId,
@@ -63,14 +89,24 @@ impl WaiterExpectation {
         match self {
             Self::Connected(connection_id)
             | Self::RssiRead(connection_id)
+            | Self::MtuRead(connection_id)
+            | Self::ConnectionPriority(connection_id)
+            | Self::BondState(connection_id)
+            | Self::BondRemoval(connection_id)
+            | Self::GattCacheRefreshed(connection_id)
             | Self::GattDiscovered(connection_id, _)
             | Self::CharacteristicRead(connection_id, _, _)
             | Self::CharacteristicWritten(connection_id, _, _)
+            | Self::DescriptorRead(connection_id, _, _, _)
+            | Self::DescriptorWritten(connection_id, _, _, _)
             | Self::NotificationsEnabled(connection_id, _, _, _)
             | Self::NotificationsDisabled(connection_id, _, _, _) => Some(connection_id),
             #[cfg(test)]
             Self::TerminalOnly => None,
             Self::Initialized
+            | Self::AdapterControl
+            | Self::DevicesListed
+            | Self::CompanionAssociation
             | Self::ScanStarted(_)
             | Self::ScanStopped(_)
             | Self::Disconnected(_) => None,
@@ -81,11 +117,18 @@ impl WaiterExpectation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum WaiterSuccess {
     Initialized(AdapterSnapshot),
+    AdapterCommandCompleted,
+    DevicesListed(Vec<blehub::DeviceRecord>),
+    CompanionAssociationRequested,
     ScanStarted(blehub::ScanSessionId),
     ScanStopped(blehub::ScanSessionId),
     Connected(ConnectionId),
     Disconnected(ConnectionId),
     RssiRead(ConnectionId, i16),
+    MtuRead(ConnectionId, MtuInfo),
+    ConnectionPriorityAccepted(ConnectionId),
+    GattCacheRefreshed(ConnectionId),
+    BondState(ConnectionId, BondState),
     GattDiscovered(GattDatabase),
     CharacteristicRead {
         connection_id: ConnectionId,
@@ -94,6 +137,19 @@ pub(crate) enum WaiterSuccess {
         value: Vec<u8>,
     },
     CharacteristicWritten(ConnectionId, GattSessionId, GattCharacteristicId),
+    DescriptorRead {
+        connection_id: ConnectionId,
+        gatt_session_id: GattSessionId,
+        characteristic_id: GattCharacteristicId,
+        descriptor_id: GattDescriptorId,
+        value: Vec<u8>,
+    },
+    DescriptorWritten {
+        connection_id: ConnectionId,
+        gatt_session_id: GattSessionId,
+        characteristic_id: GattCharacteristicId,
+        descriptor_id: GattDescriptorId,
+    },
     NotificationsEnabled {
         connection_id: ConnectionId,
         gatt_session_id: GattSessionId,

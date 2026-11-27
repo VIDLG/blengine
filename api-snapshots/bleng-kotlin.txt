@@ -1,5 +1,13 @@
 # Reviewed BLeng Kotlin API shape; ABI remains unfrozen.
 
+class AssociateCompanionDeviceOperation : AssociateCompanionDeviceOperationInterface
+
+interface AssociateCompanionDeviceOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
 class Bleng : BlengInterface
 
 enum class BlengBusyReason {
@@ -18,6 +26,10 @@ enum class BlengContractFailure {
 sealed class BlengException {
     Closed,
     Cancelled,
+    OperationNotFound(commandId: CommandId),
+    OperationAlreadyCompleted(commandId: CommandId),
+    OperationNotCancellable(commandId: CommandId),
+    OperationResultConsumed,
     Disconnected,
     InvalidTimeout,
     NotReady(reason: BlengNotReadyReason),
@@ -35,19 +47,54 @@ sealed class BlengException {
 
 interface BlengInterface {
     suspend fun assembleBackend(backend: BleBackend)
+    fun beginAssociateCompanion(serviceUuids: List<BluetoothUuid>, displayName: String?, deviceProfile: String?, notifyOnDeviceNearby: Boolean): AssociateCompanionDeviceOperation
+    fun beginConnect(peripheral: PeripheralId): ConnectOperation
+    fun beginConnectWithOptions(peripheral: PeripheralId, autoConnect: Boolean): ConnectOperation
+    fun beginCreateBond(connection: ConnectionId, pin: String?): BondOperation
+    fun beginDisableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId): DisableNotificationsOperation
+    fun beginDisconnect(connection: ConnectionId): DisconnectOperation
+    fun beginDiscoverGatt(connection: ConnectionId): DiscoverGattOperation
+    fun beginEnableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest): EnableNotificationsOperation
+    fun beginInitialize(): InitializeOperation
+    fun beginQueryDevices(kind: DeviceQueryKind, serviceUuids: List<BluetoothUuid>): QueryDevicesOperation
+    fun beginQueryMtu(connection: ConnectionId): MtuOperation
+    fun beginReadCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId): ReadOperation
+    fun beginReadDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId): ReadDescriptorOperation
+    fun beginReadRssi(connection: ConnectionId): ReadRssiOperation
+    fun beginRefreshGattCache(connection: ConnectionId): RefreshGattCacheOperation
+    fun beginRemoveBond(connection: ConnectionId): BondOperation
+    fun beginRequestMtu(connection: ConnectionId, mtu: UShort): MtuOperation
+    fun beginSetAdapterEnabled(enabled: Boolean): SetAdapterEnabledOperation
+    fun beginSetConnectionPriority(connection: ConnectionId, priority: ConnectionPriority): SetConnectionPriorityOperation
+    fun beginStartScan(options: ScanOptions): StartScanOperation
+    fun beginStopScan(session: ScanSessionId): StopScanOperation
+    fun beginWriteCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: ByteArray, writeType: WriteType): WriteOperation
+    fun beginWriteDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, value: ByteArray): WriteDescriptorOperation
+    suspend fun cancelOperation(commandId: CommandId)
     suspend fun connect(peripheral: PeripheralId, timeoutMs: ULong): ConnectionId
+    suspend fun connectWithOptions(peripheral: PeripheralId, autoConnect: Boolean, timeoutMs: ULong): ConnectionId
+    suspend fun createBond(connection: ConnectionId, timeoutMs: ULong): BondState
     suspend fun disableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId, timeoutMs: ULong)
     suspend fun disconnect(connection: ConnectionId, timeoutMs: ULong)
     suspend fun discoverGatt(connection: ConnectionId, timeoutMs: ULong): GattDatabase
-    suspend fun enableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeoutMs: ULong): SubscriptionId
+    suspend fun enableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeoutMs: ULong): NotificationSubscription
     suspend fun initialize(timeoutMs: ULong): AdapterSnapshot
     suspend fun nextEvent(timeoutMs: ULong): BleEvent?
+    suspend fun queryDevices(kind: DeviceQueryKind, serviceUuids: List<BluetoothUuid>, timeoutMs: ULong): List<DeviceRecord>
+    suspend fun queryMtu(connection: ConnectionId, timeoutMs: ULong): MtuInfo
     suspend fun readCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, timeoutMs: ULong): ByteArray
+    suspend fun readDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, timeoutMs: ULong): ByteArray
     suspend fun readRssi(connection: ConnectionId, timeoutMs: ULong): Short
+    suspend fun refreshGattCache(connection: ConnectionId, timeoutMs: ULong)
+    suspend fun removeBond(connection: ConnectionId, timeoutMs: ULong): BondState
+    suspend fun requestMtu(connection: ConnectionId, mtu: UShort, timeoutMs: ULong): MtuInfo
+    suspend fun setAdapterEnabled(enabled: Boolean, timeoutMs: ULong)
+    suspend fun setConnectionPriority(connection: ConnectionId, priority: ConnectionPriority, timeoutMs: ULong)
     suspend fun shutdown()
     suspend fun startScan(options: ScanOptions, timeoutMs: ULong): ScanSessionId
     suspend fun stopScan(session: ScanSessionId, timeoutMs: ULong)
     suspend fun writeCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: ByteArray, writeType: WriteType, timeoutMs: ULong)
+    suspend fun writeDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, value: ByteArray, timeoutMs: ULong)
 }
 
 enum class BlengNotReadyReason {
@@ -61,5 +108,163 @@ enum class BlengNotReadyReason {
 
 enum class BlengResource {
     PENDING_WAITERS,
+    SUBMISSION_QUEUE,
     IDENTIFIERS,
+}
+
+class BondOperation : BondOperationInterface
+
+interface BondOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): BondState
+}
+
+class ConnectOperation : ConnectOperationInterface
+
+interface ConnectOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): ConnectionId
+}
+
+class DisableNotificationsOperation : DisableNotificationsOperationInterface
+
+interface DisableNotificationsOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class DisconnectOperation : DisconnectOperationInterface
+
+interface DisconnectOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class DiscoverGattOperation : DiscoverGattOperationInterface
+
+interface DiscoverGattOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): GattDatabase
+}
+
+class EnableNotificationsOperation : EnableNotificationsOperationInterface
+
+interface EnableNotificationsOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): NotificationSubscription
+}
+
+class InitializeOperation : InitializeOperationInterface
+
+interface InitializeOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): AdapterSnapshot
+}
+
+class MtuOperation : MtuOperationInterface
+
+interface MtuOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): MtuInfo
+}
+
+data class NotificationSubscription(
+    var subscription: SubscriptionId,
+    var actualMode: NotificationMode?,
+)
+
+class QueryDevicesOperation : QueryDevicesOperationInterface
+
+interface QueryDevicesOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): List<DeviceRecord>
+}
+
+class ReadDescriptorOperation : ReadDescriptorOperationInterface
+
+interface ReadDescriptorOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): ByteArray
+}
+
+class ReadOperation : ReadOperationInterface
+
+interface ReadOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): ByteArray
+}
+
+class ReadRssiOperation : ReadRssiOperationInterface
+
+interface ReadRssiOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): Short
+}
+
+class RefreshGattCacheOperation : RefreshGattCacheOperationInterface
+
+interface RefreshGattCacheOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class SetAdapterEnabledOperation : SetAdapterEnabledOperationInterface
+
+interface SetAdapterEnabledOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class SetConnectionPriorityOperation : SetConnectionPriorityOperationInterface
+
+interface SetConnectionPriorityOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class StartScanOperation : StartScanOperationInterface
+
+interface StartScanOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong): ScanSessionId
+}
+
+class StopScanOperation : StopScanOperationInterface
+
+interface StopScanOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class WriteDescriptorOperation : WriteDescriptorOperationInterface
+
+interface WriteDescriptorOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
+}
+
+class WriteOperation : WriteOperationInterface
+
+interface WriteOperationInterface {
+    suspend fun cancel()
+    fun commandId(): CommandId
+    suspend fun wait(timeoutMs: ULong)
 }

@@ -107,19 +107,21 @@ impl<F: Future> FaultOnTaskDrop<F> {
         }
     }
 
-    fn try_drop_future_catching_panic(&mut self) -> bool {
+    /// Drops the retained future, faulting the owner and reporting a destructor panic.
+    /// A destructor failure must override successful polling before caller delivery.
+    fn drop_future_catching_panic(&mut self) -> Result<(), TaskFailure> {
         if catch_unwind(AssertUnwindSafe(|| drop(self.future.take()))).is_err() {
             self.lifecycle.fault();
-            true
-        } else {
-            false
+            return Err(TaskFailure::Panicked);
         }
+        Ok(())
     }
 }
 
 impl<F: Future> Drop for FaultOnTaskDrop<F> {
     fn drop(&mut self) {
-        self.try_drop_future_catching_panic();
+        // The helper already faults the lifecycle on error; Drop cannot propagate it.
+        let _ = self.drop_future_catching_panic();
     }
 }
 
@@ -405,9 +407,7 @@ impl RuntimeOwner {
                 guarded.lifecycle.fault();
             }
             // Future destructors can panic after poll succeeds; that failure wins.
-            if guarded.try_drop_future_catching_panic() {
-                return Err(TaskFailure::Panicked);
-            }
+            guarded.drop_future_catching_panic()?;
             task_outcome
         }))
         .await;

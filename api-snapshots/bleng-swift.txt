@@ -1,5 +1,13 @@
 # Reviewed BLeng Swift API shape; ABI remains unfrozen.
 
+class AssociateCompanionDeviceOperation : AssociateCompanionDeviceOperationProtocol
+
+protocol AssociateCompanionDeviceOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
 class Bleng : BlengProtocol
 
 enum BlengBusyReason {
@@ -18,6 +26,10 @@ enum BlengContractFailure {
 enum BlengError {
     case Closed
     case Cancelled
+    case OperationNotFound(commandId: CommandId)
+    case OperationAlreadyCompleted(commandId: CommandId)
+    case OperationNotCancellable(commandId: CommandId)
+    case OperationResultConsumed
     case Disconnected
     case InvalidTimeout
     case NotReady(reason: BlengNotReadyReason)
@@ -44,22 +56,215 @@ enum BlengNotReadyReason {
 
 protocol BlengProtocol {
     func assembleBackend(backend: BleBackend) async throws
+    func beginAssociateCompanion(serviceUuids: [BluetoothUuid], displayName: String?, deviceProfile: String?, notifyOnDeviceNearby: Bool) throws -> AssociateCompanionDeviceOperation
+    func beginConnect(peripheral: PeripheralId) throws -> ConnectOperation
+    func beginConnectWithOptions(peripheral: PeripheralId, autoConnect: Bool) throws -> ConnectOperation
+    func beginCreateBond(connection: ConnectionId, pin: String?) throws -> BondOperation
+    func beginDisableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId) throws -> DisableNotificationsOperation
+    func beginDisconnect(connection: ConnectionId) throws -> DisconnectOperation
+    func beginDiscoverGatt(connection: ConnectionId) throws -> DiscoverGattOperation
+    func beginEnableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest) throws -> EnableNotificationsOperation
+    func beginInitialize() throws -> InitializeOperation
+    func beginQueryDevices(kind: DeviceQueryKind, serviceUuids: [BluetoothUuid]) throws -> QueryDevicesOperation
+    func beginQueryMtu(connection: ConnectionId) throws -> MtuOperation
+    func beginReadCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId) throws -> ReadOperation
+    func beginReadDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId) throws -> ReadDescriptorOperation
+    func beginReadRssi(connection: ConnectionId) throws -> ReadRssiOperation
+    func beginRefreshGattCache(connection: ConnectionId) throws -> RefreshGattCacheOperation
+    func beginRemoveBond(connection: ConnectionId) throws -> BondOperation
+    func beginRequestMtu(connection: ConnectionId, mtu: UInt16) throws -> MtuOperation
+    func beginSetAdapterEnabled(enabled: Bool) throws -> SetAdapterEnabledOperation
+    func beginSetConnectionPriority(connection: ConnectionId, priority: ConnectionPriority) throws -> SetConnectionPriorityOperation
+    func beginStartScan(options: ScanOptions) throws -> StartScanOperation
+    func beginStopScan(session: ScanSessionId) throws -> StopScanOperation
+    func beginWriteCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Data, writeType: WriteType) throws -> WriteOperation
+    func beginWriteDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, value: Data) throws -> WriteDescriptorOperation
+    func cancelOperation(commandId: CommandId) async throws
     func connect(peripheral: PeripheralId, timeoutMs: UInt64) async throws -> ConnectionId
+    func connectWithOptions(peripheral: PeripheralId, autoConnect: Bool, timeoutMs: UInt64) async throws -> ConnectionId
+    func createBond(connection: ConnectionId, timeoutMs: UInt64) async throws -> BondState
     func disableNotifications(connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId, timeoutMs: UInt64) async throws
     func disconnect(connection: ConnectionId, timeoutMs: UInt64) async throws
     func discoverGatt(connection: ConnectionId, timeoutMs: UInt64) async throws -> GattDatabase
-    func enableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeoutMs: UInt64) async throws -> SubscriptionId
+    func enableNotifications(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, mode: NotificationModeRequest, timeoutMs: UInt64) async throws -> NotificationSubscription
     func initialize(timeoutMs: UInt64) async throws -> AdapterSnapshot
     func nextEvent(timeoutMs: UInt64) async throws -> BleEvent?
+    func queryDevices(kind: DeviceQueryKind, serviceUuids: [BluetoothUuid], timeoutMs: UInt64) async throws -> [DeviceRecord]
+    func queryMtu(connection: ConnectionId, timeoutMs: UInt64) async throws -> MtuInfo
     func readCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, timeoutMs: UInt64) async throws -> Data
+    func readDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, timeoutMs: UInt64) async throws -> Data
     func readRssi(connection: ConnectionId, timeoutMs: UInt64) async throws -> Int16
+    func refreshGattCache(connection: ConnectionId, timeoutMs: UInt64) async throws
+    func removeBond(connection: ConnectionId, timeoutMs: UInt64) async throws -> BondState
+    func requestMtu(connection: ConnectionId, mtu: UInt16, timeoutMs: UInt64) async throws -> MtuInfo
+    func setAdapterEnabled(enabled: Bool, timeoutMs: UInt64) async throws
+    func setConnectionPriority(connection: ConnectionId, priority: ConnectionPriority, timeoutMs: UInt64) async throws
     func shutdown() async throws
     func startScan(options: ScanOptions, timeoutMs: UInt64) async throws -> ScanSessionId
     func stopScan(session: ScanSessionId, timeoutMs: UInt64) async throws
     func writeCharacteristic(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, value: Data, writeType: WriteType, timeoutMs: UInt64) async throws
+    func writeDescriptor(connection: ConnectionId, session: GattSessionId, characteristic: GattCharacteristicId, descriptor: GattDescriptorId, value: Data, timeoutMs: UInt64) async throws
 }
 
 enum BlengResource {
     case pendingWaiters
+    case submissionQueue
     case identifiers
+}
+
+class BondOperation : BondOperationProtocol
+
+protocol BondOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> BondState
+}
+
+class ConnectOperation : ConnectOperationProtocol
+
+protocol ConnectOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> ConnectionId
+}
+
+class DisableNotificationsOperation : DisableNotificationsOperationProtocol
+
+protocol DisableNotificationsOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class DisconnectOperation : DisconnectOperationProtocol
+
+protocol DisconnectOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class DiscoverGattOperation : DiscoverGattOperationProtocol
+
+protocol DiscoverGattOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> GattDatabase
+}
+
+class EnableNotificationsOperation : EnableNotificationsOperationProtocol
+
+protocol EnableNotificationsOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> NotificationSubscription
+}
+
+class InitializeOperation : InitializeOperationProtocol
+
+protocol InitializeOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> AdapterSnapshot
+}
+
+class MtuOperation : MtuOperationProtocol
+
+protocol MtuOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> MtuInfo
+}
+
+struct NotificationSubscription {
+    public var subscription: SubscriptionId
+    public var actualMode: NotificationMode?
+}
+
+class QueryDevicesOperation : QueryDevicesOperationProtocol
+
+protocol QueryDevicesOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> [DeviceRecord]
+}
+
+class ReadDescriptorOperation : ReadDescriptorOperationProtocol
+
+protocol ReadDescriptorOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> Data
+}
+
+class ReadOperation : ReadOperationProtocol
+
+protocol ReadOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> Data
+}
+
+class ReadRssiOperation : ReadRssiOperationProtocol
+
+protocol ReadRssiOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> Int16
+}
+
+class RefreshGattCacheOperation : RefreshGattCacheOperationProtocol
+
+protocol RefreshGattCacheOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class SetAdapterEnabledOperation : SetAdapterEnabledOperationProtocol
+
+protocol SetAdapterEnabledOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class SetConnectionPriorityOperation : SetConnectionPriorityOperationProtocol
+
+protocol SetConnectionPriorityOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class StartScanOperation : StartScanOperationProtocol
+
+protocol StartScanOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws -> ScanSessionId
+}
+
+class StopScanOperation : StopScanOperationProtocol
+
+protocol StopScanOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class WriteDescriptorOperation : WriteDescriptorOperationProtocol
+
+protocol WriteDescriptorOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
+}
+
+class WriteOperation : WriteOperationProtocol
+
+protocol WriteOperationProtocol {
+    func cancel() async throws
+    func commandId() -> CommandId
+    func wait(timeoutMs: UInt64) async throws
 }

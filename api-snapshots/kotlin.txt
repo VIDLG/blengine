@@ -25,6 +25,35 @@ data class AdvertisementObservation(
     var connectable: Boolean?,
 )
 
+enum class AndroidScanMode {
+    LOW_POWER,
+    BALANCED,
+    LOW_LATENCY,
+    OPPORTUNISTIC,
+}
+
+data class AndroidScanOptions(
+    var scanMode: AndroidScanMode?,
+    var phy: AndroidScanPhy?,
+    /** * Scanner batch delay in milliseconds; 0 reports every result immediately. */ var reportDelayMs: UInt?,
+    /** * Scan only legacy (non-extended) advertisements. */ var legacy: Boolean?,
+)
+
+enum class AndroidScanPhy {
+    LE1M,
+    LE2M,
+    LE_CODED,
+}
+
+data class AssociateCompanionDeviceCommand(
+    var commandId: CommandId,
+    /** * At least one service UUID; the platform chooser filters candidates on it. */ var serviceUuids: List<BluetoothUuid>,
+    /** * Optional label the platform chooser shows for this request. */ var displayName: String?,
+    /** * Optional platform companion-device profile,
+    for example * android.app.role.COMPANION_DEVICE_WATCH. */ var deviceProfile: String?,
+    /** * Whether the platform should deliver presence to the app's companion-device service. * * The host opts in because it grants the App a wake-up privilege; the library ships the * service but never asks for presence on its own. */ var notifyOnDeviceNearby: Boolean,
+)
+
 enum class AuthorizationState {
     NOT_REQUIRED,
     NOT_DETERMINED,
@@ -54,6 +83,9 @@ interface BleBackend {
     fun capabilities(): BackendCapabilities
     fun bindEventIngress(ingress: BackendEventIngressHandle)
     fun initialize(command: InitializeCommand)
+    fun setAdapterEnabled(command: SetAdapterEnabledCommand)
+    fun queryDevices(command: QueryDevicesCommand)
+    fun associateCompanionDevice(command: AssociateCompanionDeviceCommand)
     fun startScan(command: StartScanCommand)
     fun stopScan(command: StopScanCommand)
     fun connect(command: ConnectCommand)
@@ -61,8 +93,16 @@ interface BleBackend {
     fun discoverGatt(command: DiscoverGattCommand)
     fun readCharacteristic(command: ReadCharacteristicCommand)
     fun writeCharacteristic(command: WriteCharacteristicCommand)
+    fun readDescriptor(command: ReadDescriptorCommand)
+    fun writeDescriptor(command: WriteDescriptorCommand)
     fun setNotifications(command: SetNotificationsCommand)
     fun readRssi(command: ReadRssiCommand)
+    fun mtu(command: MtuCommand)
+    fun setConnectionPriority(command: SetConnectionPriorityCommand)
+    fun createBond(command: CreateBondCommand)
+    fun removeBond(command: RemoveBondCommand)
+    fun refreshGattCache(command: RefreshGattCacheCommand)
+    fun cancelOperation(request: CancelOperationRequest)
     fun dispose()
 }
 
@@ -73,6 +113,7 @@ enum class BleErrorCategory {
     NOT_FOUND,
     TIMEOUT,
     CANCELLED,
+    OPERATION_ABORTED,
     CONNECTION,
     GATT,
     PROTOCOL,
@@ -90,9 +131,15 @@ sealed class BleEvent {
     GattDiscovered(commandId: CommandId, database: GattDatabase),
     CharacteristicRead(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId, value: ByteArray),
     CharacteristicWritten(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId),
+    DescriptorRead(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId, descriptorId: GattDescriptorId, value: ByteArray),
+    DescriptorWritten(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, characteristicId: GattCharacteristicId, descriptorId: GattDescriptorId),
     NotificationStateChanged(commandId: CommandId, connectionId: ConnectionId, gattSessionId: GattSessionId, subscriptionId: SubscriptionId, characteristicId: GattCharacteristicId, state: NotificationState),
     NotificationReceived(connectionId: ConnectionId, gattSessionId: GattSessionId, subscriptionId: SubscriptionId, characteristicId: GattCharacteristicId, value: ByteArray),
     RssiRead(commandId: CommandId, connectionId: ConnectionId, rssi: Short),
+    MtuRead(commandId: CommandId, connectionId: ConnectionId, info: MtuInfo),
+    DevicesListed(commandId: CommandId, devices: List<DeviceRecord>),
+    CompanionPresenceChanged(present: Boolean, key: String, localName: String?),
+    BondStateChanged(commandId: CommandId?, connectionId: ConnectionId, state: BondState),
     CommandCompleted(commandId: CommandId, error: BleEventError?),
     BackendError(error: BleEventError),
 }
@@ -115,6 +162,16 @@ data class BluetoothUuid(
     var value: String,
 )
 
+enum class BondState {
+    NONE,
+    BONDING,
+    BONDED,
+}
+
+data class CancelOperationRequest(
+    /** * Existing command identity; cancellation has no independent lifecycle. */ var targetCommandId: CommandId,
+)
+
 data class CharacteristicProperties(
     var readable: Boolean,
     var writableWithResponse: Boolean,
@@ -127,7 +184,12 @@ sealed class CommandDispatchException {
     Closed,
     InvalidRequest(detail: String),
     InvalidState(detail: String),
+    OperationNotFound(targetCommandId: CommandId),
+    OperationAlreadyCompleted(targetCommandId: CommandId),
+    OperationNotCancellable(targetCommandId: CommandId),
+    ResourceExhausted(detail: String),
     BackendUnavailable(detail: String, platformDetails: PlatformErrorDetails?),
+    NotSupported(detail: String),
     FfiContract(detail: String),
 }
 
@@ -137,6 +199,9 @@ data class CommandId(
 
 enum class CommandKind {
     INITIALIZE,
+    SET_ADAPTER_ENABLED,
+    QUERY_DEVICES,
+    ASSOCIATE_COMPANION_DEVICE,
     START_SCAN,
     STOP_SCAN,
     CONNECT,
@@ -144,19 +209,35 @@ enum class CommandKind {
     DISCOVER_GATT,
     READ_CHARACTERISTIC,
     WRITE_CHARACTERISTIC,
+    READ_DESCRIPTOR,
+    WRITE_DESCRIPTOR,
     SET_NOTIFICATIONS,
     READ_RSSI,
+    MTU,
+    SET_CONNECTION_PRIORITY,
+    CREATE_BOND,
+    REMOVE_BOND,
+    REFRESH_GATT_CACHE,
 }
 
 data class ConnectCommand(
     var commandId: CommandId,
     var connectionId: ConnectionId,
     var peripheralId: PeripheralId,
+    /** * Ask the platform to establish the link whenever the peer becomes available,
+    instead of a * one-shot connect attempt. Where the platform cannot express this,
+    the backend rejects the * command with CommandDispatchError::NotSupported rather than silently connecting once. */ var autoConnect: Boolean,
 )
 
 data class ConnectionId(
     var value: ULong,
 )
+
+enum class ConnectionPriority {
+    BALANCED,
+    HIGH,
+    LOW_POWER,
+}
 
 enum class ConnectionState {
     CONNECTING,
@@ -169,6 +250,26 @@ sealed class ConnectionStateResult {
     Ok(state: ConnectionState),
     Err(error: BleEventError),
 }
+
+data class CreateBondCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+    var pin: String?,
+)
+
+enum class DeviceQueryKind {
+    CONNECTED,
+    BONDED,
+    COMPANION,
+}
+
+data class DeviceRecord(
+    /** * Opaque and owner-scoped. Comparable with peripheral.key() when the same peer was scanned,
+    * but it cannot address native state on its own. */ var key: String,
+    var localName: String?,
+    var connected: Boolean,
+    var bonded: Boolean,
+)
 
 data class DisconnectCommand(
     var commandId: CommandId,
@@ -243,6 +344,24 @@ data class ManufacturerData(
     var payload: ByteArray,
 )
 
+data class ManufacturerDataFilter(
+    var companyId: UShort,
+    var data: ByteArray,
+    var mask: ByteArray?,
+)
+
+data class MtuCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+    var request: UShort?,
+)
+
+data class MtuInfo(
+    var mtu: UShort?,
+    var maximumWriteWithResponse: UShort?,
+    var maximumWriteWithoutResponse: UShort?,
+)
+
 sealed class NotificationAction {
     Enable(mode: NotificationModeRequest),
     Disable,
@@ -281,6 +400,14 @@ data class PlatformErrorDetails(
     var code: String?,
     var name: String?,
     var message: String?,
+    /** * Numeric platform status when the platform reports one. */ var status: Int?,
+    /** * Bluetooth ATT error code when the failure came from an ATT response. */ var attCode: Int?,
+)
+
+data class QueryDevicesCommand(
+    var commandId: CommandId,
+    var kind: DeviceQueryKind,
+    var serviceUuids: List<BluetoothUuid>,
 )
 
 data class ReadCharacteristicCommand(
@@ -290,7 +417,25 @@ data class ReadCharacteristicCommand(
     var characteristicId: GattCharacteristicId,
 )
 
+data class ReadDescriptorCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+    var gattSessionId: GattSessionId,
+    var characteristicId: GattCharacteristicId,
+    var descriptorId: GattDescriptorId,
+)
+
 data class ReadRssiCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+)
+
+data class RefreshGattCacheCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+)
+
+data class RemoveBondCommand(
     var commandId: CommandId,
     var connectionId: ConnectionId,
 )
@@ -298,7 +443,11 @@ data class ReadRssiCommand(
 data class ScanOptions(
     var serviceUuids: List<BluetoothUuid>,
     var namePrefix: String?,
+    /** * Require an exact local-name match. Applied on both platforms by the scan predicate. */ var exactName: String?,
     var companyId: UShort?,
+    /** * Require an advertisement RSSI at or above this value. Absent RSSI never matches. */ var minRssi: Short?,
+    /** * Require a manufacturer-data payload match (prefix, or masked equality when mask is set). */ var manufacturerData: ManufacturerDataFilter?,
+    /** * Android-only scanner tuning; None keeps the engine's fixed defaults. Apple rejects it. */ var android: AndroidScanOptions?,
     var allowDuplicates: Boolean,
 )
 
@@ -319,6 +468,17 @@ sealed class ScanStopResult {
 data class ServiceData(
     var serviceUuid: BluetoothUuid,
     var payload: ByteArray,
+)
+
+data class SetAdapterEnabledCommand(
+    var commandId: CommandId,
+    var enabled: Boolean,
+)
+
+data class SetConnectionPriorityCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+    var priority: ConnectionPriority,
 )
 
 data class SetNotificationsCommand(
@@ -352,6 +512,15 @@ data class WriteCharacteristicCommand(
     var characteristicId: GattCharacteristicId,
     var value: ByteArray,
     var writeType: WriteType,
+)
+
+data class WriteDescriptorCommand(
+    var commandId: CommandId,
+    var connectionId: ConnectionId,
+    var gattSessionId: GattSessionId,
+    var characteristicId: GattCharacteristicId,
+    var descriptorId: GattDescriptorId,
+    var value: ByteArray,
 )
 
 enum class WriteType {

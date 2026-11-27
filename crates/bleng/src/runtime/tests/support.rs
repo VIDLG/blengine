@@ -140,6 +140,7 @@ impl RuntimeOwner {
         timeout: Duration,
     ) -> Result<ConnectionId, WaiterError> {
         self.run_operation(timeout, |submission| BeginConnect {
+            auto_connect: false,
             submission,
             peripheral_id,
         })
@@ -396,6 +397,10 @@ impl BleBackend for BlockingDispatchBackend {
             fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
             fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>) -> Result<(), BleHubError>;
             fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+            fn set_adapter_enabled(&self, command: blehub::SetAdapterEnabledCommand) -> Result<(), CommandDispatchError>;
+            fn query_devices(&self, command: blehub::QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+            fn associate_companion_device(&self, command: blehub::AssociateCompanionDeviceCommand) -> Result<(), CommandDispatchError>;
+            fn refresh_gatt_cache(&self, command: blehub::RefreshGattCacheCommand) -> Result<(), CommandDispatchError>;
             fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
             fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
             fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
@@ -439,6 +444,39 @@ impl BleBackend for BlockingDispatchBackend {
             self.finished.notify_one();
         }
         result
+    }
+
+    fn mtu(&self, command: blehub::MtuCommand) -> Result<(), CommandDispatchError> {
+        self.inner.mtu(command)
+    }
+
+    fn set_connection_priority(
+        &self,
+        command: blehub::SetConnectionPriorityCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.inner.set_connection_priority(command)
+    }
+
+    fn create_bond(&self, command: blehub::CreateBondCommand) -> Result<(), CommandDispatchError> {
+        self.inner.create_bond(command)
+    }
+
+    fn remove_bond(&self, command: blehub::RemoveBondCommand) -> Result<(), CommandDispatchError> {
+        self.inner.remove_bond(command)
+    }
+
+    fn read_descriptor(
+        &self,
+        command: blehub::ReadDescriptorCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.inner.read_descriptor(command)
+    }
+
+    fn write_descriptor(
+        &self,
+        command: blehub::WriteDescriptorCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.inner.write_descriptor(command)
     }
 }
 
@@ -491,6 +529,7 @@ pub(super) fn connected_event(command: u64, connection: u64) -> BleEvent {
 pub(super) fn connect_scenario(command: u64, connection: u64, peripheral: u64) -> EventScenario {
     EventScenario::emit_before_return(
         RecordedCommand::Connect(ConnectCommand {
+            auto_connect: false,
             command_id: command.into(),
             connection_id: connection.into(),
             peripheral_id: peripheral.into(),

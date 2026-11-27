@@ -6,8 +6,9 @@ use blehub_testkit::{
 };
 use bleng::{
     Bleng, BlengBusyReason, BlengContractFailure, BlengError, BlengNotReadyReason, BlengResource,
-    ConnectOperation, DisableNotificationsOperation, DisconnectOperation, DiscoverGattOperation,
-    EnableNotificationsOperation, InitializeOperation, ReadOperation, ReadRssiOperation,
+    BondOperation, ConnectOperation, DisableNotificationsOperation, DisconnectOperation,
+    DiscoverGattOperation, EnableNotificationsOperation, InitializeOperation, MtuOperation,
+    NotificationSubscription, ReadOperation, ReadRssiOperation, SetConnectionPriorityOperation,
     StartScanOperation, StopScanOperation, WriteOperation,
 };
 
@@ -154,7 +155,7 @@ fn external_consumer_names_and_executes_all_eleven_typed_operations() {
             initialize_command(),
             RecordedCommand::StartScan(StartScanCommand { command_id: 2.into(), scan_session_id: 1.into(), options: ScanOptions::default() }),
             RecordedCommand::StopScan(StopScanCommand { command_id: 3.into(), scan_session_id: 1.into() }),
-            RecordedCommand::Connect(ConnectCommand { command_id: 4.into(), connection_id: 2.into(), peripheral_id: 10.into() }),
+            RecordedCommand::Connect(ConnectCommand { auto_connect: false, command_id: 4.into(), connection_id: 2.into(), peripheral_id: 10.into() }),
             RecordedCommand::DiscoverGatt(DiscoverGattCommand { command_id: 5.into(), connection_id: 2.into(), gatt_session_id: 3.into() }),
             RecordedCommand::ReadCharacteristic(ReadCharacteristicCommand { command_id: 6.into(), connection_id: 2.into(), gatt_session_id: 3.into(), characteristic_id: 30.into() }),
             RecordedCommand::WriteCharacteristic(WriteCharacteristicCommand { command_id: 7.into(), connection_id: 2.into(), gatt_session_id: 3.into(), characteristic_id: 30.into(), value: vec![7, 8], write_type: WriteType::WithResponse }),
@@ -200,11 +201,14 @@ fn external_consumer_names_and_executes_all_eleven_typed_operations() {
         let (): () = complete(&handle, 7, write.command_id(), write.wait(2000), terminal(7), BleEvent::CharacteristicWritten { command_id: 7.into(), connection_id: connection, gatt_session_id: session, characteristic_id: 30.into() }).await;
         let enable: Arc<EnableNotificationsOperation> = bleng.begin_enable_notifications(connection, session, 30.into(), NotificationModeRequest::PlatformDefault).unwrap();
         let actual = BleEvent::NotificationStateChanged { command_id: 8.into(), connection_id: connection, gatt_session_id: session, subscription_id: 4.into(), characteristic_id: 30.into(), state: NotificationState::Enabled { actual_mode: Some(NotificationMode::Indication) } };
-        let subscription: SubscriptionId = complete(&handle, 8, enable.command_id(), enable.wait(2000), actual.clone(), terminal(8)).await;
-        assert_eq!(subscription, 4.into());
+        let receipt: NotificationSubscription = complete(&handle, 8, enable.command_id(), enable.wait(2000), actual.clone(), terminal(8)).await;
+        assert_eq!(receipt.subscription, 4.into());
+        // The actual mode is part of the enable receipt, not a second event lookup.
+        assert_eq!(receipt.actual_mode, Some(NotificationMode::Indication));
         loop {
             if bleng.next_event(2000).await.unwrap() == Some(actual.clone()) { break; }
         }
+        let subscription = receipt.subscription;
         let disable: Arc<DisableNotificationsOperation> = bleng.begin_disable_notifications(connection, session, subscription).unwrap();
         let (): () = complete(&handle, 9, disable.command_id(), disable.wait(2000), terminal(9), BleEvent::NotificationStateChanged { command_id: 9.into(), connection_id: connection, gatt_session_id: session, subscription_id: subscription, characteristic_id: 30.into(), state: NotificationState::Disabled }).await;
         let rssi: Arc<ReadRssiOperation> = bleng.begin_read_rssi(connection).unwrap();
@@ -249,6 +253,7 @@ fn convenience_and_typed_paths_match_all_eleven_commands_results_and_events() {
                 scan_session_id: 1.into(),
             }),
             RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
                 command_id: 4.into(),
                 connection_id: 2.into(),
                 peripheral_id: 10.into(),
@@ -441,7 +446,8 @@ fn convenience_and_typed_paths_match_all_eleven_commands_results_and_events() {
                     3.into(),
                     30.into(),
                     NotificationModeRequest::PlatformDefault
-                ),
+                )
+                .subscription,
                 SubscriptionId::from(4)
             );
             result!(
@@ -474,7 +480,7 @@ fn typed_connect_cancel_receipt_does_not_consume_result_or_promise_support() {
         for policy in [CancellationPolicy::Accept, CancellationPolicy::Reject] {
             let (backend, handle) = FakeBackend::scripted_with_cancellation([
                             EventScenario::emit_before_return(initialize_command(), vec![initialized(), terminal(1)]),
-                            EventScenario::accept(RecordedCommand::Connect(ConnectCommand { command_id: 2.into(), connection_id: 1.into(), peripheral_id: 10.into() })),
+                            EventScenario::accept(RecordedCommand::Connect(ConnectCommand { auto_connect: false, command_id: 2.into(), connection_id: 1.into(), peripheral_id: 10.into() })),
                         ], policy);
             let bleng = Bleng::new().unwrap();
             bleng.assemble_backend(Arc::new(backend)).await.unwrap();
@@ -572,6 +578,7 @@ async fn rssi_fixture() -> (Arc<Bleng>, FakeBackendHandle) {
         EventScenario::emit_before_return(initialize_command(), vec![initialized(), terminal(1)]),
         EventScenario::emit_before_return(
             RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
                 command_id: 2.into(),
                 connection_id: 1.into(),
                 peripheral_id: 10.into(),
@@ -651,6 +658,10 @@ impl BleBackend for CountCancellation {
         to self.inner {
             fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
             fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>) -> Result<(), BleHubError>;
+            fn set_adapter_enabled(&self, command: blehub::SetAdapterEnabledCommand) -> Result<(), CommandDispatchError>;
+            fn query_devices(&self, command: blehub::QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+            fn associate_companion_device(&self, command: blehub::AssociateCompanionDeviceCommand) -> Result<(), CommandDispatchError>;
+            fn refresh_gatt_cache(&self, command: blehub::RefreshGattCacheCommand) -> Result<(), CommandDispatchError>;
             fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
             fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
             fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
@@ -660,6 +671,12 @@ impl BleBackend for CountCancellation {
             fn write_characteristic(&self, command: WriteCharacteristicCommand) -> Result<(), CommandDispatchError>;
             fn set_notifications(&self, command: SetNotificationsCommand) -> Result<(), CommandDispatchError>;
             fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+            fn mtu(&self, command: blehub::MtuCommand) -> Result<(), CommandDispatchError>;
+            fn set_connection_priority(&self, command: blehub::SetConnectionPriorityCommand) -> Result<(), CommandDispatchError>;
+            fn create_bond(&self, command: blehub::CreateBondCommand) -> Result<(), CommandDispatchError>;
+            fn remove_bond(&self, command: blehub::RemoveBondCommand) -> Result<(), CommandDispatchError>;
+            fn read_descriptor(&self, command: blehub::ReadDescriptorCommand) -> Result<(), CommandDispatchError>;
+            fn write_descriptor(&self, command: blehub::WriteDescriptorCommand) -> Result<(), CommandDispatchError>;
 
         }
     }
@@ -708,6 +725,7 @@ fn dropped_convenience_wait_never_requests_native_cancellation() {
                     vec![initialized(), terminal(1)],
                 ),
                 EventScenario::accept(RecordedCommand::Connect(ConnectCommand {
+                    auto_connect: false,
                     command_id: 2.into(),
                     connection_id: 1.into(),
                     peripheral_id: 10.into(),
@@ -756,6 +774,7 @@ fn non_read_drop_retires_delivery_only_and_explicit_cancel_still_reaches_backend
                     vec![initialized(), terminal(1)],
                 ),
                 EventScenario::accept(RecordedCommand::Connect(ConnectCommand {
+                    auto_connect: false,
                     command_id: 2.into(),
                     connection_id: 1.into(),
                     peripheral_id: 10.into(),
@@ -898,6 +917,626 @@ fn synchronous_begin_without_caller_runtime_is_eager_and_never_calls_native_on_c
         assert_eq!(bleng.next_event(2000).await.unwrap(), Some(terminal(1)));
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(handle.commands(), vec![initialize_command()]);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn mtu_query_and_request_are_distinct_bounded_platform_snapshots() {
+    caller().block_on(async {
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
+                command_id: 2.into(),
+                connection_id: 1.into(),
+                peripheral_id: 10.into(),
+            }),
+            RecordedCommand::Mtu(MtuCommand {
+                command_id: 3.into(),
+                connection_id: 1.into(),
+                request: None,
+            }),
+            RecordedCommand::Mtu(MtuCommand {
+                command_id: 4.into(),
+                connection_id: 1.into(),
+                request: Some(247),
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+
+        let connect: Arc<ConnectOperation> = bleng.begin_connect(10.into()).unwrap();
+        let connection: ConnectionId = complete(
+            &handle,
+            2,
+            connect.command_id(),
+            connect.wait(2000),
+            BleEvent::ConnectionStateChanged {
+                command_id: Some(2.into()),
+                connection_id: 1.into(),
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Connected,
+                },
+            },
+            terminal(2),
+        )
+        .await;
+
+        // A query never negotiates: the platform may not even expose the link MTU.
+        let query: Arc<MtuOperation> = bleng.begin_query_mtu(connection).unwrap();
+        assert_eq!(query.command_id(), 3.into());
+        let queried = MtuInfo {
+            mtu: None,
+            maximum_write_with_response: Some(182),
+            maximum_write_without_response: Some(185),
+        };
+        let info: MtuInfo = complete(
+            &handle,
+            3,
+            query.command_id(),
+            query.wait(2000),
+            BleEvent::MtuRead {
+                command_id: 3.into(),
+                connection_id: connection,
+                info: queried,
+            },
+            terminal(3),
+        )
+        .await;
+        assert_eq!(info, queried);
+        assert_eq!(info.mtu, None);
+
+        // A successful request is still not an echo: the receipt is the platform's own report.
+        let request: Arc<MtuOperation> = bleng.begin_request_mtu(connection, 247).unwrap();
+        let reported = MtuInfo {
+            mtu: Some(185),
+            maximum_write_with_response: Some(182),
+            maximum_write_without_response: Some(185),
+        };
+        let info: MtuInfo = complete(
+            &handle,
+            4,
+            request.command_id(),
+            request.wait(2000),
+            BleEvent::MtuRead {
+                command_id: 4.into(),
+                connection_id: connection,
+                info: reported,
+            },
+            terminal(4),
+        )
+        .await;
+        assert_eq!(info.mtu, Some(185));
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn an_unsupported_mtu_request_is_a_typed_dispatch_rejection_not_a_timeout() {
+    caller().block_on(async {
+        let (backend, handle) = FakeBackend::scripted([
+            EventScenario::emit_before_return(
+                initialize_command(),
+                vec![initialized(), terminal(1)],
+            ),
+            EventScenario::emit_before_return(
+                RecordedCommand::Connect(ConnectCommand {
+                    auto_connect: false,
+                    command_id: 2.into(),
+                    connection_id: 1.into(),
+                    peripheral_id: 10.into(),
+                }),
+                vec![
+                    BleEvent::ConnectionStateChanged {
+                        command_id: Some(2.into()),
+                        connection_id: 1.into(),
+                        result: ConnectionStateResult::Ok {
+                            state: ConnectionState::Connected,
+                        },
+                    },
+                    terminal(2),
+                ],
+            ),
+            EventScenario::reject(
+                RecordedCommand::Mtu(MtuCommand {
+                    command_id: 3.into(),
+                    connection_id: 1.into(),
+                    request: Some(247),
+                }),
+                CommandDispatchError::NotSupported {
+                    detail: "this platform reports MTU without negotiating".to_owned(),
+                },
+            ),
+        ]);
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        bleng.initialize(2000).await.unwrap();
+        let connection = bleng.connect(10.into(), 2000).await.unwrap();
+
+        let request: Arc<MtuOperation> = bleng.begin_request_mtu(connection, 247).unwrap();
+        assert!(matches!(
+            request.wait(2000).await,
+            Err(BlengError::DispatchRejected {
+                error: CommandDispatchError::NotSupported { .. }
+            })
+        ));
+        // The rejection is terminal for that submission only; the runtime stays usable.
+        assert_eq!(handle.commands().len(), 3);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn auto_connect_is_a_connect_option_not_a_separate_command() {
+    caller().block_on(async {
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::Connect(ConnectCommand {
+                auto_connect: true,
+                command_id: 2.into(),
+                connection_id: 1.into(),
+                peripheral_id: 10.into(),
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+        let connect: Arc<ConnectOperation> =
+            bleng.begin_connect_with_options(10.into(), true).unwrap();
+        let _: ConnectionId = complete(
+            &handle,
+            2,
+            connect.command_id(),
+            connect.wait(2000),
+            BleEvent::ConnectionStateChanged {
+                command_id: Some(2.into()),
+                connection_id: 1.into(),
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Connected,
+                },
+            },
+            terminal(2),
+        )
+        .await;
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn adapter_control_is_a_terminal_receipt_not_a_radio_state_claim() {
+    caller().block_on(async {
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::SetAdapterEnabled(SetAdapterEnabledCommand {
+                command_id: 2.into(),
+                enabled: true,
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+
+        let control = bleng.begin_set_adapter_enabled(true).unwrap();
+        assert_eq!(control.command_id(), 2.into());
+        accepted(&handle, 2).await;
+        emit(&handle, terminal(2));
+        control.wait(2000).await.unwrap();
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn every_device_query_kind_reaches_the_backend_unchanged() {
+    caller().block_on(async {
+        for kind in [
+            DeviceQueryKind::Connected,
+            DeviceQueryKind::Bonded,
+            DeviceQueryKind::Companion,
+        ] {
+            let commands = vec![
+                initialize_command(),
+                RecordedCommand::QueryDevices(QueryDevicesCommand {
+                    command_id: 2.into(),
+                    kind,
+                    service_uuids: vec![],
+                }),
+            ];
+            let (backend, handle) =
+                FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+            let bleng = Bleng::new().unwrap();
+            bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+            let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+            complete(
+                &handle,
+                1,
+                init.command_id(),
+                init.wait(2000),
+                initialized(),
+                terminal(1),
+            )
+            .await;
+
+            let query = bleng.begin_query_devices(kind, vec![]).unwrap();
+            accepted(&handle, 2).await;
+            emit(
+                &handle,
+                BleEvent::DevicesListed {
+                    command_id: 2.into(),
+                    devices: vec![],
+                },
+            );
+            emit(&handle, terminal(2));
+            let devices = query.wait(2000).await.unwrap();
+            assert!(devices.is_empty());
+            // The engine forwards the requested kind verbatim: platform meaning, including a
+            // companion association list, is owned by the backend.
+            assert_eq!(handle.commands(), commands);
+            bleng.shutdown().await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn device_query_returns_the_platform_inventory_payload() {
+    caller().block_on(async {
+        let device = DeviceRecord {
+            key: "7".into(),
+            local_name: Some("Kit".into()),
+            connected: true,
+            bonded: false,
+        };
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::QueryDevices(QueryDevicesCommand {
+                command_id: 2.into(),
+                kind: DeviceQueryKind::Connected,
+                service_uuids: vec![],
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+
+        let query = bleng
+            .begin_query_devices(DeviceQueryKind::Connected, vec![])
+            .unwrap();
+        accepted(&handle, 2).await;
+        emit(
+            &handle,
+            BleEvent::DevicesListed {
+                command_id: 2.into(),
+                devices: vec![device.clone()],
+            },
+        );
+        emit(&handle, terminal(2));
+        let devices = query.wait(2000).await.unwrap();
+        assert_eq!(devices, vec![device]);
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn gatt_cache_refresh_is_a_terminal_receipt_on_a_live_connection() {
+    caller().block_on(async {
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
+                command_id: 2.into(),
+                connection_id: 1.into(),
+                peripheral_id: 10.into(),
+            }),
+            RecordedCommand::RefreshGattCache(RefreshGattCacheCommand {
+                command_id: 3.into(),
+                connection_id: 1.into(),
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+        let connect: Arc<ConnectOperation> = bleng.begin_connect(10.into()).unwrap();
+        let connection: ConnectionId = complete(
+            &handle,
+            2,
+            connect.command_id(),
+            connect.wait(2000),
+            BleEvent::ConnectionStateChanged {
+                command_id: Some(2.into()),
+                connection_id: 1.into(),
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Connected,
+                },
+            },
+            terminal(2),
+        )
+        .await;
+
+        let refresh = bleng.begin_refresh_gatt_cache(connection).unwrap();
+        assert_eq!(refresh.command_id(), 3.into());
+        accepted(&handle, 3).await;
+        emit(&handle, terminal(3));
+        refresh.wait(2000).await.unwrap();
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn connection_priority_is_a_terminal_receipt_not_a_measured_link_mode() {
+    caller().block_on(async {
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
+                command_id: 2.into(),
+                connection_id: 1.into(),
+                peripheral_id: 10.into(),
+            }),
+            RecordedCommand::SetConnectionPriority(SetConnectionPriorityCommand {
+                command_id: 3.into(),
+                connection_id: 1.into(),
+                priority: ConnectionPriority::High,
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+        let connect: Arc<ConnectOperation> = bleng.begin_connect(10.into()).unwrap();
+        let connection: ConnectionId = complete(
+            &handle,
+            2,
+            connect.command_id(),
+            connect.wait(2000),
+            BleEvent::ConnectionStateChanged {
+                command_id: Some(2.into()),
+                connection_id: 1.into(),
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Connected,
+                },
+            },
+            terminal(2),
+        )
+        .await;
+
+        let priority: Arc<SetConnectionPriorityOperation> = bleng
+            .begin_set_connection_priority(connection, ConnectionPriority::High)
+            .unwrap();
+        assert_eq!(priority.command_id(), 3.into());
+        accepted(&handle, 3).await;
+        let mut wait = Box::pin(priority.wait(2000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut wait)
+                .await
+                .is_err(),
+            "the receipt must wait for the platform terminal"
+        );
+        // The receipt carries no value: a terminal success is the whole result.
+        emit(&handle, terminal(3));
+        tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn bonding_waits_for_the_platform_terminal_state() {
+    caller().block_on(async {
+        let commands = vec![
+            initialize_command(),
+            RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
+                command_id: 2.into(),
+                connection_id: 1.into(),
+                peripheral_id: 10.into(),
+            }),
+            RecordedCommand::CreateBond(CreateBondCommand {
+                command_id: 3.into(),
+                connection_id: 1.into(),
+                pin: None,
+            }),
+        ];
+        let (backend, handle) =
+            FakeBackend::scripted(commands.clone().into_iter().map(EventScenario::accept));
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        let init: Arc<InitializeOperation> = bleng.begin_initialize().unwrap();
+        complete(
+            &handle,
+            1,
+            init.command_id(),
+            init.wait(2000),
+            initialized(),
+            terminal(1),
+        )
+        .await;
+        let connect: Arc<ConnectOperation> = bleng.begin_connect(10.into()).unwrap();
+        let connection: ConnectionId = complete(
+            &handle,
+            2,
+            connect.command_id(),
+            connect.wait(2000),
+            BleEvent::ConnectionStateChanged {
+                command_id: Some(2.into()),
+                connection_id: 1.into(),
+                result: ConnectionStateResult::Ok {
+                    state: ConnectionState::Connected,
+                },
+            },
+            terminal(2),
+        )
+        .await;
+
+        let bond: Arc<BondOperation> = bleng.begin_create_bond(connection, None).unwrap();
+        assert_eq!(bond.command_id(), 3.into());
+        accepted(&handle, 3).await;
+        let mut wait = Box::pin(bond.wait(2000));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut wait)
+                .await
+                .is_err(),
+            "the receipt must wait for the platform terminal"
+        );
+        // `bonding` is progress, not a terminal: an interim report must not settle the waiter.
+        emit(
+            &handle,
+            BleEvent::BondStateChanged {
+                command_id: Some(3.into()),
+                connection_id: 1.into(),
+                state: BondState::Bonding,
+            },
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut wait)
+                .await
+                .is_err(),
+            "bonding is progress, not success evidence"
+        );
+        emit(
+            &handle,
+            BleEvent::BondStateChanged {
+                command_id: Some(3.into()),
+                connection_id: 1.into(),
+                state: BondState::Bonded,
+            },
+        );
+        emit(&handle, terminal(3));
+        let state = tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(state, BondState::Bonded);
+        assert_eq!(handle.commands(), commands);
+        bleng.shutdown().await.unwrap();
+    });
+}
+
+#[test]
+fn an_unsupported_connection_priority_is_a_typed_dispatch_rejection() {
+    caller().block_on(async {
+        let (backend, handle) = FakeBackend::scripted([
+            EventScenario::emit_before_return(
+                initialize_command(),
+                vec![initialized(), terminal(1)],
+            ),
+            EventScenario::emit_before_return(
+                RecordedCommand::Connect(ConnectCommand {
+                    auto_connect: false,
+                    command_id: 2.into(),
+                    connection_id: 1.into(),
+                    peripheral_id: 10.into(),
+                }),
+                vec![
+                    BleEvent::ConnectionStateChanged {
+                        command_id: Some(2.into()),
+                        connection_id: 1.into(),
+                        result: ConnectionStateResult::Ok {
+                            state: ConnectionState::Connected,
+                        },
+                    },
+                    terminal(2),
+                ],
+            ),
+            EventScenario::reject(
+                RecordedCommand::SetConnectionPriority(SetConnectionPriorityCommand {
+                    command_id: 3.into(),
+                    connection_id: 1.into(),
+                    priority: ConnectionPriority::LowPower,
+                }),
+                CommandDispatchError::NotSupported {
+                    detail: "CoreBluetooth does not expose connection priority".to_owned(),
+                },
+            ),
+        ]);
+        let bleng = Bleng::new().unwrap();
+        bleng.assemble_backend(Arc::new(backend)).await.unwrap();
+        bleng.initialize(2000).await.unwrap();
+        let connection = bleng.connect(10.into(), 2000).await.unwrap();
+
+        let priority: Arc<SetConnectionPriorityOperation> = bleng
+            .begin_set_connection_priority(connection, ConnectionPriority::LowPower)
+            .unwrap();
+        assert!(matches!(
+            priority.wait(2000).await,
+            Err(BlengError::DispatchRejected {
+                error: CommandDispatchError::NotSupported { .. }
+            })
+        ));
+        assert_eq!(handle.commands().len(), 3);
         bleng.shutdown().await.unwrap();
     });
 }

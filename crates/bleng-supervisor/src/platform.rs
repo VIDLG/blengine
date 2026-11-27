@@ -9,7 +9,10 @@ use crate::recovery::{RecoveryAction, RecoveryContext, RecoveryOperationId, Reco
 use blehub::{BleBackend, BluetoothUuid, NotificationModeRequest, ScanOptions};
 use bleng::Bleng;
 
-use crate::error::{RecoveryTargetError, SupervisorError};
+use crate::{
+    SessionObservationProjection,
+    error::{RecoveryTargetError, SupervisorError},
+};
 
 /// Counts reported by a platform session after its BLeng owner has shut down.
 pub type ResourceSnapshot = BTreeMap<String, u64>;
@@ -77,7 +80,14 @@ pub trait PlatformOwnerSession: Send + Sync {
     fn dispose_unassembled(&self) -> Result<(), SupervisorError>;
 
     /// Starts delivery of the owner's public event stream after assembly.
-    fn start_event_reader(&self, owner: Arc<Bleng>) -> Result<(), SupervisorError>;
+    ///
+    /// The existing reader may project scan events through this source-bound endpoint; do not
+    /// start a second reader or relabel its envelopes using the currently active owner context.
+    fn start_event_reader(
+        &self,
+        owner: Arc<Bleng>,
+        event_projection: Arc<SessionObservationProjection>,
+    ) -> Result<(), SupervisorError>;
 
     /// Waits until the event reader has drained after owner shutdown.
     fn wait_event_reader(
@@ -102,6 +112,13 @@ pub trait PlatformOwnerSession: Send + Sync {
 
 /// Creates one native platform session for a requested owner context.
 pub trait PlatformOwnerSessionFactory: Send + Sync {
+    /// Returns the resource names that must be present and zero after owner retirement.
+    ///
+    /// This contract belongs to the platform factory because the platform owns the native
+    /// resource vocabulary. The supervisor validates the returned snapshot against it; callers
+    /// must not duplicate these names in lifecycle configuration.
+    fn required_zero_resource_names(&self) -> BTreeSet<String>;
+
     fn create(
         &self,
         context: &RecoveryContext,
@@ -136,7 +153,7 @@ impl PlatformRecoveryAction {
     /// instead of being accidentally sent to a native adapter.
     pub(crate) fn from_recovery_action(
         action: &RecoveryAction,
-        target: &RecoveryTarget,
+        target: Option<&RecoveryTarget>,
     ) -> Result<Self, SupervisorError> {
         match action {
             RecoveryAction::WaitForRadioOn => Ok(Self::WaitForRadioOn),
@@ -149,11 +166,19 @@ impl PlatformRecoveryAction {
                 after_central_recreation,
             } => Ok(Self::AttemptSameOwnerRecovery {
                 after_central_recreation: *after_central_recreation,
-                target: target.clone(),
+                target: target
+                    .cloned()
+                    .ok_or(SupervisorError::RecoveryTargetMissing {
+                        action: "AttemptSameOwnerRecovery",
+                    })?,
             }),
             RecoveryAction::RecreateCentral => Ok(Self::RecreateCentral),
             RecoveryAction::AttemptFreshOwnerRecovery => Ok(Self::AttemptFreshOwnerRecovery {
-                target: target.clone(),
+                target: target
+                    .cloned()
+                    .ok_or(SupervisorError::RecoveryTargetMissing {
+                        action: "AttemptFreshOwnerRecovery",
+                    })?,
             }),
             RecoveryAction::RetireOldOwner | RecoveryAction::CreateFreshOwner => {
                 Err(SupervisorError::RecoveryActionNotPlatform {

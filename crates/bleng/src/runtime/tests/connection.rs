@@ -320,6 +320,7 @@ fn disconnecting_pending_connect_retires_connect_waiter_and_allows_reconnect() {
     let owner = RuntimeOwner::new_assuming_initialized().unwrap();
     let (backend, handle) = FakeBackend::scripted([
         EventScenario::accept(RecordedCommand::Connect(ConnectCommand {
+            auto_connect: false,
             command_id: CommandId { value: 1 },
             connection_id: ConnectionId { value: 1 },
             peripheral_id: PeripheralId { value: 10 },
@@ -943,6 +944,7 @@ fn connect_failure_releases_peripheral_and_timeout_keeps_native_reservation() {
     let (backend, handle) = FakeBackend::scripted([
         EventScenario::emit_before_return(
             RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
                 command_id: CommandId { value: 1 },
                 connection_id: ConnectionId { value: 1 },
                 peripheral_id: PeripheralId { value: 10 },
@@ -963,6 +965,7 @@ fn connect_failure_releases_peripheral_and_timeout_keeps_native_reservation() {
         ),
         connect_scenario(2, 2, 10),
         EventScenario::accept(RecordedCommand::Connect(ConnectCommand {
+            auto_connect: false,
             command_id: CommandId { value: 3 },
             connection_id: ConnectionId { value: 3 },
             peripheral_id: PeripheralId { value: 20 },
@@ -1033,6 +1036,7 @@ fn connect_dispatch_rejection_with_callback_fails_closed() {
     let (backend, handle) = FakeBackend::scripted([
         EventScenario::emit_before_reject(
             RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
                 command_id: CommandId { value: 1 },
                 connection_id: ConnectionId { value: 1 },
                 peripheral_id: PeripheralId { value: 10 },

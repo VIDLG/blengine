@@ -32,6 +32,10 @@ impl BleBackend for PanickingDispatchBackend {
             fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
             fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>) -> Result<(), BleHubError>;
             fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+            fn set_adapter_enabled(&self, command: blehub::SetAdapterEnabledCommand) -> Result<(), CommandDispatchError>;
+            fn query_devices(&self, command: blehub::QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+            fn associate_companion_device(&self, command: blehub::AssociateCompanionDeviceCommand) -> Result<(), CommandDispatchError>;
+            fn refresh_gatt_cache(&self, command: blehub::RefreshGattCacheCommand) -> Result<(), CommandDispatchError>;
             fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
             fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
             fn disconnect(&self, command: DisconnectCommand) -> Result<(), CommandDispatchError>;
@@ -68,6 +72,39 @@ impl BleBackend for PanickingDispatchBackend {
         result
     }
 
+    fn mtu(&self, command: blehub::MtuCommand) -> Result<(), CommandDispatchError> {
+        self.inner.mtu(command)
+    }
+
+    fn set_connection_priority(
+        &self,
+        command: blehub::SetConnectionPriorityCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.inner.set_connection_priority(command)
+    }
+
+    fn create_bond(&self, command: blehub::CreateBondCommand) -> Result<(), CommandDispatchError> {
+        self.inner.create_bond(command)
+    }
+
+    fn remove_bond(&self, command: blehub::RemoveBondCommand) -> Result<(), CommandDispatchError> {
+        self.inner.remove_bond(command)
+    }
+
+    fn read_descriptor(
+        &self,
+        command: blehub::ReadDescriptorCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.inner.read_descriptor(command)
+    }
+
+    fn write_descriptor(
+        &self,
+        command: blehub::WriteDescriptorCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.inner.write_descriptor(command)
+    }
+
     fn dispose(&self) -> Result<(), BleHubError> {
         self.dispose_calls.fetch_add(1, Ordering::SeqCst);
         self.inner.dispose()
@@ -83,6 +120,7 @@ fn foreign_dispatch_panic_retires_all_pending_and_reader_without_worker_restart(
         options: ScanOptions::default(),
     });
     let pending_connect = RecordedCommand::Connect(ConnectCommand {
+        auto_connect: false,
         command_id: 4.into(),
         connection_id: 3.into(),
         peripheral_id: 20.into(),
@@ -152,6 +190,7 @@ fn foreign_dispatch_panic_retires_all_pending_and_reader_without_worker_restart(
             panic_entered.notified().await;
             let connecting = owner
                 .begin_operation(|submission| BeginConnect {
+                    auto_connect: false,
                     submission,
                     peripheral_id: 20.into(),
                 })

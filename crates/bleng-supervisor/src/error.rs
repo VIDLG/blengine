@@ -18,6 +18,42 @@ pub enum RecoveryTargetError {
     InvalidScanServiceUuid { index: usize },
 }
 
+/// Synchronous context admission and typed BLeng submission errors.
+#[derive(Debug, Error)]
+#[cfg_attr(feature = "ffi", derive(uniffi::Error))]
+pub enum SupervisorOperationError {
+    #[error("supervisor has no active session")]
+    NoActiveSession,
+    #[error("operation context does not match the active owner and recovery policy")]
+    StaleContext,
+    #[error("supervisor recovery is not ready for operations")]
+    RecoveryNotReady,
+    #[error("supervisor operation is already in progress")]
+    SupervisorBusy,
+    #[error("supervisor is unavailable")]
+    SupervisorUnavailable,
+    #[error("invalid operation context: {detail}")]
+    InvalidContext { detail: String },
+    #[error("BLeng failed: {error}")]
+    Bleng {
+        #[from]
+        error: BlengError,
+    },
+}
+
+/// A connection lane that could not be installed is reported through the engine's existing error
+/// vocabulary rather than a second one: an owner that retired mid-submission has no active
+/// session, and a poisoned projection is an unavailable supervisor.
+impl From<crate::ConnectionSubmissionError> for SupervisorOperationError {
+    fn from(error: crate::ConnectionSubmissionError) -> Self {
+        match error {
+            crate::ConnectionSubmissionError::Owner { error } => error,
+            crate::ConnectionSubmissionError::OwnerRetired => Self::NoActiveSession,
+            crate::ConnectionSubmissionError::Unavailable => Self::SupervisorUnavailable,
+        }
+    }
+}
+
 /// Errors at the Rust supervisor/platform-session boundary.
 #[derive(Debug, Error)]
 pub enum SupervisorError {
@@ -34,8 +70,14 @@ pub enum SupervisorError {
     Bleng(#[from] BlengError),
     #[error("recovery policy rejected the observation: {0}")]
     Recovery(#[from] RecoveryError),
+    #[error("recovery barrier configuration rejected: {0}")]
+    RecoveryConfiguration(RecoveryError),
     #[error("platform session context does not match the requested context")]
     PlatformContextMismatch,
+    #[error("supervisor must configure at least one required zero resource")]
+    RequiredResourcesNotConfigured,
+    #[error("required zero resource name must not be blank")]
+    BlankRequiredResourceName,
     #[error("required resource is missing from the retirement snapshot: {resource}")]
     MissingResource { resource: String },
     #[error("native resources remained after retirement: {snapshot:?}")]
@@ -55,6 +97,8 @@ pub enum SupervisorError {
     #[error("recovery action is not executable by the platform session: {action}")]
     RecoveryActionNotPlatform { action: &'static str },
 
+    #[error("recovery target is required for action: {action}")]
+    RecoveryTargetMissing { action: &'static str },
     #[error("invalid recovery target: {0}")]
     InvalidRecoveryTarget(#[from] RecoveryTargetError),
     #[error("recovery action sequence mismatch: expected {expected}, received {received}")]

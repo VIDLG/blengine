@@ -43,7 +43,7 @@
 //! callbacks for replay directly into normal processing, without gating them again.
 //!
 //! Result APIs answer different questions. resolve_dispatch(None) means no matching
-//! reservation; record_terminal() returns ownership where routing needs it, not
+//! reservation; try_record_terminal() returns ownership where routing needs it, not
 //! operation success. waiter_result(None) can mean either unowned or incomplete;
 //! a present result is deliverable but does not itself advance or retire state.
 //! Leaf waiter_result() methods without a command ID assume the caller already
@@ -58,8 +58,9 @@
 //!
 
 use blehub::{
-    BleEvent, BleEventError, CommandDispatchError, CommandId, ConnectionId, GattCharacteristicId,
-    GattSessionId, NotificationModeRequest, PeripheralId, ScanSessionId, SubscriptionId,
+    BleEvent, BleEventError, CommandDispatchError, CommandId, ConnectionId, ConnectionState,
+    ConnectionStateResult, GattCharacteristicId, GattDescriptorId, GattSessionId,
+    NotificationModeRequest, PeripheralId, ScanSessionId, SubscriptionId,
 };
 
 use crate::{
@@ -69,44 +70,60 @@ use crate::{
 
 use super::{CommandDirectory, CommandRoute};
 
+mod adapter_control;
 mod cancellation;
 mod command_progress;
+mod companion_association;
 mod connection;
 mod connections;
+mod device_query;
 mod gatt;
 mod initialization;
 mod io;
 mod publication;
 mod scan;
 mod subscription;
+mod subscriptions;
+mod top_level;
 
 #[cfg(test)]
 mod tests;
 
 pub(super) use cancellation::{CancellationDecision, CancellationReceiver};
-pub(super) use command_progress::{
-    BufferedEventDisposition, CommandProgress, DispatchAction, DispatchResolution,
-    ReconciliationFault,
-};
-pub(super) use connection::connection_lost;
+use command_progress::{BufferedEventDisposition, CommandProgress};
+pub(super) use command_progress::{DispatchAction, DispatchResolution, ReconciliationFault};
+
 pub(super) use connections::ConnectionReservations;
-pub(super) use gatt::GattAccess;
+
+pub(super) use adapter_control::AdapterControlState;
+pub(super) use companion_association::CompanionAssociationState;
+pub(super) use device_query::DeviceQueryState;
 pub(super) use initialization::InitializationState;
-pub(super) use publication::{
-    PublicationDecision, PublicationGate, PublicationRelease, ScopedPublication,
-};
+pub(super) use publication::PublicationDecision;
+use publication::{PublicationGate, PublicationRelease, ScopedPublication};
 pub(super) use scan::ScanState;
 
-/// The command directory and three actor-owned reservation roots.
+/// Selects operation-specific GATT admission rules, not native capabilities.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum GattAccess {
+    Read,
+    Write,
+    EnableNotifications,
+}
+
+/// The command directory and four actor-owned reservation roots.
 ///
 /// Domain-specific admission and evidence rules remain on `InitializationState`,
-/// `ScanState`, and `ConnectionReservations`. This coordinator owns their shared
-/// command lifecycle and provides command/event operations that select one root,
+/// `AdapterControlState`, `ScanState`, and `ConnectionReservations`. This coordinator owns their
+/// shared command lifecycle and provides command/event operations that select one root,
 /// so the actor does not repeat the same `CommandRoute` match in several methods.
 #[derive(Default)]
 pub(super) struct ReservationCoordinator {
     commands: CommandDirectory,
     initialization: InitializationState,
+    adapter: AdapterControlState,
+    devices: DeviceQueryState,
+    companion: CompanionAssociationState,
     scan: ScanState,
     connections: ConnectionReservations,
 }
@@ -126,7 +143,7 @@ impl ReservationCoordinator {
             #[call(insert)]
             pub(super) fn register_command(&mut self, command_id: CommandId, route: CommandRoute);
             #[call(set_completion)]
-            pub(super) fn set_command_completion(
+            fn set_command_completion(
                 &mut self,
                 command_id: CommandId,
                 completion: CompletionObserver,
@@ -146,6 +163,27 @@ impl ReservationCoordinator {
             pub(super) fn reserve_initialize(&mut self, command_id: CommandId);
         }
 
+        to self.adapter {
+            #[call(require_available)]
+            pub(super) fn require_adapter_available(&self) -> Result<(), WaiterError>;
+            #[call(reserve)]
+            pub(super) fn reserve_adapter_control(&mut self, command_id: CommandId);
+        }
+
+        to self.devices {
+            #[call(require_available)]
+            pub(super) fn require_devices_query_available(&self) -> Result<(), WaiterError>;
+            #[call(reserve)]
+            pub(super) fn reserve_device_query(&mut self, command_id: CommandId);
+        }
+
+        to self.companion {
+            #[call(require_available)]
+            pub(super) fn require_companion_association_available(&self) -> Result<(), WaiterError>;
+            #[call(reserve)]
+            pub(super) fn reserve_companion_association(&mut self, command_id: CommandId);
+        }
+
         to self.connections {
             pub(super) fn is_foreign_disconnect(&self, event: &BleEvent) -> bool;
             pub(super) fn accepted_command_ids(&self, connection_id: ConnectionId) -> Vec<CommandId>;
@@ -154,6 +192,30 @@ impl ReservationCoordinator {
             pub(super) fn validate_disconnect(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
             pub(super) fn validate_gatt_discovery(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
             pub(super) fn validate_rssi(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+            pub(super) fn validate_mtu(&self, connection_id: ConnectionId) -> Result<PeripheralId, WaiterError>;
+            pub(super) fn validate_set_connection_priority(
+                &self,
+                connection_id: ConnectionId,
+            ) -> Result<PeripheralId, WaiterError>;
+            pub(super) fn validate_create_bond(
+                &self,
+                connection_id: ConnectionId,
+            ) -> Result<PeripheralId, WaiterError>;
+            pub(super) fn validate_remove_bond(
+                &self,
+                connection_id: ConnectionId,
+            ) -> Result<PeripheralId, WaiterError>;
+            pub(super) fn validate_refresh_gatt_cache(
+                &self,
+                connection_id: ConnectionId,
+            ) -> Result<PeripheralId, WaiterError>;
+            pub(super) fn validate_descriptor_access(
+                &self,
+                connection_id: ConnectionId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+                descriptor_id: GattDescriptorId,
+            ) -> Result<PeripheralId, WaiterError>;
             pub(super) fn validate_gatt_access(
                 &self,
                 connection_id: ConnectionId,
@@ -187,6 +249,27 @@ impl ReservationCoordinator {
                 session_id: GattSessionId,
             );
             pub(super) fn reserve_rssi(&mut self, peripheral_id: PeripheralId, command_id: CommandId);
+            pub(super) fn reserve_mtu(&mut self, peripheral_id: PeripheralId, command_id: CommandId);
+            pub(super) fn reserve_set_connection_priority(
+                &mut self,
+                peripheral_id: PeripheralId,
+                command_id: CommandId,
+            );
+            pub(super) fn reserve_create_bond(
+                &mut self,
+                peripheral_id: PeripheralId,
+                command_id: CommandId,
+            );
+            pub(super) fn reserve_remove_bond(
+                &mut self,
+                peripheral_id: PeripheralId,
+                command_id: CommandId,
+            );
+            pub(super) fn reserve_refresh_gatt_cache(
+                &mut self,
+                peripheral_id: PeripheralId,
+                command_id: CommandId,
+            );
             pub(super) fn reserve_read(
                 &mut self,
                 peripheral_id: PeripheralId,
@@ -200,6 +283,22 @@ impl ReservationCoordinator {
                 command_id: CommandId,
                 session_id: GattSessionId,
                 characteristic_id: GattCharacteristicId,
+            );
+            pub(super) fn reserve_descriptor_read(
+                &mut self,
+                peripheral_id: PeripheralId,
+                command_id: CommandId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+                descriptor_id: GattDescriptorId,
+            );
+            pub(super) fn reserve_descriptor_write(
+                &mut self,
+                peripheral_id: PeripheralId,
+                command_id: CommandId,
+                session_id: GattSessionId,
+                characteristic_id: GattCharacteristicId,
+                descriptor_id: GattDescriptorId,
             );
             pub(super) fn reserve_notification_enable(
                 &mut self,
@@ -231,10 +330,13 @@ impl ReservationCoordinator {
         let route = self.commands.route(command_id)?;
         match route {
             CommandRoute::Initialization => self.initialization.completion_observer(command_id),
+            CommandRoute::AdapterControl => self.adapter.completion_observer(command_id),
+            CommandRoute::DevicesQuery => self.devices.completion_observer(command_id),
+            CommandRoute::CompanionAssociation => self.companion.completion_observer(command_id),
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.completion_observer(command_id)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .completion_observer_for_conn(connection_id, command_id),
             #[cfg(test)]
@@ -262,10 +364,13 @@ impl ReservationCoordinator {
         let route = self.commands.route(command_id)?;
         match route {
             CommandRoute::Initialization => Some(CancellationDecision::NotCancellable),
+            CommandRoute::AdapterControl => self.adapter.request_cancellation(command_id),
+            CommandRoute::DevicesQuery => self.devices.request_cancellation(command_id),
+            CommandRoute::CompanionAssociation => self.companion.request_cancellation(command_id),
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.request_cancellation(command_id)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .request_cancellation_for_conn(connection_id, command_id),
             #[cfg(test)]
@@ -281,16 +386,19 @@ impl ReservationCoordinator {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.try_claim_cancellation_dispatch(command_id)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .try_claim_cancellation_dispatch_for_conn(connection_id, command_id),
             CommandRoute::Initialization => false,
+            CommandRoute::AdapterControl => false,
+            CommandRoute::DevicesQuery => false,
+            CommandRoute::CompanionAssociation => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
     }
 
-    pub(super) fn try_resolve_cancellation(
+    fn try_resolve_cancellation(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -302,10 +410,13 @@ impl ReservationCoordinator {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.try_resolve_cancellation(command_id, result)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .try_resolve_cancellation_for_conn(connection_id, command_id, result),
             CommandRoute::Initialization => false,
+            CommandRoute::AdapterControl => false,
+            CommandRoute::DevicesQuery => false,
+            CommandRoute::CompanionAssociation => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
@@ -319,10 +430,13 @@ impl ReservationCoordinator {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.try_clear_cancellation(command_id)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .try_clear_cancellation_for_conn(connection_id, command_id),
             CommandRoute::Initialization => false,
+            CommandRoute::AdapterControl => false,
+            CommandRoute::DevicesQuery => false,
+            CommandRoute::CompanionAssociation => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
@@ -336,10 +450,13 @@ impl ReservationCoordinator {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.is_cancellation_requested(command_id)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .is_cancellation_requested_for_conn(connection_id, command_id),
             CommandRoute::Initialization => false,
+            CommandRoute::AdapterControl => false,
+            CommandRoute::DevicesQuery => false,
+            CommandRoute::CompanionAssociation => false,
             #[cfg(test)]
             CommandRoute::Test => false,
         }
@@ -353,18 +470,22 @@ impl ReservationCoordinator {
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
                 self.scan.take_cancellation_public_events(command_id)
             }
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .take_cancellation_public_events_for_conn(connection_id, command_id),
             CommandRoute::Initialization => Vec::new(),
+            CommandRoute::AdapterControl => Vec::new(),
+            CommandRoute::DevicesQuery => Vec::new(),
+            CommandRoute::CompanionAssociation => Vec::new(),
             #[cfg(test)]
             CommandRoute::Test => Vec::new(),
         }
     }
 
-    /// Resolves cancellation before draining events released by that resolution.
-    /// The order preserves publication after the control receipt is recorded.
-    pub(super) fn resolve_cancellation_and_drain_events(
+    /// Records the control receipt before releasing public events made ready by it.
+    /// Another pending cancellation keeps its scope's FIFO buffered, so this need not drain it.
+    /// Returned events are publication-only; their internal evidence was already recorded.
+    pub(super) fn resolve_cancellation_and_release_public_events(
         &mut self,
         command_id: CommandId,
         result: Result<(), WaiterError>,
@@ -381,11 +502,14 @@ impl ReservationCoordinator {
 
     fn publication_target(&self, event: &BleEvent) -> PublicationTarget {
         match self.route_for_event(event) {
-            Some(CommandRoute::Connection { connection_id, .. }) => {
+            Some(CommandRoute::Connection { connection_id }) => {
                 PublicationTarget::Connection(connection_id)
             }
             Some(CommandRoute::ScanStart | CommandRoute::ScanStop) => PublicationTarget::Scan,
             Some(CommandRoute::Initialization) => PublicationTarget::Publish,
+            Some(CommandRoute::AdapterControl) => PublicationTarget::Publish,
+            Some(CommandRoute::DevicesQuery) => PublicationTarget::Publish,
+            Some(CommandRoute::CompanionAssociation) => PublicationTarget::Publish,
             #[cfg(test)]
             Some(CommandRoute::Test) => PublicationTarget::Publish,
             None => match event {
@@ -395,9 +519,13 @@ impl ReservationCoordinator {
                 BleEvent::ConnectionStateChanged { connection_id, .. }
                 | BleEvent::CharacteristicRead { connection_id, .. }
                 | BleEvent::CharacteristicWritten { connection_id, .. }
+                | BleEvent::DescriptorRead { connection_id, .. }
+                | BleEvent::DescriptorWritten { connection_id, .. }
                 | BleEvent::NotificationStateChanged { connection_id, .. }
                 | BleEvent::NotificationReceived { connection_id, .. }
-                | BleEvent::RssiRead { connection_id, .. } => {
+                | BleEvent::RssiRead { connection_id, .. }
+                | BleEvent::BondStateChanged { connection_id, .. }
+                | BleEvent::MtuRead { connection_id, .. } => {
                     PublicationTarget::Connection(*connection_id)
                 }
                 BleEvent::GattDiscovered { database, .. } => {
@@ -406,9 +534,10 @@ impl ReservationCoordinator {
                 BleEvent::CommandCompleted { command_id, .. } => {
                     PublicationTarget::Command(*command_id)
                 }
-                BleEvent::AdapterSnapshotChanged { .. } | BleEvent::BackendError { .. } => {
-                    PublicationTarget::Publish
-                }
+                BleEvent::AdapterSnapshotChanged { .. }
+                | BleEvent::DevicesListed { .. }
+                | BleEvent::CompanionPresenceChanged { .. }
+                | BleEvent::BackendError { .. } => PublicationTarget::Publish,
             },
         }
     }
@@ -436,14 +565,21 @@ impl ReservationCoordinator {
         let Some(event) = self.initialization.gate_event(event)? else {
             return Ok(None);
         };
-        let event = match self.route_for_event(&event) {
-            Some(CommandRoute::Connection {
-                connection_id,
-                kind,
-            }) => self
-                .connections
-                .gate_event_for_conn(connection_id, kind, event)?,
-            _ => self.connections.gate_event(event)?,
+        let route = self.route_for_event(&event);
+        let event = match (event, route) {
+            // State callbacks affect a connection scope, not just their named command.
+            (event @ BleEvent::ConnectionStateChanged { .. }, _) => {
+                self.connections.gate_event(event)?
+            }
+            (event, Some(CommandRoute::Connection { connection_id })) => {
+                self.connections.gate_event_for_conn(connection_id, event)?
+            }
+            (event, Some(CommandRoute::AdapterControl)) => self.adapter.gate_event(event)?,
+            (event, Some(CommandRoute::DevicesQuery)) => self.devices.gate_event(event)?,
+            (event, Some(CommandRoute::CompanionAssociation)) => {
+                self.companion.gate_event(event)?
+            }
+            (event, _) => self.connections.gate_event(event)?,
         };
         match event {
             Some(event) => self.scan.gate_event(event),
@@ -457,6 +593,7 @@ impl ReservationCoordinator {
     ) -> Result<(), ReconciliationFault> {
         match event {
             BleEvent::AdapterSnapshotChanged { .. } => self.initialization.record_event(event),
+            BleEvent::DevicesListed { .. } => self.devices.record_event(event),
             BleEvent::ScanStarted { .. } | BleEvent::ScanStopped { .. } => {
                 self.scan.record_event(event)
             }
@@ -481,14 +618,47 @@ impl ReservationCoordinator {
                 .initialization
                 .resolve_dispatch(command_id, result)
                 .unwrap_or_default(),
-            CommandRoute::ScanStart | CommandRoute::ScanStop => self
-                .scan
-                .resolve_dispatch(command_id, result)
-                .unwrap_or_default(),
-            CommandRoute::Connection { connection_id, .. } => self
-                .connections
-                .resolve_dispatch_for_conn(connection_id, command_id, result)
-                .unwrap_or_default(),
+            CommandRoute::AdapterControl => {
+                let resolution = self.adapter.resolve_dispatch(command_id, result);
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
+            CommandRoute::DevicesQuery => {
+                let resolution = self.devices.resolve_dispatch(command_id, result);
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
+            CommandRoute::CompanionAssociation => {
+                let resolution = self.companion.resolve_dispatch(command_id, result);
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
+            CommandRoute::ScanStart | CommandRoute::ScanStop => {
+                let resolution = self.scan.resolve_dispatch(command_id, result);
+                // Start rejection releases the session; stop rejection releases its
+                // child. Neither command remains for the retirement pass to find.
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
+            CommandRoute::Connection { connection_id } => {
+                let resolution =
+                    self.connections
+                        .resolve_dispatch_for_conn(connection_id, command_id, result);
+                // Rejection may have already released the reservation, leaving no
+                // command for the later retirement pass to discover.
+                if result.is_err() && resolution.is_some() {
+                    self.remove_commands([command_id]);
+                }
+                resolution.unwrap_or_default()
+            }
             #[cfg(test)]
             CommandRoute::Test => DispatchResolution::default(),
         }
@@ -501,12 +671,21 @@ impl ReservationCoordinator {
         let result = error.map_or(Ok(()), Err);
         match route {
             CommandRoute::Initialization => {
-                self.initialization.record_terminal(command_id, &result);
+                self.initialization.try_record_terminal(command_id, &result);
+            }
+            CommandRoute::AdapterControl => {
+                self.adapter.record_terminal(command_id, &result);
+            }
+            CommandRoute::DevicesQuery => {
+                self.devices.record_terminal(command_id, &result);
+            }
+            CommandRoute::CompanionAssociation => {
+                self.companion.record_terminal(command_id, &result);
             }
             CommandRoute::ScanStart | CommandRoute::ScanStop => {
-                self.scan.record_terminal(command_id, &result);
+                self.scan.try_record_terminal(command_id, &result);
             }
-            CommandRoute::Connection { connection_id, .. } => {
+            CommandRoute::Connection { connection_id } => {
                 self.connections
                     .record_terminal_for_conn(connection_id, command_id, &result);
             }
@@ -519,8 +698,11 @@ impl ReservationCoordinator {
         let route = self.commands.route(command_id)?;
         match route {
             CommandRoute::Initialization => self.initialization.waiter_result(command_id),
+            CommandRoute::AdapterControl => self.adapter.waiter_result(command_id),
+            CommandRoute::DevicesQuery => self.devices.waiter_result(command_id),
+            CommandRoute::CompanionAssociation => self.companion.waiter_result(command_id),
             CommandRoute::ScanStart | CommandRoute::ScanStop => self.scan.waiter_result(command_id),
-            CommandRoute::Connection { connection_id, .. } => self
+            CommandRoute::Connection { connection_id } => self
                 .connections
                 .waiter_result_for_conn(connection_id, command_id),
             #[cfg(test)]
@@ -538,14 +720,37 @@ impl ReservationCoordinator {
     pub(super) fn advance_and_retire(&mut self) -> Result<(), WaiterError> {
         // An initialization failure faults the runtime, but completed reservations in the other
         // roots can still be released in this actor turn before the error is returned.
-        let (mut retired, initialization_error) =
-            match self.initialization.advance_after_settlement() {
-                Ok(command_id) => (command_id.into_iter().collect::<Vec<_>>(), None),
-                Err(error) => (Vec::new(), Some(error)),
-            };
+        let initialization = self.initialization.advance_after_settlement();
+        let mut retired = Vec::new();
+        if let Ok(Some(command_id)) = &initialization {
+            retired.push(*command_id);
+        }
+        retired.extend(self.adapter.retire_completed());
+        retired.extend(self.devices.retire_completed());
+        retired.extend(self.companion.retire_completed());
         retired.extend(self.connections.retire_completed());
         retired.extend(self.scan.retire_completed());
         self.remove_commands(retired);
-        initialization_error.map_or(Ok(()), Err)
+        initialization.map(|_| ())
     }
+}
+
+/// Identifies loss of the expected connection. A command-correlated error alone
+/// belongs to that command; only an uncorrelated error establishes passive loss.
+pub(super) fn is_connection_lost(event: &BleEvent, expected: ConnectionId) -> bool {
+    matches!(
+        event,
+        BleEvent::ConnectionStateChanged {
+            connection_id,
+            result: ConnectionStateResult::Ok { state: ConnectionState::Disconnected },
+            ..
+        } if *connection_id == expected
+    ) || matches!(
+        event,
+        BleEvent::ConnectionStateChanged {
+            command_id: None,
+            connection_id,
+            result: ConnectionStateResult::Err { .. },
+        } if *connection_id == expected
+    )
 }

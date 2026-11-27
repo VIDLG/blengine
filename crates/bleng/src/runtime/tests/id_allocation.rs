@@ -23,6 +23,7 @@ fn equal_valued_command_and_connection_ids_still_require_exact_correlation() {
     for terminal_first in [false, true] {
         let owner = RuntimeOwner::new_assuming_initialized().unwrap();
         let second_connect = RecordedCommand::Connect(ConnectCommand {
+            auto_connect: false,
             command_id: 2.into(),
             connection_id: 2.into(),
             peripheral_id: 20.into(),

@@ -37,9 +37,11 @@ pub(super) use backend_port::{AssemblyError, BackendPort};
 pub(super) use command::{CommandDirectory, CommandRoute};
 pub(super) use lifecycle::{RuntimeLifecycle, RuntimePhase};
 pub(crate) use messages::{
-    BeginConnect, BeginDisableNotifications, BeginDisconnect, BeginDiscoverGatt,
-    BeginEnableNotifications, BeginInitialize, BeginRead, BeginRssi, BeginScan, BeginStop,
-    BeginWrite, OperationSpec,
+    BeginAssociateCompanion, BeginConnect, BeginCreateBond, BeginDisableNotifications,
+    BeginDisconnect, BeginDiscoverGatt, BeginEnableNotifications, BeginInitialize, BeginMtu,
+    BeginQueryDevices, BeginRead, BeginReadDescriptor, BeginRefreshGattCache, BeginRemoveBond,
+    BeginRssi, BeginScan, BeginSetAdapterEnabled, BeginSetConnectionPriority, BeginStop,
+    BeginWrite, BeginWriteDescriptor, OperationSpec,
 };
 pub(crate) use operation::{OperationControl, OperationHandoff, ResultSlot};
 pub(super) use owner::{EventReadError, RuntimeOwner, TaskFailure};

@@ -4,12 +4,13 @@
 //! Dropping a handle retires caller delivery, while cancel() explicitly requests
 //! native control under the operation policy and backend's cancellation support.
 
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use blehub::{
-    AdapterSnapshot, BleBackend, BleEvent, CommandId, ConnectionId, GattCharacteristicId,
-    GattDatabase, GattSessionId, NotificationModeRequest, PeripheralId, ScanOptions, ScanSessionId,
-    SubscriptionId, WriteType,
+    AdapterSnapshot, BleBackend, BleEvent, BluetoothUuid, BondState, CommandId, ConnectionId,
+    ConnectionPriority, DeviceQueryKind, DeviceRecord, GattCharacteristicId, GattDatabase,
+    GattDescriptorId, GattSessionId, MtuInfo, NotificationModeRequest, PeripheralId, ScanOptions,
+    ScanSessionId, SubscriptionId, WriteType,
 };
 use tokio::time::Instant;
 
@@ -19,9 +20,12 @@ mod operations;
 
 use operations::OperationAdapter;
 pub use operations::{
-    ConnectOperation, DisableNotificationsOperation, DisconnectOperation, DiscoverGattOperation,
-    EnableNotificationsOperation, InitializeOperation, ReadOperation, ReadRssiOperation,
-    StartScanOperation, StopScanOperation, WriteOperation,
+    AssociateCompanionDeviceOperation, BondOperation, ConnectOperation,
+    DisableNotificationsOperation, DisconnectOperation, DiscoverGattOperation,
+    EnableNotificationsOperation, InitializeOperation, MtuOperation, NotificationSubscription,
+    QueryDevicesOperation, ReadDescriptorOperation, ReadOperation, ReadRssiOperation,
+    RefreshGattCacheOperation, SetAdapterEnabledOperation, SetConnectionPriorityOperation,
+    StartScanOperation, StopScanOperation, WriteDescriptorOperation, WriteOperation,
 };
 
 const MAX_TIMEOUT_MS: u64 = 86_400_000;
@@ -78,6 +82,7 @@ impl Bleng {
         let pending =
             self.owner
                 .submit_operation(preserve_completed_result_on_close, |submission| {
+                    submission.enable_outcome_observation();
                     runtime::BeginScan {
                         submission,
                         options,
@@ -105,6 +110,7 @@ impl Bleng {
     fn submit_connect(
         &self,
         peripheral: PeripheralId,
+        auto_connect: bool,
         preserve_completed_result_on_close: bool,
     ) -> Result<OperationAdapter<runtime::BeginConnect>, BlengError> {
         let pending =
@@ -113,6 +119,7 @@ impl Bleng {
                     runtime::BeginConnect {
                         submission,
                         peripheral_id: peripheral,
+                        auto_connect,
                     }
                 })?;
         Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
@@ -251,6 +258,215 @@ impl Bleng {
                 })?;
         Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
     }
+
+    fn submit_mtu(
+        &self,
+        connection: ConnectionId,
+        request: Option<u16>,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginMtu>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginMtu {
+                        submission,
+                        connection,
+                        request,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_set_adapter_enabled(
+        &self,
+        enabled: bool,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginSetAdapterEnabled>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginSetAdapterEnabled {
+                        submission,
+                        enabled,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_associate_companion(
+        &self,
+        service_uuids: Vec<BluetoothUuid>,
+        display_name: Option<String>,
+        device_profile: Option<String>,
+        notify_on_device_nearby: bool,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginAssociateCompanion>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginAssociateCompanion {
+                        submission,
+                        service_uuids,
+                        display_name,
+                        device_profile,
+                        notify_on_device_nearby,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_query_devices(
+        &self,
+        kind: DeviceQueryKind,
+        service_uuids: Vec<BluetoothUuid>,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginQueryDevices>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginQueryDevices {
+                        submission,
+                        kind,
+                        service_uuids,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_set_connection_priority(
+        &self,
+        connection: ConnectionId,
+        priority: ConnectionPriority,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginSetConnectionPriority>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginSetConnectionPriority {
+                        submission,
+                        connection,
+                        priority,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_refresh_gatt_cache(
+        &self,
+        connection: ConnectionId,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginRefreshGattCache>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginRefreshGattCache {
+                        submission,
+                        connection,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_create_bond(
+        &self,
+        connection: ConnectionId,
+        pin: Option<String>,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginCreateBond>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginCreateBond {
+                        submission,
+                        connection,
+                        pin,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_remove_bond(
+        &self,
+        connection: ConnectionId,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginRemoveBond>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginRemoveBond {
+                        submission,
+                        connection,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_read_descriptor(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        descriptor: GattDescriptorId,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginReadDescriptor>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginReadDescriptor {
+                        submission,
+                        connection,
+                        session,
+                        characteristic,
+                        descriptor,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    fn submit_write_descriptor(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        descriptor: GattDescriptorId,
+        value: Vec<u8>,
+        preserve_completed_result_on_close: bool,
+    ) -> Result<OperationAdapter<runtime::BeginWriteDescriptor>, BlengError> {
+        let pending =
+            self.owner
+                .submit_operation(preserve_completed_result_on_close, |submission| {
+                    runtime::BeginWriteDescriptor {
+                        submission,
+                        connection,
+                        session,
+                        characteristic,
+                        descriptor,
+                        value,
+                    }
+                })?;
+        Ok(OperationAdapter::new(Arc::clone(&self.owner), pending))
+    }
+
+    /// Runs one bounded observation on this owner's single runtime.
+    ///
+    /// Lanes that are not operations (a state stream with no command behind it) still need the
+    /// owner's executor and its timer: a foreign caller may have neither. Dropping the returned
+    /// future retires that observation only — it never cancels BLE work, and it never shortens
+    /// another reader's wait.
+    pub async fn observe_with_timeout<T: Send + 'static>(
+        &self,
+        timeout_ms: u64,
+        observation: impl Future<Output = T> + Send + 'static,
+    ) -> Result<T, BlengError> {
+        let timeout = validate_timeout(timeout_ms)?;
+        self.owner
+            .run_task(async move {
+                tokio::time::timeout(timeout, observation)
+                    .await
+                    .map_err(|_| BlengError::Timeout)
+            })
+            .await?
+    }
 }
 
 #[uniffi::export]
@@ -322,7 +538,19 @@ impl Bleng {
         peripheral: PeripheralId,
     ) -> Result<Arc<ConnectOperation>, BlengError> {
         Ok(Arc::new(ConnectOperation {
-            operation: self.submit_connect(peripheral, true)?,
+            operation: self.submit_connect(peripheral, false, true)?,
+        }))
+    }
+
+    /// Same as [`Self::begin_connect`], but asks the platform for an auto-connect link where it can
+    /// express one. A backend that cannot rejects the command with `NotSupported`.
+    pub fn begin_connect_with_options(
+        &self,
+        peripheral: PeripheralId,
+        auto_connect: bool,
+    ) -> Result<Arc<ConnectOperation>, BlengError> {
+        Ok(Arc::new(ConnectOperation {
+            operation: self.submit_connect(peripheral, auto_connect, true)?,
         }))
     }
 
@@ -389,6 +617,48 @@ impl Bleng {
     }
 
     /// Eagerly submits to the bounded actor mailbox without waiting for admission.
+    /// A descriptor is addressed through the characteristic that owns it.
+    pub fn begin_read_descriptor(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        descriptor: GattDescriptorId,
+    ) -> Result<Arc<ReadDescriptorOperation>, BlengError> {
+        Ok(Arc::new(ReadDescriptorOperation {
+            operation: self.submit_read_descriptor(
+                connection,
+                session,
+                characteristic,
+                descriptor,
+                true,
+            )?,
+        }))
+    }
+
+    /// Eagerly submits to the bounded actor mailbox without waiting for admission.
+    /// Descriptor writes always expect an ATT response, so there is no write type.
+    pub fn begin_write_descriptor(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        descriptor: GattDescriptorId,
+        value: Vec<u8>,
+    ) -> Result<Arc<WriteDescriptorOperation>, BlengError> {
+        Ok(Arc::new(WriteDescriptorOperation {
+            operation: self.submit_write_descriptor(
+                connection,
+                session,
+                characteristic,
+                descriptor,
+                value,
+                true,
+            )?,
+        }))
+    }
+
+    /// Eagerly submits to the bounded actor mailbox without waiting for admission.
     /// Stateful admission errors and BLE outcomes are delivered by `wait(timeout_ms)`.
     pub fn begin_enable_notifications(
         &self,
@@ -437,6 +707,123 @@ impl Bleng {
         }))
     }
 
+    /// Requests an MTU where the platform supports it. A successful submission is not a
+    /// negotiated MTU; `wait` reports the platform's actual snapshot or a typed failure.
+    pub fn begin_request_mtu(
+        &self,
+        connection: ConnectionId,
+        mtu: u16,
+    ) -> Result<Arc<MtuOperation>, BlengError> {
+        Ok(Arc::new(MtuOperation {
+            operation: self.submit_mtu(connection, Some(mtu), true)?,
+        }))
+    }
+
+    /// Queries the current MTU/payload limits without requesting native negotiation.
+    pub fn begin_query_mtu(
+        &self,
+        connection: ConnectionId,
+    ) -> Result<Arc<MtuOperation>, BlengError> {
+        Ok(Arc::new(MtuOperation {
+            operation: self.submit_mtu(connection, None, true)?,
+        }))
+    }
+
+    /// Requests a link scheduling preference where the platform supports it.
+    /// The receipt only records that the platform accepted the request.
+    pub fn begin_set_connection_priority(
+        &self,
+        connection: ConnectionId,
+        priority: ConnectionPriority,
+    ) -> Result<Arc<SetConnectionPriorityOperation>, BlengError> {
+        Ok(Arc::new(SetConnectionPriorityOperation {
+            operation: self.submit_set_connection_priority(connection, priority, true)?,
+        }))
+    }
+
+    /// Requests a radio power change where the platform supports it.
+    /// Success only means the platform accepted the request; observe the adapter lane for state.
+    pub fn begin_set_adapter_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<Arc<SetAdapterEnabledOperation>, BlengError> {
+        Ok(Arc::new(SetAdapterEnabledOperation {
+            operation: self.submit_set_adapter_enabled(enabled, true)?,
+        }))
+    }
+
+    /// Reads a read-only system inventory. Results are data, not connectable capabilities.
+    pub fn begin_query_devices(
+        &self,
+        kind: DeviceQueryKind,
+        service_uuids: Vec<BluetoothUuid>,
+    ) -> Result<Arc<QueryDevicesOperation>, BlengError> {
+        Ok(Arc::new(QueryDevicesOperation {
+            operation: self.submit_query_devices(kind, service_uuids, true)?,
+        }))
+    }
+
+    /// Requests one companion-device association where the platform supports it.
+    ///
+    /// `device_profile` is the host's own platform profile choice; the library declares no
+    /// companion permission. Success means the platform reported an association, not that a device
+    /// is present or connected — read `DeviceQueryKind::Companion` afterwards for the list.
+    ///
+    /// This is the only command without a `timeout_ms` convenience form: the platform's system
+    /// chooser is paced by the user, so a bounded one-shot call would turn correct slow use into a
+    /// timeout. Callers own the wait through the returned handle.
+    pub fn begin_associate_companion(
+        &self,
+        service_uuids: Vec<BluetoothUuid>,
+        display_name: Option<String>,
+        device_profile: Option<String>,
+        notify_on_device_nearby: bool,
+    ) -> Result<Arc<AssociateCompanionDeviceOperation>, BlengError> {
+        Ok(Arc::new(AssociateCompanionDeviceOperation {
+            operation: self.submit_associate_companion(
+                service_uuids,
+                display_name,
+                device_profile,
+                notify_on_device_nearby,
+                true,
+            )?,
+        }))
+    }
+
+    /// Requests bonding where the platform supports it. `pin` is the platform's numeric PIN pairing
+    /// input; `None` leaves the system pairing UI in charge. A successful receipt is the
+    /// platform-reported terminal bond state, not a pairing promise.
+    pub fn begin_create_bond(
+        &self,
+        connection: ConnectionId,
+        pin: Option<String>,
+    ) -> Result<Arc<BondOperation>, BlengError> {
+        Ok(Arc::new(BondOperation::create(
+            self.submit_create_bond(connection, pin, true)?,
+        )))
+    }
+
+    /// Removes a bond where the platform supports it. Success is the platform-reported `None` state.
+    pub fn begin_remove_bond(
+        &self,
+        connection: ConnectionId,
+    ) -> Result<Arc<BondOperation>, BlengError> {
+        Ok(Arc::new(BondOperation::remove(
+            self.submit_remove_bond(connection, true)?,
+        )))
+    }
+
+    /// Requests invalidation of the platform's cached GATT topology. On success the engine also
+    /// drops this connection's discovered topology, so earlier GATT sessions must be rediscovered.
+    pub fn begin_refresh_gatt_cache(
+        &self,
+        connection: ConnectionId,
+    ) -> Result<Arc<RefreshGattCacheOperation>, BlengError> {
+        Ok(Arc::new(RefreshGattCacheOperation {
+            operation: self.submit_refresh_gatt_cache(connection, true)?,
+        }))
+    }
+
     pub async fn initialize(&self, timeout_ms: u64) -> Result<AdapterSnapshot, BlengError> {
         let deadline = completion_deadline(timeout_ms)?;
         let operation = self.submit_initialize(false)?;
@@ -469,7 +856,42 @@ impl Bleng {
         timeout_ms: u64,
     ) -> Result<ConnectionId, BlengError> {
         let deadline = completion_deadline(timeout_ms)?;
-        let operation = self.submit_connect(peripheral, false)?;
+        let operation = self.submit_connect(peripheral, false, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    /// Convenience variant of [`Self::connect`] that requests an auto-connect link.
+    pub async fn connect_with_options(
+        &self,
+        peripheral: PeripheralId,
+        auto_connect: bool,
+        timeout_ms: u64,
+    ) -> Result<ConnectionId, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_connect(peripheral, auto_connect, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    /// Requests a radio power change where the platform supports it.
+    pub async fn set_adapter_enabled(
+        &self,
+        enabled: bool,
+        timeout_ms: u64,
+    ) -> Result<(), BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_set_adapter_enabled(enabled, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    /// Reads a read-only system inventory. Results are data, not connectable capabilities.
+    pub async fn query_devices(
+        &self,
+        kind: DeviceQueryKind,
+        service_uuids: Vec<BluetoothUuid>,
+        timeout_ms: u64,
+    ) -> Result<Vec<DeviceRecord>, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_query_devices(kind, service_uuids, false)?;
         operation.wait_until(deadline).await
     }
 
@@ -541,14 +963,17 @@ impl Bleng {
         characteristic: GattCharacteristicId,
         mode: NotificationModeRequest,
         timeout_ms: u64,
-    ) -> Result<SubscriptionId, BlengError> {
+    ) -> Result<NotificationSubscription, BlengError> {
         let deadline = completion_deadline(timeout_ms)?;
         let operation =
             self.submit_enable_notifications(connection, session, characteristic, mode, false)?;
         operation
             .wait_until(deadline)
             .await
-            .map(|(subscription, _actual_mode)| subscription)
+            .map(|(subscription, actual_mode)| NotificationSubscription {
+                subscription,
+                actual_mode,
+            })
     }
 
     pub async fn disable_notifications(
@@ -571,6 +996,107 @@ impl Bleng {
     ) -> Result<i16, BlengError> {
         let deadline = completion_deadline(timeout_ms)?;
         let operation = self.submit_read_rssi(connection, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    pub async fn request_mtu(
+        &self,
+        connection: ConnectionId,
+        mtu: u16,
+        timeout_ms: u64,
+    ) -> Result<MtuInfo, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_mtu(connection, Some(mtu), false)?;
+        operation.wait_until(deadline).await
+    }
+
+    pub async fn query_mtu(
+        &self,
+        connection: ConnectionId,
+        timeout_ms: u64,
+    ) -> Result<MtuInfo, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_mtu(connection, None, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    pub async fn read_descriptor(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        descriptor: GattDescriptorId,
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation =
+            self.submit_read_descriptor(connection, session, characteristic, descriptor, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    pub async fn write_descriptor(
+        &self,
+        connection: ConnectionId,
+        session: GattSessionId,
+        characteristic: GattCharacteristicId,
+        descriptor: GattDescriptorId,
+        value: Vec<u8>,
+        timeout_ms: u64,
+    ) -> Result<(), BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_write_descriptor(
+            connection,
+            session,
+            characteristic,
+            descriptor,
+            value,
+            false,
+        )?;
+        operation.wait_until(deadline).await
+    }
+
+    pub async fn set_connection_priority(
+        &self,
+        connection: ConnectionId,
+        priority: ConnectionPriority,
+        timeout_ms: u64,
+    ) -> Result<(), BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_set_connection_priority(connection, priority, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    /// Convenience form of [`Self::begin_create_bond`] for the common case: PIN entry is left to
+    /// the system pairing UI. Use `begin_create_bond` with `pin` when the platform needs a numeric
+    /// PIN instead.
+    pub async fn create_bond(
+        &self,
+        connection: ConnectionId,
+        timeout_ms: u64,
+    ) -> Result<BondState, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_create_bond(connection, None, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    pub async fn remove_bond(
+        &self,
+        connection: ConnectionId,
+        timeout_ms: u64,
+    ) -> Result<BondState, BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_remove_bond(connection, false)?;
+        operation.wait_until(deadline).await
+    }
+
+    /// Requests invalidation of the platform's cached GATT topology for this connection.
+    pub async fn refresh_gatt_cache(
+        &self,
+        connection: ConnectionId,
+        timeout_ms: u64,
+    ) -> Result<(), BlengError> {
+        let deadline = completion_deadline(timeout_ms)?;
+        let operation = self.submit_refresh_gatt_cache(connection, false)?;
         operation.wait_until(deadline).await
     }
 

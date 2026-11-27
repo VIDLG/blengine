@@ -12,69 +12,52 @@ use super::shared::CompletionObserver;
 /// coordinator-owned metadata used to select the reservation owner without probing
 /// every root in sequence. Domain evidence and native retirement remain owned
 /// by the selected reservation.
+///
+/// The route deliberately stops at the owning root. Which connection operation it
+/// is — read, MTU, bond, a subscription transition — is already stated by the
+/// waiter expectation the route was built from, and by the reservation's own
+/// progress slot; repeating it here would be a third list to keep in sync.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CommandRoute {
     Initialization,
+    AdapterControl,
+    DevicesQuery,
+    CompanionAssociation,
     ScanStart,
     ScanStop,
     Connection {
         connection_id: ConnectionId,
-        kind: ConnectionOperationKind,
     },
     #[cfg(test)]
     Test,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ConnectionOperationKind {
-    Connect,
-    Disconnect,
-    DiscoverGatt,
-    ReadRssi,
-    Read,
-    Write,
-    EnableNotifications,
-    DisableNotifications,
 }
 
 impl From<WaiterExpectation> for CommandRoute {
     fn from(expectation: WaiterExpectation) -> Self {
         match expectation {
             WaiterExpectation::Initialized => Self::Initialization,
+            WaiterExpectation::AdapterControl => Self::AdapterControl,
+            WaiterExpectation::DevicesListed => Self::DevicesQuery,
+            WaiterExpectation::CompanionAssociation => Self::CompanionAssociation,
             WaiterExpectation::ScanStarted(_) => Self::ScanStart,
             WaiterExpectation::ScanStopped(_) => Self::ScanStop,
-            WaiterExpectation::Connected(connection_id) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::Connect,
-            },
-            WaiterExpectation::Disconnected(connection_id) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::Disconnect,
-            },
-            WaiterExpectation::RssiRead(connection_id) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::ReadRssi,
-            },
-            WaiterExpectation::GattDiscovered(connection_id, _) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::DiscoverGatt,
-            },
-            WaiterExpectation::CharacteristicRead(connection_id, _, _) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::Read,
-            },
-            WaiterExpectation::CharacteristicWritten(connection_id, _, _) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::Write,
-            },
-            WaiterExpectation::NotificationsEnabled(connection_id, _, _, _) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::EnableNotifications,
-            },
-            WaiterExpectation::NotificationsDisabled(connection_id, _, _, _) => Self::Connection {
-                connection_id,
-                kind: ConnectionOperationKind::DisableNotifications,
-            },
+            WaiterExpectation::Connected(connection_id)
+            | WaiterExpectation::Disconnected(connection_id)
+            | WaiterExpectation::RssiRead(connection_id)
+            | WaiterExpectation::MtuRead(connection_id)
+            | WaiterExpectation::ConnectionPriority(connection_id)
+            | WaiterExpectation::BondState(connection_id)
+            | WaiterExpectation::BondRemoval(connection_id)
+            | WaiterExpectation::GattCacheRefreshed(connection_id)
+            | WaiterExpectation::GattDiscovered(connection_id, ..)
+            | WaiterExpectation::CharacteristicRead(connection_id, ..)
+            | WaiterExpectation::CharacteristicWritten(connection_id, ..)
+            | WaiterExpectation::DescriptorRead(connection_id, ..)
+            | WaiterExpectation::DescriptorWritten(connection_id, ..)
+            | WaiterExpectation::NotificationsEnabled(connection_id, ..)
+            | WaiterExpectation::NotificationsDisabled(connection_id, ..) => {
+                Self::Connection { connection_id }
+            }
             #[cfg(test)]
             WaiterExpectation::TerminalOnly => Self::Test,
         }

@@ -9,6 +9,9 @@ use std::sync::Arc;
 #[path = "publication.rs"]
 mod publication;
 
+#[path = "operation_observation.rs"]
+mod operation_observation;
+
 #[test]
 fn explicit_cancellation_retains_pre_dispatch_reservation_until_dispatch_resolves() {
     use tokio::sync::mpsc::channel;

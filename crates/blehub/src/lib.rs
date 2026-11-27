@@ -4,7 +4,6 @@ pub mod contract;
 pub mod ffi;
 mod hub;
 pub mod ingress;
-pub mod types;
 
 pub use assembly::{BackendAssembly, attach_backend};
 pub use backend::BleBackend;

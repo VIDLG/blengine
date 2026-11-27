@@ -8,7 +8,7 @@ use super::support::{
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::runtime::reservations::ScanState;
+use crate::runtime::reservations::{CancellationDecision, ScanState};
 
 #[test]
 fn scan_state_retains_unsettled_start_and_ignores_stale_rejection() {
@@ -19,7 +19,7 @@ fn scan_state_retains_unsettled_start_and_ignores_stale_rejection() {
     });
     assert!(state.resolve_dispatch(99.into(), &rejection).is_none());
     assert_eq!(state.require_scan_available(), Err(WaiterError::ScanBusy));
-    assert!(!state.record_terminal(99.into(), &Ok(())));
+    assert!(!state.try_record_terminal(99.into(), &Ok(())));
 
     state.resolve_dispatch(1.into(), &Ok(())).unwrap();
     state.record_event(&BleEvent::ScanStopped {
@@ -28,7 +28,7 @@ fn scan_state_retains_unsettled_start_and_ignores_stale_rejection() {
             reason: ScanStopReason::SystemSuspended,
         },
     });
-    assert!(state.record_terminal(1.into(), &Ok(())));
+    assert!(state.try_record_terminal(1.into(), &Ok(())));
     state.retire_completed();
     assert_eq!(state.waiter_result(1.into()), None);
     assert_eq!(state.require_scan_available(), Err(WaiterError::ScanBusy));
@@ -96,7 +96,7 @@ fn scan_installation_cannot_replace_a_session_or_bypass_stop_admission() {
                 command_id: 1.into(),
                 scan_id: 10.into(),
             }),
-            _ => assert!(state.record_terminal(1.into(), &Ok(()))),
+            _ => assert!(state.try_record_terminal(1.into(), &Ok(()))),
         }
     }
     assert_eq!(
@@ -105,6 +105,16 @@ fn scan_installation_cannot_replace_a_session_or_bypass_stop_admission() {
     );
 
     state.reserve_scan_stop(2.into());
+    assert!(matches!(
+        state.request_cancellation(1.into()),
+        Some(CancellationDecision::AlreadyCompleted)
+    ));
+    assert!(matches!(
+        state.request_cancellation(2.into()),
+        Some(CancellationDecision::NotCancellable)
+    ));
+    assert!(state.request_cancellation(99.into()).is_none());
+    assert!(!state.try_claim_cancellation_dispatch(2.into()));
     assert!(
         catch_unwind(AssertUnwindSafe(|| {
             state.reserve_scan_stop(3.into());
@@ -112,7 +122,7 @@ fn scan_installation_cannot_replace_a_session_or_bypass_stop_admission() {
         .is_err()
     );
     assert_eq!(state.stop_command(), Some(2.into()));
-    assert!(!state.record_terminal(3.into(), &Ok(())));
+    assert!(!state.try_record_terminal(3.into(), &Ok(())));
 
     state.resolve_dispatch(2.into(), &Ok(())).unwrap();
     state.record_event(&BleEvent::ScanStopped {
@@ -123,7 +133,17 @@ fn scan_installation_cannot_replace_a_session_or_bypass_stop_admission() {
             },
         },
     });
-    assert!(state.record_terminal(2.into(), &Ok(())));
+    // A later unrelated Requested event must not undo valid session-end evidence.
+    state.record_event(&BleEvent::ScanStopped {
+        scan_id: 10.into(),
+        result: ScanStopResult::Ok {
+            reason: ScanStopReason::Requested {
+                command_id: 99.into(),
+            },
+        },
+    });
+    assert_eq!(state.waiter_result(2.into()), None);
+    assert!(state.try_record_terminal(2.into(), &Ok(())));
     assert_eq!(
         state.waiter_result(2.into()),
         Some(Ok(WaiterSuccess::ScanStopped(10.into())))
@@ -454,6 +474,86 @@ fn rejected_stop_keeps_scan_active_unless_requested_evidence_contradicts_rejecti
             owner.close().await.unwrap();
         });
         assert_eq!(handle.commands().len(), 2);
+        assert_eq!(handle.dispose_count(), 1);
+    }
+}
+
+#[test]
+fn stop_rejection_after_failed_stop_ignores_foreign_requested_evidence() {
+    for foreign_command in [2, 101] {
+        let owner = RuntimeOwner::new_assuming_initialized().unwrap();
+        let stop_error = BleEventError {
+            category: BleErrorCategory::Backend,
+            message: "first stop failed without ending the scan".to_owned(),
+            platform_details: None,
+        };
+        let rejection = CommandDispatchError::InvalidState {
+            detail: "retry was not dispatched".to_owned(),
+        };
+        let foreign_requested = requested_stop(foreign_command);
+        let failed_terminal = command_completed(2, Some(stop_error.clone()));
+        let (backend, handle) = FakeBackend::scripted([
+            started_scan(1),
+            EventScenario::emit_before_return(stop_command(2), vec![failed_terminal.clone()]),
+            EventScenario::emit_before_reject(
+                stop_command(3),
+                vec![
+                    command_completed(3, None),
+                    foreign_requested.clone(),
+                    command_completed(3, None),
+                ],
+                rejection.clone(),
+            ),
+            EventScenario::emit_before_return(
+                stop_command(4),
+                vec![requested_stop(4), command_completed(4, None)],
+            ),
+        ]);
+        owner
+            .attach_hub(BleHub::new(Arc::new(backend), owner.event_sink()).unwrap())
+            .unwrap();
+        let host = tokio::runtime::Builder::new_multi_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        host.block_on(async {
+            let deadline = Duration::from_secs(2);
+            let session = owner
+                .start_scan(ScanOptions::default(), deadline)
+                .await
+                .unwrap();
+            assert_eq!(
+                owner.stop_scan(session, deadline).await,
+                Err(WaiterError::Operation(stop_error))
+            );
+            for expected in [
+                BleEvent::ScanStarted {
+                    command_id: 1.into(),
+                    scan_id: session,
+                },
+                command_completed(1, None),
+                failed_terminal,
+            ] {
+                assert_eq!(owner.next_event(deadline).await, Ok(Some(expected)));
+            }
+
+            assert_eq!(
+                owner.stop_scan(session, deadline).await,
+                Err(WaiterError::DispatchRejected(rejection))
+            );
+            assert!(!owner.faulted_for_test());
+            assert_eq!(
+                owner.next_event(deadline).await,
+                Ok(Some(foreign_requested)),
+                "foreign evidence stays visible but cannot prove the rejected stop executed"
+            );
+            assert_eq!(owner.stop_scan(session, deadline).await, Ok(()));
+            for expected in [requested_stop(4), command_completed(4, None)] {
+                assert_eq!(owner.next_event(deadline).await, Ok(Some(expected)));
+            }
+            owner.close().await.unwrap();
+        });
+        assert_eq!(handle.commands().len(), 4);
         assert_eq!(handle.dispose_count(), 1);
     }
 }

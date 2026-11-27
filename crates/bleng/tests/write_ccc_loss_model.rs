@@ -141,6 +141,7 @@ fn database(connection: u64, session: u64) -> GattDatabase {
 
 fn connect(command: u64, connection: u64) -> RecordedCommand {
     RecordedCommand::Connect(ConnectCommand {
+        auto_connect: false,
         command_id: command.into(),
         connection_id: connection.into(),
         peripheral_id: 10.into(),
@@ -229,6 +230,10 @@ impl BleBackend for LaneBackend {
             fn capabilities(&self) -> Result<BackendCapabilities, BleHubError>;
             fn bind_event_ingress(&self, ingress: Arc<BackendEventIngressHandle>) -> Result<(), BleHubError>;
             fn initialize(&self, command: InitializeCommand) -> Result<(), CommandDispatchError>;
+            fn set_adapter_enabled(&self, command: blehub::SetAdapterEnabledCommand) -> Result<(), CommandDispatchError>;
+            fn query_devices(&self, command: blehub::QueryDevicesCommand) -> Result<(), CommandDispatchError>;
+            fn associate_companion_device(&self, command: blehub::AssociateCompanionDeviceCommand) -> Result<(), CommandDispatchError>;
+            fn refresh_gatt_cache(&self, command: blehub::RefreshGattCacheCommand) -> Result<(), CommandDispatchError>;
             fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError>;
             fn stop_scan(&self, command: StopScanCommand) -> Result<(), CommandDispatchError>;
             fn connect(&self, command: ConnectCommand) -> Result<(), CommandDispatchError>;
@@ -236,6 +241,12 @@ impl BleBackend for LaneBackend {
             fn discover_gatt(&self, command: DiscoverGattCommand) -> Result<(), CommandDispatchError>;
             fn read_characteristic(&self, command: ReadCharacteristicCommand) -> Result<(), CommandDispatchError>;
             fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError>;
+            fn mtu(&self, command: blehub::MtuCommand) -> Result<(), CommandDispatchError>;
+            fn set_connection_priority(&self, command: blehub::SetConnectionPriorityCommand) -> Result<(), CommandDispatchError>;
+            fn create_bond(&self, command: blehub::CreateBondCommand) -> Result<(), CommandDispatchError>;
+            fn remove_bond(&self, command: blehub::RemoveBondCommand) -> Result<(), CommandDispatchError>;
+            fn read_descriptor(&self, command: blehub::ReadDescriptorCommand) -> Result<(), CommandDispatchError>;
+            fn write_descriptor(&self, command: blehub::WriteDescriptorCommand) -> Result<(), CommandDispatchError>;
             fn cancel_operation(&self, request: CancelOperationRequest) -> Result<(), CommandDispatchError>;
             fn dispose(&self) -> Result<(), BleHubError>;
         }
@@ -453,7 +464,10 @@ async fn run(case: Case) {
         assert_eq!(bounded(accepted_rx.recv()).await.unwrap(), setup);
         emit(&handle, domain(&setup));
         emit(&handle, terminal(4, None));
-        assert_eq!(enabling.wait(DEADLINE).await.unwrap(), 3.into());
+        assert_eq!(
+            enabling.wait(DEADLINE).await.unwrap().subscription,
+            3.into()
+        );
         assert_eq!(lane.lock().unwrap().pop_front(), Some(setup));
     }
     let head_op = begin(&bleng, &head);
@@ -660,7 +674,10 @@ async fn run(case: Case) {
     emit(&handle, domain(&sibling));
     emit(&handle, domain(&fresh_enable));
     emit(&handle, terminal(fresh_enable_id, None));
-    assert_eq!(enabling.wait(DEADLINE).await.unwrap(), 6.into());
+    assert_eq!(
+        enabling.wait(DEADLINE).await.unwrap().subscription,
+        6.into()
+    );
     assert_eq!(lane.lock().unwrap().pop_front(), Some(fresh_enable));
 
     let reading = bleng

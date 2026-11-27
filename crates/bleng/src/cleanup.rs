@@ -63,7 +63,8 @@
 //!   |
 //!   v
 //! foreign backend assembly [no state lock]
-//!   | failure: guard Drop releases admission (see below)
+//!   | failure: record failed rollback/unwind before guard Drop releases admission
+//!   |          ordinary rejection with successful rollback adds no cleanup error
 //!   v
 //! AssemblyAdmission::commit(hub)
 //!   CleanupCoordinator::register_owned_hub()
@@ -115,7 +116,7 @@
 //!   [lock] check: cleanup started AND admission released AND all slots settled
 //!          complete -> read retained result; unlock and return
 //!   [unlock] if incomplete: await a change, then lock and recheck
-//!   result priority: primary error first, then rejected errors, otherwise Ok
+//!   result priority: primary, assembly failure, rejected errors, otherwise Ok
 //! ```
 //!
 //! Admission and cleanup overlap; they are not mutually exclusive phases.
@@ -206,6 +207,9 @@ struct CleanupState {
     started: bool,
     /// Whether a foreign assembly currently holds the admission reservation.
     admission_reserved: bool,
+    /// Failed rollback or worker unwind before a canonical Hub was registered.
+    /// This terminal failure must survive abandonment of the assembly waiter.
+    assembly_failure: Option<CleanupError>,
 }
 
 #[derive(Clone, Copy)]
@@ -426,8 +430,8 @@ impl CleanupState {
     /// Returns whether the terminal cleanup condition has been reached.
     ///
     /// Every clause matters: disposal must have started, admission must no
-    /// longer allow a foreign assembly to add ownership, and every registered
-    /// Hub must have a settled disposal result.
+    /// longer allow a foreign assembly to add ownership or failure, and every
+    /// registered Hub must have a settled disposal result.
     fn is_cleanup_complete(&self) -> bool {
         let primary_complete = self
             .primary
@@ -456,11 +460,14 @@ impl CleanupState {
     /// Selects the terminal cleanup error after every disposal slot settled.
     ///
     /// The primary Hub's error has precedence because it represents the
-    /// runtime's canonical ownership; rejected/late Hub errors are fallback
-    /// diagnostics only.
+    /// runtime's canonical ownership; assembly failure and rejected/late Hub
+    /// errors are fallback diagnostics.
     fn completed_result(&self) -> Result<(), CleanupError> {
         if let Some(error) = self.primary.as_ref().and_then(PrimaryRegistration::error) {
             return Err(error);
+        }
+        if let Some(error) = &self.assembly_failure {
+            return Err(error.clone());
         }
         if let Some(error) = self.rejected_hubs.iter().find_map(RejectedHub::error) {
             return Err(error);
@@ -488,6 +495,12 @@ impl CleanupCoordinator {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.record_disposal_result(slot, result);
         self.signal(CleanupSignal::DisposalCompleted);
+    }
+
+    fn record_assembly_failure(&self, error: CleanupError) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.assembly_failure.get_or_insert(error);
+        // Guard release supplies the wake-up after this result is durable.
     }
 
     /// Releases the admission reservation and wakes close waiters.
@@ -570,6 +583,12 @@ pub(crate) struct AssemblyAdmission {
 }
 
 impl AssemblyAdmission {
+    /// Record before releasing admission: close cannot publish success between
+    /// a failed foreign rollback/unwind and its terminal accounting.
+    pub(crate) fn record_failure(&self, error: CleanupError) {
+        self.shared.record_assembly_failure(error);
+    }
+
     pub(crate) fn commit(
         self,
         hub: Arc<BleHub>,

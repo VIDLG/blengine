@@ -34,6 +34,32 @@ fn lock_entries() -> std::sync::MutexGuard<'static, HashMap<AssemblyTicket, Asse
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+struct AttachInProgress {
+    ticket: AssemblyTicket,
+    active: bool,
+}
+
+impl Drop for AttachInProgress {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        // An unwinding backend call has no completing side left to retire its
+        // marker. Do not recover the panic, run cleanup, or take an attached Hub.
+        let _entry = {
+            let mut entries = lock_entries();
+            if matches!(
+                entries.get(&self.ticket),
+                Some(AssemblyEntry::Attaching | AssemblyEntry::Cancelled)
+            ) {
+                entries.remove(&self.ticket)
+            } else {
+                None
+            }
+        };
+    }
+}
+
 /// Rust-owned guard for a short-lived, one-shot native backend assembly.
 ///
 /// Dropping an unfinished guard cancels its ticket and disposes a Hub that was
@@ -80,6 +106,9 @@ impl Drop for BackendAssembly {
 /// This is the only assembly function exposed through the Stable UniFFI
 /// surface. The backend argument is therefore the generated foreign
 /// `BleBackend` object, not a raw C pointer or an integration-specific proxy.
+/// Cancellation or an early `finish` does not override constructor or cleanup
+/// errors. Plain cancellation is returned only after successful construction
+/// and disposal of the unclaimed Hub.
 #[uniffi::export]
 pub fn attach_backend(ticket: u64, backend: Arc<dyn BleBackend>) -> Result<(), BleHubError> {
     let downstream = {
@@ -99,10 +128,15 @@ pub fn attach_backend(ticket: u64, backend: Arc<dyn BleBackend>) -> Result<(), B
         downstream
     };
 
+    let mut attaching = AttachInProgress {
+        ticket,
+        active: true,
+    };
     let hub = BleHub::new(backend, downstream);
-    {
+    let entry = {
         let mut entries = lock_entries();
         if matches!(entries.get(&ticket), Some(AssemblyEntry::Attaching)) {
+            attaching.active = false;
             return match hub {
                 Ok(hub) => {
                     entries.insert(ticket, AssemblyEntry::Attached { hub });
@@ -114,49 +148,24 @@ pub fn attach_backend(ticket: u64, backend: Arc<dyn BleBackend>) -> Result<(), B
                 }
             };
         }
-    }
-    let entry = {
-        let mut entries = lock_entries();
         entries.remove(&ticket)
     };
-    match entry {
+    attaching.active = false;
+    let detail = match entry {
         Some(AssemblyEntry::Cancelled) | None => {
-            if let Ok(hub) = hub {
-                let cleanup_result = hub.dispose();
-                if let Err(_error) = cleanup_result {
-                    tracing::error!(
-                        target: "blehub::assembly",
-                        diagnostic = "cancelled_assembly_dispose_failed",
-                        ticket,
-                        error_class = "backend_cleanup",
-                        "failed to dispose a hub assembled after cancellation"
-                    );
-                }
-            }
-            Err(BleHubError::BackendAssembly {
-                detail: format!("backend assembly ticket {ticket} was cancelled"),
-            })
+            format!("backend assembly ticket {ticket} was cancelled")
         }
         Some(AssemblyEntry::Pending { .. })
         | Some(AssemblyEntry::Attached { .. })
         | Some(AssemblyEntry::Attaching) => {
-            if let Ok(hub) = hub {
-                let cleanup_result = hub.dispose();
-                if let Err(_error) = cleanup_result {
-                    tracing::error!(
-                        target: "blehub::assembly",
-                        diagnostic = "unexpected_assembly_state_dispose_failed",
-                        ticket,
-                        error_class = "backend_cleanup",
-                        "failed to dispose a hub after an unexpected assembly state transition"
-                    );
-                }
-            }
-            Err(BleHubError::BackendAssembly {
-                detail: format!("backend assembly ticket {ticket} changed state unexpectedly"),
-            })
+            format!("backend assembly ticket {ticket} changed state unexpectedly")
         }
-    }
+    };
+    // Cancellation cannot erase a constructor/rollback error or a failed
+    // cleanup. Only a successfully cleaned-up Hub reports plain cancellation.
+    let hub = hub?;
+    hub.dispose()?;
+    Err(BleHubError::BackendAssembly { detail })
 }
 
 /// Takes the completed Rust-owned Hub from an assembly slot.

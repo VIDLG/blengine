@@ -1,6 +1,16 @@
 use super::BleHubError;
 
-pub const BLEHUB_CONTRACT_VERSION: u32 = 6;
+/// Backend compatibility value: the canonical contract revision a backend was built against.
+///
+/// It changes only for an **incompatible** contract revision — a new required foreign-backend method,
+/// a changed command/event/error shape, or a removed public item — never for an additive change a
+/// previously built backend can still serve. Assembly compares it before binding, so a stale backend
+/// fails with a typed contract error instead of surfacing as a missing callback at first use.
+///
+/// Revision 7 added the descriptor I/O, MTU, connection-priority, bonding, GATT-cache-refresh,
+/// adapter-control, device-inventory and companion association/presence surface, and named the MTU
+/// answer event `MtuRead`.
+pub const BLEHUB_CONTRACT_VERSION: u32 = 7;
 
 #[uniffi::export]
 pub fn blehub_contract_version() -> u32 {
@@ -16,6 +26,19 @@ pub enum Platform {
     Test,
 }
 
+/// Static backend metadata, queried once during assembly.
+///
+/// It answers two kinds of question, and neither of them is "is this command accepted":
+///
+/// - **identity and compatibility**: `platform` is the single platform identity of an assembled
+///   [`crate::BleHub`], and `contract_version` is checked before anything is bound;
+/// - **observation quality**: the flags declare what the backend can *report*, so a host can decide
+///   whether an observation is meaningful before relying on it (Android cannot report
+///   `connectable` before API 26).
+///
+/// A command the backend cannot serve is refused at dispatch with
+/// [`crate::CommandDispatchError::NotSupported`] — the one refusal every command shares. A flag
+/// never pre-empts a dispatch, and none of them may be re-read as "command supported".
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct BackendCapabilities {
     pub platform: Platform,

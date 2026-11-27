@@ -13,15 +13,21 @@ mod cleanup;
 mod error;
 mod facade;
 pub mod ffi;
+mod operation_observation;
 mod runtime;
 mod waiter;
+
+pub use operation_observation::{OperationFailureObserver, OperationFailureRegistration};
 
 uniffi::setup_scaffolding!();
 pub use error::{
     BlengBusyReason, BlengContractFailure, BlengError, BlengNotReadyReason, BlengResource,
 };
 pub use facade::{
-    Bleng, ConnectOperation, DisableNotificationsOperation, DisconnectOperation,
-    DiscoverGattOperation, EnableNotificationsOperation, InitializeOperation, ReadOperation,
-    ReadRssiOperation, StartScanOperation, StopScanOperation, WriteOperation,
+    AssociateCompanionDeviceOperation, Bleng, BondOperation, ConnectOperation,
+    DisableNotificationsOperation, DisconnectOperation, DiscoverGattOperation,
+    EnableNotificationsOperation, InitializeOperation, MtuOperation, NotificationSubscription,
+    QueryDevicesOperation, ReadDescriptorOperation, ReadOperation, ReadRssiOperation,
+    RefreshGattCacheOperation, SetAdapterEnabledOperation, SetConnectionPriorityOperation,
+    StartScanOperation, StopScanOperation, WriteDescriptorOperation, WriteOperation,
 };
