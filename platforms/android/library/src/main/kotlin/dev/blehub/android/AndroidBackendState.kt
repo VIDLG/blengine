@@ -5,8 +5,11 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import dev.blehub.BleEvent
+import dev.blehub.BleEventError
 import dev.blehub.CommandId
 import dev.blehub.ConnectCommand
+import dev.blehub.ConnectionId
 import dev.blehub.DiscoverGattCommand
 import dev.blehub.GattCharacteristicId
 import dev.blehub.GattService
@@ -45,44 +48,237 @@ internal data class ActiveConnection(
     var gattSessionId: GattSessionId? = null,
     var characteristicsById: Map<ULong, BluetoothGattCharacteristic> = emptyMap(),
     var descriptorsById: Map<ULong, BluetoothGattDescriptor> = emptyMap(),
-    var pendingIo: PendingIo? = null,
-    val subscriptionsById: MutableMap<ULong, ActiveSubscription> = LinkedHashMap(),
+    // Platform-reported ATT MTU; 23 is the Bluetooth LE default before negotiation.
+    var mtu: Int = 23,
+    val pendingIo: PendingIoQueue = PendingIoQueue(),
+    // Only the active native operation owns a watchdog; queued work has not entered Android yet.
+    val activeWatchdog: ActiveWatchdogSlot = ActiveWatchdogSlot(),
+    val subscriptionsById: MutableMap<ULong, ActiveSubscription<*>> = LinkedHashMap(),
 )
 
-internal data class ActiveSubscription(
+/** Read-only aggregation; caller serializes route mutation with its state lock. */
+internal fun connectionRfResourceCounts(ownedRoutes: Collection<ActiveConnection>): Map<String, Int> {
+    // One route may appear in the ID index, peer index and pending-dispose ownership.
+    val routes = java.util.Collections.newSetFromMap(
+        java.util.IdentityHashMap<ActiveConnection, Boolean>(),
+    ).also { it.addAll(ownedRoutes) }
+    val subscriptions = routes.sumOf { it.subscriptionsById.size }
+    return linkedMapOf(
+        "connections" to routes.size,
+        "gattAttributes" to routes.sumOf { it.characteristicsById.size + it.descriptorsById.size },
+        "subscriptions" to subscriptions,
+        "pendingIo" to routes.sumOf { it.pendingIo.size + if (it.pendingDiscovery != null) 1 else 0 },
+        "watchdogs" to routes.count { it.activeWatchdog.isArmed },
+        "callbackRoutes" to (routes.size + subscriptions +
+                routes.count { it.pendingDiscovery != null } +
+                routes.count { it.pendingIo.active() != null }),
+    )
+}
+
+internal data class ActiveSubscription<C : Any>(
     val subscriptionId: SubscriptionId,
     val characteristicId: GattCharacteristicId,
-    val characteristic: BluetoothGattCharacteristic,
+    val characteristic: C,
     val mode: NotificationMode,
 )
 
+/** Which direction a pending bond request is pursuing; the terminal state differs per direction. */
+internal enum class BondRequestKind { CREATE, REMOVE }
+
+/** One bond request correlated to the platform broadcast that will report its terminal. */
+internal data class PendingBond(
+    val commandId: CommandId,
+    val connectionId: ConnectionId,
+    val kind: BondRequestKind,
+    /** Numeric PIN pairing input only; cleared as soon as the platform consumes it. Never logged. */
+    val pin: String? = null,
+)
+
+/**
+ * The Android GATT API serializes operations per BluetoothGatt instance.
+ * Different ActiveConnection instances still own independent queues and may
+ * make progress concurrently on the same backend Handler.
+ *
+ * The first entry is the only native operation in flight. Entries after it
+ * have been admitted but must not call BluetoothGatt until the first entry is
+ * completed or retired. The queue also prevents cancellation from removing
+ * the active native operation accidentally.
+ */
+internal class PendingIoQueue(private val capacity: Int = DEFAULT_CAPACITY) {
+    private val entries = ArrayDeque<PendingIo>()
+    private var active = false
+
+    init {
+        require(capacity > 0) { "pending I/O queue capacity must be positive" }
+    }
+
+    val isEmpty: Boolean
+        get() = entries.isEmpty()
+
+    /** Includes the native-active head and all admitted queued operations. */
+    val size: Int
+        get() = entries.size
+
+    fun contains(commandId: CommandId): Boolean =
+        entries.any { it.commandId == commandId }
+
+    fun any(predicate: (PendingIo) -> Boolean): Boolean = entries.any(predicate)
+
+    fun enqueue(operation: PendingIo): Boolean {
+        if (entries.size >= capacity || contains(operation.commandId)) return false
+        entries.addLast(operation)
+        return true
+    }
+
+    /** Claims the next operation for one native dispatch, if the lane is idle. */
+    fun begin(): PendingIo? {
+        if (active) return null
+        return entries.firstOrNull()?.also { active = true }
+    }
+
+    fun active(): PendingIo? = if (active) entries.firstOrNull() else null
+
+    fun isActive(commandId: CommandId): Boolean =
+        active && entries.firstOrNull()?.commandId == commandId
+
+    fun isActive(operation: PendingIo): Boolean = active && entries.firstOrNull() === operation
+
+    /** Completes exactly the active head; late or mismatched callbacks are ignored. */
+    fun complete(operation: PendingIo): Boolean {
+        if (!isActive(operation)) return false
+        entries.removeFirst()
+        active = false
+        return true
+    }
+
+    /** Removes a queued operation without touching the active native head. */
+    fun removeQueued(commandId: CommandId): PendingIo? {
+        val index = entries.indexOfFirst { it.commandId == commandId }
+        if (index < 0 || (active && index == 0)) return null
+        return entries.removeAt(index)
+    }
+
+    /** Retires the whole lane for disconnect/dispose and returns all owners. */
+    fun retire(): List<PendingIo> {
+        val retired = entries.toList()
+        entries.clear()
+        active = false
+        return retired
+    }
+
+    private companion object {
+        const val DEFAULT_CAPACITY = 1024
+    }
+}
+
+/** Retires native ownership even when a command terminal was claimed at local submission. */
+internal fun retirePendingIo(
+    queue: PendingIoQueue,
+    activeOperationError: BleEventError,
+    queuedOperationError: BleEventError,
+): List<BleEvent> {
+    val activeOperation = queue.active()
+    return queue.retire().mapNotNull { pending ->
+        if (!pending.claimCommandTerminal()) return@mapNotNull null
+        val error = if (pending === activeOperation) activeOperationError else queuedOperationError
+        BleEvent.CommandCompleted(pending.commandId, error)
+    }
+}
+
 internal sealed class PendingIo {
+    abstract val commandId: CommandId
+
+    private var commandTerminalClaimed = false
+
+    /** Called under stateLock; claiming publication does not release the native queue slot. */
+    fun claimCommandTerminal(): Boolean {
+        if (commandTerminalClaimed) return false
+        commandTerminalClaimed = true
+        return true
+    }
+
     data class Read(
         val command: dev.blehub.ReadCharacteristicCommand,
         val characteristic: BluetoothGattCharacteristic,
-    ) : PendingIo()
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
 
-    data class Write(
+    // Lifecycle code needs only native identity; the Framework adapter retains the concrete type.
+    data class Write<C : Any>(
         val command: WriteCharacteristicCommand,
-        val characteristic: BluetoothGattCharacteristic,
-    ) : PendingIo()
+        val characteristic: C,
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
 
-    data class Notification(
+    enum class NotificationStage { QUEUED, REGISTERING_LOCAL, WRITING_DESCRIPTOR, COMPLETING }
+
+    data class Notification<C : Any, D : Any>(
         val command: SetNotificationsCommand,
-        val characteristic: BluetoothGattCharacteristic,
-        val descriptor: BluetoothGattDescriptor,
+        val characteristic: C,
+        val descriptor: D,
         val mode: NotificationMode,
         val enabling: Boolean,
-    ) : PendingIo()
+    ) : PendingIo() {
+        // Mutated under stateLock, including across reentrant native hooks/callbacks.
+        var stage = NotificationStage.QUEUED
+
+        // Only enable can compensate, after positive local registration.
+        var localCompensationPending = false
+
+        override val commandId: CommandId
+            get() = command.commandId
+    }
 
     data class Rssi(
         val command: dev.blehub.ReadRssiCommand,
-    ) : PendingIo()
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
+
+    data class Mtu(
+        val command: dev.blehub.MtuCommand,
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
+
+    data class Priority(
+        val command: dev.blehub.SetConnectionPriorityCommand,
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
+
+    data class DescriptorRead(
+        val command: dev.blehub.ReadDescriptorCommand,
+        val descriptor: BluetoothGattDescriptor,
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
+
+    data class DescriptorWrite(
+        val command: dev.blehub.WriteDescriptorCommand,
+        val descriptor: BluetoothGattDescriptor,
+    ) : PendingIo() {
+        override val commandId: CommandId
+            get() = command.commandId
+    }
 }
 
 internal data class PendingDiscovery(
     val command: DiscoverGattCommand,
 )
+
+internal sealed class ActiveNativeOperation {
+    data class Io(val operation: PendingIo) : ActiveNativeOperation()
+    data class Discovery(val pending: PendingDiscovery) : ActiveNativeOperation()
+}
 
 internal data class GattDraft(
     val services: List<GattService>,

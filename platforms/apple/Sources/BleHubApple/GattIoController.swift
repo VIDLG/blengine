@@ -1,15 +1,51 @@
 import BleHubUniFfi
 import Foundation
 
+/// Swift-only logical FIFO evidence; none of these values retain native objects.
+@_spi(AppleDiagnostics) public enum AppleGattIoHeadKind: Equatable, Sendable {
+    case command
+    case retireSubscription
+}
+
+@_spi(AppleDiagnostics) public enum AppleGattIoHeadState: Equatable, Sendable {
+    case idle
+    case awaitingDrive
+    case awaitingNativeCallback
+    case waitingForWriteCapacity
+    case submittingWriteWithoutResponse
+}
+
+@_spi(AppleDiagnostics) public struct AppleGattIoSnapshot: Equatable, Sendable {
+    public let connectionId: ConnectionId
+    /// Nil only when idle. An internal retirement head has a kind but no command ID.
+    public let headKind: AppleGattIoHeadKind?
+    public let headCommandId: CommandId?
+    public let headState: AppleGattIoHeadState
+    /// Caller-owned commands strictly behind the logical head, in FIFO order.
+    public let queuedCommandIds: [CommandId]
+}
+
 internal enum AppleGattIoCommand {
     case read(ReadCharacteristicCommand)
     case write(WriteCharacteristicCommand)
+    case rssi(ReadRssiCommand)
+    case readDescriptor(ReadDescriptorCommand)
+    case writeDescriptor(WriteDescriptorCommand)
 }
 
 internal enum AppleGattIoCompletion {
     case read(command: ReadCharacteristicCommand, value: [UInt8])
     case write(command: WriteCharacteristicCommand)
+    case rssi(command: ReadRssiCommand, value: Int16)
+    case readDescriptor(command: ReadDescriptorCommand, value: [UInt8])
+    case writeDescriptor(command: WriteDescriptorCommand)
     case failed(command: AppleGattIoCommand, error: BleEventError)
+}
+
+internal enum AppleGattCancellationDisposition {
+    case queued(AppleConnectionCorrelation)
+    case active
+    case notFound
 }
 
 internal enum AppleGattIoAction {
@@ -28,6 +64,21 @@ internal enum AppleGattIoAction {
         connection: AppleConnectionCorrelation,
         characteristic: any AppleGattCharacteristicObject
     )
+    case rssi(
+        command: ReadRssiCommand,
+        connection: AppleConnectionCorrelation
+    )
+    case readDescriptor(
+        command: ReadDescriptorCommand,
+        connection: AppleConnectionCorrelation,
+        descriptor: any AppleGattDescriptorObject
+    )
+    case writeDescriptor(
+        command: WriteDescriptorCommand,
+        connection: AppleConnectionCorrelation,
+        descriptor: any AppleGattDescriptorObject
+    )
+    case waitForWriteCapacity(commandId: CommandId, connection: AppleConnectionCorrelation)
     case terminal(AppleGattIoCompletion)
 }
 
@@ -117,17 +168,24 @@ internal final class AppleGattIoController {
         case read
         case writeWithResponse
         case notificationState
+        case rssi
+        case descriptorRead
+        case descriptorWrite
     }
 
     private struct CallbackKey: Hashable {
         let peripheralIdentity: ObjectIdentifier
-        let characteristicIdentity: ObjectIdentifier
+        let characteristicIdentity: ObjectIdentifier?
+        var descriptorIdentity: ObjectIdentifier? = nil
         let kind: CallbackKind
     }
 
     private struct CallbackBarrier {
+        // ObjectIdentifier is only unique while its object is alive. Retain every
+        // keyed object until the barrier is consumed or drained to prevent reuse.
         let peripheral: any ApplePeripheralObject
-        let characteristic: any AppleGattCharacteristicObject
+        let characteristic: (any AppleGattCharacteristicObject)?
+        let descriptor: (any AppleGattDescriptorObject)?
     }
 
     private struct ValueRouteKey: Hashable {
@@ -156,6 +214,18 @@ internal final class AppleGattIoController {
         case disabling(commandId: CommandId)
         case rediscoveryQueued
         case rediscoveryDisabling
+
+        var diagnosticName: String {
+            switch self {
+            case .queuedEnable: return "queuedEnable"
+            case .enabling: return "enabling"
+            case .active: return "active"
+            case .queuedDisable: return "queuedDisable"
+            case .disabling: return "disabling"
+            case .rediscoveryQueued: return "rediscoveryQueued"
+            case .rediscoveryDisabling: return "rediscoveryDisabling"
+            }
+        }
     }
 
     private struct SubscriptionRoute {
@@ -185,10 +255,40 @@ internal final class AppleGattIoController {
             characteristic: any AppleGattCharacteristicObject,
             transition: NotificationTransition
         )
+        case rssi(command: ReadRssiCommand)
+        case readDescriptor(
+            command: ReadDescriptorCommand,
+            characteristic: any AppleGattCharacteristicObject,
+            descriptor: any AppleGattDescriptorObject
+        )
+        case writeDescriptor(
+            command: WriteDescriptorCommand,
+            characteristic: any AppleGattCharacteristicObject,
+            descriptor: any AppleGattDescriptorObject
+        )
         case retireSubscription(
             correlation: SubscriptionCorrelation,
             characteristic: any AppleGattCharacteristicObject
         )
+
+        var commandId: CommandId? {
+            switch self {
+            case .read(let command, _):
+                return command.commandId
+            case .write(let command, _):
+                return command.commandId
+            case .setNotifications(let command, _, _):
+                return command.commandId
+            case .rssi(let command):
+                return command.commandId
+            case .readDescriptor(let command, _, _):
+                return command.commandId
+            case .writeDescriptor(let command, _, _):
+                return command.commandId
+            case .retireSubscription:
+                return nil
+            }
+        }
 
         var ioCommand: AppleGattIoCommand? {
             switch self {
@@ -196,6 +296,12 @@ internal final class AppleGattIoController {
                 return .read(command)
             case .write(let command, _):
                 return .write(command)
+            case .rssi(let command):
+                return .rssi(command)
+            case .readDescriptor(let command, _, _):
+                return .readDescriptor(command)
+            case .writeDescriptor(let command, _, _):
+                return .writeDescriptor(command)
             case .setNotifications, .retireSubscription:
                 return nil
             }
@@ -213,8 +319,36 @@ internal final class AppleGattIoController {
             case .read(_, let characteristic),
                  .write(_, let characteristic),
                  .setNotifications(_, let characteristic, _),
+                 .readDescriptor(_, let characteristic, _),
+                 .writeDescriptor(_, let characteristic, _),
                  .retireSubscription(_, let characteristic):
                 return characteristic
+            case .rssi:
+                preconditionFailure("RSSI operations do not have a characteristic")
+            }
+        }
+
+        var characteristicIfPresent: (any AppleGattCharacteristicObject)? {
+            switch self {
+            case .read(_, let characteristic),
+                 .write(_, let characteristic),
+                 .setNotifications(_, let characteristic, _),
+                 .readDescriptor(_, let characteristic, _),
+                 .writeDescriptor(_, let characteristic, _),
+                 .retireSubscription(_, let characteristic):
+                return characteristic
+            case .rssi:
+                return nil
+            }
+        }
+
+        var descriptorIfPresent: (any AppleGattDescriptorObject)? {
+            switch self {
+            case .readDescriptor(_, _, let descriptor),
+                 .writeDescriptor(_, _, let descriptor):
+                return descriptor
+            case .read, .write, .rssi, .setNotifications, .retireSubscription:
+                return nil
             }
         }
 
@@ -231,6 +365,12 @@ internal final class AppleGattIoController {
                 case .unsupported:
                     return nil
                 }
+            case .rssi:
+                return .rssi
+            case .readDescriptor:
+                return .descriptorRead
+            case .writeDescriptor:
+                return .descriptorWrite
             case .retireSubscription:
                 return .notificationState
             }
@@ -253,6 +393,16 @@ internal final class AppleGattIoController {
 
         var isEmpty: Bool {
             count == 0
+        }
+
+        // Consumed FIFO slots may still retain objects until storage is compacted.
+        var diagnosticAttributeIdentities: Set<ObjectIdentifier> {
+            Set(storage.compactMap { $0.characteristicIfPresent.map { ObjectIdentifier($0) } })
+        }
+
+        var diagnosticQueuedCommandIds: [CommandId] {
+            // Drop the logical operation, not the first non-nil command ID.
+            storage[headIndex...].dropFirst().compactMap { $0.commandId }
         }
 
         var first: Operation? {
@@ -287,12 +437,26 @@ internal final class AppleGattIoController {
                 headIndex = 0
             }
         }
+
+        mutating func removeFirst(where predicate: (Operation) throws -> Bool) rethrows -> Operation? {
+            guard let index = try storage[headIndex...].firstIndex(where: predicate) else {
+                return nil
+            }
+            if index == headIndex {
+                let operation = storage[index]
+                removeFirst()
+                return operation
+            }
+            return storage.remove(at: index)
+        }
     }
 
     private struct ConnectionQueue {
         let connection: AppleConnectionCorrelation
         var operations: OperationQueue
         var activeStage: ActiveStage?
+        // A safety-watched FIFO head, but not a native submission or callback owner.
+        var waitingForWriteCapacity = false
         var subscriptions: [SubscriptionId: SubscriptionRoute]
         var subscriptionByCharacteristic: [GattCharacteristicId: SubscriptionId]
     }
@@ -303,6 +467,64 @@ internal final class AppleGattIoController {
     private var safetyFaultLatched = false
     private var pendingSafetyFault: BleEventError?
     private var nextSubscriptionGeneration: UInt64 = 1
+
+    func diagnosticSnapshotGattIo(connectionId: ConnectionId) -> AppleGattIoSnapshot? {
+        guard let queue = queuesByConnectionId[connectionId] else {
+            return nil
+        }
+        let head = queue.operations.first
+        let headKind: AppleGattIoHeadKind?
+        switch head {
+        case .retireSubscription?: headKind = .retireSubscription
+        case .some: headKind = .command
+        case .none: headKind = nil
+        }
+        let headState: AppleGattIoHeadState
+        switch queue.activeStage {
+        case .callback?, .notificationState?:
+            headState = .awaitingNativeCallback
+        case .submittingWriteWithoutResponse?:
+            headState = .submittingWriteWithoutResponse
+        case .none:
+            headState = queue.waitingForWriteCapacity ? .waitingForWriteCapacity
+                : (head == nil ? .idle : .awaitingDrive)
+        }
+        return AppleGattIoSnapshot(
+            connectionId: connectionId,
+            headKind: headKind,
+            headCommandId: head?.commandId,
+            headState: headState,
+            queuedCommandIds: queue.operations.diagnosticQueuedCommandIds
+        )
+    }
+
+    var diagnosticSubscriptionCount: Int {
+        queuesByConnectionId.values.reduce(0) { $0 + $1.subscriptions.count }
+    }
+
+    // One connection-level callback lane, each active native response/value route,
+    // and every retained identity barrier. Secondary lookup indexes are not roots.
+    var diagnosticCallbackRouteCount: Int {
+        queuesByConnectionId.values.reduce(0) {
+            $0 + 1 + ($1.activeStage == nil ? 0 : 1) + $1.subscriptions.count
+        } + staleCallbackBarriers.count + valueRouteBarriers.count
+    }
+
+    var diagnosticAttributeIdentities: Set<ObjectIdentifier> {
+        var identities = Set<ObjectIdentifier>()
+        for queue in queuesByConnectionId.values {
+            identities.formUnion(queue.operations.diagnosticAttributeIdentities)
+            identities.formUnion(queue.subscriptions.values.map { ObjectIdentifier($0.characteristic) })
+        }
+        identities.formUnion(staleCallbackBarriers.values.compactMap {
+            $0.characteristic.map { ObjectIdentifier($0) }
+        })
+        identities.formUnion(staleCallbackBarriers.values.compactMap {
+            $0.descriptor.map { ObjectIdentifier($0) }
+        })
+        identities.formUnion(valueRouteBarriers.values.map { ObjectIdentifier($0.characteristic) })
+        return identities
+    }
 
     static func selectNotificationMode(
         request: NotificationModeRequest,
@@ -335,6 +557,28 @@ internal final class AppleGattIoController {
             return false
         }
         return !queue.operations.isEmpty
+    }
+
+    func cancel(commandId: CommandId) -> AppleGattCancellationDisposition {
+        for connectionId in queuesByConnectionId.keys {
+            guard var queue = queuesByConnectionId[connectionId],
+                  queue.operations.contains(where: { $0.commandId == commandId })
+            else {
+                continue
+            }
+            if queue.operations.first?.commandId == commandId,
+               queue.activeStage != nil
+            {
+                return .active
+            }
+            if queue.operations.first?.commandId == commandId {
+                queue.waitingForWriteCapacity = false
+            }
+            _ = queue.operations.removeFirst { $0.commandId == commandId }
+            queuesByConnectionId[connectionId] = queue
+            return .queued(queue.connection)
+        }
+        return .notFound
     }
 
     func prepareSubscriptionsForRediscovery(
@@ -472,6 +716,60 @@ internal final class AppleGattIoController {
         try enqueue(operation, connection: connection)
     }
 
+    func enqueueReadDescriptor(
+        command: ReadDescriptorCommand,
+        connection: AppleConnectionCorrelation,
+        target: AppleGattDescriptorTarget
+    ) throws {
+        try rejectSafetyFault()
+        try validateDescriptorTarget(
+            connectionId: command.connectionId,
+            gattSessionId: command.gattSessionId,
+            characteristicId: command.characteristicId,
+            connection: connection,
+            target: target
+        )
+        let operation = Operation.readDescriptor(
+            command: command,
+            characteristic: target.characteristic,
+            descriptor: target.descriptor
+        )
+        try enqueue(operation, connection: connection)
+    }
+
+    func enqueueWriteDescriptor(
+        command: WriteDescriptorCommand,
+        connection: AppleConnectionCorrelation,
+        target: AppleGattDescriptorTarget
+    ) throws {
+        try rejectSafetyFault()
+        try validateDescriptorTarget(
+            connectionId: command.connectionId,
+            gattSessionId: command.gattSessionId,
+            characteristicId: command.characteristicId,
+            connection: connection,
+            target: target
+        )
+        guard command.value.count <= Self.maximumWriteValueBytes else {
+            throw CommandDispatchError.InvalidRequest(
+                detail: "value contains \(command.value.count) bytes; maximum is \(Self.maximumWriteValueBytes)"
+            )
+        }
+        let operation = Operation.writeDescriptor(
+            command: command,
+            characteristic: target.characteristic,
+            descriptor: target.descriptor
+        )
+        try enqueue(operation, connection: connection)
+    }
+
+    func enqueueRssi(
+        command: ReadRssiCommand,
+        connection: AppleConnectionCorrelation
+    ) throws {
+        try enqueue(.rssi(command: command), connection: connection)
+    }
+
     func enqueueSetNotifications(
         command: SetNotificationsCommand,
         connection: AppleConnectionCorrelation,
@@ -573,8 +871,17 @@ internal final class AppleGattIoController {
 
             case .withoutResponse:
                 guard canSendWriteWithoutResponse else {
-                    return nil
+                    guard !queue.waitingForWriteCapacity else {
+                        return nil
+                    }
+                    queue.waitingForWriteCapacity = true
+                    queuesByConnectionId[connection.connectionId] = queue
+                    return .waitForWriteCapacity(
+                        commandId: command.commandId,
+                        connection: connection
+                    )
                 }
+                queue.waitingForWriteCapacity = false
                 queue.activeStage = .submittingWriteWithoutResponse
                 queuesByConnectionId[connection.connectionId] = queue
                 return .writeWithoutResponse(
@@ -583,6 +890,57 @@ internal final class AppleGattIoController {
                     characteristic: characteristic
                 )
             }
+
+        case .rssi(let command):
+            let key = rssiCallbackKey(connection: connection)
+            try rejectStaleCallbackBarrier(key)
+            queue.activeStage = .callback(key)
+            queuesByConnectionId[connection.connectionId] = queue
+            return .rssi(command: command, connection: connection)
+
+        case .readDescriptor(let command, let characteristic, let descriptor):
+            let key = descriptorCallbackKey(
+                connection: connection,
+                descriptor: descriptor,
+                kind: .descriptorRead
+            )
+            try rejectStaleCallbackBarrier(key)
+            queue.activeStage = .callback(key)
+            queuesByConnectionId[connection.connectionId] = queue
+            return .readDescriptor(
+                command: command,
+                connection: connection,
+                descriptor: descriptor
+            )
+
+        case .writeDescriptor(let command, _, let descriptor):
+            if command.value.count > maximumWriteWithResponse {
+                removeFirstOperation(from: &queue)
+                store(queue)
+                return .terminal(
+                    .failed(
+                        command: .writeDescriptor(command),
+                        error: platformWriteLengthError(
+                            actual: command.value.count,
+                            maximum: maximumWriteWithResponse,
+                            writeType: .withResponse
+                        )
+                    )
+                )
+            }
+            let key = descriptorCallbackKey(
+                connection: connection,
+                descriptor: descriptor,
+                kind: .descriptorWrite
+            )
+            try rejectStaleCallbackBarrier(key)
+            queue.activeStage = .callback(key)
+            queuesByConnectionId[connection.connectionId] = queue
+            return .writeDescriptor(
+                command: command,
+                connection: connection,
+                descriptor: descriptor
+            )
 
         case .setNotifications, .retireSubscription:
             return nil
@@ -600,7 +958,7 @@ internal final class AppleGattIoController {
         }
 
         switch operation {
-        case .read, .write:
+        case .read, .write, .rssi, .readDescriptor, .writeDescriptor:
             return nil
 
         case .retireSubscription(let correlation, let characteristic):
@@ -676,6 +1034,51 @@ internal final class AppleGattIoController {
         }
     }
 
+    func consumeRetiredRssiCallback(
+        peripheral: any ApplePeripheralObject
+    ) -> Bool {
+        consumeStaleCallbackBarrier(rssiCallbackKey(peripheral: peripheral))
+    }
+
+    func didReadRssi(
+        connection: AppleConnectionCorrelation,
+        peripheral: any ApplePeripheralObject,
+        rssi: NSNumber?,
+        error: BleEventError?
+    ) -> AppleGattIoCompletion? {
+        let key = rssiCallbackKey(connection: connection)
+        if consumeStaleCallbackBarrier(key) {
+            return nil
+        }
+        guard var queue = matchingQueue(
+            connection: connection,
+            callbackPeripheral: peripheral
+        ),
+        case .callback(let expectedKey) = queue.activeStage,
+        expectedKey == key,
+        case .rssi(let command) = queue.operations.first
+        else {
+            return nil
+        }
+
+        removeFirstOperation(from: &queue)
+        store(queue)
+        if let error {
+            return .failed(command: .rssi(command), error: error)
+        }
+        guard let rssi, let value = exactInt16(rssi) else {
+            return .failed(
+                command: .rssi(command),
+                error: BleEventError(
+                    category: .connection,
+                    message: "CoreBluetooth RSSI read completed without an Int16 value",
+                    platformDetails: nil
+                )
+            )
+        }
+        return .rssi(command: command, value: value)
+    }
+
     func didReadValue(
         connection: AppleConnectionCorrelation,
         peripheral: any ApplePeripheralObject,
@@ -728,6 +1131,85 @@ internal final class AppleGattIoController {
             )
         }
         return .read(command: command, value: value)
+    }
+
+    func didReadDescriptor(
+        connection: AppleConnectionCorrelation,
+        peripheral: any ApplePeripheralObject,
+        descriptor: any AppleGattDescriptorObject,
+        value: [UInt8]?,
+        error: BleEventError?
+    ) -> AppleGattIoCompletion? {
+        let key = descriptorCallbackKey(
+            connection: connection,
+            descriptor: descriptor,
+            kind: .descriptorRead
+        )
+        if consumeStaleCallbackBarrier(key) {
+            return nil
+        }
+        guard var queue = matchingQueue(
+            connection: connection,
+            callbackPeripheral: peripheral
+        ),
+        case .callback(let expectedKey) = queue.activeStage,
+        expectedKey == key,
+        case .readDescriptor(let command, _, let expectedDescriptor) = queue.operations.first,
+        ObjectIdentifier(expectedDescriptor) == ObjectIdentifier(descriptor)
+        else {
+            return nil
+        }
+
+        removeFirstOperation(from: &queue)
+        store(queue)
+        if let error {
+            return .failed(command: .readDescriptor(command), error: error)
+        }
+        guard let value else {
+            return .failed(
+                command: .readDescriptor(command),
+                error: BleEventError(
+                    category: .gatt,
+                    message: "CoreBluetooth descriptor read completed without a value",
+                    platformDetails: nil
+                )
+            )
+        }
+        return .readDescriptor(command: command, value: value)
+    }
+
+    func didWriteDescriptor(
+        connection: AppleConnectionCorrelation,
+        peripheral: any ApplePeripheralObject,
+        descriptor: any AppleGattDescriptorObject,
+        error: BleEventError?
+    ) -> AppleGattIoCompletion? {
+        let key = descriptorCallbackKey(
+            connection: connection,
+            descriptor: descriptor,
+            kind: .descriptorWrite
+        )
+        if consumeStaleCallbackBarrier(key) {
+            return nil
+        }
+        guard var queue = matchingQueue(
+            connection: connection,
+            callbackPeripheral: peripheral
+        ),
+        case .callback(let expectedKey) = queue.activeStage,
+        expectedKey == key,
+        case .writeDescriptor(let command, _, let expectedDescriptor) = queue.operations.first,
+        ObjectIdentifier(expectedDescriptor) == ObjectIdentifier(descriptor)
+        else {
+            return nil
+        }
+
+        removeFirstOperation(from: &queue)
+        store(queue)
+        if let error {
+            return .failed(command: .writeDescriptor(command), error: error)
+        }
+        return .writeDescriptor(command: command)
     }
 
     func didUpdateValue(
@@ -805,13 +1287,14 @@ internal final class AppleGattIoController {
         ),
         case .notificationState(let expectedCorrelation) = queue.activeStage,
         let operation = queue.operations.first,
-        ObjectIdentifier(operation.characteristic) == ObjectIdentifier(characteristic)
+        let operationCharacteristic = operation.characteristicIfPresent,
+        ObjectIdentifier(operationCharacteristic) == ObjectIdentifier(characteristic)
         else {
             return nil
         }
 
         switch operation {
-        case .read, .write:
+        case .read, .write, .rssi, .readDescriptor, .writeDescriptor:
             return nil
 
         case .retireSubscription(let correlation, _):
@@ -966,6 +1449,16 @@ internal final class AppleGattIoController {
         return .write(command: command)
     }
 
+    func isWaitingForWriteCapacity(
+        connection: AppleConnectionCorrelation,
+        commandId: CommandId
+    ) -> Bool {
+        guard let queue = matchingQueue(connection: connection) else {
+            return false
+        }
+        return queue.waitingForWriteCapacity && queue.operations.first?.commandId == commandId
+    }
+
     func didBecomeReadyToSendWriteWithoutResponse(
         connection: AppleConnectionCorrelation,
         peripheral: any ApplePeripheralObject
@@ -991,7 +1484,9 @@ internal final class AppleGattIoController {
 
     func retireAll(
         connection: AppleConnectionCorrelation,
-        error: BleEventError
+        error: BleEventError,
+        activeOperationError: BleEventError? = nil,
+        queuedOperationError: BleEventError? = nil
     ) -> AppleGattRetirement {
         guard let queue = matchingQueue(connection: connection) else {
             return AppleGattRetirement(
@@ -1005,7 +1500,8 @@ internal final class AppleGattIoController {
                 addStaleCallbackBarrier(
                     key,
                     peripheral: queue.connection.peripheral,
-                    characteristic: operation.characteristic
+                    characteristic: operation.characteristicIfPresent,
+                    descriptor: operation.descriptorIfPresent
                 )
             case .notificationState:
                 addStaleCallbackBarrier(
@@ -1038,17 +1534,27 @@ internal final class AppleGattIoController {
                 activeNotificationCharacteristicsToUnsubscribe.append(route.characteristic)
             }
         }
+        // Capacity waiting owns a deadline without owning any native callback barrier.
+        let watchedHead = queue.activeStage != nil || queue.waitingForWriteCapacity
+        let activeError = activeOperationError ?? error
+        let queuedError = queuedOperationError ?? error
+        var operationIndex = 0
+        let completions = queue.operations.compactMap { operation -> AppleGattRetiredCompletion? in
+            let operationError = operationIndex == 0 && watchedHead
+                ? activeError
+                : queuedError
+            operationIndex += 1
+            if let command = operation.ioCommand {
+                return .io(.failed(command: command, error: operationError))
+            }
+            if let command = operation.notificationCommand {
+                return .notification(.failed(command: command, error: operationError))
+            }
+            return nil
+        }
         queuesByConnectionId.removeValue(forKey: connection.connectionId)
         return AppleGattRetirement(
-            completions: queue.operations.compactMap { operation in
-                if let command = operation.ioCommand {
-                    return .io(.failed(command: command, error: error))
-                }
-                if let command = operation.notificationCommand {
-                    return .notification(.failed(command: command, error: error))
-                }
-                return nil
-            },
+            completions: completions,
             activeNotificationCharacteristicsToUnsubscribe: activeNotificationCharacteristicsToUnsubscribe
         )
     }
@@ -1075,6 +1581,32 @@ internal final class AppleGattIoController {
                 peripheralIdentity: ObjectIdentifier(peripheral),
                 characteristicIdentity: ObjectIdentifier(characteristic),
                 kind: .writeWithResponse
+            )
+        )
+    }
+
+    func consumeRetiredDescriptorReadCallback(
+        peripheral: any ApplePeripheralObject,
+        descriptor: any AppleGattDescriptorObject
+    ) -> Bool {
+        consumeStaleCallbackBarrier(
+            descriptorCallbackKey(
+                peripheral: peripheral,
+                descriptor: descriptor,
+                kind: .descriptorRead
+            )
+        )
+    }
+
+    func consumeRetiredDescriptorWriteCallback(
+        peripheral: any ApplePeripheralObject,
+        descriptor: any AppleGattDescriptorObject
+    ) -> Bool {
+        consumeStaleCallbackBarrier(
+            descriptorCallbackKey(
+                peripheral: peripheral,
+                descriptor: descriptor,
+                kind: .descriptorWrite
             )
         )
     }
@@ -1291,20 +1823,63 @@ internal final class AppleGattIoController {
         _ operation: Operation,
         connection: AppleConnectionCorrelation
     ) throws {
-        if let callbackKind = operation.callbackKind {
-            try rejectStaleCallbackBarrier(
-                callbackKey(
-                    connection: connection,
-                    characteristic: operation.characteristic,
-                    kind: callbackKind
-                )
-            )
+        if let key = callbackKey(for: operation, connection: connection) {
+            try rejectStaleCallbackBarrier(key)
         }
 
         var queue = try queueForMutation(connection: connection)
         try rejectFullOperationQueue(queue)
         queue.operations.append(operation)
         queuesByConnectionId[connection.connectionId] = queue
+    }
+
+    private func validateDescriptorTarget(
+        connectionId: ConnectionId,
+        gattSessionId: GattSessionId,
+        characteristicId: GattCharacteristicId,
+        connection: AppleConnectionCorrelation,
+        target: AppleGattDescriptorTarget
+    ) throws {
+        guard target.connectionGeneration == connection.generation,
+              target.gattSessionId == gattSessionId,
+              target.characteristicId == characteristicId,
+              connection.connectionId == connectionId
+        else {
+            throw CommandDispatchError.InvalidState(
+                detail: "the GATT descriptor target is stale or does not match the active connection"
+            )
+        }
+    }
+
+    private func callbackKey(
+        for operation: Operation,
+        connection: AppleConnectionCorrelation
+    ) -> CallbackKey? {
+        switch operation {
+        case .rssi:
+            return rssiCallbackKey(connection: connection)
+        case .readDescriptor(_, _, let descriptor):
+            return descriptorCallbackKey(
+                connection: connection,
+                descriptor: descriptor,
+                kind: .descriptorRead
+            )
+        case .writeDescriptor(_, _, let descriptor):
+            return descriptorCallbackKey(
+                connection: connection,
+                descriptor: descriptor,
+                kind: .descriptorWrite
+            )
+        case .read, .write, .setNotifications, .retireSubscription:
+            guard let kind = operation.callbackKind else {
+                return nil
+            }
+            return callbackKey(
+                connection: connection,
+                characteristic: operation.characteristic,
+                kind: kind
+            )
+        }
     }
 
     private func matchingQueue(
@@ -1372,6 +1947,58 @@ internal final class AppleGattIoController {
             return false
         }
         return ObjectIdentifier(candidate) == ObjectIdentifier(characteristic)
+    }
+
+    /// Read-only callback evidence. UUID fallback identifies an expected object, not a matching route.
+    func diagnosticNotificationRoute(
+        connection: AppleConnectionCorrelation?,
+        peripheral: any ApplePeripheralObject,
+        characteristic: any AppleGattCharacteristicObject
+    ) -> [String: Any] {
+        let queue = connection.flatMap { queuesByConnectionId[$0.connectionId] }
+        let routes = queue.map { Array($0.subscriptions.values) } ?? []
+        let sameUuid = routes.filter { $0.characteristic.appleGattUuid == characteristic.appleGattUuid }
+        let route = routes.first { ObjectIdentifier($0.characteristic) == ObjectIdentifier(characteristic) }
+            ?? (sameUuid.count == 1 ? sameUuid.first : nil)
+        let key = ValueRouteKey(
+            peripheralIdentity: ObjectIdentifier(peripheral),
+            characteristicIdentity: ObjectIdentifier(characteristic)
+        )
+        var fields: [String: Any] = [
+            "peripheralObject": String(describing: ObjectIdentifier(peripheral)),
+            "characteristicObject": String(describing: ObjectIdentifier(characteristic)),
+            "characteristicUuid": characteristic.appleGattUuid.value,
+            "queuePresent": queue != nil,
+            "connectionMatches": connection.map { matchingQueue(connection: $0, callbackPeripheral: peripheral) != nil } ?? false,
+            "routeMatches": connection.map { matchingSubscriptionRoute(connection: $0, peripheral: peripheral, characteristic: characteristic) != nil } ?? false,
+            "phase": route?.phase.diagnosticName ?? "none",
+            "sameUuidRoutes": sameUuid.count,
+            "readBarrier": staleCallbackBarriers[CallbackKey(peripheralIdentity: key.peripheralIdentity, characteristicIdentity: key.characteristicIdentity, kind: .read)] != nil,
+            "notificationStateBarrier": staleCallbackBarriers[CallbackKey(peripheralIdentity: key.peripheralIdentity, characteristicIdentity: key.characteristicIdentity, kind: .notificationState)] != nil,
+            "valueBarrier": valueRouteBarriers[key] != nil,
+        ]
+        if let connection {
+            fields["connectionId"] = String(connection.connectionId.value)
+            fields["connectionGeneration"] = String(connection.generation)
+        }
+        if let command = queue?.operations.first?.commandId { fields["activeCommandId"] = String(command.value) }
+        if let route {
+            fields["gattSessionId"] = String(route.correlation.gattSessionId.value)
+            fields["subscriptionId"] = String(route.correlation.subscriptionId.value)
+            fields["characteristicId"] = String(route.correlation.characteristicId.value)
+            fields["subscriptionGeneration"] = String(route.correlation.generation)
+            fields["expectedConnectionGeneration"] = String(route.correlation.connection.generation)
+            fields["expectedPeripheralObject"] = String(describing: ObjectIdentifier(route.correlation.connection.peripheral))
+            fields["expectedCharacteristicObject"] = String(describing: ObjectIdentifier(route.characteristic))
+            fields["peripheralMatches"] = ObjectIdentifier(route.correlation.connection.peripheral) == ObjectIdentifier(peripheral)
+            fields["characteristicMatches"] = ObjectIdentifier(route.characteristic) == ObjectIdentifier(characteristic)
+            fields["acceptsValue"] = subscriptionAcceptsValue(route.phase)
+        }
+        if let barrier = valueRouteBarriers[key] {
+            fields["barrierSubscriptionId"] = String(barrier.correlation.subscriptionId.value)
+            fields["barrierGattSessionId"] = String(barrier.correlation.gattSessionId.value)
+        }
+        return fields
     }
 
     private func matchingSubscriptionRoute(
@@ -1479,6 +2106,55 @@ internal final class AppleGattIoController {
         )
     }
 
+    private func descriptorCallbackKey(
+        connection: AppleConnectionCorrelation,
+        descriptor: any AppleGattDescriptorObject,
+        kind: CallbackKind
+    ) -> CallbackKey {
+        descriptorCallbackKey(
+            peripheral: connection.peripheral,
+            descriptor: descriptor,
+            kind: kind
+        )
+    }
+
+    private func descriptorCallbackKey(
+        peripheral: any ApplePeripheralObject,
+        descriptor: any AppleGattDescriptorObject,
+        kind: CallbackKind
+    ) -> CallbackKey {
+        CallbackKey(
+            peripheralIdentity: ObjectIdentifier(peripheral),
+            characteristicIdentity: nil,
+            descriptorIdentity: ObjectIdentifier(descriptor),
+            kind: kind
+        )
+    }
+
+    private func rssiCallbackKey(
+        peripheral: any ApplePeripheralObject
+    ) -> CallbackKey {
+        CallbackKey(
+            peripheralIdentity: ObjectIdentifier(peripheral),
+            characteristicIdentity: nil,
+            kind: .rssi
+        )
+    }
+
+    private func rssiCallbackKey(
+        connection: AppleConnectionCorrelation
+    ) -> CallbackKey {
+        rssiCallbackKey(peripheral: connection.peripheral)
+    }
+
+    private func exactInt16(_ value: NSNumber) -> Int16? {
+        let numericValue = value.doubleValue
+        guard numericValue.isFinite else {
+            return nil
+        }
+        return Int16(exactly: numericValue)
+    }
+
     private func valueRouteKey(
         connection: AppleConnectionCorrelation,
         characteristic: any AppleGattCharacteristicObject
@@ -1581,7 +2257,8 @@ internal final class AppleGattIoController {
     private func addStaleCallbackBarrier(
         _ key: CallbackKey,
         peripheral: any ApplePeripheralObject,
-        characteristic: any AppleGattCharacteristicObject
+        characteristic: (any AppleGattCharacteristicObject)?,
+        descriptor: (any AppleGattDescriptorObject)? = nil
     ) {
         guard !safetyFaultLatched,
               staleCallbackBarriers[key] == nil,
@@ -1591,7 +2268,8 @@ internal final class AppleGattIoController {
         }
         staleCallbackBarriers[key] = CallbackBarrier(
             peripheral: peripheral,
-            characteristic: characteristic
+            characteristic: characteristic,
+            descriptor: descriptor
         )
         if staleCallbackBarriers.count > Self.maximumSafeBarrierRoutes {
             latchSafetyFault(
@@ -1648,6 +2326,7 @@ internal final class AppleGattIoController {
     private func removeFirstOperation(from queue: inout ConnectionQueue) {
         queue.operations.removeFirst()
         queue.activeStage = nil
+        queue.waitingForWriteCapacity = false
     }
 
     private func store(_ queue: ConnectionQueue) {

@@ -12,21 +12,6 @@ internal enum AppleBackendEventProjection {
         .commandCompleted(commandId: command.commandId, error: error)
     }
 
-    static func rssiEvents(_ completion: AppleRssiCompletion) -> [BleEvent] {
-        switch completion {
-        case .read(let command, let rssi):
-            return [
-                .rssiRead(
-                    commandId: command.commandId,
-                    connectionId: command.connectionId,
-                    rssi: rssi
-                ),
-                .commandCompleted(commandId: command.commandId, error: nil),
-            ]
-        case .failed(let command, let error):
-            return [.commandCompleted(commandId: command.commandId, error: error)]
-        }
-    }
 
     static func gattIoEvents(_ completion: AppleGattIoCompletion) -> [BleEvent] {
         switch completion {
@@ -42,6 +27,8 @@ internal enum AppleBackendEventProjection {
                 .commandCompleted(commandId: command.commandId, error: nil),
             ]
         case .write(let command):
+            // Without response, this records local submission, not a native
+            // didWrite callback or remote acknowledgement.
             return [
                 .characteristicWritten(
                     commandId: command.commandId,
@@ -51,12 +38,50 @@ internal enum AppleBackendEventProjection {
                 ),
                 .commandCompleted(commandId: command.commandId, error: nil),
             ]
+        case .readDescriptor(let command, let value):
+            return [
+                .descriptorRead(
+                    commandId: command.commandId,
+                    connectionId: command.connectionId,
+                    gattSessionId: command.gattSessionId,
+                    characteristicId: command.characteristicId,
+                    descriptorId: command.descriptorId,
+                    value: Data(value)
+                ),
+                .commandCompleted(commandId: command.commandId, error: nil),
+            ]
+        case .writeDescriptor(let command):
+            return [
+                .descriptorWritten(
+                    commandId: command.commandId,
+                    connectionId: command.connectionId,
+                    gattSessionId: command.gattSessionId,
+                    characteristicId: command.characteristicId,
+                    descriptorId: command.descriptorId
+                ),
+                .commandCompleted(commandId: command.commandId, error: nil),
+            ]
+        case .rssi(let command, let rssi):
+            return [
+                .rssiRead(
+                    commandId: command.commandId,
+                    connectionId: command.connectionId,
+                    rssi: rssi
+                ),
+                .commandCompleted(commandId: command.commandId, error: nil),
+            ]
         case .failed(let command, let error):
             let commandId: CommandId
             switch command {
             case .read(let read):
                 commandId = read.commandId
             case .write(let write):
+                commandId = write.commandId
+            case .rssi(let rssi):
+                commandId = rssi.commandId
+            case .readDescriptor(let read):
+                commandId = read.commandId
+            case .writeDescriptor(let write):
                 commandId = write.commandId
             }
             return [.commandCompleted(commandId: commandId, error: error)]

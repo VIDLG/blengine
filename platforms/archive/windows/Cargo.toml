@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "blehub-windows"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[features]
+hil-callback-gates = ["resource-accounting"]
+resource-accounting = []
+
+[target.'cfg(windows)'.dependencies]
+blehub = { version = "=0.0.0", path = "../../../crates/blehub" }
+tracing = "0.1"
+uuid = "1"
+windows = { version = "0.62", features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_Advertisement",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Devices_Radios",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+] }
+windows-future = "0.3"

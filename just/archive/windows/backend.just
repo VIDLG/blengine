@@ -1,7 +1,7 @@
 # Compile the production Windows backend without accessing Bluetooth hardware.
 check:
     rtk cargo check -p blehub-windows --all-targets
-    rtk cargo check --manifest-path tests/hil/windows/Cargo.toml --all-targets
+    rtk cargo check --manifest-path tests/hil/archive/windows/Cargo.toml --all-targets
 
 # Run deterministic Windows mapping and lifecycle tests without RF.
 test:

@@ -8,9 +8,9 @@ use std::{
 
 use blehub::{
     AdapterSnapshot, AdapterState, BackendCapabilities, BackendEventIngressHandle, BleBackend,
-    BleEvent, BleHubError, CommandDispatchError, CommandId, ConnectCommand, ConnectionId,
-    DisconnectCommand, DiscoverGattCommand, EventIngressStatus, InitializeCommand, PeripheralId,
-    Platform, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
+    BleEvent, BleHubError, CancelOperationRequest, CommandDispatchError, CommandId, ConnectCommand,
+    ConnectionId, DisconnectCommand, DiscoverGattCommand, EventIngressStatus, InitializeCommand,
+    PeripheralId, Platform, ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand,
     StartScanCommand, StopScanCommand, WriteCharacteristicCommand,
 };
 use windows::Devices::{Bluetooth::BluetoothAdapter, Radios::Radio};
@@ -374,6 +374,13 @@ impl BleBackend for WindowsBackend {
 
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
         connection::complete_unsupported_read_rssi(self, command)
+    }
+
+    fn cancel_operation(
+        &self,
+        request: CancelOperationRequest,
+    ) -> Result<(), CommandDispatchError> {
+        connection::cancel_operation(self, request.target_command_id)
     }
 
     fn dispose(&self) -> Result<(), BleHubError> {

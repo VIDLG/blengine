@@ -34,10 +34,18 @@ internal class AndroidGattCallback(
         Int,
     ) -> Unit,
     private val onReadRemoteRssi: (ActiveConnection, BluetoothGatt, Int, Int) -> Unit,
+    private val onMtuChanged: (ActiveConnection, BluetoothGatt, Int, Int) -> Unit,
     private val onDescriptorWrite: (
         ActiveConnection,
         BluetoothGatt,
         BluetoothGattDescriptor,
+        Int,
+    ) -> Unit,
+    private val onDescriptorRead: (
+        ActiveConnection,
+        BluetoothGatt,
+        BluetoothGattDescriptor,
+        ByteArray,
         Int,
     ) -> Unit,
     private val onCharacteristicChanged: (
@@ -101,12 +109,25 @@ internal class AndroidGattCallback(
         post("an RSSI") { onReadRemoteRssi(route, gatt, rssi, status) }
     }
 
+    override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+        post("an MTU") { onMtuChanged(route, gatt, mtu, status) }
+    }
+
     override fun onDescriptorWrite(
         gatt: BluetoothGatt,
         descriptor: BluetoothGattDescriptor,
         status: Int,
     ) {
         post("a descriptor write") { onDescriptorWrite(route, gatt, descriptor, status) }
+    }
+
+    override fun onDescriptorRead(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        status: Int,
+    ) {
+        val value = descriptor.value?.copyOf() ?: ByteArray(0)
+        post("a descriptor read") { onDescriptorRead(route, gatt, descriptor, value, status) }
     }
 
     @Deprecated("Android legacy callback overload")

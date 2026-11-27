@@ -186,7 +186,7 @@ final class ConnectionControllerTests: XCTestCase {
         ConnectCommand(
             commandId: CommandId(value: commandId),
             connectionId: ConnectionId(value: connectionId),
-            peripheralId: PeripheralId(value: peripheralId)
+            peripheralId: PeripheralId(value: peripheralId), autoConnect: false
         )
     }
 }

@@ -102,6 +102,37 @@ pub(super) enum PendingIoOperationState {
     Running(PendingIoOperation),
 }
 
+pub(super) enum IoCancellation {
+    Queued,
+    Active(PendingIoOperation),
+    AlreadyCompleting,
+}
+
+pub(super) fn prepare_cancellation(
+    gatt: &mut ConnectionGattState,
+    command_id: CommandId,
+) -> Option<IoCancellation> {
+    let queued = gatt
+        .io_queue
+        .iter_mut()
+        .find(|queued| queued.correlation.command_id() == command_id)?;
+    if queued.completion.is_some() {
+        return Some(IoCancellation::AlreadyCompleting);
+    }
+    match &queued.operation {
+        PendingIoOperationState::Reserved => {
+            queued.completion = Some(Err(simple_event_error(
+                BleErrorCategory::Cancelled,
+                "Windows GATT operation cancelled before native start",
+            )));
+            Some(IoCancellation::Queued)
+        }
+        PendingIoOperationState::Running(operation) => {
+            Some(IoCancellation::Active(clone_io_operation(operation)))
+        }
+    }
+}
+
 impl PendingIoOperationState {
     pub(super) fn cancel(&self) -> windows::core::Result<()> {
         match self {
@@ -118,7 +149,7 @@ pub(super) enum PendingIoOperation {
 }
 
 impl PendingIoOperation {
-    fn cancel(&self) -> windows::core::Result<()> {
+    pub(super) fn cancel(&self) -> windows::core::Result<()> {
         match self {
             Self::Read(operation) => operation.Cancel(),
             Self::Write(operation) => operation.Cancel(),

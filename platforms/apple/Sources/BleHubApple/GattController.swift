@@ -74,6 +74,14 @@ internal struct AppleGattDiscoveryCompletion {
     let nativeMap: AppleGattNativeMap
 }
 
+internal struct AppleGattDescriptorTarget {
+    let connectionGeneration: UInt64
+    let gattSessionId: GattSessionId
+    let characteristicId: GattCharacteristicId
+    let characteristic: any AppleGattCharacteristicObject
+    let descriptor: any AppleGattDescriptorObject
+}
+
 internal struct AppleGattCharacteristicTarget {
     let connectionGeneration: UInt64
     let gattSessionId: GattSessionId
@@ -154,6 +162,30 @@ internal final class AppleGattController {
     private var quarantinedGenerationByConnectionId: [ConnectionId: UInt64] = [:]
     private var nextDiscoveryGeneration: UInt64? = 1
     private var nextAttributeId: UInt64? = 1
+
+    // Native instance identities, including uncommitted drafts; UUIDs are not instance keys.
+    var diagnosticAttributeIdentities: Set<ObjectIdentifier> {
+        var identities = Set<ObjectIdentifier>()
+        for active in activeByConnectionId.values {
+            identities.formUnion(active.nativeMap.services.values.map { ObjectIdentifier($0) })
+            identities.formUnion(active.nativeMap.characteristics.values.map { ObjectIdentifier($0) })
+            identities.formUnion(active.nativeMap.descriptors.values.map { ObjectIdentifier($0) })
+        }
+        for pending in pendingByConnectionId.values {
+            for service in pending.services {
+                identities.insert(ObjectIdentifier(service.object))
+                for characteristic in service.characteristics {
+                    identities.insert(ObjectIdentifier(characteristic.object))
+                    identities.formUnion(characteristic.descriptors.map { ObjectIdentifier($0.object) })
+                }
+            }
+        }
+        return identities
+    }
+
+    var diagnosticCallbackRouteCount: Int {
+        pendingByConnectionId.count + quarantinedGenerationByConnectionId.count
+    }
 
     var pendingCount: Int {
         pendingByConnectionId.count
@@ -387,6 +419,10 @@ internal final class AppleGattController {
         return active.database
     }
 
+    func hasPendingDiscovery(commandId: CommandId) -> Bool {
+        pendingByConnectionId.values.contains { $0.correlation.command.commandId == commandId }
+    }
+
     func hasPendingDiscovery(connection: AppleConnectionCorrelation) -> Bool {
         currentPending(connection: connection) != nil
     }
@@ -442,6 +478,58 @@ internal final class AppleGattController {
             gattSessionId: active.database.gattSessionId,
             characteristicId: characteristicId,
             characteristic: characteristic
+        )
+    }
+
+    func resolveDescriptor(
+        connection: AppleConnectionCorrelation,
+        gattSessionId: GattSessionId,
+        characteristicId: GattCharacteristicId,
+        descriptorId: GattDescriptorId
+    ) throws -> AppleGattDescriptorTarget {
+        let characteristicTarget = try resolveCharacteristic(
+            connection: connection,
+            gattSessionId: gattSessionId,
+            characteristicId: characteristicId
+        )
+        guard let active = activeByConnectionId[connection.connectionId] else {
+            throw CommandDispatchError.InvalidState(
+                detail: "no discovered GATT database is active for this Apple connection"
+            )
+        }
+        let databaseContainsDescriptor = active.database.services.contains { service in
+            service.characteristics.contains { characteristic in
+                characteristic.id == characteristicId
+                    && characteristic.descriptors.contains { $0.id == descriptorId }
+            }
+        }
+        let descriptor = active.nativeMap.descriptors[descriptorId]
+        guard databaseContainsDescriptor == (descriptor != nil) else {
+            throw CommandDispatchError.BackendUnavailable(
+                detail: "Apple GATT descriptor database and native routing map are inconsistent",
+                platformDetails: nil
+            )
+        }
+        guard let descriptor else {
+            throw CommandDispatchError.InvalidRequest(
+                detail: "the GATT descriptor ID is not present in the active Apple database"
+            )
+        }
+        // A descriptor is only addressable through the characteristic that owns it.
+        if let concrete = descriptor as? CBDescriptor,
+           let owner = concrete.characteristic,
+           ObjectIdentifier(owner) != ObjectIdentifier(characteristicTarget.characteristic)
+        {
+            throw CommandDispatchError.InvalidRequest(
+                detail: "the GATT descriptor does not belong to the requested characteristic"
+            )
+        }
+        return AppleGattDescriptorTarget(
+            connectionGeneration: characteristicTarget.connectionGeneration,
+            gattSessionId: characteristicTarget.gattSessionId,
+            characteristicId: characteristicId,
+            characteristic: characteristicTarget.characteristic,
+            descriptor: descriptor
         )
     }
 

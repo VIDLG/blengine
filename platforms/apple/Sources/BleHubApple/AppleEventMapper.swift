@@ -80,6 +80,14 @@ internal enum AppleEventMapper {
         eventError(category: .internal, error: nil, context: context)
     }
 
+    static func operationTimeout(_ context: String) -> BleEventError {
+        eventError(category: .timeout, error: nil, context: context)
+    }
+
+    static func operationAborted(_ context: String) -> BleEventError {
+        eventError(category: .operationAborted, error: nil, context: context)
+    }
+
     private static func eventError(
         category: BleErrorCategory,
         error: Error?,
@@ -92,7 +100,10 @@ internal enum AppleEventMapper {
                 platform: .apple,
                 code: String(nsError.code),
                 name: nsError.domain,
-                message: nsError.localizedDescription
+                message: nsError.localizedDescription,
+                status: Int32(clamping: nsError.code),
+                attCode: nsError.domain == CBATTErrorDomain
+                    ? Int32(clamping: nsError.code) : nil
             )
         } else {
             platformDetails = nil

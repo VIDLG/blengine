@@ -136,8 +136,51 @@ pub(super) enum PendingOperation {
     Descriptors(IAsyncOperation<GattDescriptorsResult>),
 }
 
+pub(super) enum DiscoveryCancellation {
+    Queued,
+    Active(PendingOperation),
+    AlreadyCompleting,
+}
+
+pub(super) fn prepare_cancellation(
+    gatt: &mut ConnectionGattState,
+    command_id: CommandId,
+) -> Option<DiscoveryCancellation> {
+    let pending = gatt
+        .pending
+        .as_mut()
+        .filter(|pending| pending.correlation.command.command_id == command_id)?;
+    if pending.completion.is_some() {
+        return Some(DiscoveryCancellation::AlreadyCompleting);
+    }
+    match &pending.operation {
+        PendingOperationState::Reserved => {
+            pending.completion = Some(DiscoveryCompletion {
+                stage: pending.stage,
+                result: cancellation_result(pending.stage),
+            });
+            Some(DiscoveryCancellation::Queued)
+        }
+        PendingOperationState::Running(operation) => {
+            Some(DiscoveryCancellation::Active(clone_operation(operation)))
+        }
+    }
+}
+
+fn cancellation_result(stage: DiscoveryStage) -> CompletionResult {
+    let error = simple_event_error(
+        BleErrorCategory::Cancelled,
+        "Windows GATT discovery cancelled before native start",
+    );
+    match stage {
+        DiscoveryStage::Services => CompletionResult::Services(Err(error)),
+        DiscoveryStage::Characteristics { .. } => CompletionResult::Characteristics(Err(error)),
+        DiscoveryStage::Descriptors { .. } => CompletionResult::Descriptors(Err(error)),
+    }
+}
+
 impl PendingOperation {
-    fn cancel(&self) -> windows::core::Result<()> {
+    pub(super) fn cancel(&self) -> windows::core::Result<()> {
         match self {
             Self::Services(operation) => operation.Cancel(),
             Self::Characteristics(operation) => operation.Cancel(),

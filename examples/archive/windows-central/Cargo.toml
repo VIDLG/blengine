@@ -8,5 +8,5 @@ publish = false
 [workspace]
 
 [target.'cfg(windows)'.dependencies]
-blehub = { path = "../../crates/blehub" }
-blehub-windows = { path = "../../platforms/windows" }
+blehub = { path = "../../../crates/blehub" }
+blehub-windows = { path = "../../../platforms/archive/windows" }

@@ -82,31 +82,16 @@ final class ScanControllerTests: XCTestCase {
             ],
             rssi: NSNumber(value: -50)
         )
-        let matching = ScanOptions(
-            serviceUuids: [
+        let matching = ScanOptions(serviceUuids: [
                 BluetoothUuid(value: "0000fff0-0000-1000-8000-00805f9b34fb"),
-            ],
-            namePrefix: "BleHub",
-            companyId: 0x1234,
-            allowDuplicates: true
-        )
+            ], namePrefix: "BleHub", exactName: nil, companyId: 0x1234, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true)
 
         XCTAssertTrue(matching.matches(observation))
         XCTAssertFalse(
-            ScanOptions(
-                serviceUuids: matching.serviceUuids,
-                namePrefix: "Other",
-                companyId: matching.companyId,
-                allowDuplicates: false
-            ).matches(observation)
+            ScanOptions(serviceUuids: matching.serviceUuids, namePrefix: "Other", exactName: nil, companyId: matching.companyId, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: false).matches(observation)
         )
         XCTAssertFalse(
-            ScanOptions(
-                serviceUuids: [],
-                namePrefix: nil,
-                companyId: 0xFFFF,
-                allowDuplicates: false
-            ).matches(observation)
+            ScanOptions(serviceUuids: [], namePrefix: nil, exactName: nil, companyId: 0xFFFF, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: false).matches(observation)
         )
     }
 
@@ -119,12 +104,7 @@ final class ScanControllerTests: XCTestCase {
             command: StartScanCommand(
                 commandId: CommandId(value: 1),
                 scanSessionId: ScanSessionId(value: 10),
-                options: ScanOptions(
-                    serviceUuids: [serviceUuid],
-                    namePrefix: nil,
-                    companyId: nil,
-                    allowDuplicates: true
-                )
+                options: ScanOptions(serviceUuids: [serviceUuid], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true)
             )
         )
 
@@ -139,12 +119,7 @@ final class ScanControllerTests: XCTestCase {
             )
         )
         XCTAssertTrue(observation.advertisedServices.isEmpty)
-        XCTAssertTrue(ScanOptions(
-            serviceUuids: [serviceUuid],
-            namePrefix: nil,
-            companyId: nil,
-            allowDuplicates: true
-        ).matches(observation, nativeServiceFilterMatched: true))
+        XCTAssertTrue(ScanOptions(serviceUuids: [serviceUuid], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true).matches(observation, nativeServiceFilterMatched: true))
     }
 
     func testMultipleNativeFiltersDoNotClaimWhichUuidMatched() {
@@ -161,12 +136,7 @@ final class ScanControllerTests: XCTestCase {
 
         XCTAssertEqual(observation.advertisedServices, [serviceA])
         XCTAssertFalse(observation.advertisedServices.contains(serviceB))
-        XCTAssertTrue(ScanOptions(
-            serviceUuids: [serviceA, serviceB],
-            namePrefix: nil,
-            companyId: nil,
-            allowDuplicates: true
-        ).matches(observation, nativeServiceFilterMatched: true))
+        XCTAssertTrue(ScanOptions(serviceUuids: [serviceA, serviceB], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true).matches(observation, nativeServiceFilterMatched: true))
     }
 
     func testNativeServiceMatchDoesNotBypassMissingIdentityFields() {
@@ -178,12 +148,7 @@ final class ScanControllerTests: XCTestCase {
             rssi: NSNumber(value: -50)
         )
 
-        XCTAssertFalse(ScanOptions(
-            serviceUuids: [serviceA],
-            namePrefix: "BleHub",
-            companyId: nil,
-            allowDuplicates: true
-        ).matches(observation, nativeServiceFilterMatched: true))
+        XCTAssertFalse(ScanOptions(serviceUuids: [serviceA], namePrefix: "BleHub", exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true).matches(observation, nativeServiceFilterMatched: true))
     }
 
     func testRejectedLocalFiltersDoNotAllocateOrRetainPeripheralIdentity() throws {
@@ -191,14 +156,9 @@ final class ScanControllerTests: XCTestCase {
         let command = StartScanCommand(
             commandId: CommandId(value: 1),
             scanSessionId: ScanSessionId(value: 100),
-            options: ScanOptions(
-                serviceUuids: [
+            options: ScanOptions(serviceUuids: [
                     BluetoothUuid(value: "0000fff0-0000-1000-8000-00805f9b34fb"),
-                ],
-                namePrefix: "BleHub",
-                companyId: 0x1234,
-                allowDuplicates: true
-            )
+                ], namePrefix: "BleHub", exactName: nil, companyId: 0x1234, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true)
         )
         _ = try controller.begin(command: command)
 
@@ -291,6 +251,7 @@ final class ScanControllerTests: XCTestCase {
 
         let firstPeripheralId = try XCTUnwrap(controller.peripheralId(for: identifier))
         XCTAssertEqual(firstPeripheralId, controller.peripheralId(for: identifier))
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 1)
         XCTAssertThrowsError(
             try controller.stop(
                 command: StopScanCommand(
@@ -306,9 +267,15 @@ final class ScanControllerTests: XCTestCase {
         )
         XCTAssertEqual(try controller.stop(command: stop), .stopped(first.scanSessionId))
         XCTAssertEqual(try controller.stop(command: stop), .alreadyStopped)
+        XCTAssertNil(controller.activeSessionId)
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 1, "stopping does not erase warm identity")
 
         _ = try controller.begin(command: second)
         XCTAssertEqual(firstPeripheralId, controller.peripheralId(for: identifier))
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 1)
+        controller.dispose()
+        XCTAssertNil(controller.activeSessionId)
+        XCTAssertEqual(controller.diagnosticPeerCacheCount, 0)
     }
 
     private func startCommand(
@@ -318,12 +285,7 @@ final class ScanControllerTests: XCTestCase {
         StartScanCommand(
             commandId: CommandId(value: commandId),
             scanSessionId: ScanSessionId(value: scanSessionId),
-            options: ScanOptions(
-                serviceUuids: [BluetoothUuid(value: "0000fff0-0000-1000-8000-00805f9b34fb")],
-                namePrefix: nil,
-                companyId: nil,
-                allowDuplicates: true
-            )
+            options: ScanOptions(serviceUuids: [BluetoothUuid(value: "0000fff0-0000-1000-8000-00805f9b34fb")], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true)
         )
     }
 }

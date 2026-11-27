@@ -1,4 +1,8 @@
-# Windows Central example
+# Archived Windows Central example
+
+> This example is retained for historical compatibility only. It is not an active example, package gate, or maintained product target.
+
+## Historical example details
 
 This example demonstrates the Rust-first BleHub consumer model on Windows:
 
@@ -12,13 +16,13 @@ This example demonstrates the Rust-first BleHub consumer model on Windows:
 Build it without accessing Bluetooth hardware:
 
 ```text
-pixi run just windows::example
+pixi run --justfile just/archive/windows/mod.just example
 ```
 
 Run a service-filtered scan on Windows:
 
 ```text
-cargo run --manifest-path examples/windows-central/Cargo.toml -- \
+cargo run --manifest-path examples/archive/windows-central/Cargo.toml -- \
   fff00000-0000-4000-8000-000000000000 10
 ```
 

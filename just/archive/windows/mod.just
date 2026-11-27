@@ -1,4 +1,4 @@
-set working-directory := "../.."
+set working-directory := "../../.."
 
 import "backend.just"
 import "hil.just"

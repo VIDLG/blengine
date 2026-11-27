@@ -71,6 +71,104 @@ pub(crate) struct ConnectionContext {
     pub(crate) phase: ConnectionPhase,
 }
 
+enum CancellationAction {
+    Connect(PendingConnectOperation),
+    Gatt {
+        connection: ConnectionCorrelation,
+        operation: gatt::IoCancellation,
+    },
+    Discovery {
+        connection: ConnectionCorrelation,
+        operation: gatt::DiscoveryCancellation,
+    },
+}
+
+pub(crate) fn cancel_operation(
+    backend: &WindowsBackend,
+    target_command_id: CommandId,
+) -> Result<(), CommandDispatchError> {
+    let action = {
+        let mut state = lock_state(&backend.state);
+        let mut found = None;
+        for context in state.connections.values_mut() {
+            let correlation = context.correlation;
+            if correlation.connect_command_id == target_command_id {
+                found = match &context.phase {
+                    ConnectionPhase::CreatingDevice { operation } => {
+                        Some(CancellationAction::Connect(
+                            PendingConnectOperation::Device(operation.clone()),
+                        ))
+                    }
+                    ConnectionPhase::ProbingGatt { operation, .. } => {
+                        Some(CancellationAction::Connect(
+                            PendingConnectOperation::GattProbe(operation.clone()),
+                        ))
+                    }
+                    ConnectionPhase::Connected { .. } => None,
+                };
+                if found.is_some() {
+                    break;
+                }
+            }
+            if let ConnectionPhase::Connected { gatt, .. } = &mut context.phase {
+                if let Some(operation) = gatt::prepare_io_cancellation(gatt, target_command_id) {
+                    found = Some(CancellationAction::Gatt {
+                        connection: correlation,
+                        operation,
+                    });
+                    break;
+                }
+                if let Some(operation) =
+                    gatt::prepare_discovery_cancellation(gatt, target_command_id)
+                {
+                    found = Some(CancellationAction::Discovery {
+                        connection: correlation,
+                        operation,
+                    });
+                    break;
+                }
+            }
+        }
+        found.ok_or(CommandDispatchError::OperationNotFound { target_command_id })?
+    };
+
+    match action {
+        CancellationAction::Connect(operation) => operation
+            .cancel()
+            .map_err(|error| dispatch_error("cancel Windows connection operation", error)),
+        CancellationAction::Gatt {
+            connection,
+            operation,
+        } => match gatt::cancel_prepared_io(operation)
+            .map_err(|error| dispatch_error("cancel Windows GATT operation", error))?
+        {
+            gatt::IoCancellationDisposition::Queued => {
+                gatt::drive_after_io_cancellation(&backend.state, connection);
+                Ok(())
+            }
+            gatt::IoCancellationDisposition::ActiveAccepted => Ok(()),
+            gatt::IoCancellationDisposition::AlreadyCompleting => {
+                Err(CommandDispatchError::OperationAlreadyCompleted { target_command_id })
+            }
+        },
+        CancellationAction::Discovery {
+            connection,
+            operation,
+        } => match gatt::cancel_prepared_discovery(operation)
+            .map_err(|error| dispatch_error("cancel Windows GATT discovery", error))?
+        {
+            gatt::DiscoveryCancellationDisposition::Queued => {
+                gatt::drive_after_discovery_cancellation(&backend.state, connection);
+                Ok(())
+            }
+            gatt::DiscoveryCancellationDisposition::ActiveAccepted => Ok(()),
+            gatt::DiscoveryCancellationDisposition::AlreadyCompleting => {
+                Err(CommandDispatchError::OperationAlreadyCompleted { target_command_id })
+            }
+        },
+    }
+}
+
 pub(crate) fn begin_connect(
     backend: &WindowsBackend,
     command: ConnectCommand,

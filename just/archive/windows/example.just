@@ -1,4 +1,4 @@
-set working-directory := "../../examples/windows-central"
+set working-directory := "../../../examples/archive/windows-central"
 
 # Compile and lint the user-facing Windows Central example without scanning RF.
 verify:

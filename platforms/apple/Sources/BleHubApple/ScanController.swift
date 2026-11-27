@@ -122,6 +122,44 @@ internal final class AppleScanController {
         peripheralsById[id]
     }
 
+    /// Retains OS-restored peripherals under this backend's identity index.
+    ///
+    /// A restored peer is already connected, so CoreBluetooth will not advertise it again; retaining
+    /// the restored `CBPeripheral` lets an explicit adoption re-use that native link instead of
+    /// waiting for an advertisement that can never arrive. This seeds identity only: it does not
+    /// create a JS capability, and it does not claim a connection the engine has not adopted.
+    func adoptRestored(_ peripherals: [CBPeripheral]) -> Int {
+        var adopted = 0
+        for peripheral in peripherals {
+            guard let id = peripheralId(for: peripheral.identifier) else { continue }
+            peripheralsById[id] = peripheral
+            adopted += 1
+        }
+        return adopted
+    }
+
+    /// Read-only inventory of system-connected peripherals advertising `services`.
+    ///
+    /// Keys come from the same identity index as scan observations, so the same peer's key matches.
+    /// The native peer is retained under that key so an explicit `adoptPeripheral(key)` can connect
+    /// it; the inventory record itself is still data, not a capability.
+    func connectedPeripheralRecords(
+        _ central: CBCentralManager,
+        services: [BluetoothUuid]
+    ) -> [DeviceRecord] {
+        let filters = services.map { CBUUID(string: $0.value) }
+        return central.retrieveConnectedPeripherals(withServices: filters).compactMap { peripheral in
+            guard let id = peripheralId(for: peripheral.identifier) else { return nil }
+            peripheralsById[id] = peripheral
+            return DeviceRecord(
+                key: String(id.value),
+                localName: peripheral.name,
+                connected: true,
+                bonded: false
+            )
+        }
+    }
+
     func existingPeripheralId(for identifier: UUID) -> PeripheralId? {
         peripheralIdsByIdentifier[identifier]
     }
@@ -137,6 +175,11 @@ internal final class AppleScanController {
         peripheralIdsByIdentifier[identifier] = allocated
         self.nextPeripheralId = nextPeripheralId == UInt64.max ? nil : nextPeripheralId + 1
         return allocated
+    }
+
+    // Count the union of identity allocations and retained native peers, not two indexes.
+    var diagnosticPeerCacheCount: Int {
+        Set(peripheralIdsByIdentifier.values).union(peripheralsById.keys).count
     }
 
     func dispose() {
@@ -351,13 +394,45 @@ internal extension ScanOptions {
         {
             return false
         }
+        if let exactName,
+           (advertisementData[CBAdvertisementDataLocalNameKey] as? String) != exactName
+        {
+            return false
+        }
         if let companyId,
            !AppleAdvertisementMapper.manufacturerData(advertisementData)
            .contains(where: { $0.companyId == companyId })
         {
             return false
         }
+        if let filter = manufacturerData,
+           !Self.matchesManufacturer(filter, AppleAdvertisementMapper.manufacturerData(advertisementData))
+        {
+            return false
+        }
         return true
+    }
+
+    /// One manufacturer predicate over parsed advertisement entries: a matching company id whose
+    /// payload starts with `filter.data`, or matches it byte-for-byte under `filter.mask`.
+    static func matchesManufacturer(
+        _ filter: ManufacturerDataFilter,
+        _ entries: [ManufacturerData]
+    ) -> Bool {
+        let expected = [UInt8](filter.data)
+        return entries.contains { entry in
+            guard entry.companyId == filter.companyId else { return false }
+            let payload = [UInt8](entry.payload)
+            guard payload.count >= expected.count else { return false }
+            if let mask = filter.mask {
+                let maskBytes = [UInt8](mask)
+                guard maskBytes.count == expected.count else { return false }
+                return (0..<expected.count).allSatisfy { index in
+                    (payload[index] & maskBytes[index]) == (expected[index] & maskBytes[index])
+                }
+            }
+            return payload.starts(with: expected)
+        }
     }
 
     func matches(
@@ -375,8 +450,23 @@ internal extension ScanOptions {
         {
             return false
         }
+        if let exactName,
+           observation.localName != exactName
+        {
+            return false
+        }
         if let companyId,
            !observation.manufacturerData.contains(where: { $0.companyId == companyId })
+        {
+            return false
+        }
+        if let filter = self.manufacturerData,
+           !Self.matchesManufacturer(filter, observation.manufacturerData)
+        {
+            return false
+        }
+        if let minRssi = self.minRssi,
+           observation.rssi.map({ $0 >= minRssi }) != true
         {
             return false
         }

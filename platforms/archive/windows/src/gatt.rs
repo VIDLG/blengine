@@ -35,10 +35,12 @@ use crate::{
 mod discovery;
 mod io;
 
+pub(super) use discovery::DiscoveryCancellation;
 use discovery::{
     PendingDiscovery, PendingOperationState, cleanup_draft, cleanup_pending,
     discovery_failure_event,
 };
+pub(super) use io::IoCancellation;
 use io::{
     QueuedIo, SubscriptionRoute, cleanup_io_queue, cleanup_subscription_routes, io_failure_events,
     take_subscriptions,
@@ -73,6 +75,79 @@ pub(super) fn begin_set_notifications(
     command: SetNotificationsCommand,
 ) -> Result<(), CommandDispatchError> {
     io::begin_set_notifications(backend, command)
+}
+
+/// Cancels a queued or active characteristic/notification operation through
+/// the same per-connection FIFO that owns its native callback correlation.
+/// Connect and discovery operations remain outside this GATT-only path.
+pub(super) fn prepare_io_cancellation(
+    gatt: &mut ConnectionGattState,
+    command_id: CommandId,
+) -> Option<IoCancellation> {
+    io::prepare_cancellation(gatt, command_id)
+}
+
+pub(super) enum IoCancellationDisposition {
+    Queued,
+    ActiveAccepted,
+    AlreadyCompleting,
+}
+
+pub(super) fn cancel_prepared_io(
+    action: IoCancellation,
+) -> Result<IoCancellationDisposition, windows::core::Error> {
+    match action {
+        IoCancellation::Queued => Ok(IoCancellationDisposition::Queued),
+        IoCancellation::Active(operation) => {
+            operation.cancel()?;
+            Ok(IoCancellationDisposition::ActiveAccepted)
+        }
+        IoCancellation::AlreadyCompleting => Ok(IoCancellationDisposition::AlreadyCompleting),
+    }
+}
+
+pub(super) fn drive_after_io_cancellation(
+    state: &std::sync::Arc<std::sync::Mutex<BackendState>>,
+    connection: ConnectionCorrelation,
+) {
+    if drive_io_queue(state, connection) {
+        drain_deferred_services_changed(state, connection);
+    }
+}
+
+pub(super) fn prepare_discovery_cancellation(
+    gatt: &mut ConnectionGattState,
+    command_id: CommandId,
+) -> Option<DiscoveryCancellation> {
+    discovery::prepare_cancellation(gatt, command_id)
+}
+
+pub(super) enum DiscoveryCancellationDisposition {
+    Queued,
+    ActiveAccepted,
+    AlreadyCompleting,
+}
+
+pub(super) fn cancel_prepared_discovery(
+    action: DiscoveryCancellation,
+) -> Result<DiscoveryCancellationDisposition, windows::core::Error> {
+    match action {
+        DiscoveryCancellation::Queued => Ok(DiscoveryCancellationDisposition::Queued),
+        DiscoveryCancellation::Active(operation) => {
+            operation.cancel()?;
+            Ok(DiscoveryCancellationDisposition::ActiveAccepted)
+        }
+        DiscoveryCancellation::AlreadyCompleting => {
+            Ok(DiscoveryCancellationDisposition::AlreadyCompleting)
+        }
+    }
+}
+
+pub(super) fn drive_after_discovery_cancellation(
+    state: &std::sync::Arc<std::sync::Mutex<BackendState>>,
+    correlation: ConnectionCorrelation,
+) {
+    discovery::run_discovery_driver(state, correlation);
 }
 
 pub(super) struct MonotonicIdAllocator {

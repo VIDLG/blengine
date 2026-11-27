@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      `CompanionDeviceManager.getMyAssociations()` requires this platform feature declaration.
+      `required="false"` keeps the package installable on devices without companion-device setup;
+      the backend reports `not_supported` for the companion inventory when the platform cannot
+      provide it.
+    -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
+
+    <application>
+        <!--
+          Presence delivery is bound by the system, and only when the host has opted in with
+          `notifyOnDeviceNearby` and declared `REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE`. This
+          library declares that permission nowhere: the host owns the opt-in and its permission.
+          The service is inert while the app observes no companion presence, and the
+          `BIND_COMPANION_DEVICE_SERVICE` permission means only the system can bind it.
+        -->
+        <service
+            android:name="dev.blehub.android.BleHubCompanionDeviceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
+    </application>
+
+</manifest>
