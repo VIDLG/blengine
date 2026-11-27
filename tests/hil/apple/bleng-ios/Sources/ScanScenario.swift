@@ -5,6 +5,28 @@ enum ScanProbeFailure: Error {
     case invalid(String)
 }
 
+final class ScanEvidenceRouter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: ScanEvidence
+
+    init(_ evidence: ScanEvidence) {
+        current = evidence
+    }
+
+    func replace(_ evidence: ScanEvidence) {
+        lock.lock()
+        current = evidence
+        lock.unlock()
+    }
+
+    func record(_ event: BleEvent) {
+        lock.lock()
+        let evidence = current
+        lock.unlock()
+        Task { await evidence.record(event) }
+    }
+}
+
 actor ScanEvidence {
     private let service: BluetoothUuid
     private var started: [ScanSessionId] = []
@@ -87,6 +109,19 @@ actor ScanEvidence {
 
     func completedStop(for session: ScanSessionId) -> Bool { stopped.contains(session) }
     func hasPostStopAdvertisement() -> Bool { afterStop }
+
+    func diagnosticCounts(for session: ScanSessionId) -> [String: Int] {
+        [
+            "scan_started": started.contains(session) ? 1 : 0,
+            "scan_stopped": stopped.contains(session) ? 1 : 0,
+            "matching_advertisements": matching.filter { $0.scanSessionId == session }.count,
+            "connection_state_events": connectionStates.count,
+            "gatt_databases": databases.count,
+            "notification_states": notificationStates.count,
+            "notification_values": notificationValues.count,
+            "command_completions": commandCompletions.count,
+        ]
+    }
 
     func connected(_ connection: ConnectionId) -> Bool {
         let states = connectionStates.filter { $0.1 == connection }
@@ -180,6 +215,19 @@ actor ScanEvidence {
         return (event.index, event.command)
     }
 
+    func notificationEnabled(
+        connection: ConnectionId, session: GattSessionId, subscription: SubscriptionId,
+        mode modeExpected: NotificationMode
+    ) -> (index: Int, command: CommandId)? {
+        guard let event = notificationStates.first(where: {
+            guard $0.connection == connection, $0.session == session,
+                  $0.subscription == subscription,
+                  case .enabled(let mode) = $0.state else { return false }
+            return mode == modeExpected
+        }) else { return nil }
+        return (event.index, event.command)
+    }
+
     func commandCompletion(
         _ command: CommandId, after index: Int
     ) -> (index: Int, failed: Bool)? {
@@ -196,6 +244,17 @@ actor ScanEvidence {
         guard let event = notificationValues.first(where: {
             $0.index > index && $0.connection == connection && $0.session == session &&
                 $0.subscription == subscription && $0.characteristic == characteristic
+        }) else { return nil }
+        return (event.index, event.value)
+    }
+
+    func notificationValue(
+        after index: Int, connection: ConnectionId, session: GattSessionId,
+        subscription: SubscriptionId
+    ) -> (index: Int, value: Data)? {
+        guard let event = notificationValues.first(where: {
+            $0.index > index && $0.connection == connection && $0.session == session &&
+                $0.subscription == subscription
         }) else { return nil }
         return (event.index, event.value)
     }
@@ -446,10 +505,7 @@ func verifyAppleRf(
             }
             do {
                 let session = try await owner.startScan(
-                    options: ScanOptions(
-                        serviceUuids: [service], namePrefix: nil,
-                        companyId: nil, allowDuplicates: false
-                    ),
+                    options: ScanOptions(serviceUuids: [service], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: false),
                     timeoutMs: 10_000
                 )
                 let advertisement = try await awaitScanEvidence("profile advertisement", seconds: 30) {
@@ -475,9 +531,13 @@ func verifyAppleRf(
                         await evidence.connected(id) ? true : nil
                     }
                     if discover {
-                        let session = try await owner.discoverGatt(connection: id, timeoutMs: 25_000)
+                        let discoveredDatabase = try await owner.discoverGatt(connection: id, timeoutMs: 25_000)
+                        let session = discoveredDatabase.gattSessionId
                         let database = try await awaitScanEvidence("correlated GATT database", seconds: 5) {
                             await evidence.database(connection: id, session: session)
+                        }
+                        guard database == discoveredDatabase else {
+                            throw ScanProbeFailure.invalid("GATT event database differs from discovery result")
                         }
                         cccdCount = try validateFixtureDatabase(
                             database, service: service, indicationOnly: indicationOnly
@@ -551,10 +611,7 @@ func verifyAppleSubscriptionRf(
             }
             do {
                 let scanSession = try await owner.startScan(
-                    options: ScanOptions(
-                        serviceUuids: [service], namePrefix: nil,
-                        companyId: nil, allowDuplicates: false
-                    ),
+                    options: ScanOptions(serviceUuids: [service], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: false),
                     timeoutMs: 10_000
                 )
                 let advertisement = try await awaitScanEvidence("profile advertisement", seconds: 30) {
@@ -575,9 +632,13 @@ func verifyAppleSubscriptionRf(
                 _ = try await awaitScanEvidence("ordered Connecting/Connected events", seconds: 5) {
                     await evidence.connected(connection) ? true : nil
                 }
-                let gatt = try await owner.discoverGatt(connection: connection, timeoutMs: 25_000)
+                let discoveredDatabase = try await owner.discoverGatt(connection: connection, timeoutMs: 25_000)
+                let gatt = discoveredDatabase.gattSessionId
                 let database = try await awaitScanEvidence("correlated GATT database", seconds: 5) {
                     await evidence.database(connection: connection, session: gatt)
+                }
+                guard database == discoveredDatabase else {
+                    throw ScanProbeFailure.invalid("GATT event database differs from discovery result")
                 }
                 let cccdCount = try validateFixtureDatabase(
                     database, service: service, indicationOnly: indicationOnly

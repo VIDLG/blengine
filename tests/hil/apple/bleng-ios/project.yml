@@ -16,6 +16,14 @@ targets:
       - path: Info.plist
         buildPhase: none
       - path: ../../../../platforms/apple/Sources/BleHubApple
+      - path: ../../../../integrations/react-native-bleng/ios/ApplePlatformSession.swift
+        buildPhase: sources
+      - path: ../../../../integrations/react-native-bleng/ios/RecoveryEventProjection.swift
+        buildPhase: sources
+      - path: ../../../../integrations/react-native-bleng/ios/RecoveryEventInbox.swift
+        buildPhase: sources
+      - path: ../../../../integrations/react-native-bleng/ios/AppleRustSupervisorOwner.swift
+        buildPhase: sources
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
@@ -32,6 +40,73 @@ targets:
     dependencies:
       - package: BleHubUniFfi
         product: BleHubUniFfi
+  BlengAppleIOSProbeTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Tests
+      - path: ../support/RfFixtureConfiguration.swift
+      - path: ../../../consumers/react-native-bleng/ios/BleHubBlengHost/FormalNativeProcessIdentity.swift
+      - path: ../../../../integrations/react-native-bleng/ios/RecoveryEventProjection.swift
+        buildPhase: sources
+      - path: ../../../../integrations/react-native-bleng/ios/RecoveryEventInbox.swift
+        buildPhase: sources
+      - path: Sources/RustSupervisorRecoveryRunner.swift
+        buildPhase: sources
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.blehub.bleng-apple-ios-probe-tests
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: 1
+    dependencies:
+      - package: BleHubUniFfi
+        product: BleHubUniFfi
+
+  BlengAppleIOSProbeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: UITests
+      - path: ../support/BluetoothSettingsControl.swift
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.blehub.bleng-apple-ios-probe-uitests
+        SWIFT_VERSION: 5.0
+        TARGETED_DEVICE_FAMILY: 1
+        TEST_TARGET_NAME: BlengAppleIOSProbe
+    dependencies:
+      - target: BlengAppleIOSProbe
+  BlengAppleRecoveryHostTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+      - path: ../support/RfFixtureConfiguration.swift
+      - path: ../../../consumers/react-native-bleng/ios/BleHubBlengHost/FormalNativeProcessIdentity.swift
+      - path: ../../../../integrations/react-native-bleng/ios/RecoveryEventProjection.swift
+        buildPhase: sources
+      - path: ../../../../integrations/react-native-bleng/ios/RecoveryEventInbox.swift
+        buildPhase: sources
+      - path: Sources/RustSupervisorRecoveryRunner.swift
+        buildPhase: sources
+    settings:
+      base:
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: dev.blehub.bleng-apple-recovery-host-tests
+        SWIFT_VERSION: 5.0
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+    dependencies:
+      - package: BleHubUniFfi
+        product: BleHubUniFfi
 schemes:
   BlengAppleIOSProbe:
     build:
@@ -39,3 +114,14 @@ schemes:
         BlengAppleIOSProbe: all
     run:
       config: Debug
+    test:
+      targets:
+        - BlengAppleIOSProbeTests
+        - BlengAppleIOSProbeUITests
+  BlengAppleRecoveryHostTests:
+    build:
+      targets:
+        BlengAppleRecoveryHostTests: all
+    test:
+      targets:
+        - BlengAppleRecoveryHostTests

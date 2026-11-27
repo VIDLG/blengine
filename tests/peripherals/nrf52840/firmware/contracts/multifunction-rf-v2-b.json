@@ -1,0 +1,25 @@
+{
+  "board": "nrf52840dk/nrf52840",
+  "capabilities": [
+    "normal-rf",
+    "gatt-reset",
+    "notification",
+    "indication",
+    "passive-disconnect",
+    "att-read-fault-v2",
+    "att-write-fault-v2",
+    "att-ccc-fault-v2",
+    "att-precommit-defer-v2",
+    "att-fault-arm-timeout-10000",
+    "att-fault-hold-timeout-20000",
+    "notification-tx-observation-v1"
+  ],
+  "fixture_role": "multifunction-rf",
+  "image_id": "nrf-multifunction-rf-v2-b",
+  "image_sha256": "f101a5c4b13b2c869848edd6f0bd563543ade85728cd9f3fa6ffce71430e96f5",
+  "image_version": "2",
+  "local_name": "BleHubMultiRfV2DKB",
+  "profile_id": "blehub-nrf52840-multifunction-v2-b",
+  "schema_version": 1,
+  "service_uuid": "fd700000-0000-4000-8000-000000000000"
+}

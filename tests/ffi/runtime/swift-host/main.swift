@@ -194,6 +194,28 @@ final class TestBackend: BleBackend, @unchecked Sendable {
 
     func readRssi(command: ReadRssiCommand) throws {}
 
+    func setAdapterEnabled(command: SetAdapterEnabledCommand) throws {}
+
+    func queryDevices(command: QueryDevicesCommand) throws {}
+
+    func associateCompanionDevice(command: AssociateCompanionDeviceCommand) throws {}
+
+    func readDescriptor(command: ReadDescriptorCommand) throws {}
+
+    func writeDescriptor(command: WriteDescriptorCommand) throws {}
+
+    func mtu(command: MtuCommand) throws {}
+
+    func setConnectionPriority(command: SetConnectionPriorityCommand) throws {}
+
+    func createBond(command: CreateBondCommand) throws {}
+
+    func removeBond(command: RemoveBondCommand) throws {}
+
+    func refreshGattCache(command: RefreshGattCacheCommand) throws {}
+
+    func cancelOperation(request: CancelOperationRequest) throws {}
+
     func dispose() throws {
         let root = lock.withLock { () -> BackendEventIngressHandle? in
             disposeCount += 1
@@ -271,12 +293,7 @@ func scanCommand(_ value: UInt64) -> StartScanCommand {
     StartScanCommand(
         commandId: CommandId(value: value),
         scanSessionId: ScanSessionId(value: value + 100),
-        options: ScanOptions(
-            serviceUuids: [],
-            namePrefix: nil,
-            companyId: nil,
-            allowDuplicates: false
-        )
+        options: ScanOptions(serviceUuids: [], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: false)
     )
 }
 

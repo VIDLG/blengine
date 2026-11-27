@@ -53,6 +53,7 @@ private final class ProbeRunner {
     private let runId: String
     private let coordinationPath: String
     private(set) var rfResultUrl: URL?
+    private(set) var nativeIdentity = ""
 
     init(runId: String, coordinationPath: String) {
         self.runId = runId
@@ -67,6 +68,9 @@ private final class ProbeRunner {
             if rfRequested {
                 try prepareRfCoordinationDirectory(path: coordinationPath, runId: runId)
                 rfResultUrl = URL(fileURLWithPath: coordinationPath).appendingPathComponent("result.txt")
+                if CommandLine.arguments.contains("--native-hil") {
+                    nativeIdentity = try publishNativeHilIdentity(path: coordinationPath, runId: runId)
+                }
                 guard argument(after: "--rf-service-uuid") != nil else {
                     throw RfLedgerError(description: "--rf-scenario requires --rf-service-uuid")
                 }
@@ -81,6 +85,32 @@ private final class ProbeRunner {
             activeFixture = fixture
             defer {
                 try? fixture.dispose()
+            }
+
+            if scenario == .cccDisableReject {
+                guard let serviceUuid = argument(after: "--rf-service-uuid"),
+                      let controlJSON = argument(after: "--rf-ccc-disable-reject-control")
+                else {
+                    throw RfLedgerError(description: "ccc-disable-reject requires service and control arguments")
+                }
+                let configuration = try RfFixtureConfiguration.fromArguments(
+                    CommandLine.arguments,
+                    serviceUuid: serviceUuid
+                )
+                let rfOutput = try runIOSCccDisableRejectScenario(
+                    fixture: fixture,
+                    backend: backend,
+                    serviceUuid: serviceUuid,
+                    runId: runId,
+                    coordinationPath: coordinationPath,
+                    configuration: configuration,
+                    controlJSON: controlJSON
+                )
+                return ([
+                    "apple_ios_probe_run_id=\(runId)",
+                    "apple_ios_rf_scenario=\(scenarioName)",
+                    "apple_ios_corebluetooth_runtime=passed",
+                ] + rfOutput).joined(separator: "\n") + "\n"
             }
 
             let commandId = CommandId(value: 1)
@@ -195,9 +225,16 @@ private final class ProbeRunner {
                     allowDuplicates: allowDuplicates,
                     diagnosticTargetPeripheralId: diagnosticTargetPeripheralId,
                     scanDuration: scanDuration,
+                    scanNamePrefix: try RfFixtureConfiguration.scanNamePrefix(CommandLine.arguments),
                     configuration: configuration,
                     externalProvider: argument(after: "--rf-external-provider")
                 )
+                if CommandLine.arguments.contains("--native-hil") {
+                    guard rfOutput.contains("apple_ios_rf_post_dispose_silence=passed") else {
+                        throw RfLedgerError(description: "native HIL requires verified disposal")
+                    }
+                    output.append("apple_native_hil_close=passed")
+                }
                 output.append(contentsOf: rfOutput.map {
                     $0.replacingOccurrences(of: "apple_macos_", with: "apple_ios_")
                 })
@@ -217,8 +254,22 @@ private final class ProbeRunner {
                 "apple_ios_corebluetooth_raw_advertisement=\($0)"
             }.joined(separator: "\n")
             let suffix = diagnostics.isEmpty ? "" : "\n\(diagnostics)"
+            let nativeBootId: String = {
+                guard scenarioName == AppleRfScenario.cccDisableReject.rawValue,
+                      let text = try? String(
+                          contentsOf: URL(fileURLWithPath: coordinationPath).appendingPathComponent("runtime.log"),
+                          encoding: .utf8
+                      ) else { return "" }
+                let prefix = "BLEHUB_NITRO_RUNTIME rf-ccc-disable-reject:runtime:session=\(runId):nonce="
+                guard let line = text.split(separator: "\n").first(where: { $0.hasPrefix(prefix) }) else {
+                    return ""
+                }
+                let value = line.split(separator: ":").first(where: { $0.hasPrefix("nonce=") })
+                    .map { String($0.dropFirst("nonce=".count)) } ?? ""
+                return value.isEmpty ? "" : "apple_ios_native_hil_boot_id=\(value)\n"
+            }()
             let rfFailure = rfRequested
-                ? "apple_ios_rf_scenario=\(scenarioName)\napple_ios_rf_\(scenarioName)=failed\napple_ios_corebluetooth_rf=failed\n"
+                ? "apple_ios_rf_scenario=\(scenarioName)\n\(nativeBootId)apple_ios_rf_\(scenarioName)=failed\napple_ios_corebluetooth_rf=failed\n"
                 : ""
             let snapshot = activeFixture.map { "\napple_ios_rf_failure_snapshot=\($0.snapshot().events)" } ?? ""
             return "apple_ios_probe_run_id=\(runId)\n\(rfFailure)apple_ios_corebluetooth_probe=failed: \(error)\(snapshot)\(suffix)\n"
@@ -289,7 +340,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         try? FileManager.default.removeItem(at: resultUrl)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = runner.run()
+            let probeResult = runner.run()
+            let result = runner.nativeIdentity + probeResult
             let lifecycle = DispatchQueue.main.sync {
                 self?.lifecycleEvents ?? []
             }

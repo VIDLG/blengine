@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .btp_protocol import BtpFrame
 from .btp_session import BtpSession
+from .fixture_attestation_wire import READ_IMAGE_ATTESTATION, decode_attestation
+
+if TYPE_CHECKING:
+    from .fixture_attestation import InstalledImageAttestation
 
 CORE = 0x00
 GAP = 0x01
 GATT = 0x02
+VENDOR = 0xFF
 INDEX_NONE = 0xFF
 STATUS_SUCCESS = 0x00
+STATUS_UNKNOWN_CMD = 0x02
 
 CORE_READ_SUPPORTED_COMMANDS = 0x01
 CORE_READ_SUPPORTED_SERVICES = 0x02
@@ -112,3 +120,30 @@ class CoreCommands:
             payload=bytes((service,)),
         )
         require_success(response, operation="Core unregister service")
+
+
+class VendorCommands:
+    """BleHub-owned, read-only fixture control commands."""
+
+    def __init__(self, session: BtpSession) -> None:
+        self._session = session
+
+    def read_image_attestation(self) -> InstalledImageAttestation:
+        """Read identity from firmware; never infer it from host build files."""
+        response = self._session.request(
+            service=VENDOR,
+            opcode=READ_IMAGE_ATTESTATION,
+            index=INDEX_NONE,
+        )
+        if response.opcode == 0:
+            status = response.payload[0] if response.payload else 0xFF
+            if status == STATUS_UNKNOWN_CMD:
+                raise BtpCommandError(
+                    "fixture firmware does not implement image attestation "
+                    "vendor command (service=0xff opcode=0x01)"
+                )
+            raise BtpCommandError(
+                "fixture image attestation is unavailable: "
+                f"status=0x{response.payload.hex()}"
+            )
+        return decode_attestation(response.payload)

@@ -90,12 +90,14 @@ pub fn unified_event_catalog_fixture() -> Vec<BleEvent> {
     let error = BleEventError {
         category: BleErrorCategory::Gatt,
         message: "fixture failure".to_owned(),
-        platform_details: Some(PlatformErrorDetails {
+        platform_details: Some(Box::new(PlatformErrorDetails {
             platform: Platform::Test,
             code: Some("fixture-code".to_owned()),
             name: Some("FixtureError".to_owned()),
             message: Some("fixture platform detail".to_owned()),
-        }),
+            status: None,
+            att_code: None,
+        })),
     };
 
     vec![

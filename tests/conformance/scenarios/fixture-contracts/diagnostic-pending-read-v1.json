@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "fixture_role": "diagnostic-pending-read",
+  "image_id": "nrf-att-read-hold-v1",
+  "image_version": "maintained",
+  "image_sha256": "b864ace501523f51eda25cbb7b5538c73cc88ba777544c409c865d2544c872a1",
+  "board": "nrf52840dk/nrf52840",
+  "profile_id": "blehub-nrf52840-att-read-hold-v1",
+  "service_uuid": "fd100000-0000-4000-8000-000000000000",
+  "local_name": "BleHubAttHoldDK",
+  "capabilities": [
+    "att-read-hold",
+    "att-read-hold-timeout-5000",
+    "gatt-reset",
+    "diagnostic-btp"
+  ]
+}

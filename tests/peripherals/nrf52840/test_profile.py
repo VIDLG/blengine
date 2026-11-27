@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
 from tests.peripherals.nrf52840.gatt_commands import GattAttribute, GattAttributeValue
-from tests.peripherals.nrf52840.profile import ProfileError, load_profile, provision
+from tests.peripherals.nrf52840.profile import (
+    ProfileError,
+    ProfilePlan,
+    load_profile,
+    provision,
+)
 
 PROFILE = (
     Path(__file__).parents[2]
@@ -17,6 +24,10 @@ INDICATION_PROFILE = (
     / "conformance"
     / "scenarios"
     / "blehub-nrf-indication-v2.json"
+)
+LIVE_PROFILES = (
+    Path(__file__).parents[0] / "firmware" / "profiles" / "multifunction-rf-v2-a.json",
+    Path(__file__).parents[0] / "firmware" / "profiles" / "multifunction-rf-v2-b.json",
 )
 
 
@@ -98,6 +109,59 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(gatt.calls[0][0], "service")
         self.assertEqual(gatt.calls[-1][0], "start")
 
+    def test_profile_projects_recovery_target_from_declared_updates_role(self) -> None:
+        profile = load_profile(PROFILE)
+        target = profile.recovery_target()
+
+        self.assertEqual(target.service_uuid, profile.service_uuid)
+        self.assertEqual(
+            target.characteristic_uuid,
+            next(
+                characteristic.uuid
+                for characteristic in profile.characteristics
+                if characteristic.role == "updates"
+            ),
+        )
+        self.assertEqual(target.expected_value, profile.notification_value)
+        self.assertEqual(target.scan_service_uuids, (profile.service_uuid,))
+        self.assertIsNone(target.scan_name_prefix)
+
+    def test_live_v2_profiles_project_distinct_recovery_targets(self) -> None:
+        targets = [load_profile(path).recovery_target() for path in LIVE_PROFILES]
+
+        self.assertEqual(
+            [target.service_uuid for target in targets],
+            [
+                "fd600000-0000-4000-8000-000000000000",
+                "fd700000-0000-4000-8000-000000000000",
+            ],
+        )
+        self.assertEqual(
+            {target.characteristic_uuid for target in targets},
+            {"fff20000-0000-4000-8000-000000000000"},
+        )
+        self.assertEqual(
+            [target.expected_value for target in targets], [b"\xef", b"\xef"]
+        )
+
+    def test_recovery_target_rejects_missing_updates_role(self) -> None:
+        profile = load_profile(PROFILE)
+        without_updates = ProfilePlan(
+            profile.profile_id,
+            profile.local_name,
+            profile.service_uuid,
+            profile.notification_value,
+            tuple(
+                characteristic
+                for characteristic in profile.characteristics
+                if characteristic.role != "updates"
+            ),
+            profile.require_local_name,
+        )
+
+        with self.assertRaisesRegex(ProfileError, "updates characteristic"):
+            without_updates.recovery_target()
+
     def test_indication_profile_is_indication_only(self) -> None:
         profile = load_profile(INDICATION_PROFILE)
         indication = next(
@@ -118,6 +182,39 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(mapping["read-write"], 0x0025)
         values = [call for call in gatt.calls if call[0] == "value"]
         self.assertEqual(len(values), 5)
+
+    def test_advertising_name_policy_is_strict_bool_and_legacy_plan_compatible(
+        self,
+    ) -> None:
+        source = PROFILE.parent / "blehub-nrf-multifunction-v1-a.json"
+        profile = load_profile(source)
+        self.assertFalse(profile.require_local_name)
+        legacy = ProfilePlan(
+            profile.profile_id,
+            profile.local_name,
+            profile.service_uuid,
+            profile.notification_value,
+            profile.characteristics,
+        )
+        self.assertFalse(legacy.require_local_name)
+        document = json.loads(source.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            for value in (False, True):
+                with self.subTest(valid=value):
+                    document["advertising"]["require_local_name"] = value
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    self.assertIs(load_profile(path).require_local_name, value)
+            for value in (None, 0, 1, "false", "true", [], {}):
+                with self.subTest(invalid=value):
+                    document["advertising"]["require_local_name"] = value
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    with self.assertRaisesRegex(ProfileError, "require_local_name"):
+                        load_profile(path)
+            del document["advertising"]["require_local_name"]
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaisesRegex(ProfileError, "require_local_name"):
+                load_profile(path)
 
     def test_missing_profile_is_rejected(self) -> None:
         with self.assertRaises(ProfileError):

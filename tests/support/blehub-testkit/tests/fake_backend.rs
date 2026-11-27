@@ -6,11 +6,13 @@ use blehub_testkit::*;
 #[test]
 fn complete_command_mismatch_rejects_without_emitting_events() {
     let expected = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 1 },
         connection_id: ConnectionId { value: 2 },
         peripheral_id: PeripheralId { value: 3 },
     };
     let actual = ConnectCommand {
+        auto_connect: false,
         peripheral_id: PeripheralId { value: 4 },
         ..expected
     };
@@ -40,6 +42,7 @@ fn dispatch_rejection_emits_no_event() {
         platform_details: None,
     };
     let command = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 1 },
         connection_id: ConnectionId { value: 2 },
         peripheral_id: PeripheralId { value: 3 },
@@ -61,11 +64,15 @@ fn records_the_complete_canonicalized_backend_command() {
         command_id: CommandId { value: 1 },
         scan_session_id: ScanSessionId { value: 2 },
         options: ScanOptions {
+            android: None,
             service_uuids: vec![BluetoothUuid {
                 value: "180D".to_owned(),
             }],
             name_prefix: Some("BleHub".to_owned()),
             company_id: Some(0x1234),
+            exact_name: None,
+            min_rssi: None,
+            manufacturer_data: None,
             allow_duplicates: true,
         },
     };
@@ -73,11 +80,15 @@ fn records_the_complete_canonicalized_backend_command() {
         command_id: CommandId { value: 1 },
         scan_session_id: ScanSessionId { value: 2 },
         options: ScanOptions {
+            android: None,
             service_uuids: vec![BluetoothUuid {
                 value: "0000180d-0000-1000-8000-00805f9b34fb".to_owned(),
             }],
             name_prefix: Some("BleHub".to_owned()),
             company_id: Some(0x1234),
+            exact_name: None,
+            min_rssi: None,
+            manufacturer_data: None,
             allow_duplicates: true,
         },
     };

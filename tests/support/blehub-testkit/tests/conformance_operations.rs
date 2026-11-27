@@ -37,6 +37,7 @@ fn full_success_flow_uses_every_non_notification_command_through_the_real_ingres
         scan_session_id,
     };
     let connect = ConnectCommand {
+        auto_connect: false,
         command_id: connect_id,
         connection_id,
         peripheral_id,

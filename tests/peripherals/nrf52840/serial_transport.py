@@ -11,6 +11,11 @@ DEFAULT_READ_TIMEOUT = 1.0
 
 
 class SerialPort(Protocol):
+    timeout: float | None
+
+    @property
+    def in_waiting(self) -> int: ...
+
     def write(self, data: bytes) -> int: ...
 
     def read(self, size: int) -> bytes: ...
@@ -43,10 +48,18 @@ class SerialByteTransport:
         if timeout <= 0:
             raise BtpTransportError("serial read timeout must be positive")
         try:
-            # pyserial exposes timeout as a mutable per-read setting.
-            self._port.timeout = timeout  # type: ignore[attr-defined]
-            data = self._port.read(4096)
-        except OSError as error:
+            # Only the first byte may block; a size-based read would wait for
+            # 4096 bytes or exhaust the deadline even for a complete small frame.
+            self._port.timeout = timeout
+            data = self._port.read(1)
+            if data:
+                available = min(self._port.in_waiting, 4095)
+                if available:
+                    # The availability snapshot must not grant a second wait
+                    # budget if fewer bytes remain by the time we read them.
+                    self._port.timeout = 0
+                    data += self._port.read(available)
+        except (OSError, ValueError) as error:
             raise BtpTransportError(f"serial read failed: {error}") from error
         return data
 

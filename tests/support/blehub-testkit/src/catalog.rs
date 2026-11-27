@@ -309,16 +309,19 @@ pub struct ConnectionExclusivityScenario {
 pub fn connection_exclusivity() -> ConnectionExclusivityScenario {
     let peripheral_id = PeripheralId { value: 210 };
     let first = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 20 },
         connection_id: ConnectionId { value: 220 },
         peripheral_id,
     };
     let rejected_conflict = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 21 },
         connection_id: ConnectionId { value: 221 },
         peripheral_id,
     };
     let accepted_conflict = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 22 },
         connection_id: ConnectionId { value: 222 },
         peripheral_id,
@@ -374,6 +377,7 @@ pub struct ProvenConnectCancellationScenario {
 
 pub fn proven_connect_cancellation() -> ProvenConnectCancellationScenario {
     let connect = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 30 },
         connection_id: ConnectionId { value: 330 },
         peripheral_id: PeripheralId { value: 230 },
@@ -426,6 +430,7 @@ pub struct IndependentConnectFailureScenario {
 
 pub fn independent_connect_failure() -> IndependentConnectFailureScenario {
     let connect = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 40 },
         connection_id: ConnectionId { value: 440 },
         peripheral_id: PeripheralId { value: 240 },
@@ -491,6 +496,7 @@ pub struct UnconfirmedConnectCancellationScenario {
 
 pub fn unconfirmed_connect_cancellation() -> UnconfirmedConnectCancellationScenario {
     let connect = ConnectCommand {
+        auto_connect: false,
         command_id: CommandId { value: 50 },
         connection_id: ConnectionId { value: 550 },
         peripheral_id: PeripheralId { value: 250 },

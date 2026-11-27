@@ -183,18 +183,14 @@ func passiveDisconnectState(
 
 func runScan(
     fixture: SwiftProbeHarness,
-    serviceUuid value: String
+    serviceUuid value: String,
+    namePrefix: String? = nil
 ) throws -> (output: [String], advertisement: AdvertisementObservation) {
     let serviceUuid = BluetoothUuid(value: value.lowercased())
     let startCommand = StartScanCommand(
         commandId: CommandId(value: 2),
         scanSessionId: ScanSessionId(value: 1),
-        options: ScanOptions(
-            serviceUuids: [serviceUuid],
-            namePrefix: nil,
-            companyId: nil,
-            allowDuplicates: true
-        )
+        options: ScanOptions(serviceUuids: [serviceUuid], namePrefix: namePrefix, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: true)
     )
     let eventOffset = fixture.snapshot().events.count
     try fixture.startScan(command: startCommand)
@@ -218,6 +214,9 @@ func runScan(
     }
     guard let advertisement else {
         throw ProbeError.scanTimeout(fixture.snapshot().events)
+    }
+    if let namePrefix, advertisement.localName?.hasPrefix(namePrefix) != true {
+        throw ProbeError.invalidGattDatabase("scan returned a name outside the requested prefix")
     }
 
     let stopCommand = StopScanCommand(
@@ -271,7 +270,10 @@ func runScan(
             "apple_macos_corebluetooth_scan_stopped=passed",
             "apple_macos_corebluetooth_post_stop_silence=passed",
             "apple_macos_corebluetooth_scan=passed",
-        ],
+        ] + (namePrefix.map { [
+            "apple_macos_corebluetooth_scan_filter=service+name",
+            "apple_macos_corebluetooth_scan_name_prefix=\($0)",
+        ] } ?? []),
         advertisement: advertisement
     )
 }
@@ -1147,7 +1149,7 @@ func runConnection(
     let connect = ConnectCommand(
         commandId: CommandId(value: 4),
         connectionId: ConnectionId(value: 1),
-        peripheralId: peripheralId
+        peripheralId: peripheralId, autoConnect: false
     )
     let connectOffset = fixture.snapshot().events.count
     try fixture.connect(command: connect)
@@ -1539,7 +1541,10 @@ func runProbe(
         guard authorizedSnapshot.state == .poweredOn else {
             throw ProbeError.scanUnavailable(authorizedSnapshot)
         }
-        let scan = try runScan(fixture: fixture, serviceUuid: scanServiceUuid)
+        let scan = try runScan(
+            fixture: fixture, serviceUuid: scanServiceUuid,
+            namePrefix: try RfFixtureConfiguration.scanNamePrefix(CommandLine.arguments)
+        )
         output.append(contentsOf: scan.output)
         output.append(contentsOf: AppleAdvertisementDiagnostics.snapshot().map {
             "apple_macos_corebluetooth_raw_advertisement=\($0)"
@@ -1561,6 +1566,15 @@ func runProbe(
             )
         }
     }
+    if CommandLine.arguments.contains("--native-hil") {
+        let beforeDispose = fixture.snapshot().events
+        try fixture.dispose()
+        Thread.sleep(forTimeInterval: 2)
+        guard fixture.snapshot().events == beforeDispose else {
+            throw ProbeError.invalidGattDatabase("events changed after native HIL close")
+        }
+        output.append("apple_native_hil_close=passed")
+    }
     return configuration.evidence + output
 }
 
@@ -1577,7 +1591,14 @@ func executeProbe(
     fixtureCoordinationPath: String?,
     resultPath: String?
 ) -> Never {
+    var identity = ""
     do {
+        if CommandLine.arguments.contains("--native-hil") {
+            guard let path = fixtureCoordinationPath, let runId = argument(after: "--run-id") else {
+                throw ProbeError.invalidGattDatabase("native HIL requires coordination and run identity")
+            }
+            identity = try publishNativeHilIdentity(path: path, runId: runId)
+        }
         try signalProbeHost(
             path: fixtureCoordinationPath,
             marker: "probe-pid",
@@ -1597,7 +1618,7 @@ func executeProbe(
             fixtureCoordinationPath: fixtureCoordinationPath,
             configuration: configuration
         )
-        let text = output.joined(separator: "\n") + "\n"
+        let text = identity + output.joined(separator: "\n") + "\n"
         print(text, terminator: "")
         if let resultPath {
             try text.write(toFile: resultPath, atomically: true, encoding: .utf8)
@@ -1608,7 +1629,7 @@ func executeProbe(
             "apple_macos_corebluetooth_raw_advertisement=\($0)"
         }.joined(separator: "\n")
         let suffix = diagnostics.isEmpty ? "" : "\n\(diagnostics)"
-        let text = "apple_macos_corebluetooth_probe=failed: \(error)\(suffix)\n"
+        let text = identity + "apple_macos_corebluetooth_probe=failed: \(error)\(suffix)\n"
         fputs(text, stderr)
         if let resultPath {
             try? text.write(toFile: resultPath, atomically: true, encoding: .utf8)

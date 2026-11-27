@@ -22,9 +22,34 @@ private func verifyAppleInitialization() async throws -> AdapterSnapshot {
     }
 }
 
+private struct AppLaunchConfiguration {
+    let runId: String
+    let systemLossArguments: SystemLossArguments?
+    let freshOwnerLifecycleRequested: Bool
+    let centralRecoverySpikeRequested: Bool
+    let scanService: String?
+    let ioRequested: Bool
+    let rssiRequested: Bool
+    let notificationRequested: Bool
+    let indicationRequested: Bool
+    let faultRequested: Bool
+    let faultScenario: String
+    let subscriptionRequested: Bool
+    let subscriptionScenario: String
+    let notificationValueHex: String?
+    let initialValueHex: String?
+    let indicationOnly: Bool
+    let connect: Bool
+    let discover: Bool
+    let ioInputs: RfIoInputs?
+    let notificationRunDirectory: URL?
+}
+
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
+    private var launchConfiguration: AppLaunchConfiguration?
+    private var didStartProbe = false
 
     func application(
         _ application: UIApplication,
@@ -36,6 +61,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
               UUID(uuidString: arguments[index + 1]) != nil
         else { return false }
         let runId = arguments[index + 1]
+        let systemLossArguments: SystemLossArguments?
+        do {
+            systemLossArguments = try SystemLossArguments.parse(arguments)
+        } catch {
+            return false
+        }
+        let freshOwnerLifecycleRequested = arguments.contains("--rf-fresh-owner-lifecycle-spike")
+        let centralRecoverySpikeRequested = arguments.contains("--rf-central-recovery-spike")
         let scanIndex = arguments.firstIndex(of: "--rf-scan-service-uuid")
         let scanService = scanIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
         if scanIndex != nil && scanService == nil { return false }
@@ -52,18 +85,33 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         let subscriptionRequested = notificationRequested || indicationRequested
         let subscriptionScenario = indicationRequested ? "indication" : "notification"
+        if freshOwnerLifecycleRequested &&
+            (systemLossArguments != nil || centralRecoverySpikeRequested || ioRequested ||
+             rssiRequested || notificationRequested || indicationRequested ||
+             passiveRequested || recoveryRequested || scanService != nil) {
+            return false
+        }
+        if centralRecoverySpikeRequested &&
+            (systemLossArguments != nil || freshOwnerLifecycleRequested || ioRequested ||
+             rssiRequested || notificationRequested || indicationRequested || passiveRequested ||
+             recoveryRequested || scanService == nil) {
+            return false
+        }
         func argument(_ name: String) -> String? {
             guard let position = arguments.firstIndex(of: name),
                   arguments.indices.contains(position + 1) else { return nil }
             return arguments[position + 1]
         }
         let notificationValueHex = argument("--rf-notification-value-hex")
-        if (subscriptionRequested || faultRequested) && (scanService == nil || notificationValueHex == nil) {
+        let initialValueHex = argument("--rf-initial-hex")
+        if (subscriptionRequested || faultRequested) &&
+            (scanService == nil || notificationValueHex == nil || initialValueHex == nil) {
             return false
         }
         let discover = arguments.contains("--rf-gatt") || ioRequested || subscriptionRequested
         let connect = arguments.contains("--rf-connect") || discover || rssiRequested
         if connect && scanService == nil { return false }
+        if centralRecoverySpikeRequested && (connect || discover) { return false }
         let indicationOnly = arguments.contains("--rf-indication-only")
         if indicationRequested && !indicationOnly { return false }
         var ioInputs: RfIoInputs?
@@ -76,13 +124,86 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             )
         }
         var notificationRunDirectory: URL?
-        if subscriptionRequested || faultRequested {
+        if subscriptionRequested || faultRequested || systemLossArguments != nil ||
+            centralRecoverySpikeRequested || freshOwnerLifecycleRequested {
             do {
                 notificationRunDirectory = try prepareBlengRfRun(runId: runId)
             } catch {
                 return false
             }
         }
+        if systemLossArguments != nil, let notificationRunDirectory {
+            let launchDocument: [String: Any] = [
+                "schema_version": 1,
+                "run_id": runId,
+                "state": "app-launch-accepted",
+                "system_loss_arguments": true,
+            ]
+            if let data = try? JSONSerialization.data(
+                withJSONObject: launchDocument,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            ) {
+                try? data.write(
+                    to: notificationRunDirectory.appendingPathComponent("launch-receipt.json"),
+                    options: .atomic
+                )
+            }
+        }
+        launchConfiguration = AppLaunchConfiguration(
+            runId: runId,
+            systemLossArguments: systemLossArguments,
+            freshOwnerLifecycleRequested: freshOwnerLifecycleRequested,
+            centralRecoverySpikeRequested: centralRecoverySpikeRequested,
+            scanService: scanService,
+            ioRequested: ioRequested,
+            rssiRequested: rssiRequested,
+            notificationRequested: notificationRequested,
+            indicationRequested: indicationRequested,
+            faultRequested: faultRequested,
+            faultScenario: faultScenario,
+            subscriptionRequested: subscriptionRequested,
+            subscriptionScenario: subscriptionScenario,
+            notificationValueHex: notificationValueHex,
+            initialValueHex: initialValueHex,
+            indicationOnly: indicationOnly,
+            connect: connect,
+            discover: discover,
+            ioInputs: ioInputs,
+            notificationRunDirectory: notificationRunDirectory
+        )
+        return true
+    }
+
+    func application(
+        _ application: UIApplication,
+        configurationForConnecting connectingSceneSession: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        UISceneConfiguration(name: "Default Configuration", sessionRole: connectingSceneSession.role)
+    }
+
+    private func writeSystemLossReceipt(_ name: String, state: String) {
+        guard let configuration = launchConfiguration,
+              configuration.systemLossArguments != nil,
+              let directory = configuration.notificationRunDirectory else { return }
+        let document: [String: Any] = [
+            "schema_version": 1,
+            "run_id": configuration.runId,
+            "state": state,
+        ]
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: document,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        ) else { return }
+        try? data.write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+
+    /// SceneDelegate owns the scene window; this method keeps all existing probe work in this AppDelegate.
+    func connect(window: UIWindow) {
+        guard !didStartProbe, let configuration = launchConfiguration else { return }
+        didStartProbe = true
+        writeSystemLossReceipt("scene-receipt.json", state: "scene-connected")
+        self.window = window
 
         let status = UILabel()
         status.textAlignment = .center
@@ -96,37 +217,85 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             status.centerXAnchor.constraint(equalTo: controller.view.centerXAnchor),
             status.centerYAnchor.constraint(equalTo: controller.view.centerYAnchor),
         ])
-        let window = UIWindow(frame: UIScreen.main.bounds)
         window.rootViewController = controller
         window.makeKeyAndVisible()
-        self.window = window
 
+        let runId = configuration.runId
+        writeSystemLossReceipt("task-receipt.json", state: "task-started")
         Task {
             let result: String
             do {
-                if faultRequested {
-                    guard let scanService, let notificationValueHex, let notificationRunDirectory,
-                          let initial = argument("--rf-initial-hex") else {
+                if configuration.freshOwnerLifecycleRequested {
+                    guard let notificationRunDirectory = configuration.notificationRunDirectory else {
+                        throw ScanProbeFailure.invalid("fresh-owner lifecycle run directory required")
+                    }
+                    status.text = "BLeng: fresh-owner lifecycle"
+                    result = try await verifyAppleFreshOwnerLifecycle(
+                        runId: runId,
+                        runDirectory: notificationRunDirectory,
+                        status: { value in
+                            DispatchQueue.main.async { status.text = value }
+                        }
+                    )
+                    status.text = "BLeng: fresh-owner lifecycle finished"
+                } else if configuration.centralRecoverySpikeRequested {
+                    guard let scanService = configuration.scanService,
+                          let notificationRunDirectory = configuration.notificationRunDirectory else {
+                        throw ScanProbeFailure.invalid("central recovery spike arguments are incomplete")
+                    }
+                    status.text = "BLeng: central recovery spike"
+                    result = try await verifyAppleCentralRecoverySpike(
+                        serviceUuid: scanService,
+                        runId: runId,
+                        runDirectory: notificationRunDirectory,
+                        status: { value in
+                            DispatchQueue.main.async { status.text = value }
+                        }
+                    )
+                    status.text = "BLeng: central recovery spike finished"
+                } else if let systemLossArguments = configuration.systemLossArguments {
+                    guard let notificationRunDirectory = configuration.notificationRunDirectory else {
+                        throw SystemLossFailure.invalid("system-loss run directory required")
+                    }
+                    status.text = "BLeng: system-loss \(systemLossArguments.active ? "active" : "witness")"
+                    writeSystemLossReceipt("entered-receipt.json", state: "system-loss-entered")
+                    result = await verifyAppleSystemLossWitness(
+                        arguments: systemLossArguments,
+                        runDirectory: notificationRunDirectory,
+                        status: { value in
+                            DispatchQueue.main.async { status.text = value }
+                        }
+                    )
+                    status.text = "BLeng: system-loss finished; gate pending"
+                } else if configuration.faultRequested {
+                    guard let scanService = configuration.scanService,
+                          let notificationValueHex = configuration.notificationValueHex,
+                          let notificationRunDirectory = configuration.notificationRunDirectory,
+                          let initial = configuration.initialValueHex else {
                         throw ScanProbeFailure.invalid("recovery RF arguments are incomplete")
                     }
-                    status.text = "BLeng + CoreBluetooth: \(faultScenario) RF"
+                    status.text = "BLeng + CoreBluetooth: \(configuration.faultScenario) RF"
                     result = try await verifyAppleRecoveryRf(
                         serviceUuid: scanService, notificationValueHex: notificationValueHex,
-                        initialValueHex: initial, indicationOnly: indicationOnly,
-                        runDirectory: notificationRunDirectory, recovery: recoveryRequested
+                        initialValueHex: initial, indicationOnly: configuration.indicationOnly,
+                        runDirectory: notificationRunDirectory,
+                        recovery: configuration.faultScenario == "recovery"
                     )
-                    status.text = "BLeng + CoreBluetooth: RF \(faultScenario) passed"
-                } else if subscriptionRequested {
-                    guard let scanService, let notificationValueHex, let notificationRunDirectory else {
+                    status.text = "BLeng + CoreBluetooth: RF \(configuration.faultScenario) passed"
+                } else if configuration.subscriptionRequested {
+                    guard let scanService = configuration.scanService,
+                          let notificationValueHex = configuration.notificationValueHex,
+                          let notificationRunDirectory = configuration.notificationRunDirectory else {
                         throw ScanProbeFailure.invalid("notification RF arguments are incomplete")
                     }
-                    status.text = "BLeng + CoreBluetooth: \(subscriptionScenario) RF"
+                    status.text = "BLeng + CoreBluetooth: \(configuration.subscriptionScenario) RF"
                     let evidence = try await verifyAppleSubscriptionRf(
                         serviceUuid: scanService, notificationValueHex: notificationValueHex,
-                        indicationOnly: indicationOnly, runDirectory: notificationRunDirectory,
-                        strictIndication: indicationRequested
+                        indicationOnly: configuration.indicationOnly,
+                        runDirectory: notificationRunDirectory,
+                        strictIndication: configuration.indicationRequested
                     )
-                    status.text = "BLeng + CoreBluetooth: RF \(subscriptionScenario) passed"
+                    status.text = "BLeng + CoreBluetooth: RF \(configuration.subscriptionScenario) passed"
                     var lines = [
                         "apple_bleng_corebluetooth_scan=passed",
                         "adapter_state=\(evidence.snapshot.state)",
@@ -139,33 +308,33 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                         "connection_state_sequence=connecting,connected,disconnected",
                         "apple_bleng_corebluetooth_gatt=passed",
                         "gatt_session_id=\(evidence.gatt.value)",
-                        "gatt_characteristic_count=\(indicationOnly ? 5 : 4)",
+                        "gatt_characteristic_count=\(configuration.indicationOnly ? 5 : 4)",
                         "gatt_cccd_count=\(evidence.cccdCount)",
-                        "\(subscriptionScenario)_value_hex=\(evidence.valueHex)",
+                        "\(configuration.subscriptionScenario)_value_hex=\(evidence.valueHex)",
                         "actual_mode=\(evidence.actualMode == .indication ? "indication" : "notification")",
                         "subscription_id=\(evidence.subscription.value)",
-                        "\(subscriptionScenario)_enable_disable_order=passed",
-                        "\(subscriptionScenario)_post_disable_silence=passed",
+                        "\(configuration.subscriptionScenario)_enable_disable_order=passed",
+                        "\(configuration.subscriptionScenario)_post_disable_silence=passed",
                     ]
-                    if indicationRequested {
+                    if configuration.indicationRequested {
                         lines.append(contentsOf: [
                             "strict_dual_indication_rejected=passed",
                             "strict_dual_no_active_route=passed",
                         ])
                     }
-                    lines.append("apple_bleng_corebluetooth_\(subscriptionScenario)=passed")
+                    lines.append("apple_bleng_corebluetooth_\(configuration.subscriptionScenario)=passed")
                     result = lines.joined(separator: "\n") + "\n"
-                } else if let scanService {
+                } else if let scanService = configuration.scanService {
                     status.text = "BLeng + CoreBluetooth: scanning"
                     let evidence = try await verifyAppleRf(
-                        serviceUuid: scanService, connect: connect,
-                        discover: discover, indicationOnly: indicationOnly,
-                        ioInputs: ioInputs, readRssi: rssiRequested
+                        serviceUuid: scanService, connect: configuration.connect,
+                        discover: configuration.discover, indicationOnly: configuration.indicationOnly,
+                        ioInputs: configuration.ioInputs, readRssi: configuration.rssiRequested
                     )
-                    status.text = rssiRequested ? "BLeng + CoreBluetooth: RF RSSI passed" :
-                        (ioRequested ? "BLeng + CoreBluetooth: RF I/O passed" :
-                         (discover ? "BLeng + CoreBluetooth: RF GATT passed" :
-                          (connect ? "BLeng + CoreBluetooth: RF connection passed" :
+                    status.text = configuration.rssiRequested ? "BLeng + CoreBluetooth: RF RSSI passed" :
+                        (configuration.ioRequested ? "BLeng + CoreBluetooth: RF I/O passed" :
+                         (configuration.discover ? "BLeng + CoreBluetooth: RF GATT passed" :
+                          (configuration.connect ? "BLeng + CoreBluetooth: RF connection passed" :
                            "BLeng + CoreBluetooth: RF scan passed")))
                     var lines = [
                         "apple_bleng_corebluetooth_scan=passed",
@@ -175,22 +344,22 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                         "scan_session_id=\(evidence.advertisement.scanSessionId.value)",
                         "peripheral_id=\(evidence.advertisement.peripheralId.value)",
                     ]
-                    if connect, let connection = evidence.connection {
+                    if configuration.connect, let connection = evidence.connection {
                         lines.append(contentsOf: [
                             "apple_bleng_corebluetooth_connection=passed",
                             "connection_id=\(connection.value)",
                             "connection_state_sequence=connecting,connected,disconnected",
                         ])
                     }
-                    if discover, let gatt = evidence.gatt, let cccdCount = evidence.cccdCount {
+                    if configuration.discover, let gatt = evidence.gatt, let cccdCount = evidence.cccdCount {
                         lines.append(contentsOf: [
                             "apple_bleng_corebluetooth_gatt=passed",
                             "gatt_session_id=\(gatt.value)",
-                            "gatt_characteristic_count=\(indicationOnly ? 5 : 4)",
+                            "gatt_characteristic_count=\(configuration.indicationOnly ? 5 : 4)",
                             "gatt_cccd_count=\(cccdCount)",
                         ])
                     }
-                    if ioRequested, let io = evidence.io {
+                    if configuration.ioRequested, let io = evidence.io {
                         lines.append(contentsOf: [
                             "apple_bleng_corebluetooth_io=passed",
                             "initial_read_hex=\(io.initial)",
@@ -198,7 +367,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                             "without_response_delayed_readback_hex=\(io.withoutResponse)",
                         ])
                     }
-                    if rssiRequested, let rssi = evidence.rssi {
+                    if configuration.rssiRequested, let rssi = evidence.rssi {
                         lines.append(contentsOf: [
                             "apple_bleng_corebluetooth_rssi=passed",
                             "rssi_dbm=\(rssi)",
@@ -217,19 +386,45 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
             } catch {
                 status.text = "BLeng + CoreBluetooth: failed"
-                if faultRequested {
-                    result = "apple_bleng_corebluetooth_\(faultScenario)=failed\nerror=\(error)\n"
-                } else if subscriptionRequested {
-                    result = "apple_bleng_corebluetooth_\(subscriptionScenario)=failed\nerror=\(error)\n"
+                if configuration.systemLossArguments != nil,
+                   let notificationRunDirectory = configuration.notificationRunDirectory {
+                    let failureDocument: [String: Any] = [
+                        "schema_version": 1,
+                        "run_id": runId,
+                        "state": "app-failed",
+                        "error": String(describing: error),
+                    ]
+                    if let data = try? JSONSerialization.data(
+                        withJSONObject: failureDocument,
+                        options: [.sortedKeys, .withoutEscapingSlashes]
+                    ) {
+                        try? data.write(
+                            to: notificationRunDirectory.appendingPathComponent("failure-receipt.json"),
+                            options: .atomic
+                        )
+                    }
+                }
+                if configuration.freshOwnerLifecycleRequested {
+                    result = "apple_bleng_fresh_owner_lifecycle=failed\nproduction_gate_claim=none\nerror=\(error)\n"
+                } else if configuration.centralRecoverySpikeRequested {
+                    result = "apple_bleng_corebluetooth_central_recovery_spike=failed\nproduction_gate_claim=none\nerror=\(error)\n"
+                } else if configuration.systemLossArguments != nil {
+                    result = "apple_bleng_system_loss_witness=failed\ngate=pending\nrf=not-evaluated\nerror=\(error)\n"
+                } else if configuration.faultRequested {
+                    result = "apple_bleng_corebluetooth_\(configuration.faultScenario)=failed\nerror=\(error)\n"
+                } else if configuration.subscriptionRequested {
+                    result = "apple_bleng_corebluetooth_\(configuration.subscriptionScenario)=failed\nerror=\(error)\n"
                 } else {
-                    let scenario = scanService == nil ? "initialize" :
-                        (rssiRequested ? "rssi" :
-                         (ioRequested ? "io" : (discover ? "gatt" : (connect ? "connection" : "scan"))))
+                    let scenario = configuration.scanService == nil ? "initialize" :
+                        (configuration.rssiRequested ? "rssi" :
+                         (configuration.ioRequested ? "io" :
+                          (configuration.discover ? "gatt" :
+                           (configuration.connect ? "connection" : "scan"))))
                     result = "apple_bleng_corebluetooth_\(scenario)=failed\nerror=\(error)\n"
                 }
             }
             let resultWithRunId = "apple_bleng_corebluetooth_run_id=\(runId)\n" + result
-            if let notificationRunDirectory {
+            if let notificationRunDirectory = configuration.notificationRunDirectory {
                 do {
                     try resultWithRunId.write(
                         to: notificationRunDirectory.appendingPathComponent("result.txt"),
@@ -247,6 +442,5 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
                 NSLog("cannot write BLeng CoreBluetooth result: %@", String(describing: error))
             }
         }
-        return true
     }
 }

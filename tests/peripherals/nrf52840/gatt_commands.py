@@ -29,9 +29,29 @@ class GattAttributeValue:
 
 @dataclass(frozen=True)
 class GattAttribute:
+    """GET_ATTRIBUTES entry; permissions are Zephyr native bits, not ADD input bits."""
+
     handle: int
     permissions: int
     uuid: str
+
+
+def tester_characteristic_native_permissions(btp_permissions: int) -> int:
+    """Map ADD_CHARACTERISTIC input to GET_ATTRIBUTES native permissions.
+
+    Tester consumes BTP authorization bits (0x40/0x80) into private value
+    flags, then unconditionally adds native PREPARE_WRITE (also 0x40).
+    GET_ATTRIBUTES exposes attr->perm, so it cannot attest authorization flags.
+    Mirrors Zephyr tester alloc_characteristic(), including its legacy fallback.
+    """
+    if not 0 <= btp_permissions <= 0xFF:
+        raise BtpCommandError("characteristic permissions do not fit one byte")
+    native = btp_permissions & 0x3F
+    if btp_permissions & 0x40 and not native & 0x14:
+        native |= 0x01
+    if btp_permissions & 0x80 and not native & 0x28:
+        native |= 0x02
+    return native | 0x40
 
 
 def uuid_to_le_bytes(value: str) -> bytes:

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use blehub::{
-    BleEvent, BleEventError, CommandId, CommandKind, ConnectionState, ConnectionStateResult,
-    NotificationAction, NotificationMode, NotificationModeRequest, NotificationState,
-    ScanStopReason, ScanStopResult,
+    BleEvent, BleEventError, BondState, CommandId, CommandKind, ConnectionState,
+    ConnectionStateResult, NotificationAction, NotificationMode, NotificationModeRequest,
+    NotificationState, ScanStopReason, ScanStopResult,
 };
 
 use crate::RecordedCommand;
@@ -19,6 +19,11 @@ pub enum CommandEventKind {
     CharacteristicWritten,
     NotificationStateChanged,
     RssiRead,
+    MtuRead,
+    DevicesListed,
+    BondStateChanged,
+    DescriptorRead,
+    DescriptorWritten,
     CommandCompleted,
 }
 
@@ -329,10 +334,24 @@ pub(crate) fn command_event(event: &BleEvent) -> Option<(CommandId, CommandEvent
         BleEvent::CharacteristicWritten { command_id, .. } => {
             Some((*command_id, CommandEventKind::CharacteristicWritten))
         }
+        BleEvent::DescriptorRead { command_id, .. } => {
+            Some((*command_id, CommandEventKind::DescriptorRead))
+        }
+        BleEvent::DescriptorWritten { command_id, .. } => {
+            Some((*command_id, CommandEventKind::DescriptorWritten))
+        }
         BleEvent::NotificationStateChanged { command_id, .. } => {
             Some((*command_id, CommandEventKind::NotificationStateChanged))
         }
         BleEvent::RssiRead { command_id, .. } => Some((*command_id, CommandEventKind::RssiRead)),
+        BleEvent::MtuRead { command_id, .. } => Some((*command_id, CommandEventKind::MtuRead)),
+        BleEvent::DevicesListed { command_id, .. } => {
+            Some((*command_id, CommandEventKind::DevicesListed))
+        }
+        BleEvent::BondStateChanged {
+            command_id: Some(command_id),
+            ..
+        } => Some((*command_id, CommandEventKind::BondStateChanged)),
         BleEvent::CommandCompleted { command_id, .. } => {
             Some((*command_id, CommandEventKind::CommandCompleted))
         }
@@ -344,7 +363,11 @@ pub(crate) fn command_event(event: &BleEvent) -> Option<(CommandId, CommandEvent
         | BleEvent::ConnectionStateChanged {
             command_id: None, ..
         }
+        | BleEvent::BondStateChanged {
+            command_id: None, ..
+        }
         | BleEvent::NotificationReceived { .. }
+        | BleEvent::CompanionPresenceChanged { .. }
         | BleEvent::BackendError { .. } => None,
     }
 }
@@ -376,6 +399,18 @@ fn command_event_is_progress(command: &RecordedCommand, event: &BleEvent) -> boo
                 result: ConnectionStateResult::Ok {
                     state: ConnectionState::Disconnecting
                 },
+                ..
+            },
+        ) | (
+            RecordedCommand::CreateBond(_),
+            BleEvent::BondStateChanged {
+                state: BondState::Bonding,
+                ..
+            },
+        ) | (
+            RecordedCommand::RemoveBond(_),
+            BleEvent::BondStateChanged {
+                state: BondState::Bonding,
                 ..
             },
         )
@@ -483,6 +518,39 @@ pub(crate) fn command_matches_event(command: &RecordedCommand, event: &BleEvent)
                 && command.characteristic_id == *characteristic_id
         }
         (
+            RecordedCommand::ReadDescriptor(command),
+            BleEvent::DescriptorRead {
+                command_id,
+                connection_id,
+                gatt_session_id,
+                characteristic_id,
+                descriptor_id,
+                ..
+            },
+        ) => {
+            command.command_id == *command_id
+                && command.connection_id == *connection_id
+                && command.gatt_session_id == *gatt_session_id
+                && command.characteristic_id == *characteristic_id
+                && command.descriptor_id == *descriptor_id
+        }
+        (
+            RecordedCommand::WriteDescriptor(command),
+            BleEvent::DescriptorWritten {
+                command_id,
+                connection_id,
+                gatt_session_id,
+                characteristic_id,
+                descriptor_id,
+            },
+        ) => {
+            command.command_id == *command_id
+                && command.connection_id == *connection_id
+                && command.gatt_session_id == *gatt_session_id
+                && command.characteristic_id == *characteristic_id
+                && command.descriptor_id == *descriptor_id
+        }
+        (
             RecordedCommand::SetNotifications(command),
             BleEvent::NotificationStateChanged {
                 command_id,
@@ -531,6 +599,30 @@ pub(crate) fn command_matches_event(command: &RecordedCommand, event: &BleEvent)
                 ..
             },
         ) => command.command_id == *command_id && command.connection_id == *connection_id,
+        (
+            RecordedCommand::Mtu(command),
+            BleEvent::MtuRead {
+                command_id,
+                connection_id,
+                ..
+            },
+        ) => command.command_id == *command_id && command.connection_id == *connection_id,
+        (
+            RecordedCommand::CreateBond(command),
+            BleEvent::BondStateChanged {
+                command_id: Some(command_id),
+                connection_id,
+                ..
+            },
+        ) => command.command_id == *command_id && command.connection_id == *connection_id,
+        (
+            RecordedCommand::RemoveBond(command),
+            BleEvent::BondStateChanged {
+                command_id: Some(command_id),
+                connection_id,
+                ..
+            },
+        ) => command.command_id == *command_id && command.connection_id == *connection_id,
         (_, BleEvent::CommandCompleted { command_id, .. }) => command.command_id() == *command_id,
         _ => false,
     }
@@ -570,6 +662,7 @@ mod tests {
         let connection_id = ConnectionId { value: 2 };
         [
             RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
                 command_id,
                 connection_id,
                 peripheral_id: PeripheralId { value: 3 },
@@ -821,6 +914,7 @@ mod tests {
         );
         assert_successful_completion(
             RecordedCommand::Connect(ConnectCommand {
+                auto_connect: false,
                 command_id: CommandId { value: 4 },
                 connection_id,
                 peripheral_id: PeripheralId { value: 21 },
@@ -1020,6 +1114,7 @@ mod tests {
             ..state_error.clone()
         };
         let command = RecordedCommand::Connect(ConnectCommand {
+            auto_connect: false,
             command_id,
             connection_id,
             peripheral_id: PeripheralId { value: 3 },

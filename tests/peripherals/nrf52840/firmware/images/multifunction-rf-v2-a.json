@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "image_id": "nrf-multifunction-rf-v2-a",
+  "image_version": "2",
+  "board": "nrf52840dk/nrf52840",
+  "profile_id": "blehub-nrf52840-multifunction-v2-a",
+  "fixture_role": "multifunction-rf",
+  "capabilities": [
+    "normal-rf",
+    "gatt-reset",
+    "notification",
+    "indication",
+    "passive-disconnect",
+    "att-read-fault-v2",
+    "att-write-fault-v2",
+    "att-ccc-fault-v2",
+    "att-precommit-defer-v2",
+    "att-fault-arm-timeout-10000",
+    "att-fault-hold-timeout-20000"
+  ],
+  "settings": {
+    "CONFIG_BT_TESTING_ATT_FAULT": "y",
+    "CONFIG_BTTESTER_ATT_FAULT": "y",
+    "CONFIG_BTTESTER_BLEHUB_ATTESTATION": "y",
+    "CONFIG_BT_MAX_CONN": "1",
+    "CONFIG_BT_EATT": "n"
+  }
+}

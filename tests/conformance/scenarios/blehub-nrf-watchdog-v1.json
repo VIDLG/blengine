@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "profile_id": "blehub-nrf52840-watchdog-v1",
+  "notification_value_hex": "ef",
+  "advertising": {
+    "local_name": "BleHubWatchdogDK",
+    "require_local_name": false,
+    "service_uuids": [
+      "fd300000-0000-4000-8000-000000000000"
+    ]
+  },
+  "services": [
+    {
+      "uuid": "fd300000-0000-4000-8000-000000000000",
+      "primary": true,
+      "advertise": true,
+      "characteristics": [
+        {
+          "role": "read-write",
+          "read_authorization": true,
+          "uuid": "fff10000-0000-4000-8000-000000000000",
+          "properties": [
+            "read",
+            "write",
+            "write_without_response"
+          ],
+          "initial_value_hex": "00"
+        },
+        {
+          "role": "updates",
+          "uuid": "fff20000-0000-4000-8000-000000000000",
+          "properties": [
+            "read",
+            "notify",
+            "indicate"
+          ],
+          "initial_value_hex": "00"
+        },
+        {
+          "role": "indications",
+          "uuid": "fff50000-0000-4000-8000-000000000000",
+          "properties": [
+            "read",
+            "indicate"
+          ],
+          "initial_value_hex": "00"
+        },
+        {
+          "role": "read-only",
+          "uuid": "fff30000-0000-4000-8000-000000000000",
+          "properties": [
+            "read"
+          ],
+          "initial_value_hex": "426c65487562"
+        },
+        {
+          "role": "write-only",
+          "uuid": "fff40000-0000-4000-8000-000000000000",
+          "properties": [
+            "write",
+            "write_without_response"
+          ],
+          "initial_value_hex": "00"
+        }
+      ]
+    }
+  ]
+}

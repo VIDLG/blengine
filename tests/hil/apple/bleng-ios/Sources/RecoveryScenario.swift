@@ -1,7 +1,7 @@
 import BleHubUniFfi
 import Foundation
 
-private struct RecoveryLink {
+struct RecoveryLink {
     let connection: ConnectionId
     let session: GattSessionId
     let read: GattCharacteristicId
@@ -43,7 +43,7 @@ private func requireRecoveryRejection(
     throw ScanProbeFailure.invalid("stale handle operation returned an unexpected typed error")
 }
 
-private func recoveryConnect(
+func recoveryConnect(
     owner: Bleng, evidence: ScanEvidence, peripheral: PeripheralId,
     service: BluetoothUuid, indicationOnly: Bool
 ) async throws -> RecoveryLink {
@@ -51,9 +51,13 @@ private func recoveryConnect(
     _ = try await awaitScanEvidence("recovery Connecting/Connected", seconds: 5) {
         await evidence.connected(connection) ? true : nil
     }
-    let session = try await owner.discoverGatt(connection: connection, timeoutMs: 25_000)
+    let discoveredDatabase = try await owner.discoverGatt(connection: connection, timeoutMs: 25_000)
+    let session = discoveredDatabase.gattSessionId
     let database = try await awaitScanEvidence("recovery database", seconds: 5) {
         await evidence.database(connection: connection, session: session)
+    }
+    guard database == discoveredDatabase else {
+        throw ScanProbeFailure.invalid("recovery GATT event database differs from discovery result")
     }
     _ = try validateFixtureDatabase(database, service: service, indicationOnly: indicationOnly)
     let characteristics = database.services.first { $0.uuid == service }?.characteristics ?? []
@@ -108,7 +112,7 @@ func verifyAppleRecoveryRf(
                     try await awaitRecoveryMarker(runDirectory.appendingPathComponent("cycle-1"), "fixture-ready")
                 }
                 let scan = try await owner.startScan(
-                    options: ScanOptions(serviceUuids: [service], namePrefix: nil, companyId: nil, allowDuplicates: false),
+                    options: ScanOptions(serviceUuids: [service], namePrefix: nil, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: false),
                     timeoutMs: 10_000
                 )
                 let advertisement = try await awaitScanEvidence("recovery advertisement", seconds: 30) {

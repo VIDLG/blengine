@@ -4,11 +4,13 @@ use std::sync::{
 };
 
 use blehub::{
-    BackendCapabilities, BackendEventIngressHandle, BleBackend, BleEvent, BleHubError,
-    CancelOperationRequest, CommandDispatchError, ConnectCommand, DisconnectCommand,
-    DiscoverGattCommand, EventIngressStatus, InitializeCommand, Platform,
-    ReadCharacteristicCommand, ReadRssiCommand, SetNotificationsCommand, StartScanCommand,
-    StopScanCommand, WriteCharacteristicCommand,
+    AssociateCompanionDeviceCommand, BackendCapabilities, BackendEventIngressHandle, BleBackend,
+    BleEvent, BleHubError, CancelOperationRequest, CommandDispatchError, ConnectCommand,
+    CreateBondCommand, DisconnectCommand, DiscoverGattCommand, EventIngressStatus,
+    InitializeCommand, MtuCommand, Platform, QueryDevicesCommand, ReadCharacteristicCommand,
+    ReadDescriptorCommand, ReadRssiCommand, RefreshGattCacheCommand, RemoveBondCommand,
+    SetAdapterEnabledCommand, SetConnectionPriorityCommand, SetNotificationsCommand,
+    StartScanCommand, StopScanCommand, WriteCharacteristicCommand, WriteDescriptorCommand,
 };
 
 use crate::{
@@ -137,6 +139,31 @@ impl BleBackend for FakeBackend {
         self.dispatch(RecordedCommand::Initialize(command))
     }
 
+    fn set_adapter_enabled(
+        &self,
+        command: SetAdapterEnabledCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::SetAdapterEnabled(command))
+    }
+
+    fn query_devices(&self, command: QueryDevicesCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::QueryDevices(command))
+    }
+
+    fn associate_companion_device(
+        &self,
+        command: AssociateCompanionDeviceCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::AssociateCompanionDevice(command))
+    }
+
+    fn refresh_gatt_cache(
+        &self,
+        command: RefreshGattCacheCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::RefreshGattCache(command))
+    }
+
     fn start_scan(&self, command: StartScanCommand) -> Result<(), CommandDispatchError> {
         self.dispatch(RecordedCommand::StartScan(command))
     }
@@ -180,6 +207,36 @@ impl BleBackend for FakeBackend {
 
     fn read_rssi(&self, command: ReadRssiCommand) -> Result<(), CommandDispatchError> {
         self.dispatch(RecordedCommand::ReadRssi(command))
+    }
+
+    fn mtu(&self, command: MtuCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::Mtu(command))
+    }
+
+    fn set_connection_priority(
+        &self,
+        command: SetConnectionPriorityCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::SetConnectionPriority(command))
+    }
+
+    fn create_bond(&self, command: CreateBondCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::CreateBond(command))
+    }
+
+    fn remove_bond(&self, command: RemoveBondCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::RemoveBond(command))
+    }
+
+    fn read_descriptor(&self, command: ReadDescriptorCommand) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::ReadDescriptor(command))
+    }
+
+    fn write_descriptor(
+        &self,
+        command: WriteDescriptorCommand,
+    ) -> Result<(), CommandDispatchError> {
+        self.dispatch(RecordedCommand::WriteDescriptor(command))
     }
 
     fn cancel_operation(

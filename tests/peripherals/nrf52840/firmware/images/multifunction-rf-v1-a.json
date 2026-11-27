@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "image_id": "nrf-multifunction-rf-v1-a",
+  "image_version": "maintained",
+  "board": "nrf52840dk/nrf52840",
+  "profile_id": "blehub-nrf52840-multifunction-v1-a",
+  "fixture_role": "multifunction-rf",
+  "capabilities": [
+    "normal-rf",
+    "gatt-reset",
+    "notification",
+    "indication",
+    "passive-disconnect",
+    "att-read-hold",
+    "att-read-hold-timeout-30000",
+    "att-read-hold-runtime"
+  ],
+  "settings": {
+    "CONFIG_BTTESTER_GATT_READ_HOLD": "y",
+    "CONFIG_BTTESTER_GATT_READ_HOLD_RUNTIME": "y",
+    "CONFIG_BTTESTER_GATT_READ_HOLD_TIMEOUT_MS": "30000"
+  }
+}

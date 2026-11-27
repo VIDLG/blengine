@@ -1,0 +1,80 @@
+[workspace]
+
+[package]
+name = "blehub-windows-hil"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+autobins = false
+
+[dependencies]
+blehub = { path = "../../../../crates/blehub" }
+blehub-windows = { path = "../../../../platforms/archive/windows", features = ["hil-callback-gates"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+[[bin]]
+name = "scan"
+path = "src/scan.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "connect"
+path = "src/connect.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "gatt"
+path = "src/gatt.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "read-write"
+path = "src/read_write.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "gatt-throughput"
+path = "src/gatt_throughput.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "notifications"
+path = "src/notifications.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "notification-throughput"
+path = "src/notification_throughput.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "passive-disconnect"
+path = "src/passive_disconnect.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "inflight-fault"
+path = "src/inflight_fault.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "resource-lifecycle"
+path = "src/resource_lifecycle.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "scan-connect-soak"
+path = "src/scan_connect_soak.rs"
+test = false
+bench = false

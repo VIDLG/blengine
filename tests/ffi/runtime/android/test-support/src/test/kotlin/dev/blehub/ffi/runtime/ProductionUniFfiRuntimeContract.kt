@@ -3,6 +3,7 @@ package dev.blehub.ffi.runtime
 import dev.blehub.AdapterSnapshot
 import dev.blehub.AdapterState
 import dev.blehub.AdvertisementObservation
+import dev.blehub.AssociateCompanionDeviceCommand
 import dev.blehub.AuthorizationState
 import dev.blehub.BackendCapabilities
 import dev.blehub.BackendEventIngressHandle
@@ -14,6 +15,7 @@ import dev.blehub.BleEventSink
 import dev.blehub.BleHub
 import dev.blehub.BleHubException
 import dev.blehub.BluetoothUuid
+import dev.blehub.CancelOperationRequest
 import dev.blehub.CharacteristicProperties
 import dev.blehub.CommandDispatchException
 import dev.blehub.CommandId
@@ -41,17 +43,26 @@ import dev.blehub.PeripheralId
 import dev.blehub.Platform
 import dev.blehub.PlatformErrorDetails
 import dev.blehub.ReadCharacteristicCommand
+import dev.blehub.ReadDescriptorCommand
 import dev.blehub.ReadRssiCommand
 import dev.blehub.ScanOptions
 import dev.blehub.ScanSessionId
 import dev.blehub.ScanStopReason
 import dev.blehub.ScanStopResult
 import dev.blehub.ServiceData
+import dev.blehub.SetConnectionPriorityCommand
 import dev.blehub.SetNotificationsCommand
 import dev.blehub.StartScanCommand
 import dev.blehub.StopScanCommand
 import dev.blehub.SubscriptionId
+import dev.blehub.CreateBondCommand
+import dev.blehub.MtuCommand
+import dev.blehub.RemoveBondCommand
+import dev.blehub.SetAdapterEnabledCommand
+import dev.blehub.QueryDevicesCommand
+import dev.blehub.RefreshGattCacheCommand
 import dev.blehub.WriteCharacteristicCommand
+import dev.blehub.WriteDescriptorCommand
 import dev.blehub.blehubContractVersion
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
@@ -111,6 +122,54 @@ abstract class ProductionUniFfiRuntimeContract {
 
             assertTrue(statuses.all { it == EventIngressStatus.Delivered })
             assertTrue(eventCatalogMatches(expected, sink.snapshot().events))
+        } finally {
+            release(hub, backend, sink)
+        }
+    }
+
+    @Test
+    fun largeIdsBytesAndStructuredErrorCrossTheProductionIngressInOrder() {
+        val backend = TestBackend(BackendMode.NO_EVENT)
+        val sink = RecordingSink()
+        val hub = BleHub(backend, sink)
+        try {
+            val commandId = CommandId(ULong.MAX_VALUE)
+            // Odd values above 2^53 expose any lossy floating-point ID conversion.
+            val connectionId = ConnectionId(9_007_199_254_740_993uL)
+            val gattSessionId = GattSessionId(9_007_199_254_740_995uL)
+            val characteristicId = GattCharacteristicId(9_007_199_254_740_997uL)
+            val subscriptionId = SubscriptionId(9_007_199_254_740_999uL)
+            val bytes = byteArrayOf(0x00, 0x7f, 0x80.toByte(), 0xff.toByte())
+            val error = BleEventError(
+                category = BleErrorCategory.GATT,
+                message = "structured ingress failure",
+                platformDetails = PlatformErrorDetails(
+                    platform = Platform.ANDROID,
+                    code = "133",
+                    name = "GATT_ERROR",
+                    message = "native platform detail",
+                    status = null,
+                    attCode = null,
+                ),
+            )
+            val expected = listOf(
+                BleEvent.CharacteristicRead(
+                    commandId, connectionId, gattSessionId, characteristicId, bytes,
+                ),
+                BleEvent.NotificationReceived(
+                    connectionId, gattSessionId, subscriptionId, characteristicId, bytes,
+                ),
+                BleEvent.CommandCompleted(commandId, error),
+            )
+
+            expected.forEach { event ->
+                assertEquals(EventIngressStatus.Delivered, backend.push(event))
+            }
+
+            assertTrue(
+                eventCatalogMatches(expected, sink.snapshot().events),
+                "production ingress changed IDs, bytes, structured error, or domain/terminal order",
+            )
         } finally {
             release(hub, backend, sink)
         }
@@ -495,6 +554,28 @@ private class TestBackend(
 
     override fun readRssi(command: ReadRssiCommand) = Unit
 
+    override fun readDescriptor(command: ReadDescriptorCommand) = Unit
+
+    override fun writeDescriptor(command: WriteDescriptorCommand) = Unit
+
+    override fun mtu(command: MtuCommand) = Unit
+
+    override fun setConnectionPriority(command: SetConnectionPriorityCommand) = Unit
+
+    override fun createBond(command: CreateBondCommand) = Unit
+
+    override fun removeBond(command: RemoveBondCommand) = Unit
+
+    override fun setAdapterEnabled(command: SetAdapterEnabledCommand) = Unit
+
+    override fun queryDevices(command: QueryDevicesCommand) = Unit
+
+    override fun associateCompanionDevice(command: AssociateCompanionDeviceCommand) = Unit
+
+    override fun refreshGattCache(command: RefreshGattCacheCommand) = Unit
+
+    override fun cancelOperation(request: CancelOperationRequest) = Unit
+
     override fun dispose() {
         disposeCount.incrementAndGet()
         sharedDisposeCount?.incrementAndGet()
@@ -661,8 +742,11 @@ private fun scanCommand(id: ULong) = StartScanCommand(
     options = ScanOptions(
         serviceUuids = emptyList(),
         namePrefix = null,
+        exactName = null,
         companyId = null,
-        allowDuplicates = false,
+        minRssi = null,
+        manufacturerData = null,
+        allowDuplicates = false, android = null
     ),
 )
 
@@ -744,6 +828,8 @@ private fun runtimeEventCatalog(): List<BleEvent> {
             code = "fixture-code",
             name = "FixtureError",
             message = "fixture platform detail",
+            status = null,
+            attCode = null,
         ),
     )
 

@@ -1,88 +1,205 @@
-# nRF52840 Peripheral fixture
+# nRF52840 multifunction fault v2 fixture
 
-This directory is the BleHub-owned provider entry for the standalone nRF52840
-Peripheral fixture. The shared profile is under
-`tests/conformance/scenarios/blehub-nrf-indication-v2.json`; this directory contains
-provider source and documentation only. The current provider is a transitional
-bridge used during migration. The final provider will own its host control path
-and standalone firmware project; it must not require the independent `nrftest`
-repository at runtime.
+This is the maintained entry for BleHub's standalone nRF52840 Peripheral fixture:
+**one v2 image family for normal RF and nonblocking read / response-write / managed
+CCC faults**. There is no live v1 read-hold compatibility lane or legacy-wire fallback.
+The provider is test infrastructure, not a BleHub Peripheral product API.
 
-## Configuration
+BleHub owns the declarations, profiles, expected contracts, BTP control and scenario
+coordination. The configured independent `nrftest` checkout supplies the firmware
+builder/toolchain and shared physical lease authority during migration; it is not a
+production BLE dependency. Runtime BTP control belongs to this provider.
 
-Set the external fixture root in ignored `blehub.local.toml`:
+## Canonical inputs and evidence boundary
 
-```toml
-[toolchains]
-nrftest_root = "/absolute/path/to/nrftest"
+All maintained firmware JSON inputs are under this directory, not the historical
+`tests/conformance/scenarios/fixture-contracts/` location:
 
-[peripheral_nrf52840]
-# Optional when nrftest.local.toml already selects the unique device.
-port = "/dev/cu.usbmodem..."
-```
+| Input | A | B |
+|---|---|---|
+| Image declaration | [images/multifunction-rf-v2-a.json](firmware/images/multifunction-rf-v2-a.json) | [images/multifunction-rf-v2-b.json](firmware/images/multifunction-rf-v2-b.json) |
+| Canonical profile | [profiles/multifunction-rf-v2-a.json](firmware/profiles/multifunction-rf-v2-a.json) | [profiles/multifunction-rf-v2-b.json](firmware/profiles/multifunction-rf-v2-b.json) |
+| Expected build contract | [contracts/multifunction-rf-v2-a.json](firmware/contracts/multifunction-rf-v2-a.json) | [contracts/multifunction-rf-v2-b.json](firmware/contracts/multifunction-rf-v2-b.json) |
 
-The same values can be supplied for one run with:
+A/B have distinct image/profile identities, service UUIDs and local names, with the
+same five characteristic roles. Select a matching declaration/profile/contract trio;
+do not infer identity from a board label, port, remembered installation or UUID alone.
+The declarations carry the exact eleven capabilities and fixed-bearer, single-connection
+settings. A characteristic's CCC target is its discovered descriptor, not the first `2902`.
+
+**A and B have completed real two-pass builds and contract export/check; building is
+not installed-image proof.** The independently authorized DK-B recovery, installed-image
+assertion and Android/iPhone full-suite results are recorded in the
+[current candidate report](../../../docs/testing/reports/2026-10-18-v2-dk-b-mobile-full-suite.md).
+They do not establish installation of A, write/CCC fault coverage, native HIL or
+Linux/BabbleSim runtime results. Machine identities, hashes and failed attempts belong
+in named evidence, not a maintained table of what a DK is presumed to run.
+
+The execution priority is a real Android/iPhone Central and physical DK Peripheral,
+controlled by the Mac. Linux/BabbleSim is not a prerequisite to start real RF;
+unexecuted scheduling/resource/protocol assertions remain explicit coverage gaps.
+Native Mac CoreBluetooth is a separate backend/HIL lane, not a replacement for phone
+RN evidence. Native Mac RF shortcuts currently fail closed until v2 session,
+live proof and owner-bound cleanup are connected. Old native iOS RF shortcuts still
+have the same ownership gap and must not be used; their fix is a separate review candidate.
+See the [real-Central preflight](../../../docs/testing/reports/2026-10-18-real-central-rf-preflight.md).
+
+## Build, export, check, then explicit provision
+
+Run these recipes from the configured `nrftest` checkout with its prerequisites already
+prepared. Replace placeholders with absolute paths; do not assume sibling checkouts or
+reuse an unrelated build manifest:
 
 ```text
-BLEHUB_NRFTEST_ROOT
-BLEHUB_NRF52840_PORT
+pixi run just firmware-build-dk-image <declaration.json> <profile.json>
+pixi run just firmware-export-contract <build-manifest.json> <declaration.json> <profile.json> <new-contract.json>
+pixi run just firmware-check-contract <build-manifest.json> <declaration.json> <profile.json> <tracked-contract.json>
 ```
 
-For the private two-DK gate, use explicit ignored local mappings. The full USB
-serial includes leading zeroes and must match the CDC port reported by
-`pyserial`; the controller fails closed before starting either fixture if the
-mapping is missing or inconsistent:
+Use the manifest printed by the builder under configured
+`build_dir/images/<image_id>/nrftest-build-manifest.json`. It binds the input snapshots,
+actual source/configuration and two-pass normalized digest. Export creates a new contract
+and refuses overwrite; check revalidates an existing contract without modifying it.
+Neither operation accesses or proves the installed image.
 
-```toml
-[peripheral_nrf52840.devices.dk_a]
-probe_serial = "001050252028"
-port = "/dev/cu.usbmodem0010502520281"
-profile = "tests/conformance/scenarios/blehub-nrf-indication-v2.json"
+Programming is a separate, explicitly authorized operation against an explicitly selected DK:
 
-[peripheral_nrf52840.devices.dk_b]
-probe_serial = "001050251479"
-port = "/dev/cu.usbmodem0010502514791"
-profile = "tests/conformance/scenarios/blehub-nrf-indication-v2-b.json"
+```text
+pixi run just firmware-provision-dk <build-manifest.json> <raw-hex-sha256> <contract.json> <new-installed-attestation.json>
 ```
 
-`host-android-rf-multi` then performs profile provisioning/doctor and direct
-fixture readiness independently for both boards. Startup is failure-atomic:
-if either board is absent, has no compatible BTP firmware, or fails doctor,
-the other newly started board is stopped. No recipe flashes firmware.
+The confirmation is the manifest's **raw HEX artifact SHA-256**, not the contract's
+normalized image digest. Provision holds the physical lease through programming and BTP
+installed-image assertion. Lower-level `firmware-flash-dk` only programs; it does not
+replace that assertion. Ordinary build/export/check/RF runs never flash or reset firmware,
+install tools, accept licenses or retry destructive gates implicitly.
 
-The provider does not flash firmware. The configured nRF application firmware
-must already be running. Firmware setup and flashing remain explicit `nrftest`
-operations. Normal startup does not assume the optional BTP GATT reset-server
-command exists: the doctor validates the configured profile, reuses a matching
-resident database, and initializes its values before advertising; an incomplete
-or different database fails closed.
+## Runtime ownership and fault semantics
 
-## Optional ATT read-hold diagnostic (private iPhone RF gate)
+- **Host/provider:** freeze contract/profile and artifact identities; own the physical
+  lease, sole BTP session, live installed-image receipt, exact peer/ATT target/ticket,
+  scenario ledger, cleanup and final evidence-bundle verdict. Live attestation precedes
+  GATT mutation/advertising and App installation/launch. Historical receipts are not live authority.
+- **App/native:** use the same **Tests → Current run → Evidence** workbench and production
+  BLE operations. Browsing creates no Probe or BLE/BTP command; changing views must not
+  unmount, cancel or restart the scenario. UART control stays outside the App.
+- **Firmware:** capture bounded request bytes before the target callback and return to
+  RX; own the original bearer, reserved response buffer, pinned lifetime and bounded
+  reply/event handoff. Disconnect does not require a release to unblock an RX callback.
 
-`diagnostic/read_hold.py` owns only the private one-shot BTP control protocol. The tracked `tests/conformance/scenarios/blehub-nrf-att-read-hold-v1.json` selects a separate advertised service and local name; its single read-write value explicitly requires read authorization. `diagnostic/profile.py` validates that identity and permission before provisioning. The normal profile loader rejects that authorization field, so the default nRF fixture cannot silently start a diagnostic profile. None of these pure-software modules open a port or flash/reset a DK. Validate them with `pixi run just peripheral nrf52840-att-hold-test` (no `nrftest` installation required).
+The ARM barrier is **connected + GATT-discovered exact route → host validates peer,
+handle and pre-state → ARM acknowledged as ARMED → App dispatch → matching HELD receipt**.
+Do not ARM a fabricated future peer before launch, or treat native dispatch acceptance
+as proof that the Peripheral received a request. Controls use vendor service/index
+`0xff/0xff`, protocol version 2, opcodes `0x10–0x16`; the codec and typed controller are in
+[fault_control.py](fault_control.py). Read, response-write and CCC share one slot; Write
+Commands and long/prepared writes are not deferred-response fault operations.
 
-The explicit BleHub-owned build (`diagnostic/build_dk.py`) stages a copy of the pinned Zephyr Tester plus the tracked read-hold patch under ignored `.work/nrf-att-hold-maintained-dk`. Run `pixi run just peripheral nrf52840-att-hold-build` only when the locally configured `nrftest` checkout already has its west workspace, SDK 1.0.1 and Pixi tools installed. This **build-time-only** reuse reads the existing `nrftest.local.toml` toolchain paths and Pixi lock; it does not import its Python implementation, update its sources, install tools, modify shared `contrib/zephyr`, or flash the DK. Before and after compiling, the builder verifies the pinned Zephyr manifest, west module revisions and clean worktrees. Output already present is refused rather than overwritten. `diagnostic/image.py` validates the local HEX and its build manifest, **not** the firmware installed on the DK.
+ARM is bounded by **10 s**, HELD by **20 s**, response resolution by **2 s**, and retirement
+by **5 s**. STATUS does not renew deadlines. The production native watchdog remains its
+**10 s** default: a watchdog gate must observe that native terminal before firmware expiry,
+not relabel a firmware timeout as native watchdog success.
 
-With the normal provider stopped, `pixi run just peripheral nrf52840-att-hold-doctor <probe-serial>` performs a read-only, exclusive BTP capability/status probe. It refuses a present RN or provider lock, and its success proves only that the attached DK responds to the diagnostic protocol—not which HEX is installed or any Central RF result.
+COMMIT uses the ordinary permission/authorization/callback path; REJECT or held ABORT uses
+ATT Unlikely Error without invoking the target callback. Ordinary reads remain ordinary
+reads without an ARM. Successful read resolution is `NORMAL_NO_COMMIT`, not a write commit.
+Write/CCC callback invocation, callback result, committed value and response/TX facts are
+separate evidence. CCC disable requires a verified enabled pre-state; a no-op zero is not
+an in-flight disable. Supporting these controls does not itself prove RN write/CCC fault coverage.
 
-The opt-in iPhone runner (`diagnostic/device.py`) owns the sole BTP serial session and RN fixture lock. Run `pixi run just react-native host-ios-device-rf-pending-read-reload <udid> <team> <probe-serial> <local-hex-sha256>` after preparing the diagnostic DK separately. The recipe builds the signed RN host and checks its single image; it does not flash/reset the DK. Under the exclusive lock, the runner explicitly clears only the Tester's dynamic GATT database while disconnected before provisioning the diagnostic profile; it fails closed if the reset is rejected. Never run the normal `nrf52840-direct-start` fixture concurrently. The [maintained iPhone + DK RF rerun](../../../docs/testing/reports/2026-09-27-react-native-ios-dk-pending-att-maintained.md) passed on the unfrozen private RN candidate; the earlier spike is archived under `spikes/archive/nrf-att-hold/`. This is not an installed-image readback, general late-CoreBluetooth-callback proof, full GATT I/O gate or public RN API. See [the plan](../../../.plan/PLAN.md) for the scope and installed-image identity limit.
+After disconnect, STATUS can read the exact **retained receipt**; old RESOLVE/ABORT cannot
+mutate a retired owner. Response queued / answer-ordered / TX completion are not peer or
+Central-application delivery proof. Before rearm or successful handoff, require RETIRED,
+REARMABLE, no infrastructure failure and all six firmware owner counters zero: connection,
+bearer, response buffer, resolver work, TX and evidence. Quarantine stays failed even after
+late safe reclamation. Independently require the scenario's native close/resource-zero and
+old-event isolation proof; neither process death nor a host ACK proves old Probe cleanup.
 
-## Provider commands
+## Entry points and separate gates
 
-From the BleHub root:
+Machine roots, ports, full USB serials and per-DK profile mappings belong in ignored
+`blehub.local.toml` (`toolchains.nrftest_root`, `peripheral_nrf52840` and its `devices`
+entries), with `BLEHUB_NRFTEST_ROOT` / `BLEHUB_NRF52840_PORT` overrides where applicable.
+Resolve the actual debugger/BTP serial pair; no A/B device installation is assumed here.
+A/B multi-DK runs need explicit matching per-device mappings and independent live proof.
 
-```sh
-pixi run just peripheral nrf52840-start
-pixi run just peripheral nrf52840-status
-pixi run just peripheral nrf52840-stop
+From the BleHub root, the maintained full-suite recipes default to the canonical v2 A
+contract/profile above; pass both paths explicitly to select B:
+
+```text
+pixi run just react-native host-android-rf-lab-suite <android-serial>
+pixi run just react-native host-ios-device-rf-lab-suite <ios-udid> <team>
 ```
 
-`nrf52840-start` launches the locked `nrftest` BTP GATT fixture using the
-conformance scenario profile and waits for its ready marker. It keeps the
-fixture process alive until `nrf52840-stop` or an RF scenario's cleanup trap.
+These are execution instructions, not claims that this candidate passed those gates.
+See [host tooling ownership](../../../docs/research/react-native/react-native-host-tooling-architecture.md)
+for the named runners and [RN RF Lab architecture](../../../docs/research/archive/react-native-rf-lab-test-architecture.md)
+for workbench behavior.
 
-The provider is not a second BLE implementation and does not expose a BleHub
-Peripheral product API. It only gives project-managed Central HIL recipes the
-same start/ready/stop shape as the Android and BLESS fixtures. The multi-DK
-controller is private test infrastructure; its two profiles preserve the same
-GATT semantics while using distinct service UUIDs and local names.
+| Gate | Boundary retained despite sharing the image and App |
+|---|---|
+| `full-suite` | Ten flows including cancellation/watchdog, then RecoveryTen in one runtime/session; host cleanup and bundle verdict remain mandatory. |
+| Standalone RF / watchdog / RecoveryTen / multi-DK | Explicit diagnostics and isolation boundaries; overlap does not make them dead code or substitute for another gate. Watchdog uses v2's 20 s hold, not a separate legacy 30 s image. |
+| Response-write / CCC enable/disable REJECT | Independent opt-in gates, not full-suite flows; exact native ATT14 and original uncommitted receipt. Enable recovery uses a fresh subscription; disable continuity must retain the original subscription and receive another value without re-enable. Both CCC gates require native-fenced post-disable silence. See [write](../../../docs/testing/reports/2026-10-19-rn-response-write-reject.md), [enable](../../../docs/testing/reports/2026-10-19-rn-ccc-enable-reject.md), and [disable results/gaps](../../../docs/testing/reports/2026-10-19-rn-ccc-disable-reject.md). |
+| Pending read engine reload | Same App/PID, distinct RN engines; held request, module invalidation, retained receipt and old native resource-zero barrier. Not an ordinary relaunch or same-runtime suite. |
+| Adapter / permission transitions | Separate opt-in gates with physical mutation, OS evidence and restoration policy; never implicitly part of full-suite. iOS authorization-only XCTest is not Android permission-death or RF evidence. |
+| `IOS-RADIO-GATE` | **Reopened and queued after the current firmware/CCC work**, by explicit user instruction. Follow the Plan for execution order; preserve prior failed evidence, no-password controls and independent RF/cleanup requirements. Reopening is neither passed nor waived. |
+
+Direct fixture lifecycle is exposed through `peripheral nrf52840-direct-start` with a v2
+fixture request, plus `nrf52840-status` / `nrf52840-stop`. The old `nrf52840-start` bridge
+fails closed; do not revive it or archived read-hold commands as compatibility shortcuts.
+Successful result pages stay visible unless closing is explicitly requested. App Passed
+is not host-gate Passed, and RN gates do not replace native HIL or clean artifact consumers.
+
+### Implementation and test ownership
+
+`direct_fixture.py` owns the live leased BTP session, fixture startup/teardown and
+reusable physical operations. `provider.py` exposes the v2 attested entries
+(`direct-start` / `direct-serve` / `ready` / `status` / `doctor` / `stop-owned`) and
+accepts only coordination modes that a maintained lane actually passes:
+`notification`, `indication`, `passive-disconnect`, `host-close`, `recovery`,
+`recovery-ios`, `recovery-ten`, `system-loss-attested` and
+`ccc-disable-reject-attested`. The retired RF-lab modes
+(`permission-transition`, `adapter-transition-attested`, `*-pending-reload`,
+`recovery-ten-attested`, `write-reject-attested`, `ccc-enable-reject-attested`,
+`rf-lab-suite`, `rf-lab-full-attested`) and their BTP simulators were deleted on
+2026-11-22 — no recipe passed them, and the formal managed lanes drive the App instead.
+
+Tests follow the boundary they protect:
+
+- `test_direct_fixture.py`: startup ordering, identity/lease checks and rollback.
+- `test_ccc_disable_reject.py`: the surviving CCC reject gate — real provider/relay
+  boundaries, exact descriptor topology, disabled peer-specific readbacks and
+  notification submission versus App receipt. Host-side runtime replay belongs to
+  `tools/react_native/ccc_disable_reject_ledger`, not a second firmware codec.
+- `test_system_loss*`: the shared fault codec behind the Apple system-loss lanes.
+- `test_btp_*`, `test_gatt_commands.py`, `test_gap_commands.py`,
+  `test_fixture_session.py`, `test_resource_lease.py`, `test_provider.py`: protocol,
+  lease and CLI boundaries.
+
+Synthetic setup and emulators stay in `support/`; live modules never import them.
+Scenario-specific safety assertions stay in their owning tests, rather than being
+hidden behind a universal test harness.
+
+Hardware-free regression entry points (not RF or installation proof):
+
+```text
+pixi run just peripheral nrf52840-test
+pixi run just react-native tools-test
+pixi run just react-native tools-fixture-test
+```
+
+Use the focused entry for a local change and `tools-fixture-test` for the combined
+host/provider/controller regression. These entries intentionally overlap; running
+all three is not required to establish additional coverage.
+
+## Historical evidence
+
+The following reports retain their original candidate/device scope, not current v2 authority:
+
+- [Maintained iPhone pending-ATT rerun](../../../docs/testing/reports/2026-09-27-react-native-ios-dk-pending-att-maintained.md).
+- [Normal-attested RN RF Lab](../../../docs/testing/reports/2026-10-13-normal-attested-rn-rf-lab.md).
+- [Native watchdog RF](../../../docs/testing/reports/2026-10-13-rn-native-watchdog-rf.md).
+- [Multifunction A/B firmware and RN RF](../../../docs/testing/reports/2026-10-14-multifunction-nrf-rn-rf.md).
+
+Archived implementations and v1 evidence do not enter current recipes or authorize v2 runs.

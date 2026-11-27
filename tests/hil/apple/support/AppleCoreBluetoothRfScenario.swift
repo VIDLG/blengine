@@ -77,6 +77,7 @@ enum AppleRfScenario: String {
     case io, notification, indication, rssi
     case passiveDisconnect = "passive-disconnect"
     case recovery
+    case cccDisableReject = "ccc-disable-reject"
 
     var usesNotifications: Bool {
         self == .notification || self == .indication || self == .passiveDisconnect || self == .recovery
@@ -89,12 +90,14 @@ enum AppleRfScenario: String {
 // command block. Opaque attribute IDs remain backend-owned and session-scoped.
 struct RfCycleIds {
     var cycle: UInt64 = 1
-    func command(_ local: UInt64) -> CommandId { CommandId(value: (cycle - 1) * 100 + local) }
-    var scan: ScanSessionId { ScanSessionId(value: cycle) }
-    var connection: ConnectionId { ConnectionId(value: cycle) }
-    var gatt: GattSessionId { GattSessionId(value: cycle) }
-    var subscription: SubscriptionId { SubscriptionId(value: cycle) }
-    var rejectedSubscription: SubscriptionId { SubscriptionId(value: 1000 + cycle) }
+    var commandBase: UInt64 = 0
+    var routeBase: UInt64 = 0
+    func command(_ local: UInt64) -> CommandId { CommandId(value: commandBase + (cycle - 1) * 100 + local) }
+    var scan: ScanSessionId { ScanSessionId(value: routeBase == 0 ? cycle : routeBase + 1) }
+    var connection: ConnectionId { ConnectionId(value: routeBase == 0 ? cycle : routeBase + 4) }
+    var gatt: GattSessionId { GattSessionId(value: routeBase == 0 ? cycle : routeBase + 7) }
+    var subscription: SubscriptionId { SubscriptionId(value: routeBase == 0 ? cycle : routeBase + 9) }
+    var rejectedSubscription: SubscriptionId { SubscriptionId(value: routeBase == 0 ? 1000 + cycle : routeBase + 10) }
 }
 
 struct RfLedgerError: Error, CustomStringConvertible {
@@ -344,6 +347,7 @@ func runIOSRfScenario(
     runId: String, coordinationPath: String, unfiltered: Bool = false,
     allowDuplicates: Bool = true, diagnosticTargetPeripheralId: (() -> PeripheralId?)? = nil,
     scanDuration: TimeInterval = 30,
+    scanNamePrefix: String? = nil,
     configuration: RfFixtureConfiguration = .android,
     externalProvider: String? = nil
 ) throws -> [String] {
@@ -364,7 +368,7 @@ func runIOSRfScenario(
         let start = cycles.last?.range.upperBound ?? historyStart
         let scan = try runScan(fixture: fixture, serviceUuid: serviceUuid, unfiltered: unfiltered,
                                allowDuplicates: allowDuplicates, diagnosticTargetPeripheralId: diagnosticTargetPeripheralId,
-                               scanDuration: scanDuration, ids: ids)
+                               scanDuration: scanDuration, ids: ids, namePrefix: scanNamePrefix)
         output.append(contentsOf: scan.output)
         // Preserve the historical diagnostic scan-only path, but never call it an RF pass.
         if unfiltered && diagnosticTargetPeripheralId == nil {
@@ -544,18 +548,14 @@ func runScan(
     allowDuplicates: Bool = true,
     diagnosticTargetPeripheralId: (() -> PeripheralId?)? = nil,
     scanDuration: TimeInterval = 30,
-    ids: RfCycleIds = RfCycleIds()
+    ids: RfCycleIds = RfCycleIds(),
+    namePrefix: String? = nil
 ) throws -> (output: [String], advertisement: AdvertisementObservation) {
     let serviceUuid = BluetoothUuid(value: value.lowercased())
     let startCommand = StartScanCommand(
         commandId: ids.command(2),
         scanSessionId: ids.scan,
-        options: ScanOptions(
-            serviceUuids: unfiltered ? [] : [serviceUuid],
-            namePrefix: nil,
-            companyId: nil,
-            allowDuplicates: allowDuplicates
-        )
+        options: ScanOptions(serviceUuids: unfiltered ? [] : [serviceUuid], namePrefix: namePrefix, exactName: nil, companyId: nil, minRssi: nil, manufacturerData: nil, android: nil, allowDuplicates: allowDuplicates)
     )
     let eventOffset = fixture.snapshot().events.count
     try fixture.startScan(command: startCommand)
@@ -598,6 +598,9 @@ func runScan(
     }
     guard let advertisement else {
         throw ProbeError.scanTimeout(fixture.snapshot().events)
+    }
+    if let namePrefix, advertisement.localName?.hasPrefix(namePrefix) != true {
+        throw ProbeError.invalidGattDatabase("scan returned a name outside the requested prefix")
     }
 
     let stopCommand = StopScanCommand(
@@ -661,7 +664,7 @@ func runScan(
     return (
         output: [
             "apple_macos_corebluetooth_scan_service_uuid=\(serviceUuid.value)",
-            "apple_macos_corebluetooth_scan_filter=\(unfiltered ? "unfiltered" : "service")",
+            "apple_macos_corebluetooth_scan_filter=\(unfiltered ? "unfiltered" : (namePrefix == nil ? "service" : "service+name"))",
             "apple_macos_corebluetooth_scan_selection=\(diagnosticTargetPeripheralId == nil ? (diagnosticScanOnly ? "diagnostic-scan-only" : "service") : "native-identifier")",
             "apple_macos_corebluetooth_scan_allow_duplicates=\(allowDuplicates)",
             "apple_macos_corebluetooth_scan_peripheral_id=\(advertisement.peripheralId.value)",
@@ -674,7 +677,7 @@ func runScan(
             "apple_macos_corebluetooth_scan_stopped=passed",
             "apple_macos_corebluetooth_post_stop_silence=passed",
             "apple_macos_corebluetooth_scan=passed",
-        ],
+        ] + (namePrefix.map { ["apple_macos_corebluetooth_scan_name_prefix=\($0)"] } ?? []),
         advertisement: advertisement
     )
 }
@@ -684,10 +687,11 @@ func runGattDiscovery(
     connectionId: ConnectionId,
     expectedServiceUuid: String,
     ids: RfCycleIds = RfCycleIds(),
-    configuration: RfFixtureConfiguration = .android
+    configuration: RfFixtureConfiguration = .android,
+    discoveryCommandId: CommandId? = nil
 ) throws -> (output: [String], database: GattDatabase) {
     let command = DiscoverGattCommand(
-        commandId: ids.command(5),
+        commandId: discoveryCommandId ?? ids.command(5),
         connectionId: connectionId,
         gattSessionId: ids.gatt
     )
@@ -1230,7 +1234,7 @@ func runNotifications(
     try validateNotificationEventLedger(
         valueEvents, database: database, subscriptionId: subscriptionId,
         characteristicId: characteristic.id, expectedValue: expectedValue,
-        ids: ids, expectedMode: expectedMode, expectDisable: !leaveActive
+        ids: ids, expectedMode: expectedMode, expectDisable: false
     )
     if leaveActive {
         return ([
@@ -1582,7 +1586,7 @@ func runConnection(
     let connect = ConnectCommand(
         commandId: ids.command(4),
         connectionId: ids.connection,
-        peripheralId: peripheralId
+        peripheralId: peripheralId, autoConnect: false
     )
     let connectOffset = fixture.snapshot().events.count
     try fixture.connect(command: connect)

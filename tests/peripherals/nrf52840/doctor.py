@@ -29,7 +29,8 @@ class NrfDoctor:
         self._gap = GapCommands(session)
         self._gatt = GattCommands(session)
 
-    def run(self, profile: ProfilePlan) -> DoctorResult:
+    def ensure_services(self) -> tuple[int, dict[int, int]]:
+        """Register missing BTP services without changing the GATT profile."""
         services = self._core.read_supported_services()
         required_services = (1 << GAP) | (1 << GATT)
         if services & required_services != required_services:
@@ -47,6 +48,10 @@ class NrfDoctor:
                 supported_commands[service] = self._core.read_supported_commands(
                     service
                 )
+        return services, supported_commands
+
+    def run(self, profile: ProfilePlan) -> DoctorResult:
+        services, supported_commands = self.ensure_services()
         controller_info = self._gap.read_controller_info()
         role_handles = provision(self._gatt, profile)
         return DoctorResult(
