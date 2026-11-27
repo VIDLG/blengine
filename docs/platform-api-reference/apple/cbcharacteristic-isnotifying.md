@@ -43,7 +43,7 @@ If the value of the property is <doc://com.apple.documentation/documentation/Swi
 
 ### Related Documentation
 
-[`-  setNotifyValue:forCharacteristic:`](/documentation/CoreBluetooth/CBPeripheral/setNotifyValue(_:for:))
+[`func setNotifyValue(Bool, for: CBCharacteristic)`](/documentation/CoreBluetooth/CBPeripheral/setNotifyValue(_:for:))
 
 Sets notifications or indications for the value of a specified characteristic.
 

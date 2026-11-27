@@ -131,11 +131,11 @@ A failed doctor or readiness handshake is an **environment failure**, not a BleH
 Repository ownership is split by responsibility rather than placing guest behavior, host orchestration, and VM lifecycle in one package:
 
 ```text
-tests/peripherals/archive/bless/ # Archived BLESS provider and guest fixture behavior.
-tests/peripherals/archive/android/ # Archived Android provider implementation and app fixture.
-tests/peripherals/nrf52840/   # nRF52840 provider implementation.
-tests/support/peripheral/     # Shared provider process/readiness/cleanup support.
-vm/archive/linux-peripheral/    # Archived Packer template, image locks, and guest provisioning inputs.
+tests/peripherals/archive/bless/  # Archived BLESS provider and guest fixture behavior.
+tests/peripherals/android/        # Explicit-compatibility Android provider and app fixture.
+tests/peripherals/nrf52840/       # nRF52840 provider implementation.
+tests/support/peripheral/         # Shared provider process/readiness/cleanup support.
+vm/archive/linux-peripheral/      # Archived Packer template, image locks, and guest provisioning inputs.
 ```
 
 Shared GATT scenarios remain under `tests/conformance/scenarios/`; provider code consumes those project-owned fixtures instead of duplicating UUIDs, manufacturer data, or payload contracts.
@@ -145,27 +145,27 @@ Shared GATT scenarios remain under `tests/conformance/scenarios/`; provider code
 The implemented interface is:
 
 ```sh
-pixi run just peripheral vm-bootstrap
-pixi run just peripheral vm-build
-pixi run just peripheral vm-doctor
-pixi run just peripheral vm-start
-pixi run just peripheral vm-stop
-pixi run just peripheral vm-reset
-pixi run just peripheral vm-status
-pixi run just peripheral vm-logs
-pixi run just peripheral vm-clean
-pixi run just peripheral vm-usb-status
-pixi run just peripheral vm-usb-attach
-pixi run just peripheral vm-usb-detach
-pixi run just peripheral vm-fixture-install
-pixi run just peripheral vm-fixture-sync
-pixi run just peripheral vm-fixture-start
-pixi run just peripheral vm-fixture-stop
-pixi run just peripheral vm-fixture-status
-pixi run just peripheral vm-fixture-update deadbeef
-pixi run just peripheral vm-fixture-burst 0123456789abcdef 200 500
-pixi run just peripheral vm-whpx-status
-pixi run just peripheral vm-whpx-enable
+pixi run just --justfile just/archive/bless.just vm-bootstrap
+pixi run just --justfile just/archive/bless.just vm-build
+pixi run just --justfile just/archive/bless.just vm-doctor
+pixi run just --justfile just/archive/bless.just vm-start
+pixi run just --justfile just/archive/bless.just vm-stop
+pixi run just --justfile just/archive/bless.just vm-reset
+pixi run just --justfile just/archive/bless.just vm-status
+pixi run just --justfile just/archive/bless.just vm-logs
+pixi run just --justfile just/archive/bless.just vm-clean
+pixi run just --justfile just/archive/bless.just vm-usb-status
+pixi run just --justfile just/archive/bless.just vm-usb-attach
+pixi run just --justfile just/archive/bless.just vm-usb-detach
+pixi run just --justfile just/archive/bless.just vm-fixture-install
+pixi run just --justfile just/archive/bless.just vm-fixture-sync
+pixi run just --justfile just/archive/bless.just vm-fixture-start
+pixi run just --justfile just/archive/bless.just vm-fixture-stop
+pixi run just --justfile just/archive/bless.just vm-fixture-status
+pixi run just --justfile just/archive/bless.just vm-fixture-update deadbeef
+pixi run just --justfile just/archive/bless.just vm-fixture-burst 0123456789abcdef 200 500
+pixi run just --justfile just/archive/bless.just vm-whpx-status
+pixi run just --justfile just/archive/bless.just vm-whpx-enable
 ```
 
 The responsibility split is:
@@ -173,7 +173,7 @@ The responsibility split is:
 | Layer | Responsibility |
 |---|---|
 | Pixi | Pin Packer, the official `qemu.qmp` Python client, and other host tooling plus the guest BLESS/Python environment; provide the locked 7-Zip extractor. QEMU itself is pinned by tracked URL/hash because no Windows QEMU package is available in the configured Pixi channel. |
-| Just | Expose the thin `peripheral vm-*` user-facing namespace and delegate lifecycle work. It must not contain image, QMP, SSH, USB, retry, or provisioning logic. |
+| Just | Expose the archived `vm-*` namespace through `just/archive/bless.just` and delegate lifecycle work. It must not contain image, QMP, SSH, USB, retry, or provisioning logic. The file is intentionally not imported by the root `justfile`. |
 | Packer | Create and resize the build qcow2, generate the `CIDATA` VFAT for minimal NoCloud SSH bootstrap, boot QEMU, wait for SSH, upload tracked image inputs, run provisioning, and shut down cleanly. The official QEMU plugin is fixed to `1.1.6` and is installed only by `vm-bootstrap`. |
 | Python host orchestration | Download and verify pinned assets, invoke Packer for image builds, create mutable runtime overlays, automatically select WHPX when enabled on Windows and otherwise use TCG, use the official `qemu.qmp` client for runtime QMP sessions, manage SSH/SCP/PID/log lifecycle, select the USB controller, and produce actionable diagnostics. `BLEHUB_VM_ACCEL=tcg|whpx` remains an explicit override. The orchestration retains project-specific QMP command policy but does not implement the wire protocol, a second image builder, or an ISO writer. |
 | Guest provisioning | Install and configure the stable Debian/BlueZ/D-Bus/Pixi/systemd runtime and udev/rfkill permissions from tracked image inputs. Frequently changing BLESS fixture source, environment, and scenarios are deployed separately and are not part of the stable-image target. |

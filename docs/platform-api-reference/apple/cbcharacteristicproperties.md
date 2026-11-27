@@ -41,49 +41,49 @@ Since you can combine characteristic properties, a characteristic may have multi
 
 ### Creating a Characteristic Properties Instance
 
-[`init(rawValue:)`](/documentation/CoreBluetooth/CBCharacteristicProperties/init(rawValue:))
+[`init(rawValue: UInt)`](/documentation/CoreBluetooth/CBCharacteristicProperties/init(rawValue:))
 
 Creates a characteristic properties instance from the given raw value.
 
 ### Characteristic Properties
 
-[`CBCharacteristicPropertyBroadcast`](/documentation/CoreBluetooth/CBCharacteristicProperties/broadcast)
+[`static var broadcast: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/broadcast)
 
 A property that indicates the characteristic can broadcast its value using a characteristic configuration descriptor.
 
-[`CBCharacteristicPropertyRead`](/documentation/CoreBluetooth/CBCharacteristicProperties/read)
+[`static var read: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/read)
 
 A property that indicates a peripheral can read the characteristic’s value.
 
-[`CBCharacteristicPropertyWriteWithoutResponse`](/documentation/CoreBluetooth/CBCharacteristicProperties/writeWithoutResponse)
+[`static var writeWithoutResponse: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/writeWithoutResponse)
 
 A property that indicates a peripheral can write the characteristic’s value, without a response to indicate that the write succeeded.
 
-[`CBCharacteristicPropertyWrite`](/documentation/CoreBluetooth/CBCharacteristicProperties/write)
+[`static var write: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/write)
 
 A property that indicates a peripheral can write the characteristic’s value, with a response to indicate that the write succeeded.
 
-[`CBCharacteristicPropertyNotify`](/documentation/CoreBluetooth/CBCharacteristicProperties/notify)
+[`static var notify: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/notify)
 
 A property that indicates the peripheral permits notifications of the characteristic’s value, without a response from the central to indicate receipt of the notification.
 
-[`CBCharacteristicPropertyIndicate`](/documentation/CoreBluetooth/CBCharacteristicProperties/indicate)
+[`static var indicate: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/indicate)
 
 A property that indicates the peripheral permits notifications of the characteristic’s value, with a response from the central to indicate receipt of the notification.
 
-[`CBCharacteristicPropertyAuthenticatedSignedWrites`](/documentation/CoreBluetooth/CBCharacteristicProperties/authenticatedSignedWrites)
+[`static var authenticatedSignedWrites: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/authenticatedSignedWrites)
 
 A property that indicates the perhipheral allows signed writes of the characteristic’s value, without a response to indicate the write succeeded.
 
-[`CBCharacteristicPropertyExtendedProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/extendedProperties)
+[`static var extendedProperties: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/extendedProperties)
 
 A property that indicates the characteristic defines additional properties in the extended properties descriptor.
 
-[`CBCharacteristicPropertyNotifyEncryptionRequired`](/documentation/CoreBluetooth/CBCharacteristicProperties/notifyEncryptionRequired)
+[`static var notifyEncryptionRequired: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/notifyEncryptionRequired)
 
 A property that indicates that only trusted devices can enable notifications of the characteristic’s value.
 
-[`CBCharacteristicPropertyIndicateEncryptionRequired`](/documentation/CoreBluetooth/CBCharacteristicProperties/indicateEncryptionRequired)
+[`static var indicateEncryptionRequired: CBCharacteristicProperties`](/documentation/CoreBluetooth/CBCharacteristicProperties/indicateEncryptionRequired)
 
 A property that indicates only trusted devices can enable indications of the characteristic’s value.
 
@@ -91,21 +91,21 @@ A property that indicates only trusted devices can enable indications of the cha
 
 ### Conforms To
 
-[`BitwiseCopyable`](/documentation/Swift/BitwiseCopyable)
+[`ExpressibleByArrayLiteral`](/documentation/Swift/ExpressibleByArrayLiteral)
+
+[`SetAlgebra`](/documentation/Swift/SetAlgebra)
 
 [`Sendable`](/documentation/Swift/Sendable)
 
-[`ExpressibleByArrayLiteral`](/documentation/Swift/ExpressibleByArrayLiteral)
+[`BitwiseCopyable`](/documentation/Swift/BitwiseCopyable)
 
 [`OptionSet`](/documentation/Swift/OptionSet)
 
-[`RawRepresentable`](/documentation/Swift/RawRepresentable)
+[`Equatable`](/documentation/Swift/Equatable)
 
 [`SendableMetatype`](/documentation/Swift/SendableMetatype)
 
-[`Equatable`](/documentation/Swift/Equatable)
-
-[`SetAlgebra`](/documentation/Swift/SetAlgebra)
+[`RawRepresentable`](/documentation/Swift/RawRepresentable)
 
 ---
 

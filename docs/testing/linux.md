@@ -225,7 +225,7 @@ BLESS HIL 不能替代 FakeBackend 对 duplicate、orphan、stale 和任意乱�
 以下 recipe 名称是 Phase 6 的计划接口，当前不得据此假定它们已经存在：
 
 - `just linux-vm-start`：启动通用 Linux Central/development VM；
-- `just peripheral vm-start`：显式启动归档的Linux Peripheral VM；该入口仅用于历史/兼容路径，不与Linux Central VM混用；
+- `just --justfile just/archive/bless.just vm-start`：显式启动归档的Linux Peripheral VM；该入口仅用于历史/兼容路径，不与Linux Central VM混用；
 - `just linux-test`：默认不要求硬件；
 - `just linux-test-hil`：先运行 dual-controller doctor，再执行串行 HIL。
 

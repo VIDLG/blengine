@@ -1,6 +1,6 @@
 # Android managed development peripheral
 
-This page describes the project-managed Kotlin BLE Peripheral under [`tests/peripherals/archive/android/`](../../tests/peripherals/archive/android/). It runs on a physical Android device and provides the Phase 2 day-to-day RF fixture for the Windows Central backend. It is test infrastructure, not an Android Central backend and not a BleHub product capability.
+This page describes the project-managed Kotlin BLE Peripheral under [`tests/peripherals/android/`](../../tests/peripherals/android/). It runs on a physical Android device. It originated as the Phase 2 Windows RF fixture; today its maintained consumers are the Apple RF lane (`just apple rf-android`), the explicit `just peripheral android-*` compatibility recipes, and the Android-side tests that drive `android-resume`. It is test infrastructure, not an Android Central backend and not a BleHub product capability.
 
 The app is deliberately small:
 
@@ -34,6 +34,8 @@ pixi run just peripheral android-start
 ```
 
 `peripheral android-start` builds the debug APK and uses the Android CLI to deploy and launch it on the selected physical device with runtime permissions granted. It exits successfully only after the Activity acknowledges that advertising reached `ADVERTISING`; the host retries the transient asynchronous `STARTING` state for up to five seconds. The UI starts advertising automatically and exposes Start, Stop, Notify, Indicate, Disconnect, and Status buttons.
+
+Some OEM ROMs (observed on the OnePlus/ColorOS device `3ac5cc09`) replace the standard package-installer dialog with an enhanced-protection screen that a non-interactive `adb install` cannot drive. When `adb install` times out, the provider fails over to the same rooted `push` + `pm install -r -g` path the instrumentation tooling already uses, and reports `android_install_fallback=root`. The fallback stays fail-closed: without `adb shell su` exposing uid 0 the original timeout error is raised, and a root install that does not print `Success` fails instead of being reported as ready.
 
 The Android-specific advertised service is:
 
@@ -108,9 +110,9 @@ The expected evidence is:
 
 This is a real-RF test. Before running it, identify the DUT, confirm the Android fixture is advertising, and reserve the physical devices/controller. A missing or misconfigured fixture is infrastructure unavailable, not a BleHub backend failure.
 
-## Production Windows backend notification smoke
+## Historical Windows backend notification smoke
 
-The production `WindowsBackend` path uses the Android-specific service UUID so it remains isolated while the QEMU fixture advertises its `FFE0...` profile:
+The archived `WindowsBackend` path historically used the Android-specific service UUID so it remained isolated while the QEMU fixture advertised its `FFE0...` profile. This is historical compatibility evidence, not an active gate:
 
 ```sh
 pixi run just peripheral android-start

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "fetched_at_utc": "2026-08-30T10:09:00+00:00",
+  "fetched_at_utc": "2026-11-02T17:19:02+00:00",
   "generator": "tools/update_platform_docs.py",
   "files": [
     {
@@ -170,7 +170,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/advertisement-data-retrieval-keys.md",
       "local_path": "apple/advertisement-data-retrieval-keys.md",
-      "sha256": "6e482bba38a977e821a0adfeec1b481b82486716623d79e5eda7b38414b4b71f",
+      "sha256": "aac424ebc01b95b8daead9c24923f8ef0b22053e5edf07bf5345c25990cfd71b",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -240,7 +240,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbattribute.md",
       "local_path": "apple/cbattribute.md",
-      "sha256": "ecaf82f4cb42a9bc5ab74311948cb2ded4ce95abdfe13025d621b324d138dd86",
+      "sha256": "4058b0756f20bc17837ef8a2903ad6c0c71d07317e30a981257d27e077d1bdde",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -290,7 +290,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbcentralmanager.md",
       "local_path": "apple/cbcentralmanager.md",
-      "sha256": "1ff65193b6b9ec92faa6ba9860275b1631bee45918c6e52396a40af4de063314",
+      "sha256": "3c9084c391a24f6fd73b8d4751ed398a601361b0c2935ed7a477202268c3a996",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -310,7 +310,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbcentralmanagerdelegate.md",
       "local_path": "apple/cbcentralmanagerdelegate.md",
-      "sha256": "0b29a38729a8381917b5ee1a3ad7ad478e75153847dd2d3623c6c6bbaae4d361",
+      "sha256": "55b53223a90bd9241d8481e9af6f40bfa6f019dcec15bd41c5ed17f7797de507",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -340,7 +340,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbcharacteristic/isnotifying.md",
       "local_path": "apple/cbcharacteristic-isnotifying.md",
-      "sha256": "8d282021d417556d82cecc26c242a97d093b372a2fa1df155d7031d59257f009",
+      "sha256": "ec3c2a5d8bbd0c13ff3651c8edf75d269dc9b5d6f00d59063cbf8ee758197b5c",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -370,7 +370,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbcharacteristic.md",
       "local_path": "apple/cbcharacteristic.md",
-      "sha256": "a37077a009a00e98240b9f1b88a2b22d6452d907094cae114f334d46416bb8ee",
+      "sha256": "0655162d10e56daec66c4d9c414aeabb007245ca8340936c2b2feb71ee9527f6",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -380,7 +380,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbcharacteristicproperties.md",
       "local_path": "apple/cbcharacteristicproperties.md",
-      "sha256": "44b445f3239679e7544f4a9144b85c7bb30e241ac93596a8d7d866bfc5a4da8c",
+      "sha256": "1ce3ae829d6ad6ddee66f74ad4100806c3d7c4389a476d0462fd66f5fbf45ec7",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -390,7 +390,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbcharacteristicwritetype.md",
       "local_path": "apple/cbcharacteristicwritetype.md",
-      "sha256": "2b6bc1e4703d8d8d2710d0398c91a8d4c9548f7ab5b9d0727ab72e7b673a8e38",
+      "sha256": "d784d76da669fee9085aecf1e26fe5db410774e145c663d6fae43a344c1a7189",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -400,7 +400,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbdescriptor.md",
       "local_path": "apple/cbdescriptor.md",
-      "sha256": "e2c8a1774c25629c7e3bbdbdd093d5f040c2cdd140a30e280e236483ae5552ea",
+      "sha256": "4b07a8a58ddff4aa6f129fdb69803b99500416984eed4b84ec24c57507d7b0dc",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -410,7 +410,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbmanager.md",
       "local_path": "apple/cbmanager.md",
-      "sha256": "01fb7c4f8fb973cae02429457560c642e23f0177b308e36a97d22b9395774516",
+      "sha256": "1310075bfe0354faab277a2570bf249e931f6f71a76e7ac7f06f18864ea4bbfd",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -430,7 +430,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbpeer.md",
       "local_path": "apple/cbpeer.md",
-      "sha256": "29b8f85ef3821cfede17bbca9a2886c539040a702e1cb8a5a241968430dc2b75",
+      "sha256": "d73f9cb8cd167a1100111faaafd9d6d531c3d6de4f0cff94c0f506966b629313",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -510,7 +510,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbperipheral/setnotifyvalue(_:for:).md",
       "local_path": "apple/cbperipheral-setnotifyvalue.md",
-      "sha256": "f9c7723c3fd7abe38bdccfd48099b8ca433c67dbd86cc62417f7f1555a287f01",
+      "sha256": "5730338c40cb7b4cecb0073d6ff17f3582cbf139e845622d3b1feecd73a529b5",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -530,7 +530,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbperipheral.md",
       "local_path": "apple/cbperipheral.md",
-      "sha256": "9a18f26b8ace2a9785e8511a5c86347039a13b406fd32bfc7de91a3b5cc8965d",
+      "sha256": "4ddef4822d766fd8e3fd4c08cd200902939aa01fac87e4f5306f082eacc66a1e",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -630,7 +630,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbperipheraldelegate.md",
       "local_path": "apple/cbperipheraldelegate.md",
-      "sha256": "330fb67dde39c6ddc4f887a8ccdd5fb93f95db5681ee930944ac063c6fc1ef60",
+      "sha256": "a378ba668ad39594f8ba92bd5b4d9c70210614499b4803b2e07f36e5b59087a5",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -670,7 +670,7 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/cbservice.md",
       "local_path": "apple/cbservice.md",
-      "sha256": "689b87dd199f61cb823326f0ee4ee65ad1d1edff5b4072e29f973ad9bf0924d8",
+      "sha256": "4adb26015aae3ff4faab7138c7e172af9a8475a66e375d8d48b93cbbdebd97f2",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
@@ -680,15 +680,15 @@
       "revision": "live-snapshot",
       "source_url": "https://developer.apple.com/documentation/corebluetooth/peripheral-scanning-options.md",
       "local_path": "apple/peripheral-scanning-options.md",
-      "sha256": "de2a4c29e66ae4d0f721ea6d9818e26060bda3b4fc92a192ad8db16200eb2749",
+      "sha256": "7baace1e66d1ab981e633e1ca1900d35d13aa5e7de84c8b33c5080379c79562f",
       "upstream_terms_note": "Apple Developer documentation terms and applicable Apple terms apply. This live snapshot does not grant or alter any upstream rights."
     },
     {
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.Adapter.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.Adapter.rst",
       "local_path": "bluez/org.bluez.Adapter.rst",
       "sha256": "3f9ed0e7f837ce8b00cf6e3ef814c21a3beb1999fd30c4f28225aa6b2246b196",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
@@ -697,18 +697,18 @@
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.Device.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.Device.rst",
       "local_path": "bluez/org.bluez.Device.rst",
-      "sha256": "51440787d2064e344223c556a13108af7f7647a369e7aaee86bdafd528b27f6d",
+      "sha256": "1c18ffb33c4539e9873382b795d61b85b70c621b5cb8db7e4887733c8223d92c",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
     },
     {
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.GattCharacteristic.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.GattCharacteristic.rst",
       "local_path": "bluez/org.bluez.GattCharacteristic.rst",
       "sha256": "3fb3cf4b511a9048751b2c296a188457f7a03c10d6bad845f8ce63e8a69bf39c",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
@@ -717,8 +717,8 @@
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.GattDescriptor.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.GattDescriptor.rst",
       "local_path": "bluez/org.bluez.GattDescriptor.rst",
       "sha256": "ebe910e9e9c64a0bed2a1fa4a927c03709f7782240d1d6110d8bc2811529e65a",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
@@ -727,8 +727,8 @@
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.GattManager.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.GattManager.rst",
       "local_path": "bluez/org.bluez.GattManager.rst",
       "sha256": "4709f1c2b9842e82d5906861ca100af60404d42972a8db104e03dfe803c850e5",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
@@ -737,8 +737,8 @@
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.GattProfile.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.GattProfile.rst",
       "local_path": "bluez/org.bluez.GattProfile.rst",
       "sha256": "68acde8327856fcc9ced3d66248efd0e98afdadb946084969cede53588e037a2",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
@@ -747,8 +747,8 @@
       "platform": "bluez",
       "source_name": "GitHub repository bluez/bluez",
       "source_kind": "official BlueZ D-Bus API documentation source",
-      "revision": "e8141342284be2a52e16565b96b513ebe1297d84",
-      "source_url": "https://raw.githubusercontent.com/bluez/bluez/e8141342284be2a52e16565b96b513ebe1297d84/doc/org.bluez.GattService.rst",
+      "revision": "14bd6ab65f4a647302edbd6df27f6faa91bee8a8",
+      "source_url": "https://raw.githubusercontent.com/bluez/bluez/14bd6ab65f4a647302edbd6df27f6faa91bee8a8/doc/org.bluez.GattService.rst",
       "local_path": "bluez/org.bluez.GattService.rst",
       "sha256": "7ba10efca1ae9ba7405dad395a35fb8ab2c16ed52df8d640912946436eb357cd",
       "upstream_terms_note": "See the bluez/bluez repository COPYING and per-file notices. This snapshot does not alter upstream licensing. Resolved from default branch 'master'."
@@ -757,8 +757,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothadapter.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothadapter.md",
       "local_path": "windows/bluetoothadapter.md",
       "sha256": "fc1fd74d418e714c1b66fcc66ed07e32852876a7546f4fb13bfdadbfdc139ce9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -767,8 +767,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothadapter_getdefaultasync_1549573963.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothadapter_getdefaultasync_1549573963.md",
       "local_path": "windows/bluetoothadapter_getdefaultasync_1549573963.md",
       "sha256": "c65e5f4acd96fbb4609a21971b64e6ead11912e88eae129d45469897843236e3",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -777,8 +777,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothadapter_getradioasync_1950748834.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothadapter_getradioasync_1950748834.md",
       "local_path": "windows/bluetoothadapter_getradioasync_1950748834.md",
       "sha256": "a93e567f0b3b2fb3029ff4af2eb194cc24be89b0bb61b6bb1a074a4ea98adaea",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -787,8 +787,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothadapter_iscentralrolesupported.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothadapter_iscentralrolesupported.md",
       "local_path": "windows/bluetoothadapter_iscentralrolesupported.md",
       "sha256": "9bac847cda2cde2e1a08c9ad698af00d5b51fe33da047ccd787f1f9ea01a1dd2",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -797,8 +797,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothadapter_islowenergysupported.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothadapter_islowenergysupported.md",
       "local_path": "windows/bluetoothadapter_islowenergysupported.md",
       "sha256": "02ab013e3b13a5e1abd828990f382cb7038731715ea4ca150621c4b22e982218",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -807,8 +807,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothcachemode.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothcachemode.md",
       "local_path": "windows/bluetoothcachemode.md",
       "sha256": "95b7e1323031186d0480f01b350535dfaa50d30a204d4640e4d4c1541d0b9edb",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -817,8 +817,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisement.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisement.md",
       "local_path": "windows/bluetoothleadvertisement.md",
       "sha256": "87b58e344b4fba4454a52ef479d0481cb35c418544e567acd9f7981273a28899",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -827,8 +827,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_datasections.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_datasections.md",
       "local_path": "windows/bluetoothleadvertisement_datasections.md",
       "sha256": "835a45cbdcfcdce485785c80d30f991b91b1df4062cdeaae4c676890aa0d8e53",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -837,8 +837,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_localname.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_localname.md",
       "local_path": "windows/bluetoothleadvertisement_localname.md",
       "sha256": "6a4923be43f65af1fc0b0885add93dafbdece1c415506b5107b4dab9894098f1",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -847,8 +847,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_manufacturerdata.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_manufacturerdata.md",
       "local_path": "windows/bluetoothleadvertisement_manufacturerdata.md",
       "sha256": "379db44352e0b1315ab23f7e402c9e89e13a1a7f31e5db26618f555acece50c5",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -857,8 +857,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_serviceuuids.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisement_serviceuuids.md",
       "local_path": "windows/bluetoothleadvertisement_serviceuuids.md",
       "sha256": "0a67e2d84ab226bc0896e072407d22afe5a050cbfbde3bd3c1c05e63cd48c2ed",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -867,8 +867,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatasection.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatasection.md",
       "local_path": "windows/bluetoothleadvertisementdatasection.md",
       "sha256": "b0cec1d0c4a5a6fe77af5f043f63caa4d018bfe95e08b27538bbcd71230931a9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -877,8 +877,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatasection_data.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatasection_data.md",
       "local_path": "windows/bluetoothleadvertisementdatasection_data.md",
       "sha256": "163a4ef9a46effbb912659cc5e9a921b5a50711c99d8ca3368ee066a96b95ed0",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -887,8 +887,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatasection_datatype.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatasection_datatype.md",
       "local_path": "windows/bluetoothleadvertisementdatasection_datatype.md",
       "sha256": "f847b237825d550b6dbda1b3b0539635b6616830a3f4fb493b62fb522f411a56",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -897,8 +897,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatatypes_servicedata128bituuids.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatatypes_servicedata128bituuids.md",
       "local_path": "windows/bluetoothleadvertisementdatatypes_servicedata128bituuids.md",
       "sha256": "76fbdd57fe4c4b60fbf3d36650eb8455a43e0c780d205f39d8a6628b3b1190a4",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -907,8 +907,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatatypes_servicedata16bituuids.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatatypes_servicedata16bituuids.md",
       "local_path": "windows/bluetoothleadvertisementdatatypes_servicedata16bituuids.md",
       "sha256": "775e5afd0df84eb5f318c3ffeb1e3749ecf39b7f6f6f84c9bf5c590f886b4ac5",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -917,8 +917,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatatypes_servicedata32bituuids.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementdatatypes_servicedata32bituuids.md",
       "local_path": "windows/bluetoothleadvertisementdatatypes_servicedata32bituuids.md",
       "sha256": "90f54aaf20ba21f1b002f72ac9c4b725a2c8cb6589509739aad0e101ebbcb080",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -927,8 +927,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs.md",
       "local_path": "windows/bluetoothleadvertisementreceivedeventargs.md",
       "sha256": "703b46f19fe768c11f3316992420151b12c21ef662b0c9c9cf168fd4a85ce553",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -937,8 +937,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_advertisement.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_advertisement.md",
       "local_path": "windows/bluetoothleadvertisementreceivedeventargs_advertisement.md",
       "sha256": "efc908525dcf2672cfe2a52b84c35f49842533c805caa16f441f06a0d90212bf",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -947,8 +947,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_isconnectable.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_isconnectable.md",
       "local_path": "windows/bluetoothleadvertisementreceivedeventargs_isconnectable.md",
       "sha256": "93a7d5e27afaf2221e6e029db74c256713974966b67d2a1b0857e65dbb50e0a6",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -957,8 +957,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_isscanresponse.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_isscanresponse.md",
       "local_path": "windows/bluetoothleadvertisementreceivedeventargs_isscanresponse.md",
       "sha256": "f1d1a3000b4fe9caa72b3c573424f8f9110494ae1e028e1c1d6e793fa1b981d8",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -967,8 +967,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_rawsignalstrengthindbm.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_rawsignalstrengthindbm.md",
       "local_path": "windows/bluetoothleadvertisementreceivedeventargs_rawsignalstrengthindbm.md",
       "sha256": "830f474bf363821b99d5f1b29f432755e871fe3d36d5c85d09c502761df668c8",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -977,8 +977,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_timestamp.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementreceivedeventargs_timestamp.md",
       "local_path": "windows/bluetoothleadvertisementreceivedeventargs_timestamp.md",
       "sha256": "91318bccd9f2ba6152acd869dd51fd69dbd40b073c71dc0b9c98275f5839eef3",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -987,8 +987,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher.md",
       "local_path": "windows/bluetoothleadvertisementwatcher.md",
       "sha256": "d43f797f9687e88b739dbdda3be5279b8d9f32fbe0b9bfeeb34c425fcaa575b1",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -997,8 +997,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_start_1587696324.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_start_1587696324.md",
       "local_path": "windows/bluetoothleadvertisementwatcher_start_1587696324.md",
       "sha256": "df52869a5652998832ac4d0cc1569a38626cefd29f90f75b9ad03623fc6bf534",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1007,8 +1007,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_status.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_status.md",
       "local_path": "windows/bluetoothleadvertisementwatcher_status.md",
       "sha256": "032a9716c1de7156ffec0b44bccc703fdda4961c388cc6b040e82c876668215d",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1017,8 +1017,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_stop_1201535524.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_stop_1201535524.md",
       "local_path": "windows/bluetoothleadvertisementwatcher_stop_1201535524.md",
       "sha256": "f033c4bd052529fc5767e057ac0ce2d841a6766547deb4b31fa54f4a099750c6",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1027,8 +1027,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_stopped.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcher_stopped.md",
       "local_path": "windows/bluetoothleadvertisementwatcher_stopped.md",
       "sha256": "f4bc9dddfce3ca42e97ce51bd531a60cd5f933e84228453e2ac94329e9c37ff3",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1037,8 +1037,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcherstatus.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothleadvertisementwatcherstatus.md",
       "local_path": "windows/bluetoothleadvertisementwatcherstatus.md",
       "sha256": "2260219e0de5bcd84cb0424ccc6ae5388dea5688e7cc456b761abec79717124c",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1047,8 +1047,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice.md",
       "local_path": "windows/bluetoothledevice.md",
       "sha256": "71367c9536a0f99c7073b2db0f33b540f3e71dce54d38ca9c48c47f5013156e8",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1057,8 +1057,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice_close_811482585.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice_close_811482585.md",
       "local_path": "windows/bluetoothledevice_close_811482585.md",
       "sha256": "1f907c49e49bfa8258ca3a17c5fad4a3a22f45bd6c422dda1dd071e74faecaa3",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1067,8 +1067,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice_connectionstatus.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice_connectionstatus.md",
       "local_path": "windows/bluetoothledevice_connectionstatus.md",
       "sha256": "8f7d9169a540305cc64733500e241923818b44ac63265d4d60792d2fce744764",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1077,8 +1077,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice_connectionstatuschanged.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice_connectionstatuschanged.md",
       "local_path": "windows/bluetoothledevice_connectionstatuschanged.md",
       "sha256": "b367f46d787efe4cad4c8364c6f026e1694321755033b46373be60409b54752a",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1087,8 +1087,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice_fromidasync_1322863552.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice_fromidasync_1322863552.md",
       "local_path": "windows/bluetoothledevice_fromidasync_1322863552.md",
       "sha256": "737abe2c08544a9b1eef4e0bad3bef5f1ce7ed7436209e1149fa11aaaf870bb6",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1097,8 +1097,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice_getgattservicesasync_1174771000.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice_getgattservicesasync_1174771000.md",
       "local_path": "windows/bluetoothledevice_getgattservicesasync_1174771000.md",
       "sha256": "8ce76ea539a61c27797d9f8f4fd99511171b8da49ea3c53733e848144ff6ee9f",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1107,8 +1107,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth/bluetoothledevice_getgattservicesasync_220222675.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth/bluetoothledevice_getgattservicesasync_220222675.md",
       "local_path": "windows/bluetoothledevice_getgattservicesasync_220222675.md",
       "sha256": "639bfe91e51b446335bafd96c4b492a4e92aac7cf7d4b2dd16e0bc33c2ceb2fc",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1117,8 +1117,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothlemanufacturerdata.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothlemanufacturerdata.md",
       "local_path": "windows/bluetoothlemanufacturerdata.md",
       "sha256": "c707278663f8fabef0a11de52ffdc055086781e4971f5bedd6a6ed0c11c1cb10",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1127,8 +1127,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothlemanufacturerdata_companyid.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothlemanufacturerdata_companyid.md",
       "local_path": "windows/bluetoothlemanufacturerdata_companyid.md",
       "sha256": "0becf021219db0e970ba5fbee21d87250b852b51c4f42dee3f6c5ffc72b7ac08",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1137,8 +1137,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.advertisement/bluetoothlemanufacturerdata_data.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.advertisement/bluetoothlemanufacturerdata_data.md",
       "local_path": "windows/bluetoothlemanufacturerdata_data.md",
       "sha256": "762ab14d25735ad20511cdaf2dfe2582bef4e7a91ddae23149b03877995412c9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1147,8 +1147,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic.md",
       "local_path": "windows/gattcharacteristic.md",
       "sha256": "415b108dc08b2166dbe1e2db18348db8ea01ac292cf84eda74640220aa58e113",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1157,8 +1157,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_characteristicproperties.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_characteristicproperties.md",
       "local_path": "windows/gattcharacteristic_characteristicproperties.md",
       "sha256": "15f0327e13b2a4a0b90ace86e96190e40d84dd367da2109201e5840f036124e7",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1167,8 +1167,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_getdescriptorsasync_1141906880.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_getdescriptorsasync_1141906880.md",
       "local_path": "windows/gattcharacteristic_getdescriptorsasync_1141906880.md",
       "sha256": "932ef82af0113d3b0e482f7f1f1d9dfc23b85549c9b7edc50219ba6523b999b6",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1177,8 +1177,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_getdescriptorsasync_255188005.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_getdescriptorsasync_255188005.md",
       "local_path": "windows/gattcharacteristic_getdescriptorsasync_255188005.md",
       "sha256": "bb6950d3a65f6be3dc0799ac9de10ecb9a6e4a08a28b477892889ce79c94fdc1",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1187,8 +1187,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_readvalueasync_2134129157.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_readvalueasync_2134129157.md",
       "local_path": "windows/gattcharacteristic_readvalueasync_2134129157.md",
       "sha256": "edf4303baf2cf5123ea8fc8d53fcfd1bfd015489591140b199132926a9c683c1",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1197,8 +1197,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_readvalueasync_873593826.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_readvalueasync_873593826.md",
       "local_path": "windows/gattcharacteristic_readvalueasync_873593826.md",
       "sha256": "d2a9d2da7bd5b373147b742700dbc18f75bb84874226749327863bfe66f3054a",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1207,8 +1207,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_uuid.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_uuid.md",
       "local_path": "windows/gattcharacteristic_uuid.md",
       "sha256": "6e38a24bd96a93bef12adc16d787bb2f66c6fe391e9a6dbf3095e273ee5282d1",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1217,8 +1217,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_valuechanged.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_valuechanged.md",
       "local_path": "windows/gattcharacteristic_valuechanged.md",
       "sha256": "698536fc5f78cc5d82ddf0d36905b35dc791740dc9824b1a614f1e2283a4cb8c",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1227,8 +1227,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writeclientcharacteristicconfigurationdescriptorwithresultasync_2005787286.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writeclientcharacteristicconfigurationdescriptorwithresultasync_2005787286.md",
       "local_path": "windows/gattcharacteristic_writeclientcharacteristicconfigurationdescriptorwithresultasync_2005787286.md",
       "sha256": "8aacb30f58d60046b0015c7ceedc01531769190be84ccb30afbeee63ff9b1e80",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1237,8 +1237,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevalueasync_1609109153.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevalueasync_1609109153.md",
       "local_path": "windows/gattcharacteristic_writevalueasync_1609109153.md",
       "sha256": "397bd44534fbc3cbff3882f8a979e529436db06a399df6e34d0625ed5b99dd23",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1247,8 +1247,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevalueasync_991358569.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevalueasync_991358569.md",
       "local_path": "windows/gattcharacteristic_writevalueasync_991358569.md",
       "sha256": "b7def8c0e6d8b4d2625290aa2f0c11c5fc641ebee1629fb1cf62143cb60bc674",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1257,8 +1257,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevaluewithresultasync_2074671654.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevaluewithresultasync_2074671654.md",
       "local_path": "windows/gattcharacteristic_writevaluewithresultasync_2074671654.md",
       "sha256": "dc6452a607e9dd8d6b663eb9a4f6f01302c0f327d4c79d0c2b8cf0af60831ec1",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1267,8 +1267,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevaluewithresultasync_525802224.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristic_writevaluewithresultasync_525802224.md",
       "local_path": "windows/gattcharacteristic_writevaluewithresultasync_525802224.md",
       "sha256": "83bda3b22e690f933637cfd4b81d4e2d8c68728dfe004b9e6410196a9d2a8d93",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1277,8 +1277,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicproperties.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicproperties.md",
       "local_path": "windows/gattcharacteristicproperties.md",
       "sha256": "9731988a369d609fdf26e34b7b1442b756bcd5272c021ce53f1547fd2bad474b",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1287,8 +1287,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult.md",
       "local_path": "windows/gattcharacteristicsresult.md",
       "sha256": "55bb95877b5a88d953f2723c6a24ac97583f68ee91f745e5f92daa59cd47c7be",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1297,8 +1297,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult_characteristics.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult_characteristics.md",
       "local_path": "windows/gattcharacteristicsresult_characteristics.md",
       "sha256": "cd681afe92e51be41851e2ddf8410f0fc2353347367bcd1ab4fce99c744a2369",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1307,8 +1307,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult_protocolerror.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult_protocolerror.md",
       "local_path": "windows/gattcharacteristicsresult_protocolerror.md",
       "sha256": "0290466cf4865facba898c454180db26ffb6997971962720416d812568f8b702",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1317,8 +1317,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult_status.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcharacteristicsresult_status.md",
       "local_path": "windows/gattcharacteristicsresult_status.md",
       "sha256": "5bae89a8da5bfd2883b2fc55ebeab68ede905d957f9801f1abe54da4be5e59e9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1327,8 +1327,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattclientcharacteristicconfigurationdescriptorvalue.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattclientcharacteristicconfigurationdescriptorvalue.md",
       "local_path": "windows/gattclientcharacteristicconfigurationdescriptorvalue.md",
       "sha256": "516f3ad5fce1d2887d5d194551c92b472b984fbda2e7abfa9252c2e8d565be71",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1337,8 +1337,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattcommunicationstatus.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattcommunicationstatus.md",
       "local_path": "windows/gattcommunicationstatus.md",
       "sha256": "c4b1d2a2543255638812ba402d443c6bcff01717e4db9b07fa9957ebe58b9052",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1347,8 +1347,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptor.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptor.md",
       "local_path": "windows/gattdescriptor.md",
       "sha256": "c02961c001c2d4b2ef615c7490b5040d30f7d26c394e7885d43a72bfc42f2ae8",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1357,8 +1357,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_readvalueasync_2134129157.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_readvalueasync_2134129157.md",
       "local_path": "windows/gattdescriptor_readvalueasync_2134129157.md",
       "sha256": "e1a21917aeabfc6263297da4b60aa80084fa1f13f0bd6843bfb0de0c066b64c9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1367,8 +1367,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_readvalueasync_873593826.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_readvalueasync_873593826.md",
       "local_path": "windows/gattdescriptor_readvalueasync_873593826.md",
       "sha256": "5b9c2e7a25a47d9f420ae3e91e841f57a8b737fbe5a5a2edcc85db8593bf116d",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1377,8 +1377,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_uuid.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_uuid.md",
       "local_path": "windows/gattdescriptor_uuid.md",
       "sha256": "38ffea6f4216d5c155046642e900318a272290e7141f81c427fe93ab61004099",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1387,8 +1387,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_writevalueasync_1609109153.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptor_writevalueasync_1609109153.md",
       "local_path": "windows/gattdescriptor_writevalueasync_1609109153.md",
       "sha256": "f05bbee3552fe50bfb0a560cc787d993cf70dd674e918d4d74e20b1392853a9c",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1397,8 +1397,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult.md",
       "local_path": "windows/gattdescriptorsresult.md",
       "sha256": "7a41470194470dd27363af203bd52a722242bfe28700cf223ef1fac167fb3895",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1407,8 +1407,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult_descriptors.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult_descriptors.md",
       "local_path": "windows/gattdescriptorsresult_descriptors.md",
       "sha256": "d7cd7599d3d789b2659d0641eee126ed6f220fab02917e32032ba4f27520771f",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1417,8 +1417,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult_protocolerror.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult_protocolerror.md",
       "local_path": "windows/gattdescriptorsresult_protocolerror.md",
       "sha256": "8372151a6ccff56b730e7e92bc840efbddc9cdd331f3e08f35f5d137acd1f5e9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1427,8 +1427,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult_status.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdescriptorsresult_status.md",
       "local_path": "windows/gattdescriptorsresult_status.md",
       "sha256": "104f39ddbb91077a030e68c8993f013908a80f0cbe0e349ed0f300c5baa77c2f",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1437,8 +1437,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice.md",
       "local_path": "windows/gattdeviceservice.md",
       "sha256": "2513fd98e07d6f43e669541d8c7cbbc251165e6d01675a5c3902b03c0ca5ced4",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1447,8 +1447,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getcharacteristicsasync_1845166286.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getcharacteristicsasync_1845166286.md",
       "local_path": "windows/gattdeviceservice_getcharacteristicsasync_1845166286.md",
       "sha256": "ee9a8008b07b6d893a4fea12047cf77f47a473aecaefb67f7d30faf501a9e535",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1457,8 +1457,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getcharacteristicsasync_652132649.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getcharacteristicsasync_652132649.md",
       "local_path": "windows/gattdeviceservice_getcharacteristicsasync_652132649.md",
       "sha256": "fea6be2a0ee7136cf32c45160eaedcacc06fee84a76acf7772824d6b2a9b9d67",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1467,8 +1467,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getincludedservicesasync_1443434351.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getincludedservicesasync_1443434351.md",
       "local_path": "windows/gattdeviceservice_getincludedservicesasync_1443434351.md",
       "sha256": "7624b8e27cece4782a256f3b94571dc43c2d962f861cc809918aac2ca0d1e552",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1477,8 +1477,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getincludedservicesasync_489475724.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_getincludedservicesasync_489475724.md",
       "local_path": "windows/gattdeviceservice_getincludedservicesasync_489475724.md",
       "sha256": "0867748adb0ec8cdb4cef87669810350d309dd10e121bf8104888e8cdab9f660",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1487,8 +1487,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_uuid.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservice_uuid.md",
       "local_path": "windows/gattdeviceservice_uuid.md",
       "sha256": "85f1d6315a80ed4a865c9fa7266937420006440d96f2e440571213a2dcd9fc3a",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1497,8 +1497,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult.md",
       "local_path": "windows/gattdeviceservicesresult.md",
       "sha256": "bc0bc77828f58412bb2b8c731c55ce2793654da414d89767590f663fffb89183",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1507,8 +1507,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult_protocolerror.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult_protocolerror.md",
       "local_path": "windows/gattdeviceservicesresult_protocolerror.md",
       "sha256": "bf05d2d37dca71b4520a2767d9c2ef9140f7704c53203d8a32495917462dc941",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1517,8 +1517,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult_services.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult_services.md",
       "local_path": "windows/gattdeviceservicesresult_services.md",
       "sha256": "926f00efa155c1f21b041694bede7f3aeb515a11e0f5235fa52489f41c6df68c",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1527,8 +1527,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult_status.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattdeviceservicesresult_status.md",
       "local_path": "windows/gattdeviceservicesresult_status.md",
       "sha256": "756ca39b58f6dcb766545307e7273d29b92a5dd43b6bb0e9c5992fb86bdff60c",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1537,8 +1537,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattreadresult.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattreadresult.md",
       "local_path": "windows/gattreadresult.md",
       "sha256": "c28241c8b02c350e36e78fc29684a58614298770c5e036a7ee2c6c2662e349ca",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1547,8 +1547,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattreadresult_protocolerror.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattreadresult_protocolerror.md",
       "local_path": "windows/gattreadresult_protocolerror.md",
       "sha256": "a6d1034f385bcdd21bf2107ab2868b6f2ae49b8253a5686cceae695018e60fcc",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1557,8 +1557,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattreadresult_status.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattreadresult_status.md",
       "local_path": "windows/gattreadresult_status.md",
       "sha256": "02aa2aa93ff225216c3e4a0c43cbd7eea078e46f3e351373cb86a46abc913dec",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1567,8 +1567,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattreadresult_value.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattreadresult_value.md",
       "local_path": "windows/gattreadresult_value.md",
       "sha256": "ee5e18eae94d8435883f63853ff2994dcd0e7c020a497ecd4df9a9427cf6a236",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1577,8 +1577,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattsession.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattsession.md",
       "local_path": "windows/gattsession.md",
       "sha256": "58b721b9f67e68547606cdba48ee011a604656edf5446ecc6707b368aef1e1e9",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1587,8 +1587,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattsession_close_811482585.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattsession_close_811482585.md",
       "local_path": "windows/gattsession_close_811482585.md",
       "sha256": "966b02484d185e5436a62eaf1647251f51faa033d38364e09953796a481ec78d",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1597,8 +1597,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattvaluechangedeventargs.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattvaluechangedeventargs.md",
       "local_path": "windows/gattvaluechangedeventargs.md",
       "sha256": "32c134409dcb48d725203e4ba5eef964f7242c013550023cc345132d8aa0ec19",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1607,8 +1607,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattvaluechangedeventargs_characteristicvalue.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattvaluechangedeventargs_characteristicvalue.md",
       "local_path": "windows/gattvaluechangedeventargs_characteristicvalue.md",
       "sha256": "cccc9fed2964ee3ff4dc2244a6d621bd802fac083f8e6f3afd988c4a75961cc7",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1617,8 +1617,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattvaluechangedeventargs_timestamp.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattvaluechangedeventargs_timestamp.md",
       "local_path": "windows/gattvaluechangedeventargs_timestamp.md",
       "sha256": "b1f3dcc0266274493dd898d8391689e7682db18ae3c28f827f8ce06433332468",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1627,8 +1627,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattwriteoption.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattwriteoption.md",
       "local_path": "windows/gattwriteoption.md",
       "sha256": "cfea745bd76f02d80b1af7825b2183103cd00ac8a2ba5549ea556d296a2873dc",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1637,8 +1637,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattwriteresult.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattwriteresult.md",
       "local_path": "windows/gattwriteresult.md",
       "sha256": "2dfa01b2bff20066464873e8471b15c26e266af47336d4cbc7c20f2540f9d397",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1647,8 +1647,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattwriteresult_protocolerror.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattwriteresult_protocolerror.md",
       "local_path": "windows/gattwriteresult_protocolerror.md",
       "sha256": "fbd11448448ba7ae9b6b0251e5e2e8bba61cef4a84c338942604f2047a13cb18",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1657,8 +1657,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.bluetooth.genericattributeprofile/gattwriteresult_status.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.bluetooth.genericattributeprofile/gattwriteresult_status.md",
       "local_path": "windows/gattwriteresult_status.md",
       "sha256": "c352486d8977162d01327eb600b92c4400ed978e1391e4f525c7a4c24232e35e",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1667,8 +1667,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radio.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radio.md",
       "local_path": "windows/radio.md",
       "sha256": "64e1ae5f21a515ba88527856f77681e934b33f8bd8708d0a5bb73e7256602231",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1677,8 +1677,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radio_requestaccessasync_380675631.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radio_requestaccessasync_380675631.md",
       "local_path": "windows/radio_requestaccessasync_380675631.md",
       "sha256": "eebbfb49812a3ef5b9c9d53da3954334930155e8b75b268595393643ca554332",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1687,8 +1687,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radio_state.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radio_state.md",
       "local_path": "windows/radio_state.md",
       "sha256": "baf9c5dc02987ecec525dd6cb690159962fcc9c1514bb850db53afc984dc5e24",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1697,8 +1697,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radio_statechanged.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radio_statechanged.md",
       "local_path": "windows/radio_statechanged.md",
       "sha256": "2c8c4c18d9557eb358d8fed94354a3eebdd1cd33ae6e7dd4ce1ea3e22ab2db59",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1707,8 +1707,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radioaccessstatus.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radioaccessstatus.md",
       "local_path": "windows/radioaccessstatus.md",
       "sha256": "43863b409350ec4cdadb9bc0313293af33092927ca41b722b29f795061bdfbb5",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1717,8 +1717,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radiokind.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radiokind.md",
       "local_path": "windows/radiokind.md",
       "sha256": "2ebd3ca7fc2a6a04e2156be30beebea4c2bac71346be123bfd5fb677355e1617",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."
@@ -1727,8 +1727,8 @@
       "platform": "windows",
       "source_name": "GitHub repository MicrosoftDocs/winrt-api",
       "source_kind": "official GitHub documentation source",
-      "revision": "62c96c5c687767fe9c2bbd939d621622fc96c8bd",
-      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/62c96c5c687767fe9c2bbd939d621622fc96c8bd/windows.devices.radios/radiostate.md",
+      "revision": "4c1e9164521785f82dc63ab57a5ee4644f9d1888",
+      "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/winrt-api/4c1e9164521785f82dc63ab57a5ee4644f9d1888/windows.devices.radios/radiostate.md",
       "local_path": "windows/radiostate.md",
       "sha256": "e546d8bc009ce6d0cd1fafae22c6932be33f1150d7d6ae467a1dbd8dfe64660b",
       "upstream_terms_note": "See the MicrosoftDocs/winrt-api repository LICENSE, Microsoft Learn terms, and notices. This snapshot does not alter upstream licensing."

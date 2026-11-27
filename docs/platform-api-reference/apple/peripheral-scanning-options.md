@@ -17,11 +17,11 @@ Keys used to pass options when scanning for peripherals.
 
 ### Constants
 
-[`CBCentralManagerScanOptionAllowDuplicatesKey`](/documentation/CoreBluetooth/CBCentralManagerScanOptionAllowDuplicatesKey)
+[`let CBCentralManagerScanOptionAllowDuplicatesKey: String`](/documentation/CoreBluetooth/CBCentralManagerScanOptionAllowDuplicatesKey)
 
 A Boolean value that specifies whether the scan should run without duplicate filtering.
 
-[`CBCentralManagerScanOptionSolicitedServiceUUIDsKey`](/documentation/CoreBluetooth/CBCentralManagerScanOptionSolicitedServiceUUIDsKey)
+[`let CBCentralManagerScanOptionSolicitedServiceUUIDsKey: String`](/documentation/CoreBluetooth/CBCentralManagerScanOptionSolicitedServiceUUIDsKey)
 
 An array of service UUIDs that you want to scan for.
 

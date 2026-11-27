@@ -41,25 +41,25 @@ The [`CBCentralManagerDelegate`](/documentation/CoreBluetooth/CBCentralManagerDe
 
 ### Monitoring Connections with Peripherals
 
-[`-  centralManager:didConnectPeripheral:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didConnect:))
+[`func centralManager(CBCentralManager, didConnect: CBPeripheral)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didConnect:))
 
 Tells the delegate that the central manager connected to a peripheral.
 
-[`-  centralManager:didDisconnectPeripheral:error:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didDisconnectPeripheral:error:))
+[`func centralManager(CBCentralManager, didDisconnectPeripheral: CBPeripheral, error: (any Error)?)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didDisconnectPeripheral:error:))
 
 Tells the delegate that the central manager disconnected from a peripheral.
 
-[`-  centralManager:didFailToConnectPeripheral:error:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didFailToConnect:error:))
+[`func centralManager(CBCentralManager, didFailToConnect: CBPeripheral, error: (any Error)?)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didFailToConnect:error:))
 
 Tells the delegate the central manager failed to create a connection with a peripheral.
 
-[`-  centralManager:connectionEventDidOccur:forPeripheral:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:connectionEventDidOccur:for:))
+[`func centralManager(CBCentralManager, connectionEventDidOccur: CBConnectionEvent, for: CBPeripheral)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:connectionEventDidOccur:for:))
 
 Tells the delegate that a connection event occurred which matches the registered options.
 
 ### Discovering and Retrieving Peripherals
 
-[`-  centralManager:didDiscoverPeripheral:advertisementData:RSSI:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didDiscover:advertisementData:rssi:))
+[`func centralManager(CBCentralManager, didDiscover: CBPeripheral, advertisementData: [String : Any], rssi: NSNumber)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didDiscover:advertisementData:rssi:))
 
 Tells the delegate the central manager discovered a peripheral while scanning for devices.
 
@@ -69,23 +69,23 @@ Keys used to specify items in a dictionary of peripheral advertisement data.
 
 ### Monitoring the Central Manager’s State
 
-[`-  centralManagerDidUpdateState:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManagerDidUpdateState(_:))
+[`func centralManagerDidUpdateState(CBCentralManager)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManagerDidUpdateState(_:))
 
 Tells the delegate the central manager’s state updated.
 
-[`-  centralManager:willRestoreState:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:willRestoreState:))
+[`func centralManager(CBCentralManager, willRestoreState: [String : Any])`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:willRestoreState:))
 
 Tells the delegate the system is about to restore the central manager.
 
 ### Monitoring the Central Manager’s Authorization
 
-[`-  centralManager:didUpdateANCSAuthorizationForPeripheral:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didUpdateANCSAuthorizationFor:))
+[`func centralManager(CBCentralManager, didUpdateANCSAuthorizationFor: CBPeripheral)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didUpdateANCSAuthorizationFor:))
 
 Tells the delegate the authorization status changed for a ANCS-requiring connected peripheral.
 
 ### Instance Methods
 
-[`-  centralManager:didDisconnectPeripheral:timestamp:isReconnecting:error:`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:))
+[`func centralManager(CBCentralManager, didDisconnectPeripheral: CBPeripheral, timestamp: CFAbsoluteTime, isReconnecting: Bool, error: (any Error)?)`](/documentation/CoreBluetooth/CBCentralManagerDelegate/centralManager(_:didDisconnectPeripheral:timestamp:isReconnecting:error:))
 
 ## Relationships
 

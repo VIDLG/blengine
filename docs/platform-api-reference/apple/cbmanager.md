@@ -37,55 +37,55 @@ class CBManager
 
 ### Accessing the Manager’s Properties
 
-[`state`](/documentation/CoreBluetooth/CBManager/state)
+[`var state: CBManagerState`](/documentation/CoreBluetooth/CBManager/state)
 
 The current state of the manager.
 
-[`CBManagerState`](/documentation/CoreBluetooth/CBManagerState)
+[`enum CBManagerState`](/documentation/CoreBluetooth/CBManagerState)
 
 The possible states of a Core Bluetooth manager.
 
 ### Determining Authorization State
 
-[`authorization`](/documentation/CoreBluetooth/CBManager/authorization-swift.type.property)
+[`class var authorization: CBManagerAuthorization`](/documentation/CoreBluetooth/CBManager/authorization-swift.type.property)
 
 The current authorization status for using Bluetooth.
 
-[`CBManagerAuthorization`](/documentation/CoreBluetooth/CBManagerAuthorization)
+[`enum CBManagerAuthorization`](/documentation/CoreBluetooth/CBManagerAuthorization)
 
 The current authorization state of a Core Bluetooth manager.
 
 ### Deprecated Properties
 
-[`authorization`](/documentation/CoreBluetooth/CBManager/authorization-swift.property)
+[`var authorization: CBManagerAuthorization`](/documentation/CoreBluetooth/CBManager/authorization-swift.property)
 
 The current authorization status for using Bluetooth.
 
 ## Relationships
 
-### Inherits From
+### Inherited By
 
-[`NSObject-swift.class`](/documentation/ObjectiveC/NSObject-swift.class)
+[`CBCentralManager`](/documentation/CoreBluetooth/CBCentralManager)
+
+[`CBPeripheralManager`](/documentation/CoreBluetooth/CBPeripheralManager)
 
 ### Conforms To
+
+[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
+
+[`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
 
 [`CVarArg`](/documentation/Swift/CVarArg)
 
 [`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
 
-[`Equatable`](/documentation/Swift/Equatable)
-
-[`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
-
-[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
-
 [`Hashable`](/documentation/Swift/Hashable)
 
-### Inherited By
+[`Equatable`](/documentation/Swift/Equatable)
 
-[`CBPeripheralManager`](/documentation/CoreBluetooth/CBPeripheralManager)
+### Inherits From
 
-[`CBCentralManager`](/documentation/CoreBluetooth/CBCentralManager)
+[`NSObject-swift.class`](/documentation/ObjectiveC/NSObject-swift.class)
 
 ---
 

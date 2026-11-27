@@ -45,7 +45,7 @@ Concrete subclasses of [`CBAttribute`](/documentation/CoreBluetooth/CBAttribute)
 
 ### Identifying an Attribute
 
-[`UUID`](/documentation/CoreBluetooth/CBAttribute/uuid)
+[`var uuid: CBUUID`](/documentation/CoreBluetooth/CBAttribute/uuid)
 
 The Bluetooth-specific UUID of the attribute.
 
@@ -53,25 +53,25 @@ The Bluetooth-specific UUID of the attribute.
 
 ### Conforms To
 
+[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
+
+[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
+
+[`CVarArg`](/documentation/Swift/CVarArg)
+
 [`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
 
 [`Hashable`](/documentation/Swift/Hashable)
 
-[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
-
 [`Equatable`](/documentation/Swift/Equatable)
 
-[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
-
-[`CVarArg`](/documentation/Swift/CVarArg)
-
 ### Inherited By
-
-[`CBService`](/documentation/CoreBluetooth/CBService)
 
 [`CBCharacteristic`](/documentation/CoreBluetooth/CBCharacteristic)
 
 [`CBDescriptor`](/documentation/CoreBluetooth/CBDescriptor)
+
+[`CBService`](/documentation/CoreBluetooth/CBService)
 
 ### Inherits From
 

@@ -43,133 +43,139 @@ You use this class to discover, explore, and interact with the services availabl
 
 ### Identifying a Peripheral
 
-[`name`](/documentation/CoreBluetooth/CBPeripheral/name)
+[`var name: String?`](/documentation/CoreBluetooth/CBPeripheral/name)
 
 The name of the peripheral.
 
-[`delegate`](/documentation/CoreBluetooth/CBPeripheral/delegate)
+[`var delegate: (any CBPeripheralDelegate)?`](/documentation/CoreBluetooth/CBPeripheral/delegate)
 
 The delegate object specified to receive peripheral events.
 
 ### Discovering Services
 
-[`-  discoverServices:`](/documentation/CoreBluetooth/CBPeripheral/discoverServices(_:))
+[`func discoverServices([CBUUID]?)`](/documentation/CoreBluetooth/CBPeripheral/discoverServices(_:))
 
 Discovers the specified services of the peripheral.
 
-[`-  discoverIncludedServices:forService:`](/documentation/CoreBluetooth/CBPeripheral/discoverIncludedServices(_:for:))
+[`func discoverIncludedServices([CBUUID]?, for: CBService)`](/documentation/CoreBluetooth/CBPeripheral/discoverIncludedServices(_:for:))
 
 Discovers the specified included services of a previously-discovered service.
 
-[`services`](/documentation/CoreBluetooth/CBPeripheral/services)
+[`var services: [CBService]?`](/documentation/CoreBluetooth/CBPeripheral/services)
 
 A list of a peripheral’s discovered services.
 
 ### Discovering Characteristics and Descriptors
 
-[`-  discoverCharacteristics:forService:`](/documentation/CoreBluetooth/CBPeripheral/discoverCharacteristics(_:for:))
+[`func discoverCharacteristics([CBUUID]?, for: CBService)`](/documentation/CoreBluetooth/CBPeripheral/discoverCharacteristics(_:for:))
 
 Discovers the specified characteristics of a service.
 
-[`-  discoverDescriptorsForCharacteristic:`](/documentation/CoreBluetooth/CBPeripheral/discoverDescriptors(for:))
+[`func discoverDescriptors(for: CBCharacteristic)`](/documentation/CoreBluetooth/CBPeripheral/discoverDescriptors(for:))
 
 Discovers the descriptors of a characteristic.
 
 ### Reading Characteristic and Descriptor Values
 
-[`-  readValueForCharacteristic:`](/documentation/CoreBluetooth/CBPeripheral/readValue(for:)-6u2kr)
+[`func readValue(for: CBCharacteristic)`](/documentation/CoreBluetooth/CBPeripheral/readValue(for:)-6u2kr)
 
 Retrieves the value of a specified characteristic.
 
-[`-  readValueForDescriptor:`](/documentation/CoreBluetooth/CBPeripheral/readValue(for:)-91hhp)
+[`func readValue(for: CBDescriptor)`](/documentation/CoreBluetooth/CBPeripheral/readValue(for:)-91hhp)
 
 Retrieves the value of a specified characteristic descriptor.
 
 ### Writing Characteristic and Descriptor Values
 
-[`-  writeValue:forCharacteristic:type:`](/documentation/CoreBluetooth/CBPeripheral/writeValue(_:for:type:))
+[`func writeValue(Data, for: CBCharacteristic, type: CBCharacteristicWriteType)`](/documentation/CoreBluetooth/CBPeripheral/writeValue(_:for:type:))
 
 Writes the value of a characteristic.
 
-[`-  writeValue:forDescriptor:`](/documentation/CoreBluetooth/CBPeripheral/writeValue(_:for:))
+[`func writeValue(Data, for: CBDescriptor)`](/documentation/CoreBluetooth/CBPeripheral/writeValue(_:for:))
 
 Writes the value of a characteristic descriptor.
 
-[`-  maximumWriteValueLengthForType:`](/documentation/CoreBluetooth/CBPeripheral/maximumWriteValueLength(for:))
+[`func maximumWriteValueLength(for: CBCharacteristicWriteType) -> Int`](/documentation/CoreBluetooth/CBPeripheral/maximumWriteValueLength(for:))
 
 The maximum amount of data, in bytes, you can send to a characteristic in a single write type.
 
-[`CBCharacteristicWriteType`](/documentation/CoreBluetooth/CBCharacteristicWriteType)
+[`enum CBCharacteristicWriteType`](/documentation/CoreBluetooth/CBCharacteristicWriteType)
 
 Values representing the possible write types to a characteristic’s value.
 
 ### Setting Notifications for a Characteristic’s Value
 
-[`-  setNotifyValue:forCharacteristic:`](/documentation/CoreBluetooth/CBPeripheral/setNotifyValue(_:for:))
+[`func setNotifyValue(Bool, for: CBCharacteristic)`](/documentation/CoreBluetooth/CBPeripheral/setNotifyValue(_:for:))
 
 Sets notifications or indications for the value of a specified characteristic.
 
 ### Monitoring a Peripheral’s Connection State
 
-[`state`](/documentation/CoreBluetooth/CBPeripheral/state)
+[`var state: CBPeripheralState`](/documentation/CoreBluetooth/CBPeripheral/state)
 
 The connection state of the peripheral.
 
-[`CBPeripheralState`](/documentation/CoreBluetooth/CBPeripheralState)
+[`enum CBPeripheralState`](/documentation/CoreBluetooth/CBPeripheralState)
 
 Values representing the connection state of a peripheral.
 
-[`canSendWriteWithoutResponse`](/documentation/CoreBluetooth/CBPeripheral/canSendWriteWithoutResponse)
+[`var canSendWriteWithoutResponse: Bool`](/documentation/CoreBluetooth/CBPeripheral/canSendWriteWithoutResponse)
 
 A Boolean value that indicates whether the remote device can send a write without a response.
 
 ### Accessing a Peripheral’s Signal Strength
 
-[`-  readRSSI`](/documentation/CoreBluetooth/CBPeripheral/readRSSI())
+[`func readRSSI()`](/documentation/CoreBluetooth/CBPeripheral/readRSSI())
 
 Retrieves the current RSSI value for the peripheral while connected to the central manager.
 
-[`RSSI`](/documentation/CoreBluetooth/CBPeripheral/rssi)
+[`var rssi: NSNumber?`](/documentation/CoreBluetooth/CBPeripheral/rssi)
 
 The Received Signal Strength Indicator (RSSI), in decibels, of the peripheral.
 
 ### Working with L2CAP Channels
 
-[`-  openL2CAPChannel:`](/documentation/CoreBluetooth/CBPeripheral/openL2CAPChannel(_:))
+[`func openL2CAPChannel(CBL2CAPPSM)`](/documentation/CoreBluetooth/CBPeripheral/openL2CAPChannel(_:))
 
 Attempts to open an L2CAP channel to the peripheral using the supplied Protocol/Service Multiplexer (PSM).
 
-[`CBL2CAPChannel`](/documentation/CoreBluetooth/CBL2CAPChannel)
+[`class CBL2CAPChannel`](/documentation/CoreBluetooth/CBL2CAPChannel)
 
 A live L2CAP connection to a remote device.
 
-[`CBL2CAPPSM`](/documentation/CoreBluetooth/CBL2CAPPSM)
+[`typealias CBL2CAPPSM`](/documentation/CoreBluetooth/CBL2CAPPSM)
 
 The type of PSM identifiers.
 
 ### Working with Apple Notification Center Service (ANCS)
 
-[`ancsAuthorized`](/documentation/CoreBluetooth/CBPeripheral/ancsAuthorized)
+[`var ancsAuthorized: Bool`](/documentation/CoreBluetooth/CBPeripheral/ancsAuthorized)
 
 A Boolean value that indicates if the remote device has authorization to receive data over ANCS protocol.
+
+### Instance Methods
+
+[`func cancelChannelSoundingSession()`](/documentation/CoreBluetooth/CBPeripheral/cancelChannelSoundingSession())
+
+[`func startChannelSoundingSession(CBChannelSoundingSessionConfiguration)`](/documentation/CoreBluetooth/CBPeripheral/startChannelSoundingSession(_:))
 
 ## Relationships
 
 ### Conforms To
 
-[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
-
-[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
-
 [`NSCopying`](/documentation/Foundation/NSCopying)
-
-[`CVarArg`](/documentation/Swift/CVarArg)
-
-[`Hashable`](/documentation/Swift/Hashable)
 
 [`NSObjectProtocol`](/documentation/ObjectiveC/NSObjectProtocol)
 
+[`CustomStringConvertible`](/documentation/Swift/CustomStringConvertible)
+
+[`CVarArg`](/documentation/Swift/CVarArg)
+
 [`Equatable`](/documentation/Swift/Equatable)
+
+[`Hashable`](/documentation/Swift/Hashable)
+
+[`CustomDebugStringConvertible`](/documentation/Swift/CustomDebugStringConvertible)
 
 ### Inherits From
 
