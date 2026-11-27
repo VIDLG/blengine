@@ -26,7 +26,7 @@ from tools.react_native.rf_runner import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-HOST_BUILD = PROJECT_ROOT / "tests/consumers/react-native-internal/ios/build"
+HOST_BUILD = PROJECT_ROOT / "tests/consumers/react-native-bleng/ios/build"
 APP = HOST_BUILD / "device-derived/Build/Products/Debug-iphoneos" / APP_NAME
 SERVICE_UUID = str(
     load_profile(NRF_MULTIFUNCTION_A_PATH)["services"][0]["uuid"]
