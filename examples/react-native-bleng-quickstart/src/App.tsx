@@ -1,5 +1,5 @@
 /**
- * A minimal, complete BLE Central over `@blehub/react-native-bleng`.
+ * A minimal, complete BLE Central over `@blengine/react-native-bleng`.
  *
  * What it shows, in the order a real screen needs it:
  *

@@ -1,6 +1,6 @@
 import type {
   BlengCharacteristicProperties, BlengGattCharacteristic, BlengGattService, BlengGattSession,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 import { GATT_ADDRESSABLE_LIMIT, projectGatt } from './gattProjection'
 
 const properties: BlengCharacteristicProperties = {

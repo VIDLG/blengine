@@ -1,6 +1,6 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "name": "@blehub/react-native-bleng",
+  "name": "@blengine/react-native-bleng",
   "entryPoints": ["src/index.ts"],
   "tsconfig": "tsconfig.json",
   "out": "site/api",

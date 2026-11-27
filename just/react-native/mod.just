@@ -15,7 +15,7 @@ formal-host-install:
 [working-directory("tests/consumers/react-native-bleng")]
 formal-host-check:
     npm run typecheck
-    node -e 'const {execFileSync}=require("node:child_process"); const config=JSON.parse(execFileSync("./node_modules/.bin/react-native",["config","--platform","android"],{encoding:"utf8"})); const dependency=config.dependencies["@blehub/react-native-bleng"]; if (!dependency?.platforms?.android) throw new Error("formal RN Android dependency was not autolinked"); if (config.dependencies["@blehub/react-native-internal"]) throw new Error("transitional internal dependency leaked into formal host"); console.log("formal RN consumer autolinking passed")'
+    node -e 'const {execFileSync}=require("node:child_process"); const config=JSON.parse(execFileSync("./node_modules/.bin/react-native",["config","--platform","android"],{encoding:"utf8"})); const dependency=config.dependencies["@blengine/react-native-bleng"]; if (!dependency?.platforms?.android) throw new Error("formal RN Android dependency was not autolinked"); if (config.dependencies["@blehub/react-native-internal"]) throw new Error("transitional internal dependency leaked into formal host"); console.log("formal RN consumer autolinking passed")'
 
 # Debug includes native contract tests; explicit release packages JS without Metro.
 formal-host-android-build variant="debug": formal-host-check

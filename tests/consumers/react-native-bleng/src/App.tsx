@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Ids } from './ids'
 import { Button, Keyboard, ScrollView, StyleSheet, Text, View } from 'react-native'
 import { initialWindowMetrics, SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context'
-import { createBlengCentral, requireOutcome } from '@blehub/react-native-bleng'
-import type { BlengAdapterSnapshot, BlengCentral } from '@blehub/react-native-bleng'
+import { createBlengCentral, requireOutcome } from '@blengine/react-native-bleng'
+import type { BlengAdapterSnapshot, BlengCentral } from '@blengine/react-native-bleng'
 import {
   GattPanel, ManualScanDetails, NotifyPanel, ScanConfiguration, ScanSummary,
 } from './ManualScan'

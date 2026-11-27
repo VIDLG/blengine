@@ -1,4 +1,4 @@
-# `@blehub/react-native-bleng` 与竞品 BLE 库的 API 对比
+# `@blengine/react-native-bleng` 与竞品 BLE 库的 API 对比
 
 本文对比本仓库的 React Native BLE API 与 workspace 内三个主流/新兴竞品的**公开 API 设计**，回答三个问题：
 
@@ -12,7 +12,7 @@
 
 | 库 | 版本 | 证据来源 |
 |---|---|---|
-| `@blehub/react-native-bleng`（本仓库） | `0.0.0`，ABI **未冻结** | `integrations/react-native-bleng/specs/*.nitro.ts`、`src/index.ts`、`API.md` |
+| `@blengine/react-native-bleng`（本仓库） | `0.0.0`，ABI **未冻结** | `integrations/react-native-bleng/specs/*.nitro.ts`、`src/index.ts`、`API.md` |
 | `react-native-ble-plx` | 3.5.1 | `contrib/react-native-ble-plx/src/index.d.ts`、`BleManager.js` |
 | `react-native-ble-manager` | 12.5.3 | `contrib/react-native-ble-manager/src/index.ts`、`docs/methods.markdown` |
 | `react-native-ble-nitro` | 1.15.1 | `contrib/react-native-ble-nitro/src/manager.ts`、`src/specs/NativeBleNitro.nitro.ts` |

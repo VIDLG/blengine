@@ -96,7 +96,7 @@ D7 的 async/await 层是一条**派生**面，不是第二套操作模型：它
 
 ### D9. 公开包边界
 
-- 现状：包 `@blehub/react-native-bleng` 仍 `private: true`、`version 0.0.0`，消费外部 staged 原生产物。
+- 现状：包 `@blengine/react-native-bleng` 仍 `private: true`、`version 0.0.0`，消费外部 staged 原生产物。
 - 要决定：ABI freeze 时是否**同时**冻结包名、入口函数 `createBlengCentral()`、两个 native 标识名。
 - 推荐：冻结包名与入口函数；native 标识（bundle id / package 名）留到真正对外发布时再核对，避免为一个未发布的包提前改名。
 

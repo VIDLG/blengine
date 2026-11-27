@@ -11,7 +11,7 @@ module.exports = mergeConfig(getDefaultConfig(__dirname), {
   resolver: {
     blockList: [new RegExp(`${moduleRoot}/node_modules/.*`)],
     extraNodeModules: {
-      '@blehub/react-native-bleng': moduleRoot,
+      '@blengine/react-native-bleng': moduleRoot,
       '@babel/runtime': path.join(hostNodeModules, '@babel/runtime'),
       react: path.join(hostNodeModules, 'react'),
       'react-native': path.join(hostNodeModules, 'react-native'),

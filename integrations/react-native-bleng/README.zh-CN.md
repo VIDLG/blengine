@@ -249,7 +249,7 @@ Rust 在显式退休之前、以及所有权 drop 时撤销端点。这阻止的
 ## 类型化初始化结果（未冻结候选）
 
 ```ts
-import { createBlengCentral, requireOutcome } from '@blehub/react-native-bleng'
+import { createBlengCentral, requireOutcome } from '@blengine/react-native-bleng'
 
 const central = createBlengCentral() // 不会初始化 BLE。
 const { snapshot } = requireOutcome(await central.initialize())
@@ -313,7 +313,7 @@ Rust 拥有 64 条广告/256-KiB 的有界观察投递、确切上下文绑定�
 取消控制的调用方：
 
 ```ts
-import { pendingOperation, BlengOperationError } from '@blehub/react-native-bleng'
+import { pendingOperation, BlengOperationError } from '@blengine/react-native-bleng'
 
 const pending = pendingOperation(characteristic.beginRead(), 5_000) // 被拒的提交在这里抛出
 try {

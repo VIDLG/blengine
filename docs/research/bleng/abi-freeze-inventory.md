@@ -239,7 +239,7 @@
 - `BlengSubscriptionDisableAccepted`
 - 联合/别名：`BlengNotificationModeRequest`、`BlengNotificationMode`、`BlengSubscriptionNext`、`BlengSubscriptionSubmission`、`BlengSubscriptionResult`、`BlengSubscriptionDisableSubmission`
 
-入口标识（D9）：包名 `@blehub/react-native-bleng`、`createBlengCentral()`、
+入口标识（D9）：包名 `@blengine/react-native-bleng`、`createBlengCentral()`、
 `getBlengCentral()`、`BlengProvider`、`BlengCentral`、`BleHubBlengEngineLifecycle`。
 D7 的派生面（同一 JS 面，冻结时一并算）：`pendingOperation`、`run`、`requireAccepted`、
 `requireOutcome`、`AbortSignalLike`、`BlengOperationError`、`Operation`、`OperationSubmission`、`PendingOperation`、`isBlengFailure`、`shareLane`、`useBlengCentral`、`closeBlengCentral`。

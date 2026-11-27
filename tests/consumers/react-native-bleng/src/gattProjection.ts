@@ -1,7 +1,7 @@
 import type {
   BlengCharacteristicProperties, BlengGattCharacteristic, BlengGattDescriptor, BlengGattSession,
   BlengServiceKind,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 /**
  * UI projection of one discovered topology.

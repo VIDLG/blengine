@@ -1,4 +1,4 @@
-# `@blehub/react-native-bleng` — API
+# `@blengine/react-native-bleng` — API
 
 React Native 的有类型 BLE Central。所有操作都由一个 Rust 引擎拥有；这个包是它的 Nitro 桥，
 外加一层很小的 await 便捷接口。
@@ -52,7 +52,7 @@ import {
   requireAccepted,
   requireOutcome,
   run,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 const HEART_RATE = '180d' // 16-bit、32-bit 和完整 128-bit UUID 都接受
 
@@ -274,7 +274,7 @@ if ('failure' in submission) {
 ### React 与 Fast Refresh
 
 ```tsx
-import { BlengProvider, useBlengCentral } from '@blehub/react-native-bleng'
+import { BlengProvider, useBlengCentral } from '@blengine/react-native-bleng'
 
 <BlengProvider>
   <Screen />
@@ -303,7 +303,7 @@ import { useEffect, useState } from 'react'
 import {
   isBlengFailure, requireAccepted, useBlengCentral,
   type BlengScan, type BlengScanAdvertisement,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 function ScanScreen() {
   const central = useBlengCentral()
@@ -702,7 +702,7 @@ await disable.wait(5_000)                                // 同时也是这条�
 它通过该 operation 自己的 `wait` 结算，而取消仍然只在你真的调用时才发生。
 
 ```ts
-import { pendingOperation, BlengOperationError } from '@blehub/react-native-bleng'
+import { pendingOperation, BlengOperationError } from '@blengine/react-native-bleng'
 
 const pending = pendingOperation(characteristic.beginRead(), 5_000) // 被拒就在这里同步抛出
 try {
@@ -783,7 +783,7 @@ const { connection } = await pendingOperation(
 一条 lane 只允许一个挂起的 pull。多个组件需要同一条流时，共享它，而不是抢着调用两次 `nextEvent`：
 
 ```ts
-import { shareLane } from '@blehub/react-native-bleng'
+import { shareLane } from '@blengine/react-native-bleng'
 
 const shared = shareLane(scan, { timeoutMs: 5_000 })
 const unsubscribe = shared.subscribe((next) => {
@@ -959,7 +959,7 @@ ble.startScan({ serviceUUIDs: [HEART_RATE] }, async device => {
 ```ts
 import {
   getBlengCentral, requireAccepted, requireOutcome, run,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 const central = getBlengCentral()
 const { snapshot } = requireOutcome(await central.initialize()) // 收音机 + 授权

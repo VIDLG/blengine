@@ -4,8 +4,8 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "paths": {
-      "@blehub/react-native-bleng": ["../../../integrations/react-native-bleng/src/index.ts"],
-      "@blehub/react-native-bleng/*": ["../../../integrations/react-native-bleng/*"],
+      "@blengine/react-native-bleng": ["../../../integrations/react-native-bleng/src/index.ts"],
+      "@blengine/react-native-bleng/*": ["../../../integrations/react-native-bleng/*"],
       "react": ["./node_modules/@types/react/index.d.ts"],
       "react-native": ["./node_modules/react-native/types/index.d.ts"]
     },

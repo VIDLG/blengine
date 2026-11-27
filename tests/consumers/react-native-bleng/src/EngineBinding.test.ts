@@ -1,4 +1,4 @@
-import type { BlengCentral } from '@blehub/react-native-bleng'
+import type { BlengCentral } from '@blengine/react-native-bleng'
 
 const reactNativeMock = {
   Platform: { OS: 'ios' },
@@ -12,7 +12,7 @@ const resolveModule = (require as typeof require & {
 }).resolve
 const { dirname } = require('node:path') as { dirname(path: string): string }
 const consumerDirectory = dirname(resolveModule('../package.json'))
-const packageSourceDirectory = dirname(resolveModule('@blehub/react-native-bleng'))
+const packageSourceDirectory = dirname(resolveModule('@blengine/react-native-bleng'))
 
 // The consumer and package source have separate node_modules trees. Register both exact
 // resolutions before loading the real factory, sharing the mocks used by the assertions.
@@ -22,8 +22,8 @@ for (const directory of [consumerDirectory, packageSourceDirectory]) {
 }
 const { Platform, TurboModuleRegistry } = require('react-native') as typeof import('react-native')
 const { NitroModules } = require('react-native-nitro-modules') as typeof import('react-native-nitro-modules')
-const { createBlengCentral } = jest.requireActual<typeof import('@blehub/react-native-bleng')>(
-  '@blehub/react-native-bleng',
+const { createBlengCentral } = jest.requireActual<typeof import('@blengine/react-native-bleng')>(
+  '@blengine/react-native-bleng',
 )
 
 const getLifecycle = jest.mocked(TurboModuleRegistry.getEnforcing)

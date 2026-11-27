@@ -10,7 +10,7 @@ jest.mock('react-native-safe-area-context', () => mockSafeAreaContext);
 // the real renderer. The package source resolves the bridge from its own node_modules tree, which
 // is why both resolutions are registered.
 const { dirname } = require('node:path');
-const packageSourceDirectory = dirname(require.resolve('@blehub/react-native-bleng'));
+const packageSourceDirectory = dirname(require.resolve('@blengine/react-native-bleng'));
 const consumerDirectory = __dirname;
 for (const directory of [consumerDirectory, packageSourceDirectory]) {
   jest.doMock(require.resolve('react-native-nitro-modules', { paths: [directory] }), () => ({

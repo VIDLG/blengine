@@ -39,7 +39,7 @@ class BlengIOSConsumerTests(unittest.TestCase):
             "ROOT": self.root,
             "HOST_ROOT": host,
             "IOS_ROOT": ios,
-            "FORMAL_PACKAGE_ROOT": host / "node_modules/@blehub/react-native-bleng",
+            "FORMAL_PACKAGE_ROOT": host / "node_modules/@blengine/react-native-bleng",
             "RN_STAGED_ROOT": self.root / "staged combined",
             "SPEC": contract / "project.yml",
             "SMOKE_ROOT": contract / "Sources",

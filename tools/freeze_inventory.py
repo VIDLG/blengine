@@ -206,7 +206,7 @@ def render() -> str:
             lines.append("- 联合/别名：" + "、".join(f"`{alias}`" for alias in aliases))
         lines.append("")
     lines += [
-        "入口标识（D9）：包名 `@blehub/react-native-bleng`、`createBlengCentral()`、",
+        "入口标识（D9）：包名 `@blengine/react-native-bleng`、`createBlengCentral()`、",
         "`getBlengCentral()`、`BlengProvider`、`BlengCentral`、`BleHubBlengEngineLifecycle`。",
         "D7 的派生面（同一 JS 面，冻结时一并算）：`pendingOperation`、`run`、`requireAccepted`、",
         (

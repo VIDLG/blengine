@@ -1,6 +1,6 @@
 import React from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
-import { createBlengCentral } from '@blehub/react-native-bleng'
+import { createBlengCentral } from '@blengine/react-native-bleng'
 import type {
   BlengAdapterSnapshot, BlengCharacteristicProperties, BlengReceipt, BlengConnect,
   BlengConnectResult, BlengConnection, BlengDescriptorRead, BlengDescriptorWrite,
@@ -8,11 +8,11 @@ import type {
   BlengGattCharacteristic, BlengGattDescriptor, BlengGattDiscovery, BlengGattDiscoveryResult,
   BlengGattService, BlengGattSession, BlengPeripheral, BlengScan, BlengScanAdvertisement,
   BlengScanNext, BlengCentral,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 import App from './App'
 
-jest.mock('@blehub/react-native-bleng', () => ({
-  ...jest.requireActual('@blehub/react-native-bleng'),
+jest.mock('@blengine/react-native-bleng', () => ({
+  ...jest.requireActual('@blengine/react-native-bleng'),
   createBlengCentral: jest.fn(),
 }))
 const createCentral = jest.mocked(createBlengCentral)

@@ -259,7 +259,7 @@ module IosPodGraph
       codegen_roots = inventory.filter_map do |entry|
         root = Pathname.new(entry['realpath'])
         package = read_json(root + 'package.json')
-        nitrogen_inputs(root, package, metadata) if package['name'] == '@blehub/react-native-bleng'
+        nitrogen_inputs(root, package, metadata) if package['name'] == '@blengine/react-native-bleng'
         config = package['codegenConfig']
         if config
           raise "unsupported codegenConfig: #{root}" unless config.is_a?(Hash)

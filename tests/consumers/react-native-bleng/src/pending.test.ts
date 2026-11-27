@@ -3,7 +3,7 @@ import type {
   BlengInitializeOutcome, BlengInitializeResult,
   BlengRead, BlengReadOutcome, BlengReadResult, BlengReadSubmission, BlengScan,
   BlengScanSubmission, BlengWrite, BlengWriteSubmission,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 // This file is about a pure-JS layer, so the two native boundaries are stubbed the same way
 // `EngineBinding.test.ts` does it: the real package source is loaded, nothing native is.
@@ -17,13 +17,13 @@ const resolveModule = (require as typeof require & {
 }).resolve
 const { dirname } = require('node:path') as { dirname(path: string): string }
 const consumerDirectory = dirname(resolveModule('../package.json'))
-const packageSourceDirectory = dirname(resolveModule('@blehub/react-native-bleng'))
+const packageSourceDirectory = dirname(resolveModule('@blengine/react-native-bleng'))
 for (const directory of [consumerDirectory, packageSourceDirectory]) {
   jest.doMock(resolveModule('react-native', { paths: [directory] }), () => reactNativeMock)
   jest.doMock(resolveModule('react-native-nitro-modules', { paths: [directory] }), () => nitroMock)
 }
 const { BlengOperationError, pendingOperation, run, isBlengFailure, requireAccepted, requireOutcome } =
-  jest.requireActual<typeof import('@blehub/react-native-bleng')>('@blehub/react-native-bleng')
+  jest.requireActual<typeof import('@blengine/react-native-bleng')>('@blengine/react-native-bleng')
 
 /**
  * The async/await layer is a *derived* surface: it may only submit through `begin*`, settle

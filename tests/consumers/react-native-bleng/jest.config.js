@@ -8,6 +8,6 @@ module.exports = {
   moduleNameMapper: {
     '^react$': '<rootDir>/node_modules/react',
     '^react/(.*)$': '<rootDir>/node_modules/react/$1',
-    '^@blehub/react-native-bleng$': '<rootDir>/../../../integrations/react-native-bleng/src/index.ts',
+    '^@blengine/react-native-bleng$': '<rootDir>/../../../integrations/react-native-bleng/src/index.ts',
   },
 };

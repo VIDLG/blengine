@@ -2,8 +2,8 @@ import { useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import {
   pendingOperation, BlengOperationError,
-} from '@blehub/react-native-bleng'
-import type { PendingOperation } from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
+import type { PendingOperation } from '@blengine/react-native-bleng'
 import type {
   BlengReceipt, BlengConnectOutcome, BlengConnection, BlengEndReason,
   BlengConnectionNext,
@@ -13,7 +13,7 @@ import type {
   BlengNotificationModeRequest, BlengSubscription, BlengPeripheral, BlengRead, BlengScan,
   BlengScanAdvertisement, BlengFailureInfo, BlengScanStop, BlengCentral, BlengWriteType,
   BlengDeviceQueryOutcome,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 import {
   projectGatt, gattCharacteristicText, gattPropertyFlags, resolveGattTarget,
 } from './gattProjection'

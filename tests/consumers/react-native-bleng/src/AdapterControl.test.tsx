@@ -1,16 +1,16 @@
 import React from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react-native'
-import { createBlengCentral } from '@blehub/react-native-bleng'
+import { createBlengCentral } from '@blengine/react-native-bleng'
 import type {
   BlengAdapterControlSubmission, BlengAdapterSnapshot, BlengCentral, BlengFailureInfo,
   BlengReceipt,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 import App from './App'
 
 // Only the native factory is replaced, so the App's own dispatch, ledger and projection are the
 // ones that ship.
-jest.mock('@blehub/react-native-bleng', () => ({
-  ...jest.requireActual('@blehub/react-native-bleng'),
+jest.mock('@blengine/react-native-bleng', () => ({
+  ...jest.requireActual('@blengine/react-native-bleng'),
   createBlengCentral: jest.fn(),
 }))
 const createCentral = jest.mocked(createBlengCentral)
@@ -122,7 +122,7 @@ it('treats an operation-boundary refusal as the same platform answer', async () 
   current.beginAdapterControl.mockReturnValue({
     control: { wait, cancel: jest.fn() },
   } as unknown as BlengAdapterControlSubmission)
-  const { BlengOperationError } = jest.requireActual('@blehub/react-native-bleng')
+  const { BlengOperationError } = jest.requireActual('@blengine/react-native-bleng')
   wait.mockRejectedValue(new BlengOperationError({
     domain: 'operation', code: 'bleng.operation.not_supported',
     message: 'Android refused the adapter power request; it may require user confirmation',

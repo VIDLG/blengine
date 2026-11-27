@@ -1,6 +1,6 @@
 # Awaiting one BLeng operation：便捷层的边界
 
-本文说明 `@blehub/react-native-bleng` 里那层 async/await 便捷接口（`src/pending.ts`）为什么存在、
+本文说明 `@blengine/react-native-bleng` 里那层 async/await 便捷接口（`src/pending.ts`）为什么存在、
 它被允许做什么、以及它明确不做哪些事。提交契约本身以 Nitro spec 为准，本文只解释分层与命名。
 
 ## 结论

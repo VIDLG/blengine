@@ -1,18 +1,18 @@
 import React from 'react'
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native'
-import { createBlengCentral } from '@blehub/react-native-bleng'
+import { createBlengCentral } from '@blengine/react-native-bleng'
 import type {
   BlengAdapterSnapshot, BlengReceipt, BlengConnect, BlengConnectResult, BlengConnection,
   BlengFailureInfo, BlengGattCharacteristic, BlengGattDiscovery, BlengGattDiscoveryResult,
   BlengGattService, BlengGattSession, BlengPeripheral, BlengRead, BlengReadResult, BlengRssi,
   BlengRssiResult, BlengScan, BlengScanAdvertisement, BlengScanNext, BlengCentral, BlengWrite,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 import App from './App'
 
 // Only the native factory is replaced: the pure-JS layer (`pendingOperation`) is the real one,
 // so the App's own error and ledger text is exercised exactly as it ships.
-jest.mock('@blehub/react-native-bleng', () => ({
-  ...jest.requireActual('@blehub/react-native-bleng'),
+jest.mock('@blengine/react-native-bleng', () => ({
+  ...jest.requireActual('@blengine/react-native-bleng'),
   createBlengCentral: jest.fn(),
 }))
 const createCentral = jest.mocked(createBlengCentral)

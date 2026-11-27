@@ -774,7 +774,7 @@ class RubyGraphTests(unittest.TestCase):
         (root / "package.json").write_text(
             json.dumps(
                 {
-                    "name": "@blehub/react-native-bleng",
+                    "name": "@blengine/react-native-bleng",
                     "scripts": {
                         "check": "npm run typecheck && npm run generate",
                         "generate": "nitrogen",
@@ -807,7 +807,7 @@ class RubyGraphTests(unittest.TestCase):
         bin_dir = root / "node_modules/.bin"
         bin_dir.mkdir()
         (bin_dir / "nitrogen").symlink_to("../nitrogen/index.js")
-        logical = self.host / "node_modules/@blehub/react-native-bleng"
+        logical = self.host / "node_modules/@blengine/react-native-bleng"
         logical.parent.mkdir()
         logical.symlink_to(root, target_is_directory=True)
         decoy = self.host / "node_modules/nitrogen"
@@ -816,7 +816,7 @@ class RubyGraphTests(unittest.TestCase):
         (decoy / "index.js").write_text('throw Error("HOST DECOY MUST NOT RUN");')
         lock = self.host / "node_modules/.package-lock.json"
         data = json.loads(lock.read_text())
-        data["packages"]["node_modules/@blehub/react-native-bleng"] = {}
+        data["packages"]["node_modules/@blengine/react-native-bleng"] = {}
         data["packages"]["node_modules/nitrogen"] = {}
         lock.write_text(json.dumps(data))
         return root

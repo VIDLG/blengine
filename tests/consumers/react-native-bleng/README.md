@@ -1,7 +1,7 @@
 # Formal React Native BLeng consumer
 
 This directory is the clean downstream executable consumer for
-[`@blehub/react-native-bleng`](../../../integrations/react-native-bleng/README.md).
+[`@blengine/react-native-bleng`](../../../integrations/react-native-bleng/README.md).
 It is the only maintained React Native UI host for the formal package line.
 
 The host exercises the approved typed lifecycle and scan surfaces:

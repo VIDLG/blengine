@@ -60,7 +60,7 @@ end
 
 target "BleHubBlengHostNativeTests" do
   inherit! :complete
-  pod "BleHubReactNativeBleng", :path => "../node_modules/@blehub/react-native-bleng"
+  pod "BleHubReactNativeBleng", :path => "../node_modules/@blengine/react-native-bleng"
   pod "BleHubApple", :path => File.join(apple_staged_root, "BleHubApple")
   pod "BleHubUniFfi", :path => File.join(apple_staged_root, "BleHubUniFfi")
 end

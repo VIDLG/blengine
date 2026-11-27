@@ -10,13 +10,13 @@ const resolveModule = (require as typeof require & {
 }).resolve
 const { dirname } = require('node:path') as { dirname(path: string): string }
 const consumerDirectory = dirname(resolveModule('../package.json'))
-const packageSourceDirectory = dirname(resolveModule('@blehub/react-native-bleng'))
+const packageSourceDirectory = dirname(resolveModule('@blengine/react-native-bleng'))
 for (const directory of [consumerDirectory, packageSourceDirectory]) {
   jest.doMock(resolveModule('react-native', { paths: [directory] }), () => reactNativeMock)
   jest.doMock(resolveModule('react-native-nitro-modules', { paths: [directory] }), () => nitroMock)
 }
-const { shareLane } = jest.requireActual<typeof import('@blehub/react-native-bleng')>(
-  '@blehub/react-native-bleng',
+const { shareLane } = jest.requireActual<typeof import('@blengine/react-native-bleng')>(
+  '@blengine/react-native-bleng',
 )
 
 type LaneEvent =

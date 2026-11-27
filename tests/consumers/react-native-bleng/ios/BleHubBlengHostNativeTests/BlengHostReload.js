@@ -1,4 +1,4 @@
-import {createBlengCentral} from '@blehub/react-native-bleng';
+import {createBlengCentral} from '@blengine/react-native-bleng';
 import {createElement, useSyncExternalStore} from 'react';
 import {AppRegistry, Text, TurboModuleRegistry, View} from 'react-native';
 

@@ -1713,7 +1713,7 @@ PODS:
 
 DEPENDENCIES:
   - BleHubApple (from `/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubApple`)
-  - "BleHubReactNativeBleng (from `../node_modules/@blehub/react-native-bleng`)"
+  - "BleHubReactNativeBleng (from `../node_modules/@blengine/react-native-bleng`)"
   - BleHubUniFfi (from `/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubUniFfi`)
   - boost (from `build/rndeps-facades/boost`)
   - DoubleConversion (from `build/rndeps-facades/DoubleConversion`)
@@ -1808,7 +1808,7 @@ EXTERNAL SOURCES:
   BleHubApple:
     :path: "/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubApple"
   BleHubReactNativeBleng:
-    :path: "../node_modules/@blehub/react-native-bleng"
+    :path: "../node_modules/@blengine/react-native-bleng"
   BleHubUniFfi:
     :path: "/Users/vision/projects/blehub/.work/staged/apple-bleng-react-native/BleHubUniFfi"
   boost:
@@ -2079,6 +2079,6 @@ SPEC CHECKSUMS:
   SocketRocket: 37aec555668fb852ec12e3c0de59a86ca58f0871
   Yoga: d1c536142c5ff8ec8cd856ab2a7c227a1d875c8e
 
-PODFILE CHECKSUM: 5c12d111b1d5fd8d201514561b4a35433461ae16
+PODFILE CHECKSUM: 328271c212310c6ceba0d5840cb12c8fbb5fa5da
 
 COCOAPODS: 1.17.0

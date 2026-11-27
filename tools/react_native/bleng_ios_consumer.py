@@ -30,7 +30,7 @@ from tools.react_native import ios_pod_preparation, ios_pod_refresh
 ROOT = Path(__file__).resolve().parents[2]
 HOST_ROOT = ROOT / "tests/consumers/react-native-bleng"
 IOS_ROOT = HOST_ROOT / "ios"
-FORMAL_PACKAGE_ROOT = HOST_ROOT / "node_modules/@blehub/react-native-bleng"
+FORMAL_PACKAGE_ROOT = HOST_ROOT / "node_modules/@blengine/react-native-bleng"
 FORMAL_PODSPEC = FORMAL_PACKAGE_ROOT / "BleHubReactNativeBleng.podspec"
 RN_STAGED_ROOT = (
     Path(

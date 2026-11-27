@@ -1,4 +1,4 @@
-# `@blehub/react-native-bleng` — API
+# `@blengine/react-native-bleng` — API
 
 Typed BLE Central for React Native. One Rust engine owns every operation; this package is the
 Nitro bridge to it, plus a small await layer.
@@ -53,7 +53,7 @@ import {
   requireAccepted,
   requireOutcome,
   run,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 const HEART_RATE = '180d' // 16-bit, 32-bit and full 128-bit UUIDs are all accepted
 
@@ -285,7 +285,7 @@ safe once you compare the API's own output.
 ### React and Fast Refresh
 
 ```tsx
-import { BlengProvider, useBlengCentral } from '@blehub/react-native-bleng'
+import { BlengProvider, useBlengCentral } from '@blengine/react-native-bleng'
 
 <BlengProvider>
   <Screen />
@@ -315,7 +315,7 @@ import { useEffect, useState } from 'react'
 import {
   isBlengFailure, requireAccepted, useBlengCentral,
   type BlengScan, type BlengScanAdvertisement,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 function ScanScreen() {
   const central = useBlengCentral()
@@ -761,7 +761,7 @@ adds **no** new semantics: it settles through the operation's own `wait`, and ca
 happens when you call it.
 
 ```ts
-import { pendingOperation, BlengOperationError } from '@blehub/react-native-bleng'
+import { pendingOperation, BlengOperationError } from '@blengine/react-native-bleng'
 
 const pending = pendingOperation(characteristic.beginRead(), 5_000) // throws here if refused
 try {
@@ -849,7 +849,7 @@ A lane allows one pending pull. When several components need the same stream, sh
 racing two pulls:
 
 ```ts
-import { shareLane } from '@blehub/react-native-bleng'
+import { shareLane } from '@blengine/react-native-bleng'
 
 const shared = shareLane(scan, { timeoutMs: 5_000 })
 const unsubscribe = shared.subscribe((next) => {
@@ -1035,7 +1035,7 @@ ble.startScan({ serviceUUIDs: [HEART_RATE] }, async device => {
 ```ts
 import {
   getBlengCentral, requireAccepted, requireOutcome, run,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 const central = getBlengCentral()
 const { snapshot } = requireOutcome(await central.initialize()) // radio + authorizations

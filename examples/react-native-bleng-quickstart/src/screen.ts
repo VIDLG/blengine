@@ -15,10 +15,10 @@
  */
 import {
   BlengOperationError, createBlengCentral, isBlengFailure, requireAccepted, requireOutcome, run,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 import type {
   BlengCentral, BlengConnection, BlengScan, BlengScanAdvertisement, BlengSubscription,
-} from '@blehub/react-native-bleng'
+} from '@blengine/react-native-bleng'
 
 /** One bounded budget for every wait on this screen. */
 const TIMEOUT = 5_000

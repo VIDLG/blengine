@@ -1,15 +1,15 @@
 {
-  "name": "@blehub/react-native-bleng-quickstart",
+  "name": "@blengine/react-native-bleng-quickstart",
   "version": "0.0.0",
   "private": true,
-  "description": "Minimal runnable example for @blehub/react-native-bleng",
+  "description": "Minimal runnable example for @blengine/react-native-bleng",
   "main": "index.js",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "compile": "node ../../tools/react_native/quickstart_compile.mjs"
   },
   "dependencies": {
-    "@blehub/react-native-bleng": "file:../../integrations/react-native-bleng",
+    "@blengine/react-native-bleng": "file:../../integrations/react-native-bleng",
     "react": "19.3.0",
     "react-native": "0.87.1",
     "react-native-nitro-modules": "0.37.1"

@@ -1,6 +1,6 @@
 # BLeng quickstart（React Native）
 
-`@blehub/react-native-bleng` 的最小可用示例：扫描 → 连接 → 发现 GATT → 读取 → 订阅 → 断开 → 关闭，
+`@blengine/react-native-bleng` 的最小可用示例：扫描 → 连接 → 发现 GATT → 读取 → 订阅 → 断开 → 关闭，
 每一步都是 API 文档里的形状，不含重试/缓存/自动重连之类的策略。
 
 - API 参考：[`../../integrations/react-native-bleng/API.zh.md`](../../integrations/react-native-bleng/API.zh.md)

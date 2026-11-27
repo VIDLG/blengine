@@ -1,7 +1,7 @@
 import { Text } from 'react-native'
 import { render } from '@testing-library/react-native'
-import type { BlengCentral } from '@blehub/react-native-bleng'
-import { BlengProvider, useBlengCentral } from '@blehub/react-native-bleng'
+import type { BlengCentral } from '@blengine/react-native-bleng'
+import { BlengProvider, useBlengCentral } from '@blengine/react-native-bleng'
 
 const central = {} as BlengCentral
 

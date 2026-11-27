@@ -305,7 +305,7 @@ remains separate from the product surface.
 ## Typed initialization result (unfrozen candidate)
 
 ```ts
-import { createBlengCentral, requireOutcome } from '@blehub/react-native-bleng'
+import { createBlengCentral, requireOutcome } from '@blengine/react-native-bleng'
 
 const central = createBlengCentral() // Does not initialize BLE.
 const { snapshot } = requireOutcome(await central.initialize())
@@ -378,7 +378,7 @@ and [candidate evidence](../../docs/testing/reports/2026-11-04-formal-rn-scan.md
 callers that want `await` without losing the receipt or the cancel control:
 
 ```ts
-import { pendingOperation, BlengOperationError } from '@blehub/react-native-bleng'
+import { pendingOperation, BlengOperationError } from '@blengine/react-native-bleng'
 
 const pending = pendingOperation(characteristic.beginRead(), 5_000) // refuses a refused submission here
 try {

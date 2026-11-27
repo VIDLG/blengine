@@ -76,7 +76,7 @@ runCLI({
 
     def test_the_formal_host_has_no_internal_dependency(self) -> None:
         package = json.loads((FORMAL / "package.json").read_text(encoding="utf-8"))
-        self.assertIn("@blehub/react-native-bleng", package["dependencies"])
+        self.assertIn("@blengine/react-native-bleng", package["dependencies"])
         self.assertNotIn("@blehub/react-native-internal", package["dependencies"])
         lock = json.loads((FORMAL / "package-lock.json").read_text(encoding="utf-8"))
         self.assertNotIn(

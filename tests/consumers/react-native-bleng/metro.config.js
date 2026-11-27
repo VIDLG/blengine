@@ -9,7 +9,7 @@ module.exports = mergeConfig(getDefaultConfig(__dirname), {
   resolver: {
     blockList: [new RegExp(`${moduleRoot}/node_modules/.*`)],
     extraNodeModules: {
-      '@blehub/react-native-bleng': moduleRoot,
+      '@blengine/react-native-bleng': moduleRoot,
       // The package's own node_modules is blocklisted below, so every bare import its source
       // makes resolves through this host. `@babel/runtime` belongs here because the package
       // ships source: babel's helpers for its own syntax (an Error subclass) are imported by

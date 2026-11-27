@@ -41,7 +41,7 @@ def relative(target: Path, base: Path) -> str:
 # a `paths` entry resolves from the config that declares it. Only the three resolutions a consumer
 # supplies are mapped; everything else resolves the ordinary way.
 RESOLUTIONS = {
-    "@blehub/react-native-bleng": PACKAGE_SOURCE,
+    "@blengine/react-native-bleng": PACKAGE_SOURCE,
     "react": HOST_NODE_MODULES / "@types/react/index.d.ts",
     "react-native": HOST_NODE_MODULES / "react-native/types/index.d.ts",
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@blehub/react-native-bleng",
+  "name": "@blengine/react-native-bleng",
   "version": "0.0.0",
   "private": true,
   "description": "Private Apple and Android Nitro bridge for the formal BleHub BLeng package line",

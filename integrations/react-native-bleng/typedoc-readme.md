@@ -1,4 +1,4 @@
-# `@blehub/react-native-bleng` — type reference
+# `@blengine/react-native-bleng` — type reference
 
 This site is **generated** from the package's Nitro specs and its public entry point by TypeDoc, so
 every signature, union arm and field is exactly what the compiler sees. Nothing here is hand-edited,
