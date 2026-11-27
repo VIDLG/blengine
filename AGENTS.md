@@ -1,210 +1,201 @@
 # AGENTS.md
 
-## Purpose
+## Purpose and source of truth
 
-This file defines the working rules for coding agents in the `blehub` project.
-Read it before researching, planning, or changing the project.
-
-## Current Project State
-
-BleHub's architecture plan is approved. Phase 0 Stable UniFFI mechanism, Phase 1 unified thin-contract/conformance, and Phase 2 Windows-first implementation are complete.
-
-**2026-09-04 maintained Peripheral topology correction:** macOS native BLESS, the `apple-bless` environment, and Mac QEMU + BLESS are retired and must not be used by production or long-lived test paths. Apple Central RF uses the Android Peripheral now and a standalone nRF52840 DK when available. Windows retains QEMU Linux + BlueZ + BLESS; its USB controller is configured only through ignored local configuration or environment variables, with no tracked UB500/Zadig/WinUSB identity. The nRF52840 Dongle will be integrated after arrival, using mutually exclusive HCI firmware for QEMU or standalone Peripheral firmware for direct Windows RF. Historical reports may retain old UB500/macOS-BLESS evidence, but it is not current architecture evidence.
-
-- The single reviewed plan is [`.plan/PLAN.md`](.plan/PLAN.md).
-- The plan status is `已批准`.
-- Phase 1 public contract and shared conformance are complete. Phase 2 completed the project-managed Android development Peripheral fixture, production Windows backend, managed QEMU/BLESS fixture, artifact-only Windows consumer, lifecycle accounting, fault recovery, and exit review. See [`docs/testing/reports/2026-09-02-windows-phase2-exit-review.md`](docs/testing/reports/2026-09-02-windows-phase2-exit-review.md).
-- The user-approved implementation order after Phase 2 is now Phase 3 unified Apple backend (macOS first, then independently validated iOS), Phase 4 Android backend, and Phase 5 Windows + Apple + Android v0.1/production ABI freeze. The current active lane is Phase 3 Apple; Android Central implementation waits for Phase 3 exit, while the Android Peripheral fixture remains available for Apple RF development.
-- All maintained Apple Swift runtime, package, backend, and HIL gates run on the project real Mac mini through local Pixi + Just. There is no maintained Windows desktop Swift lane, Windows-managed Swift toolchain/root/bootstrap, or GitHub-hosted macOS workflow. Earlier Windows Swift and GitHub Actions runs remain historical, non-maintained evidence only. Phase 5 requires macOS/iOS Swift coverage from the Mac mini, not a Windows Swift supplement.
-- Repository ownership is now explicit: `crates/blehub` is the canonical definition owner and exports the production `BleHub` object, foreign `BleBackend`, foreign `BleEventSink`, direct ingress, commands, events, and errors; thin `crates/blehub-uniffi` owns the only production Stable UniFFI final native image, bindgen entry, and production package staging. Production backends live under `platforms/`; reusable Rust test support lives under `tests/support/blehub-testkit`; `tests/ffi/runtime` contains Swift and Android Kotlin tests that implement test backend/sink objects directly and exercise the production ABI; Apple HIL consumes the production package, uses a direct Swift sink, and shares only a pure-Swift helper with the macOS runtime probe; and staged artifact-only consumers remain under `tests/consumers`. There is no second UniFFI native image or test component. The post-migration current candidate has now passed the macOS single-image Apple package/symbol gate, direct Swift production runtime gate, Apple deterministic and generic-build gates, iPhone HIL project generation/unsigned generic build, Android production AAR assembly/publish and macOS NDK native-slice builds, plus workspace Cargo tests and lint. The current `runtime-macos` invocation completed initialization but its terminal ad-hoc snapshot was adapter `Unavailable` with authorization `NotDetermined`; it was not a `PoweredOn + Authorized` or RF result. Physical Android ART remained unrun after two locked-phone APK installation timeouts, and no migration RF gate ran; see [`docs/testing/reports/2026-09-03-single-image-production-abi-migration.md`](docs/testing/reports/2026-09-03-single-image-production-abi-migration.md). The public ABI remains unfrozen and Phase 5 still requires the complete same-candidate rerun. No production or long-lived test path may depend on `spikes/`; the superseded production-candidate spike is archived under `spikes/archive/`.
-- On 2026-09-02 the then-current unfrozen candidate passed the real-macOS Stable UniFFI Swift runtime gate plus a three-slice XCFramework/SPM package gate covering arm64 iOS device, arm64+x86_64 iOS simulator, and arm64+x86_64 macOS, including an isolated macOS package consumer and unsigned generic Xcode builds for iOS simulator/device. See [`docs/testing/reports/2026-09-02-apple-production-candidate-bringup.md`](docs/testing/reports/2026-09-02-apple-production-candidate-bringup.md). The production Swift/CoreBluetooth initialization, scan, connection-lifecycle, aggregate GATT-discovery, characteristic read/write, and Notification/Indication slices now implement single-owner lifecycle, serial-queue confinement, initialization state/authorization mapping, ingress delivery, one active scan, CoreBluetooth local start/stop completion, advertisement/predicate mapping, backend-private peripheral identity reuse, one lifecycle per peripheral, exact native-object plus generation correlation, connect/failure/passive-disconnect mapping, logical disconnect, callback-first route teardown, depth-first service/characteristic/descriptor discovery, duplicate-UUID instance preservation, all-or-error database publication, pending-discovery quarantine after service invalidation, one shared per-connection I/O/subscription FIFO, exact read/write/value/state callback routing, no-response backpressure/local-submission semantics, separate platform write limits, CoreBluetooth mode-selection policy, native unsubscribe-before-rediscovery, and bounded explicit fail-closed late-callback/value-route safety faults, a backend-owned serial queue, local scan filtering before peripheral retention, a bounded GATT FIFO, conservative CoreBluetooth error mapping, and exact RSSI callback correlation across the documented macOS/iOS delegate paths; rediscovery now distinguishes ready, queued native unsubscribe, and unsafe states, fails closed above 1,024 active subscriptions rather than starting discovery, and aggregate discovery enforces private pre-draft FFI/allocation guards of 128 services, 1,024 total characteristics, and 2,048 total descriptors while preserving the previously committed database on failure; wire-valid writes above the current CoreBluetooth maximum terminal as `Gatt`, not capability-level `NotSupported`; 71 deterministic macOS tests and unsigned generic iOS simulator/device builds pass. See [`docs/testing/reports/2026-09-03-apple-gatt-discovery-slice.md`](docs/testing/reports/2026-09-03-apple-gatt-discovery-slice.md), [`docs/testing/reports/2026-09-03-apple-gatt-io-slice.md`](docs/testing/reports/2026-09-03-apple-gatt-io-slice.md), and [`docs/testing/reports/2026-09-03-apple-notification-indication-slice.md`](docs/testing/reports/2026-09-03-apple-notification-indication-slice.md), and [`docs/testing/reports/2026-09-03-apple-architecture-hardening-rssi-slice.md`](docs/testing/reports/2026-09-03-apple-architecture-hardening-rssi-slice.md) for deterministic GATT/RSSI results and the completed characteristic I/O RF evidence. The current candidate now also passes the project-managed real macOS-to-OnePlus 11 `PlatformDefault` Notification RF workflow: actual mode `Notification`, exact `DE AD BE EF` value, enable/disable domain-before-terminal ordering, expected fixture-side rejection plus two-second host silence after disable, logical disconnect, and post-disconnect silence. This is not strict Indication, passive-disconnect recovery, RSSI RF, or iPhone evidence. A bundled macOS app also passed real CoreBluetooth construction, delegate ingress, and initialization event ordering. Its first terminal-launched run reported adapter `Unavailable` and authorization `NotDetermined`; after launching a visible Cocoa app through LaunchServices, the system Bluetooth prompt and TCC registration completed and the app passed a `PoweredOn + Authorized` runtime gate. The source-tree probe is ad-hoc signed, so rebuilding/re-signing may require authorization again; visible Apple Development identities were not usable by the current agent `codesign` process (`errSecInternalComponent`). This is not a development-signing pass. The OnePlus 11 Android fixture (`3ac5cc09`) subsequently passed real macOS CoreBluetooth provider-filtered scan/start/advertisement/stop/post-stop-silence, connect/`Connecting`/`Connected`, aggregate GATT service/characteristic/descriptor discovery with fixture database/CCCD validation, initial characteristic read (`00`), write-with-response (`10 20 30`) and exact readback, write-without-response (`AB CD`) local submission and exact delayed readback, commands 6 through 10 exactly-once/domain-before-terminal ledger validation, logical-disconnect, and post-disconnect-silence RF gates on the built-in `BCM_4388C2` controller (latest I/O run `RSSI=-50`, connectable). The no-response terminal remains local CoreBluetooth submission only; delayed readback is separate fixture-application evidence. A preceding run with `IOConsoleLocked=Yes` timed out before initialization and never entered RF; the passing rerun used an unlocked graphical session and bounded `caffeinate` assertion. See [`docs/testing/reports/2026-09-02-apple-initialization-slice.md`](docs/testing/reports/2026-09-02-apple-initialization-slice.md), [`docs/testing/reports/2026-09-02-apple-scan-slice-macos-runtime.md`](docs/testing/reports/2026-09-02-apple-scan-slice-macos-runtime.md), [`docs/testing/reports/2026-09-02-apple-android-scan-rf-connection-slice.md`](docs/testing/reports/2026-09-02-apple-android-scan-rf-connection-slice.md), and [`docs/testing/reports/2026-09-03-apple-android-gatt-discovery-rf.md`](docs/testing/reports/2026-09-03-apple-android-gatt-discovery-rf.md). The Mac mini exposes UB500 `2357:0604` at the USB layer but not as an `IOBluetoothHCIController`; CoreBluetooth still uses the built-in controller, and the Linux/BlueZ BLESS fixture cannot run directly against that dongle on macOS. A separate Debian arm64/HVF macOS fixture path now passes image provision, guest boot, `linux-aarch64` environment install, and source/profile sync. QEMU 11.1.1/libusb can exclusively claim the UB500 and Linux binds `btusb`, but Realtek HCI command `0xfc61` times out under both xHCI and a temporary OHCI diagnostic, leaving zero BlueZ controllers; BLESS advertising and Apple BLESS scan RF therefore did not run and this remains a fixture-infrastructure limitation, not an Apple backend failure. See [`docs/testing/reports/2026-09-02-apple-bless-qemu-macos-bringup.md`](docs/testing/reports/2026-09-02-apple-bless-qemu-macos-bringup.md). A connected iPhone 14 is visible and its production HIL passed development signing, installation, launch, and CoreBluetooth initialization runtime on 2026-09-04; iPhone RF remains unrun. See [`docs/testing/reports/2026-09-04-apple-ios-production-runtime.md`](docs/testing/reports/2026-09-04-apple-ios-production-runtime.md). Applicable Apple gates must rerun after ABI freeze; macOS evidence never proves iOS. On 2026-09-03 the Apple fixture topology was corrected after inspecting the official BLESS `0.3.0` wheel: upstream BLESS has a native CoreBluetooth server backend even though the existing managed fixture lock was Linux-only. A root `apple-bless` Pixi environment, native process controller, and provider-isolated `blehub-macos-bless-basic-gatt-v1` profile (`FFD0...`) now pass non-RF backend/profile checks. Native macOS BLESS uses the system-selected built-in controller and is intended as a second Peripheral for iPhone Central tests; it never uses UB500 and does not replace Windows-hosted Linux/BlueZ/BLESS + UB500 fault/soak evidence. No native macOS BLESS advertising or iPhone RF pass is yet claimed. The Apple Silicon arm64/HVF QEMU control path is retained for command/readiness parity with Windows. A physical UB500 cold-plug recheck fixed a Unix QEMU child-lifetime bug by starting it in a new session and proved VM/QMP/SSH persistence, but default passthrough again reached `btusb` then failed Realtek `0xfc61` with zero BlueZ controllers. A bounded `guest-resets-all` experiment made guest USB enumeration worse and was removed; attach timeout now performs failure-atomic QMP rollback. See [`docs/testing/reports/2026-09-03-apple-native-macos-bless-design.md`](docs/testing/reports/2026-09-03-apple-native-macos-bless-design.md) and [`docs/testing/reports/2026-09-03-apple-qemu-ub500-cold-plug-recheck.md`](docs/testing/reports/2026-09-03-apple-qemu-ub500-cold-plug-recheck.md).
-- The iPhone HIL uses the staged production package, a direct Swift `BleEventSink`, a shared pure-Swift helper also used by the macOS runtime probe, tracked XcodeGen YAML (`tests/hil/apple/ios/project.yml`), and official `xcodebuild`/`xcrun devicectl` JSON interfaces through `tools/apple/test_ios_runtime.py`. Its project generation and unsigned generic iOS build pass. XcodeGen 2.46.0 is a shared Homebrew tool installed only by the explicit `pixi run -e apple-ci just apple install-tools` recipe; ordinary workflows verify it but never install or update it. The connected iPhone 14 is visible, Developer Mode is enabled, the unique non-Personal development team is selected, and Swift/SPM compilation plus automatic provisioning reached final code signing. The device app is now recorded as signed, installed, launched, and runtime-passed for production CoreBluetooth initialization; the explicit human-only login-keychain and Apple signing-tool key-partition workflow was required. Unlocking is an explicit human-only `pixi run -e apple-ci just apple unlock-login-keychain` step; ordinary tests never request or accept a password. Test-layer responsibilities and the real Hub/Stable-UniFFI/Swift/CoreBluetooth HIL path are documented in [`docs/research/testing-layer-responsibilities.md`](docs/research/testing-layer-responsibilities.md).
-- The project-managed Kotlin development fixture under `tests/peripherals/android` has verified build/deploy/advertising and ADB control on an Android phone. The authoritative QEMU Debian + BlueZ/BLESS managed peripheral now boots from pinned assets and exclusively owns the TP-Link UB500 through WinUSB; guest doctor, profile advertising/readiness, Windows scan/connect/public GATT discovery, and one stop/detach/rebuild/start/reattach recovery passed on 2026-08-31. Android and QEMU now use semantically aligned but provider-specific JSON profiles with distinct profile IDs, local names, and advertised/root service UUIDs (`FFF0...` versus `FFE0...`) so concurrent fixtures cannot match the same service filter. The production `WindowsBackend` initialization/scan/filter/advertisement/stop, connect/private uncached GATT service probe/logical disconnect, public uncached service/characteristic/descriptor discovery plus unified database mapping, public characteristic read/write-with-response/write-without-response with deterministic readback, and `PlatformDefault` Notification plus strict Indication enable/value/disable with deterministic Android payload and post-disable stale-route silence RF smokes have passed. Concurrent provider-specific service-filter isolation also passed. One earlier notification attempt selected the concurrently advertising QEMU fixture under the old shared service UUID and remains neither pass nor fail evidence. The same candidate then passed QEMU/BLESS scan/connect/public GATT discovery, deterministic read/write readback, `PlatformDefault` Notification, strict Indication, disable stale-route silence, and capability-false connected RSSI terminal behavior. Detaching the guest-owned UB500 produced a passive `command_id=None` disconnect; reattach, guest doctor, fixture restart, and new readiness also passed. Stopping only the BLESS service did not produce a Windows disconnect and is not backend evidence. The Android phone was not ADB-connected for the later comparison rerun, so earlier Android evidence was not relabeled as a current-candidate rerun. At that point, BlueZ/guest/host reboot recovery, repeated USB fault recovery, WHPX-after-reboot, and soak had not yet been recorded as passed. LightBlue is only a manual fallback.
-- On 2026-09-01 the RF-tested candidate was reorganized into private initialization, scan, GATT, mapping, and error modules while keeping `WindowsBackend` as the only public Windows export; 28 Windows tests, 103 workspace tests, Clippy, Ruff, rustfmt, and profile isolation passed. The connected Android fixture then reran the full scan/connect/GATT/read/write/Notification/Indication matrix successfully. Android application-level `BluetoothGattServer.cancelConnection()` produced server-side `status=0 state=0` but no WinRT device-level disconnect at 30/60-second observation windows, including after retained public GATT discovery, so it is not a valid device-loss trigger. Disabling the same phone's Bluetooth radio and waiting for `STATE_OFF` immediately produced the required passive `command_id=None` `Disconnected`; radio enable, `STATE_ON`, and fixture restart recovered successfully. See [`docs/testing/reports/2026-09-01-windows-android-current-candidate-smoke.md`](docs/testing/reports/2026-09-01-windows-android-current-candidate-smoke.md). A subsequent non-RF candidate moved potentially reentrant WinRT teardown outside the event-delivery lock with explicit connection/GATT cleanup gates, extracted `connection.rs`, split GATT into parent/discovery/I/O/test modules, removed unbounded historical caller-ID tombstones, redacted raw Bluetooth addresses from default scan tracing, and hardened standalone Windows HIL subprocess/disposal/recovery reporting. It passed 34 Windows tests, 109 workspace tests, strict Clippy, Ruff, rustfmt, and provider-profile isolation. This hardened candidate then reran and passed the QEMU/BLESS non-destructive scan/connect/public GATT/read/write/`PlatformDefault` Notification/strict Indication matrix, including deterministic payloads and post-disable stale-route silence; see [`docs/testing/reports/2026-09-01-windows-hardened-cleanup-qemu-rf.md`](docs/testing/reports/2026-09-01-windows-hardened-cleanup-qemu-rf.md).
-- The latest Phase 2 candidate now passes 39 Windows tests and 114 workspace tests. The OnePlus 11 Android fixture (`3ac5cc09`) reran the non-destructive scan/connect/GATT/read/write/Notification matrix; the combined process was interrupted near strict Indication, so strict Indication was rerun independently and passed rather than inferred. The same candidate retains the complete QEMU/BLESS non-destructive matrix evidence. Standard Cargo staged archives, metadata-enforced source isolation, the offline locked `tests/consumers/windows` artifact-only consumer, and the user-facing `examples/windows-central` strict-Clippy gate all pass. See [`docs/testing/reports/2026-09-01-windows-current-candidate-rf-packaging-summary.md`](docs/testing/reports/2026-09-01-windows-current-candidate-rf-packaging-summary.md). A release-build 20-byte throughput matrix ran three 200-operation batches for Android and QEMU. The latest ledger-accounted rerun measured QEMU median uncached read, callback-confirmed write-with-response, no-response WinRT terminal, and no-response Peripheral callback rates of 17.9, 16.7, 1,263.6, and 91.8 ops/s; Android measured 8.3, 8.3, 1,262.4, and 844.7 ops/s. Every write batch reached 200/200 unique fixture callbacks with zero missing, duplicate, out-of-order, out-of-range, foreign-batch, or malformed values. WinRT no-response terminals remain local/native progress and are not relabeled as remote throughput. Earlier lossless Notification medians were 85.1 ops/s for QEMU and 820.0 ops/s for Android. QEMU HCI evidence observed a 30 ms write-stage connection interval and 54.732 ms median ATT Write Request spacing. One unpaced BLESS burst delivered only 183/200; formal 0.5 ms requested guest-pacing and Android callback-backpressure runs had zero sequence gaps, duplicates, or order violations. These are application-boundary values, not raw PHY throughput; see [`docs/testing/reports/2026-09-01-windows-android-qemu-throughput-matrix.md`](docs/testing/reports/2026-09-01-windows-android-qemu-throughput-matrix.md). The final 10-cycle scan/connect and full active-resource accounting smokes now pass with 40 feature-enabled Windows tests and exact per-cycle logical-root and callback-delegate return to zero. The same candidate then passed one OnePlus 11 radio-disable and one QEMU UB500-detach active-subscription passive-disconnect gate, including `command_id=None` disconnect, pre-dispose connection/GATT/subscription resource release, post-dispose exact-zero accounting, and provider recovery; see [`docs/testing/reports/2026-09-02-windows-passive-disconnect-resource-recovery.md`](docs/testing/reports/2026-09-02-windows-passive-disconnect-resource-recovery.md). Those gates were subsequently executed in the 2026-09-02 follow-up described below; this earlier report remains the evidence for the single-cycle passive-disconnect boundary.
-- A throughput follow-up added a nonfatal Windows `ThroughputOptimized` connection-parameter request, 20–512-byte HIL payloads, Android PHY/MTU callback evidence, and a QEMU throughput-only active-PHY control. Android confirmed MTU 517 and 2M/2M; 244-byte no-response writes and Notifications reached about 98 KiB/s (~0.8 Mbit/s) at the Peripheral/BleHub application boundaries without sequence loss. QEMU confirmed MTU 517, DLE 251, 15 ms interval, and active 2M/2M, but 244-byte no-response writes remained about 21.7 KiB/s and Notifications about 1.99 KiB/s. Guest HCI evidence identified the UB500's 27-byte × 8 LE ACL host buffer (v2 buffer-size unsupported) as the long-Notification fragmentation limit. Repeated 512-byte QEMU reads disconnected and are not recorded as passed; the stable QEMU matrix is limited to 20/100/244 bytes.
-- The consolidated 2026-09-02 follow-up passed four strict 1,000-packet Android/QEMU Notification/Indication soaks with zero sequence loss, three destructive recovery cycles per provider, and four faults synchronized with entered WinRT read/write/CCCD/value callbacks. The provisioned QEMU image was refreshed; BlueZ restart passed, and a TCG same-process guest reboot completed guest shutdown plus SSH/controller/fixture/doctor/Windows-scan recovery under the then-current controller. QEMU 11.1.0 under WHPX instead paused with `Unexpected VP exit code 4` after guest shutdown, while a fresh WHPX process restored UB500, BlueZ/BLESS, doctor, and Windows scan. Same-process WHPX guest reboot is therefore an accepted fixture-infrastructure limitation; fresh-process restart is the supported WHPX recovery path. Elevation scripts, Zadig execution, and USB rollback were hardened against the reviewed TOCTOU/identity risks and passed static checks, but the UAC-changing operations were not executed. The reboot controller was subsequently strengthened to require a changed Linux boot ID, but that TCG RF assertion has not been rerun. A real Windows host reboot also remains unexecuted. See [`docs/testing/reports/2026-09-02-windows-phase2-fault-soak-reboot-hardening.md`](docs/testing/reports/2026-09-02-windows-phase2-fault-soak-reboot-hardening.md). The explicit Phase 2 exit review passed. Neither unexecuted boundary is claimed as passed.
-- Project-authored research belongs under [`docs/research/`](docs/research/).
-- Downloaded platform API evidence belongs under [`docs/platform-api-reference/`](docs/platform-api-reference/).
-
-## Source Of Truth Order
+Read this file before researching or changing BleHub. It contains durable rules and navigation,
+not a run log.
 
 When sources disagree, use this order:
 
-1. Explicit instructions in the current user conversation.
-2. This `AGENTS.md`.
-3. The reviewed decisions in [`.plan/PLAN.md`](.plan/PLAN.md).
-4. Project-authored research in [`docs/research/`](docs/research/).
-5. Locally downloaded official platform API references in [`docs/platform-api-reference/`](docs/platform-api-reference/).
-6. Relevant source repositories already present in the workspace.
-7. External online material only when the required information is not available locally.
+1. Current user conversation.
+2. This file.
+3. [`.plan/PLAN.md`](.plan/PLAN.md), the single approved architecture plan.
+4. `docs/research/`, downloaded official evidence, local source, then narrow official online material.
 
-A research report records evidence and recommendations; it does not silently override the plan. Proposed architectural changes must be made explicit in the plan and reviewed by the user.
+Reports preserve candidate facts and failures; they do not change the plan, freeze ABI, or turn a
+pending gate into a pass.
 
-## Local-First Research Policy
+## Current baseline
 
-### Always inspect local source first
+- Release order: **Apple → Android → Apple + Android ABI freeze**. Windows and old Tauri/BLESS/QEMU/
+  Android-Peripheral/RN-macOS lanes are historical unless explicitly re-admitted by the plan.
+- Active Peripheral: standalone **nRF52840 Multifunction Fault v2 + BTP**. Resolve live identity,
+  capabilities and installed image from receipts and the physical lease; build evidence is not RF evidence.
+- RF priority: real Mac controller, real Android/iPhone Central and physical nRF52840 DK. Sniffer is
+  passive diagnostics; no silent firmware, radio, permission or Linux/BabbleSim setup.
+- RN has one workbench: **Tests → Current run → Evidence**. Browsing issues no BLE commands. Host
+  tooling owns installation, physical control, cleanup and final bundle verdict.
+- UI gates target platform-native drivers (iOS XCTest, Android instrumented). The iOS in-process
+  scene driver is live: a host-owned declarative plan over the App's pinned machine surface, one
+  `XCTAttachment` receipt read back with `xcresulttool export attachments`, no WDA/Appium/tunnel.
+  It cannot scroll by design — a machine fact the tree lacks is pinned in the App instead — and it
+  answers only system prompts its plan declares, by declared title and button text. The managed
+  envelope is driver-independent (`SceneDriver`): **every** managed iOS scene (`scan`, `notification`,
+  `indication`, `io`, `cancellation`, `write-reject`, the two `ccc-*-reject` scenes,
+  `passive-disconnect`, `recovery`, `recovery-ten`, `background`, `disconnect`, `connect-failure`)
+  now runs in-process
+  through the same
+  admission/lease/fixture/cleanup path, so iOS keeps no Appium lane at all. Android now has the
+  same in-process shape (`scene_android_native` + `BlengSceneDriverInstrumentedTest` over the
+  same plans), with one platform fact encoded: an instrumented test runs inside the target
+  package's own process, so a scene is one process whose host actions are in-band `handoff`
+  steps, and binding/cleanup prove the installation rather than the launch pid. A repeated
+  host action is one *occurrence* per request file, never one per action name — a scene that
+  drops the peer every cycle must be answered every cycle. Twenty managed scenes exist; on
+  the real Android device `scan` … `indication`, `background`, `io`, `disconnect`,
+  `connect-failure`, `cancellation`, `write-reject`, the two `ccc-*-reject` scenes,
+  `passive-disconnect`, `recovery` and `recovery-ten` passed in one sequence on 2026-11-24, and
+  `link-facts` (MTU query/request, connection priority, GATT-cache invalidation) passed on
+  2026-11-25 as its own run, then `descriptor-io` (the peer's own CCCD read across a
+  subscription's lifecycle) and `devices-query` (the platform's `connected` inventory must
+  contain the linked peer) each passed on 2026-11-25 as its own run, `auto-connect` (a
+  standing "connect when the peer appears" request, proved against a peer the host had
+  withdrawn) passed on 2026-11-26 as its own run, `devices-kinds` (`bonded`/`companion`
+  inventories, answered with no peer and no link at all) passed on 2026-11-26 as its own run, and
+  `adapter-control` (radio power in both directions, also with no peer: both platforms refuse,
+  Android at the operation terminal and Apple at dispatch) passed on both devices the same day.
+  `auto-connect` introduced the `Probe` page:
+  capabilities outside the observation main line get their own pinned surface instead of
+  growing `CommandConsole`, whose fixed height has caused two real regressions. Each of the
+  newest five caught a real defect: `disconnect` (App claimed `subscribed` on a dead link),
+  `connect-failure` (machine surface reported a failed connect as `failure=none` while the
+  panel and ledger carried it), `link-facts` (a longer control strip pushed a later control out
+  of the viewport, where Android renders nothing), `descriptor-io` (a `tapUntil` whose expected
+  value already equalled the on-screen value was skipped entirely, so the final "unchanged" read
+  was a fake witness; fixed with a monotonic `descriptorReadTotal` and a plan-declared `advance`
+  guard) and `devices-query` (verification exposed that `tapUntil` with `advance` re-tapped
+  before its operation settled, overflowing the App's 32-entry ledger window and dropping the
+  scene's first actions; fixed in both drivers by waiting for the counter to advance after each
+  tap, and `_require_ledger` now refuses a truncated window explicitly). `auto-connect` caught
+  no App defect; it caught a missing page declaration in its own plan, which is now stated as a
+  `workbench-page` wait so moving a control between pages fails by name. `devices-kinds` caught
+  a structural one: the probe borrowed a `ScanRun` the scene never creates, so the button was
+  enabled and the handler returned immediately; inventories other than `connected` are now
+  fenced on an owner-scoped probe record instead of a run (and its ledger shape is derived from
+  each answer, so "one answered, one refused" is legal where "both the same" is not required).
+  **Sequences**: the whole order passed in one Android run on 2026-11-26 (`scene_sequence=passed`,
+  all 20, every bundle `integrity=passed`, `cleanup_errors=[]`, 11.9 min; closing run
+  `.work/android-native-sequence/2026-11-26-d`, report
+  `docs/testing/reports/2026-11-26-closed-loop.md`), including `background`. That scene's earlier
+  failure was not a flake but a **fake witness**: the post-return pull's wait was satisfied by the
+  value already on screen, so `drained` was read before the away-window value arrived
+  (`notifyTotal=1`, then 2 a moment later). The plan now waits on the App's own counter. iOS has
+  its own sequence: the whole order also passed in one iPhone run on 2026-11-26
+  (`scene_sequence=passed`, all 20, every bundle offline `integrity=passed`, `cleanup_errors=[]`,
+  33.4 min; report `docs/testing/reports/2026-11-26-ios-sequence-20.md`). Both platforms' sequences
+  in the same batch, with the 4 native lanes, 6 artifact consumers and 9 snapshots, are recorded in
+  `docs/testing/reports/2026-11-26-closed-loop.md`. Three iOS scenes have paid an extra 9-23 min
+  (`link-facts` 1407 s, `ccc-enable-reject` 1168 s, `devices-kinds` 553 s) while the same plan
+  standalone runs in 13-36 s. The shape is measured: one press costs `press≈120.6 s` while
+  `hittable≈0.1 s`, and `setText` spends ~61 s inside a single element query — XCTest's 60 s units,
+  i.e. the device's automation channel degrading and recovering, with no code-level cause found.
+  Mitigations: `tap` records `hittable=`/`press=`, a slow phase keeps XCTest's own console tail,
+  the iPhone display is checked before any lease (a sleeping screen accepts every command and
+  answers none — measured as a device screenshot with luminance 0 while `lockState` said unlocked),
+  and no plan waits on a transient state it can prove another way. The `auto-connect` scene also
+  states that an *immediate* adoption of the resumed advertisement is its expected answer; the
+  fixture used to refuse it, which made the scene a race against the App's own retry timer.
+  Those iOS rounds caught six real
+  defects: the software keyboard stayed up after `setText` and covered pinned controls
+  (`pull-notification` at y≈622 under a keyboard spanning y 578–926) — the title is now the
+  App's tap-to-dismiss surface and the driver retires the keyboard after every text entry;
+  `linkEnd` still said `operator` while the package's own vocabulary is `requested`; the Apple
+  backend decoded a CCCD's value only as `Data` although CoreBluetooth delivers an `NSNumber`;
+  a direct CCCD write made CoreBluetooth *assert and abort* — it is now a typed `NotSupported`
+  at the dispatch boundary, published as `descriptorWrite=unsupported`; `failureIdentity` let a
+  platform detail without a code (`[Android/not reported …]`) beat `domain/code` and discarded
+  the only assertable word; and the App matched one full `not_supported` code although the
+  supervisor composes it per boundary. Both are now one rule each — `isNotSupported` in the App
+  and `is_not_supported` in the host, on the code's terminal segment — and every ledger
+  derivation accepts a refusal at either boundary (submission or operation terminal), because
+  that is one answer, not a broken record (reports
+  `docs/testing/reports/2026-11-26-ios-seven-scenes.md` and
+  `docs/testing/reports/2026-11-26-adapter-control-scene.md`). The Android side of the
+  scenes whose plans or App behaviour changed was re-run the same day (`disconnect`,
+  `descriptor-io`, `auto-connect`, `adapter-control`). Appium (driver, toolchain,
+  helper APKs, HANS policy and every recipe) was deleted on 2026-11-23: nothing is kept as a
+  fallback diagnostic. Maestro was removed
+  2026-11-22; Detox is source feasibility only. HANS (this ROM's process classifier) **is
+  enabled** on the lab phone, and the stall recorded against it belonged to the deleted Appium
+  UiA2 helper UID — the in-process lane has no such process and the evidence layer refuses a
+  HANS receipt. The one process a scene depends on runs a `connectedDevice` foreground service
+  exactly while it is backgrounded (measured), which is outside the AOSP freezer's cached band,
+  and `background` passes in that state. If the App is ever observed hung, diagnose in this
+  order: HANS props → foreground service present in the away window → trace has `notify:resumed`
+  → only then an explicitly authorized classification read. Never whitelist a helper or toggle
+  HANS globally (report `docs/testing/reports/2026-11-26-hans-rescope.md`).
+- ABI is unfrozen and review readiness is not release/Phase exit. Stress remains deferred until a
+  functionally converged, human-reviewed, release-shaped candidate exists.
 
-When investigating a library, API, behavior, or architecture:
+## Architecture guardrails
 
-1. Search the current workspace first.
-2. Use `codegraph` against the relevant local repository before using broad text searches.
-3. Read the actual implementation and tests rather than relying on remembered behavior, package summaries, or third-party articles.
-4. Record whether a conclusion is:
-   - verified by local source or official API evidence;
-   - inferred from that evidence;
-   - still unverified and requires a spike.
+- `crates/blehub` owns canonical `BleHub`, commands/DTOs/events/errors, foreign traits and direct
+  ingress; it owns no runtime, worker, timer, mailbox or canonical BLE state.
+- `crates/blehub-uniffi` and `crates/bleng-uniffi` each own one final Stable UniFFI image for their
+  package line. Never add a duplicate API/image for a test.
+- Commands are fire-and-forget. BLeng `begin_*` is a separate bounded submission boundary with async
+  wait and independent cancel.
+- Backends own native handles, callback correlation, bounded serialized I/O and watchdogs. Native
+  submission is not remote delivery; platform cancellation is not rollback; process death is not resource-zero.
+- Production backends live under `platforms/`; reusable Rust support under
+  `tests/support/blehub-testkit`; FFI/artifact consumers stay separate from UI/RF scenarios. Apple
+  uses CoreBluetooth directly; Android uses Framework BLE APIs.
 
-Do not browse the web merely to get a newer or more convenient copy of material that is already available locally.
+### API snapshots are the freeze's mechanical stand-in
 
-### Relevant local repositories
+The nine reviewed snapshots (`api-snapshots/{rust,kotlin,swift}.txt` for BleHub,
+`bleng-*.txt`, `supervisor-*.txt`) are generated from the canonical images and compared in CI by
+`binding snapshot-check` / `binding bleng-snapshot-check`. They are not documentation: they are the
+thing that fails when a public shape drifts.
 
-The workspace currently provides these source trees:
+Updating them is a **reviewed act**, never a repair:
 
-| Project | Workspace path | Use |
-|---|---|---|
-| BleHub | `D:\projects\blehub` | Current plan, research, tools, and future implementation |
-| BoltFFI | `D:\projects\contrib\boltffi` | FFI generator/runtime implementation, generated bindings, packaging code, examples, and tests |
-| espkit | `D:\projects\users\hyc\espkit` | Optional BLE domain reference, especially `crates/std/btleplus`; it is not BleHub's architecture baseline |
+- allowed: a deliberate public-API change whose DTO/handle/error shape was reviewed, compiled by all
+  consumers, and recorded in a report under `docs/testing/reports/`;
+- never: running `snapshot-update` to make a red gate green, to land a refactor's incidental output,
+  or because a generated file was easier to regenerate than to read;
+- the update lands with the change that causes it, so the diff of the snapshots is part of that
+  review, and re-adding a removed symbol later is an unfreeze, not a fix.
 
-When investigating BoltFFI behavior, query `D:\projects\contrib\boltffi` directly. Do not infer capabilities only from generated API names or old discussion.
+After the freeze, scenes may still be added (a scene is not ABI); any DTO, handle, error or
+snapshot change goes through that review again.
 
-When investigating `btleplus`, follow `espkit/AGENT.md` and its `.planning/` source-of-truth rules. Reuse only domain structures or behavior that fit BleHub's deliberately thin architecture.
+## Research, safety and change discipline
 
-### Native platform API evidence
+- Inspect local source, tests and indexed codegraph first. Label conclusions as verified, inferred or
+  unverified. Keep scenario policy above generic helpers.
+- Change code in its owning repository. Before adding a helper/entry, check owners, imports, Just
+  recipes and discovery; do not create duplicate codecs, registries or runners for symmetry.
+- Preserve identity, lease, deadline, permission, error, watchdog, rollback, cleanup and sealed-failure
+  contracts. Do not weaken them to make tests pass.
+- Do not adopt unknown sessions, kill/restart foreign ADB daemons, flash/reset firmware, toggle DUT
+  radio or close unknown Apps. Destructive mobile/RF actions require explicit scope and a fresh lease.
+- Use `pixi run just <recipe>`. Ordinary runs do not install tools, accept licenses, request passwords
+  or replace SDK/Xcode. Signing, keychain unlock, `sudo` and developer authorization are human-only.
 
-Official platform BLE Central references have already been downloaded to:
+## Git, validation and documentation
 
-```text
-docs/platform-api-reference/
-├── windows/
-├── android/
-├── apple/
-├── bluez/
-├── README.md
-└── sources.lock.json
-```
+- Inspect the worktree first. Preserve unrelated changes; do not stash/reset/clean, commit, push or
+  create branches unless explicitly requested.
+- Keep one architecture plan. Put durable responsibilities in `docs/research/`, candidate facts in
+  `docs/testing/reports/`, and consumer ownership in `tests/consumers/README.md`.
+- Start with targeted checks, then relevant combined checks. Report exact commands and results; do not
+  infer current passes from old reports, package builds or synthetic tests.
+- For tooling/docs run `pixi run just fmt` and `pixi run just lint`; for Markdown run
+  `pixi run just docs-check-mermaid` when applicable. Authored Markdown must be UTF-8, fenced,
+  conflict-free and free of trailing whitespace.
 
-Use these local snapshots before looking online:
+## Evidence entry points
 
-- Windows: WinRT Bluetooth API documentation.
-- Android: Android 36 Bluetooth Framework source and Javadocs. The API is Java-defined even though the backend will be written in Kotlin.
-- Apple: CoreBluetooth documentation snapshots for iOS and macOS.
-- Linux: BlueZ D-Bus API documentation.
+- Plan: [`.plan/PLAN.md`](.plan/PLAN.md)
+- Responsibilities: [`docs/research/cross-cutting/testing-layer-responsibilities.md`](docs/research/cross-cutting/testing-layer-responsibilities.md)
+- ABI freeze readiness (mechanical gates, human review items, what is explicitly not a freeze condition): [`docs/research/cross-cutting/abi-freeze-readiness.md`](docs/research/cross-cutting/abi-freeze-readiness.md)
+- Apple gates: [`docs/testing/apple.md`](docs/testing/apple.md)
+- RN host ownership: [`docs/research/react-native/react-native-host-tooling-architecture.md`](docs/research/react-native/react-native-host-tooling-architecture.md). Test layering, conventions and guards: [`docs/research/react-native/host-tooling-test-architecture.md`](docs/research/react-native/host-tooling-test-architecture.md). Async/await convenience layer over `begin*`/`wait`/`cancel`: [`docs/research/react-native/pending-operation-layer.md`](docs/research/react-native/pending-operation-layer.md). Background/foreground `background` scene and its declared dwell window: [`docs/research/react-native/background-connection-scene.md`](docs/research/react-native/background-connection-scene.md). Generated signature-level TypeDoc site (derived from specs, never hand-edited): [`docs/research/react-native/typedoc-site.md`](docs/research/react-native/typedoc-site.md). The former RF-lab protocol doc is historical: [`docs/research/archive/react-native-rf-lab-test-architecture.md`](docs/research/archive/react-native-rf-lab-test-architecture.md)
+- Functional convergence: [`docs/testing/reports/2026-10-25-core-functional-convergence.md`](docs/testing/reports/2026-10-25-core-functional-convergence.md)
+- Historical Appium diagnosis (lane removed 2026-11-23): [`docs/testing/reports/2026-11-10-formal-android-appium-root-cause-diagnosis.md`](docs/testing/reports/2026-11-10-formal-android-appium-root-cause-diagnosis.md)
+- Android in-process scene lane (first device pass, root causes): [`docs/testing/reports/2026-11-23-android-native-scene-lane.md`](docs/testing/reports/2026-11-23-android-native-scene-lane.md)
+- Historical Appium upstream review (lane removed 2026-11-23): [`docs/testing/reports/2026-11-10-formal-android-appium-upstream-review.md`](docs/testing/reports/2026-11-10-formal-android-appium-upstream-review.md)
+- Consumer ownership: [`tests/consumers/README.md`](tests/consumers/README.md)
 
-The platform subdirectories are generated evidence. Do not hand-edit files under `windows/`, `android/`, `apple/`, or `bluez/`.
-
-Refresh them only through:
-
-```text
-pixi run just docs-update
-```
-
-### Missing external source
-
-If required information is absent locally:
-
-- A small, narrowly scoped official page may be queried online only when it is genuinely needed and the local snapshots do not contain the answer.
-- Prefer official specifications, vendor documentation, and upstream source over blogs or summaries.
-- If a large library or repository is important enough that its implementation must be audited, do not clone or download the large repository automatically. Tell the user exactly which repository, revision/tag, and reason are needed, and ask the user to add it to the workspace.
-- After the user provides the repository, initialize/query it with `codegraph` and inspect its source locally.
-- Do not introduce a dependency based only on online documentation when its ownership, threading, runtime, FFI, or lifecycle behavior is architecture-critical.
-
-## Project Architecture Guardrails
-
-The current intended architecture is a thin cross-platform BLE Central contract:
-
-- `crates/blehub` owns and exports the production `BleHub` object, unified DTOs/errors, foreign `BleBackend`, foreign `BleEventSink`, direct ingress, command API, and event API.
-- `crates/blehub-uniffi` is the only final UniFFI native-image, bindgen, and production-package owner; it defines no second API.
-- `BleBackend` and `BleEventSink` use ordinary non-async methods.
-- Commands are fire-and-forget:
-  - synchronous `Result` means accepted/rejected for dispatch;
-  - eventual platform/BLE outcomes are events.
-- The caller owns command IDs, timeout policy, cancellation policy, stale/late/duplicate event handling, and business state.
-- BleHub core owns no runtime, executor, worker thread, mailbox, timer, event loop, or canonical BLE device/GATT state.
-- Backends own unavoidable platform handles, callback correlation, and serialized native GATT operations.
-- Native backends retain the exported `BackendEventIngressHandle`, whose Rust implementation holds only a weak reference to per-Hub ingress state; there is no token or process-local routing registry.
-- Rust, Swift, or Kotlin downstream code supplies the foreign `BleEventSink` and decides whether events go to a channel, actor, UI loop, or runtime.
-
-Current platform direction:
-
-| Baseline order | Platform | Backend direction |
-|---:|---|---|
-| 1 | Windows | Rust + `windows-rs`; Phase 2 reference implementation complete |
-| 2 | macOS/iOS | One shared Swift + CoreBluetooth + Stable UniFFI backend; macOS first, iOS independently validated in Phase 3 |
-| 3 | Android | Kotlin + Android Framework BLE + Stable UniFFI in Phase 4 |
-| 4 | Linux | Rust + `dbus-rs` + BlueZ D-Bus in Phase 6 |
-
-The baseline order records dependency and release sequencing. Phase 3 Apple completes before Phase 4 Android; Phase 5 freezes the shared Windows + Apple + Android v0.1 production ABI. Stable UniFFI direct ingress is the production mechanism. Swift production-candidate runtime/ARC, lifecycle, fault isolation, packaging, and performance gates still require validation before Apple artifacts can ship; before the public ABI is frozen, any Apple result applies only to the tested unfrozen candidate. Apple production transport uses the system CoreBluetooth framework directly. High-level Swift BLE wrappers that own async/reactive execution, timers, retries, operation queues, or canonical BLE state are not used. The pinned local-source audit of Nordic `IOS-CoreBluetooth-Mock` `1.0.6` found that complete-backend use would require a broad second CBM wrapper/delegate type system while its scan queue, native wrapper identity, and no-response flow-control behavior cannot serve as CoreBluetooth authority; it is therefore not added to the current production or test targets. See [`docs/research/swift-ble-ecosystem-assessment.md`](docs/research/swift-ble-ecosystem-assessment.md).
-
-## Dependency And Tooling Rules
-
-- Rust dependencies are managed by Cargo once the Rust workspace is approved and created.
-- External development tools are managed by Pixi.
-- Project recipes are defined in `justfile`.
-- `just` itself is managed by Pixi.
-- Run project recipes through Pixi:
-
-```text
-pixi run just <recipe>
-```
-
-Do not assume globally installed Python, Ruff, Just, RTK, sccache, or other tools. Test recipes route verbose Cargo/Gradle output through Pixi-managed RTK; RTK is an output filter only and must preserve command selection, failure detail, and exit status. Pixi-managed sccache wraps ordinary Rust compilation and eligible C/C++ glue with Cargo incremental disabled to avoid duplicate caches; it does not reduce required final artifacts and does not cache Swift/Kotlin compilation. Stable UniFFI scaffolding is generated by the locked proc macro during ordinary Cargo builds; Kotlin/Swift source, headers, and module maps are generated by the locked bindgen from the same candidate library.
-
-Except for Apple Swift/Xcode, machine-local configurable toolchain roots resolve through `BLEHUB_<TOOL>_ROOT` and ignored `blehub.local.toml` overrides. Android then honors `ANDROID_HOME`/`ANDROID_SDK_ROOT` and otherwise uses the platform-standard shared SDK location (`~/Library/Android/sdk` on macOS, `%LOCALAPPDATA%/Android/Sdk` on Windows, or `~/Android/Sdk` on Linux), so Android Studio and other projects can reuse the pinned packages. Other project-managed tools fall back to `~/.cache/blehub/toolchains/<tool>`. Apple Swift comes only from the Xcode installation selected by `xcode-select` on the project real Mac mini; there is no `BLEHUB_SWIFT_ROOT`, local `swift_root`, or project Swift bootstrap. Copy `blehub.local.example.toml` for stable developer-machine overrides; future non-Apple CI may use environment variables. Keep only machine-local paths and endpoints in local config; pin versions, URLs, hashes, repositories, and license policy in tracked scripts and locks. Use `pixi run just toolchain-paths` to inspect applicable effective values. Bootstrap/install recipes must be explicit; ordinary build and test recipes must not silently install Android SDK/NDK, replace Xcode/Swift, or accept licenses.
-
-The user-approved development workflow uses two independent Git clones sharing one GitHub remote and commit history, with both Windows and the real Mac mini developing on `main`. There are no maintained per-host branches. Both hosts may commit and push `main` when explicitly authorized; Windows is no longer the sole Git owner. Before starting work, use `git pull --ff-only` with a clean worktree. If both hosts have committed and the histories diverge, fetch, review and merge `origin/main`, resolve conflicts and validate before pushing; never force-push to overwrite the other host. Exchange changes through Git, never live filesystem synchronization between the two worktrees. Migration starts by publishing the current Windows checkout as the common baseline, then cloning that history on the Mac while preserving its old working directory. A Mac repository with no commits is not yet a migrated clone. See [`docs/git-workflow.md`](docs/git-workflow.md) for setup and daily use.
-
-The BleHub Mutagen project has been terminated and its daemon stopped for this migration. Do not restart it against the independent Windows/Mac Git worktrees. The existing `tools/mutagen_sync.py` and Just recipes remain available only for an explicitly requested temporary non-Git copy; they are not the maintained collaboration workflow or part of build/runtime/package. They retain `two-way-safe`, VCS ignores, and ignored local endpoint configuration. Never copy `.git` between hosts. Machine configuration, tool environments, work directories, and generated/build output remain local. A Git push/merge or historical Mutagen transfer does not transfer build, runtime, package, or RF evidence between platforms; validate the relevant gates on each host against the identified candidate.
-
-Current recipes include:
-
-```text
-pixi run just docs-update
-pixi run just docs-check-mermaid
-pixi run just fmt
-pixi run just lint
-```
-
-Prefer mature ecosystem libraries where they clearly reduce risk or maintenance. “Thin core” means limited responsibility, not a ban on dependencies. Lightweight boilerplate-reduction crates such as `derive_more`, `delegate`, or `getset` are allowed when they remove meaningful repeated code without obscuring ownership, FFI, validation, or lifecycle behavior. Do not add accessor/delegation macros merely to replace one or two obvious lines, and verify any attribute macro used in a BoltFFI-scanned crate against binding generation. Do not add a runtime or heavyweight framework that changes the caller-owned execution model.
-
-## Documentation Rules
-
-- Write and edit all project-authored documentation as UTF-8.
-- Keep one reviewable architecture plan in [`.plan/PLAN.md`](.plan/PLAN.md).
-- Put durable investigations and decision evidence in [`docs/research/`](docs/research/).
-- Keep generated official snapshots separate from authored interpretation.
-- When making factual claims, link to the relevant local source file or snapshot where practical.
-- Distinguish platform guarantees from BleHub policy and from conclusions that still need runtime validation.
-- Do not claim that a callback, completion, disconnect, write, shutdown, or cancellation has stronger semantics than the native platform provides.
-- Future user-facing docs should be derived from the approved plan and verified implementation, not copied blindly from an unapproved draft.
-
-## Change Discipline
-
-- Inspect relevant files and existing user work before editing.
-- Make minimal, focused changes.
-- Do not modify vendored/generated code unless the task explicitly requires it.
-- Do not broaden planning into implementation without approval.
-- Do not commit or create branches unless explicitly requested.
-- This directory may not yet be a Git repository; do not assume `git status` or `git diff` is available.
-
-## Validation
-
-Do not add tests for trivial field assignment, obvious constructors/getters, derived trait behavior, or direct delegation that has no project-specific invariant. Prefer tests that protect FFI/wire compatibility, validation boundaries, lifecycle and rollback semantics, concurrency linearization, platform mapping, or previously observed regressions. Combine closely related boundary cases when that improves signal and readability; test count is not a goal.
-
-For documentation/tooling changes, run the narrowest applicable checks through Pixi. At minimum:
-
-```text
-pixi run just fmt
-pixi run just lint
-```
-
-For authored Markdown, also verify:
-
-- Mermaid fences with `pixi run just docs-check-mermaid` when diagrams are present;
-- UTF-8 decoding;
-- balanced fenced code blocks;
-- no trailing whitespace;
-- no merge-conflict markers.
-
-For future Rust/platform implementation, add platform-specific build, unit-test, generated-binding, packaging-consumer, and lifecycle stress recipes to `justfile` as each phase begins.
+Detailed candidate reports remain under `docs/testing/reports/`; do not duplicate their timelines here.
