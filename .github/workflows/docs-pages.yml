@@ -1,0 +1,84 @@
+# Publish the generated TypeDoc reference as the repository's GitHub Pages site.
+#
+# The site is a generated artifact: nothing is committed, nothing is edited. `docs-checks.yml` is the
+# gate; this workflow only builds and deploys it.
+#
+# Two preconditions before the first run, neither of which a workflow can do for itself:
+#
+# 1. GitHub Pages must be enabled for the repository once (Settings -> Pages -> Source: GitHub
+#    Actions). `actions/configure-pages` can also do this, but only with a non-`GITHUB_TOKEN` token
+#    that has `administration:write` + `pages:write`; this repository is not configured with such a
+#    secret on purpose.
+# 2. Pages must be entitled to serve this repository. GitHub Pages serves private repositories only
+#    on GitHub Pro, GitHub Team, GitHub Enterprise Cloud/Server. `VIDLG/blehub` is a private
+#    repository owned by a Free organization, so deployment is refused until the organization is
+#    upgraded to Team or the repository becomes public.
+#
+# Once both hold, add the push trigger below and this workflow publishes on `main` automatically:
+#
+#   push:
+#     branches: [main]
+#     paths:
+#       - "integrations/react-native-bleng/specs/**"
+#       - "integrations/react-native-bleng/src/**"
+#       - "integrations/react-native-bleng/typedoc.json"
+#       - "integrations/react-native-bleng/typedoc-readme.md"
+#       - "integrations/react-native-bleng/package*.json"
+#       - "package.json"
+#       - "package-lock.json"
+#       - ".github/workflows/docs-pages.yml"
+name: Docs site
+
+on:
+  workflow_dispatch:
+
+# The official Pages template permissions: build reads, deploy writes Pages with an OIDC token.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; never cancel a publish that is already running.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            integrations/react-native-bleng/package-lock.json
+
+      - name: Install documentation tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Install package type dependencies
+        working-directory: integrations/react-native-bleng
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build the site
+        run: npm run docs:api
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: integrations/react-native-bleng/site/api
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

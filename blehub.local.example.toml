@@ -9,7 +9,9 @@
 # BLEHUB_MUTAGEN_EXE/HOST/USER/REMOTE_PATH/SESSION_NAME override the
 # corresponding [mutagen] values. BLEHUB_PERIPHERAL_USB_* override the
 # corresponding [peripheral_usb] values. BLEHUB_NRFTEST_ROOT and
-# BLEHUB_NRF52840_PORT override the external nRF52840 provider. BLEHUB_APPLE_DEVICE,
+# BLEHUB_NRF52840_PORT and BLEHUB_NRF52840_SNIFFER_PORT override the external
+# nRF52840 provider and independent sniffer. BLEHUB_NRFUTIL_HOME overrides the
+# nrfutil installation root. BLEHUB_APPLE_DEVICE,
 # BLEHUB_APPLE_DEVELOPMENT_TEAM, and BLEHUB_APPLE_IOS_PROBE_BUNDLE_ID can
 # disambiguate iPhone device-signing runs; the normal single-device/single-paid-
 # team setup is detected automatically. The Apple Team ID may also be kept in
@@ -27,11 +29,16 @@
 # android_root = "~/Library/Android/sdk"
 # qemu_root = "/path/to/shared/qemu"
 # nrftest_root = "/path/to/nrftest"
+# 
+[tools]
+# nrfutil_home = "/path/to/nrftest/.work/firmware-tools/nrfutil-8.2.1"
 
 [peripheral_nrf52840]
 # Single-DK recipes may use this legacy selection when nrftest.local.toml
 # already selects the unique application device.
 # port = "/dev/cu.usbmodem..."
+# Independent nRF52840 sniffer port; this belongs only in ignored local config.
+# sniffer_port = "/dev/cu.usbmodem..."
 # Multi-DK RF uses the explicit mappings below. probe_serial is the full
 # USB/CDC serial identity, including leading zeroes; port is the matching BTP CDC.
 # [peripheral_nrf52840.devices.dk_a]

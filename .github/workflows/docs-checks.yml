@@ -1,0 +1,81 @@
+# Documentation contracts that do not need a device, a radio or a native build.
+#
+# The API reference pair is pinned by `tools/tests/react_native/test_api_docs.py`, the generated
+# TypeDoc site by `test_api_site.py`, and every Mermaid block in `docs/` is parsed. All of it is
+# Node + stdlib Python, so this is the cheapest gate in the repository and the only one that can run
+# on every docs change without a macOS runner or a physical device.
+name: Docs checks
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "integrations/react-native-bleng/specs/**"
+      - "integrations/react-native-bleng/src/**"
+      - "integrations/react-native-bleng/typedoc.json"
+      - "integrations/react-native-bleng/typedoc-readme.md"
+      - "integrations/react-native-bleng/package*.json"
+      - "tools/tests/react_native/**"
+      - "tools/check_mermaid.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs-checks.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "integrations/react-native-bleng/specs/**"
+      - "integrations/react-native-bleng/src/**"
+      - "integrations/react-native-bleng/typedoc.json"
+      - "integrations/react-native-bleng/typedoc-readme.md"
+      - "integrations/react-native-bleng/package*.json"
+      - "tools/tests/react_native/**"
+      - "tools/check_mermaid.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/docs-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          # TypeDoc resolves Nitro and React types from the package's own install, so both lockfiles
+          # are part of the cache key.
+          cache-dependency-path: |
+            package-lock.json
+            integrations/react-native-bleng/package-lock.json
+
+      - name: Install documentation tooling
+        run: npm ci --no-audit --no-fund
+
+      - name: Install package type dependencies
+        # No lifecycle scripts: this gate reads declarations, it never builds native code.
+        working-directory: integrations/react-native-bleng
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: API reference and site-ownership tests
+        run: >-
+          python3 -m unittest
+          tools.tests.react_native.test_api_docs
+          tools.tests.react_native.test_api_site
+          -v
+
+      - name: Mermaid syntax
+        run: npm run check:mermaid
+
+      - name: TypeDoc entry point (validated, nothing written)
+        run: npm run docs:api:check
