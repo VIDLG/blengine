@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check:mermaid": "node tools/check_mermaid.mjs"
+    "check:mermaid": "node tools/check_mermaid.mjs",
+    "docs:api": "typedoc --options integrations/react-native-bleng/typedoc.json",
+    "docs:api:check": "typedoc --options integrations/react-native-bleng/typedoc.json --emit none --treatWarningsAsErrors"
   },
   "devDependencies": {
     "jsdom": "30.0.1",
-    "mermaid": "11.17.2"
+    "mermaid": "11.17.2",
+    "typedoc": "0.28.20"
   }
 }
